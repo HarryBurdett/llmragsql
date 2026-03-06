@@ -735,13 +735,16 @@ class OperaSQLImport:
             else:
                 ptddr, ptdcr = 0, value  # ptdcr stored as negative
 
+            nhist_id = self._get_next_id(conn, 'nhist')
             insert_sql = f"""
                 INSERT INTO nhist (
+                    id,
                     nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
                     nh_job, nh_project, nh_year, nh_period,
                     nh_bal, nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
                     datecreated, datemodified, state
                 ) VALUES (
+                    {nhist_id},
                     1, '{na_type}', '{na_subt}', '{account_stripped:<8}', '{cost_centre}',
                     '        ', '        ', {year}, {period},
                     {value}, 0, 0, {ptddr}, {ptdcr}, 0,
@@ -749,7 +752,7 @@ class OperaSQLImport:
                 )
             """
             conn.execute(text(insert_sql))
-            logger.debug(f"Inserted nhist for {account_stripped} period {period}/{year}: value={value}")
+            logger.debug(f"Inserted nhist id={nhist_id} for {account_stripped} period {period}/{year}: value={value}")
 
     def verify_nominal_balances(self, accounts: list, period: int, year: int = None):
         """
@@ -918,6 +921,39 @@ class OperaSQLImport:
         """))
         logger.debug(f"Allocated journal number(s) {next_journal}..{next_journal + count - 1} from nparm")
         return next_journal
+
+    def _get_next_id(self, conn, tablename: str, count: int = 1) -> int:
+        """
+        Allocate the next sequential ID(s) from the nextid table for a given table.
+
+        Opera maintains a `nextid` table with a row per table, holding the next
+        available `id` value. This method reads the current value with UPDLOCK
+        to prevent concurrent allocation, then advances the counter by `count`.
+
+        Args:
+            conn: Active database connection (within transaction)
+            tablename: Opera table name (e.g. 'stran', 'ptran', 'atran', 'ntran')
+            count: Number of IDs to allocate (default 1).
+                   Returns the FIRST id; caller uses first..first+count-1.
+
+        Returns:
+            The first allocated id.
+        """
+        result = conn.execute(text(f"""
+            SELECT nextid FROM nextid WITH (UPDLOCK, ROWLOCK)
+            WHERE RTRIM(tablename) = '{tablename}'
+        """))
+        next_val = result.scalar()
+        if next_val is None:
+            raise RuntimeError(f"No nextid row found for table '{tablename}'")
+        next_val = int(next_val)
+        conn.execute(text(f"""
+            UPDATE nextid WITH (ROWLOCK)
+            SET nextid = {next_val + count}, datemodified = GETDATE()
+            WHERE RTRIM(tablename) = '{tablename}'
+        """))
+        logger.debug(f"Allocated id(s) {next_val}..{next_val + count - 1} from nextid for {tablename}")
+        return next_val
 
     def update_nbank_balance(self, conn, bank_account: str, amount_pounds: float):
         """
@@ -2045,6 +2081,11 @@ class OperaSQLImport:
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
+                # Allocate IDs from nextid table for all INSERTs in this method
+                aentry_row_id = self._get_next_id(conn, 'aentry')
+                atran_row_id = self._get_next_id(conn, 'atran')
+                stran_row_id = self._get_next_id(conn, 'stran')
+
                 # 1. INSERT INTO aentry (Cashbook Entry Header)
                 # ae_complet should only be 1 if we're posting to nominal ledger
                 ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
@@ -2052,13 +2093,13 @@ class OperaSQLImport:
                 safe_comment = comment.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''") if comment else ''
                 aentry_sql = f"""
                     INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        id, ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        {aentry_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_comment[:40]}',
@@ -2074,7 +2115,7 @@ class OperaSQLImport:
                 # 2. INSERT INTO atran (Cashbook Transaction)
                 atran_sql = f"""
                     INSERT INTO atran (
-                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                         at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                         at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                         at_account, at_name, at_comment, at_payee, at_payname,
@@ -2085,7 +2126,7 @@ class OperaSQLImport:
                         at_bsref, at_bsname, at_vattycd, at_project, at_job,
                         at_bic, at_iban, at_memo, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                        {atran_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {amount_pence},
                         0, '   ', 1.0, 0, 2,
                         '{customer_account}', '{customer_name[:35]}', '{safe_comment[:50]}', '        ', '',
@@ -2109,10 +2150,13 @@ class OperaSQLImport:
                     bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
                     control_type = self._get_nacnt_type(conn, sales_ledger_control) or ('B ', 'BB')
 
+                    # Allocate 2 ntran IDs (bank debit + control credit)
+                    ntran_id_start = self._get_next_id(conn, 'ntran', 2)
+
                     # INSERT INTO ntran - DEBIT (Bank Account +amount)
                     ntran_debit_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -2121,7 +2165,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
+                            {ntran_id_start}, '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2138,7 +2182,7 @@ class OperaSQLImport:
                     # INSERT INTO ntran - CREDIT (Sales Ledger Control -amount)
                     ntran_credit_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -2147,7 +2191,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
+                            {ntran_id_start + 1}, '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2169,15 +2213,18 @@ class OperaSQLImport:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
+                    # Allocate 2 anoml IDs (bank + control)
+                    anoml_id_start = self._get_next_id(conn, 'anoml', 2)
+
                     # anoml record 1 - Bank account (debit - money coming in)
                     anoml_bank_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            {anoml_id_start}, '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -2188,12 +2235,12 @@ class OperaSQLImport:
                     # anoml record 2 - Debtors control account (credit - reducing asset)
                     anoml_control_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            {anoml_id_start + 1}, '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -2206,7 +2253,7 @@ class OperaSQLImport:
                 stran_memo = f"Payment received - {reference[:50]}"
                 stran_sql = f"""
                     INSERT INTO stran (
-                        st_account, st_trdate, st_trref, st_custref, st_trtype,
+                        id, st_account, st_trdate, st_trref, st_custref, st_trtype,
                         st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
                         st_advance, st_memo, st_payflag, st_set1day, st_set1,
                         st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
@@ -2219,7 +2266,7 @@ class OperaSQLImport:
                         st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
                         datecreated, datemodified, state
                     ) VALUES (
-                        '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'R',
+                        {stran_row_id}, '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'R',
                         {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
                         'N', '{stran_memo[:200]}', 0, 0, 0,
                         0, 0, '{post_date}', '   ', 0,
@@ -2532,19 +2579,24 @@ class OperaSQLImport:
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
+                # Allocate IDs from nextid table
+                aentry_row_id = self._get_next_id(conn, 'aentry')
+                atran_row_id = self._get_next_id(conn, 'atran')
+                stran_row_id = self._get_next_id(conn, 'stran')
+
                 # 1. aentry - NEGATIVE amount (money going out)
                 # ae_complet should only be 1 if we're posting to nominal ledger
                 ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
                 safe_comment = comment.replace(chr(10), ' ').replace(chr(13), ' ').replace("'", "''") if comment else ''
                 aentry_sql = f"""
                     INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        id, ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        {aentry_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_comment[:40]}',
@@ -2557,7 +2609,7 @@ class OperaSQLImport:
                 trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
                 atran_sql = f"""
                     INSERT INTO atran (
-                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                         at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                         at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                         at_account, at_name, at_comment, at_payee, at_payname,
@@ -2568,7 +2620,7 @@ class OperaSQLImport:
                         at_bsref, at_bsname, at_vattycd, at_project, at_job,
                         at_bic, at_iban, at_memo, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                        {atran_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {-amount_pence},
                         0, '   ', 1.0, 0, 2,
                         '{customer_account}', '{customer_name[:35]}', '{safe_comment[:50]}', '        ', '',
@@ -2591,10 +2643,13 @@ class OperaSQLImport:
                     bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
                     control_type = self._get_nacnt_type(conn, sales_ledger_control) or ('B ', 'BB')
 
+                    # Allocate 2 ntran IDs
+                    ntran_id_start = self._get_next_id(conn, 'ntran', 2)
+
                     # Bank account CREDIT (-amount, money going out)
                     ntran_bank_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -2603,7 +2658,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
+                            {ntran_id_start}, '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2620,7 +2675,7 @@ class OperaSQLImport:
                     # Debtors control DEBIT (+amount, increasing debtors)
                     ntran_control_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -2629,7 +2684,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
+                            {ntran_id_start + 1}, '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -2651,15 +2706,18 @@ class OperaSQLImport:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
+                    # Allocate 2 anoml IDs
+                    anoml_id_start = self._get_next_id(conn, 'anoml', 2)
+
                     # Bank account (credit - money going out)
                     anoml_bank_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            {anoml_id_start}, '{bank_account}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -2670,12 +2728,12 @@ class OperaSQLImport:
                     # Debtors control (debit - increasing debtors)
                     anoml_control_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{sales_ledger_control}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            {anoml_id_start + 1}, '{sales_ledger_control}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -2687,7 +2745,7 @@ class OperaSQLImport:
                 stran_memo = f"Refund to customer - {reference[:50]}"
                 stran_sql = f"""
                     INSERT INTO stran (
-                        st_account, st_trdate, st_trref, st_custref, st_trtype,
+                        id, st_account, st_trdate, st_trref, st_custref, st_trtype,
                         st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
                         st_advance, st_memo, st_payflag, st_set1day, st_set1,
                         st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
@@ -2700,7 +2758,7 @@ class OperaSQLImport:
                         st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
                         datecreated, datemodified, state
                     ) VALUES (
-                        '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'F',
+                        {stran_row_id}, '{customer_account}', '{post_date}', '{reference[:20]}', '{payment_method[:20]}', 'F',
                         {amount_pounds}, 0, {amount_pounds}, ' ', '{post_date}',
                         'N', '{stran_memo[:200]}', 0, 0, 0,
                         0, 0, '{post_date}', '   ', 0,
@@ -2975,18 +3033,23 @@ class OperaSQLImport:
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
+                # Allocate IDs from nextid table
+                aentry_row_id = self._get_next_id(conn, 'aentry')
+                atran_row_id = self._get_next_id(conn, 'atran')
+                ptran_row_id = self._get_next_id(conn, 'ptran')
+
                 # 1. INSERT INTO aentry (Cashbook Entry Header) - NEGATIVE for payment
                 # ae_complet should only be 1 if we're posting to nominal ledger
                 ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
                 aentry_sql = f"""
                     INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        id, ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        {aentry_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_comment[:40]}',
@@ -2998,7 +3061,7 @@ class OperaSQLImport:
                 # 2. INSERT INTO atran (Cashbook Transaction)
                 atran_sql = f"""
                     INSERT INTO atran (
-                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                         at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                         at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                         at_account, at_name, at_comment, at_payee, at_payname,
@@ -3009,7 +3072,7 @@ class OperaSQLImport:
                         at_bsref, at_bsname, at_vattycd, at_project, at_job,
                         at_bic, at_iban, at_memo, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                        {atran_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {-amount_pence},
                         0, '   ', 1.0, 0, 2,
                         '{supplier_account}', '{supplier_name[:35]}', '{safe_comment[:50]}', '        ', '',
@@ -3029,12 +3092,15 @@ class OperaSQLImport:
                     bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
                     control_type = self._get_nacnt_type(conn, creditors_control) or ('C ', 'CA')
 
+                    # Allocate 2 ntran IDs
+                    ntran_id_start = self._get_next_id(conn, 'ntran', 2)
+
                     # INSERT INTO ntran - CREDIT Bank (money going out)
                     # nt_type='B ', nt_subt='BC', nt_posttyp='P'
                     logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran bank value will be: {-amount_pounds}")
                     ntran_bank_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -3043,7 +3109,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
+                            {ntran_id_start}, '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -3062,7 +3128,7 @@ class OperaSQLImport:
                     logger.info(f"PURCHASE_PAYMENT_DEBUG: ntran control value will be: {amount_pounds}")
                     ntran_control_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -3071,7 +3137,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{creditors_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
+                            {ntran_id_start + 1}, '{creditors_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -3093,15 +3159,18 @@ class OperaSQLImport:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
+                    # Allocate 2 anoml IDs
+                    anoml_id_start = self._get_next_id(conn, 'anoml', 2)
+
                     # anoml record 1 - Bank account (credit - money going out)
                     anoml_bank_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            {anoml_id_start}, '{bank_account}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -3112,12 +3181,12 @@ class OperaSQLImport:
                     # anoml record 2 - Creditors control account (debit - reducing liability)
                     anoml_control_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{creditors_control}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            {anoml_id_start + 1}, '{creditors_control}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -3128,7 +3197,7 @@ class OperaSQLImport:
                 # 5. INSERT INTO ptran (Purchase Ledger Transaction)
                 ptran_sql = f"""
                     INSERT INTO ptran (
-                        pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
+                        id, pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
                         pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
                         pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
                         pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
@@ -3138,7 +3207,7 @@ class OperaSQLImport:
                         pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
                         datecreated, datemodified, state
                     ) VALUES (
-                        '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'P',
+                        {ptran_row_id}, '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'P',
                         {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
                         'N', 0, 0, 0, 0,
                         0, ' ', '   ', 0, 0,
@@ -3483,6 +3552,9 @@ class OperaSQLImport:
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
+                # Allocate IDs from nextid table
+                aentry_row_id = self._get_next_id(conn, 'aentry')
+
                 # ae_complet = 1 if posting to nominal
                 ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
 
@@ -3493,13 +3565,13 @@ class OperaSQLImport:
                 # ae_value is always GROSS (in pence) regardless of VAT split
                 aentry_sql = f"""
                     INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        id, ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        {aentry_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {entry_value}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{desc_clean[:40].replace("'", "''")}',
@@ -3516,10 +3588,13 @@ class OperaSQLImport:
                     net_entry_value = net_pence if is_receipt else -net_pence
                     vat_entry_value = vat_pence if is_receipt else -vat_pence
 
+                    # Allocate atran IDs (2 if VAT, 1 otherwise - allocated later if no VAT)
+                    atran_id_start = self._get_next_id(conn, 'atran', 2)
+
                     # Line 1 - NET amount to nominal account
                     atran_net_sql = f"""
                         INSERT INTO atran (
-                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                             at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                             at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                             at_account, at_name, at_comment, at_payee, at_payname,
@@ -3530,7 +3605,7 @@ class OperaSQLImport:
                             at_bsref, at_bsname, at_vattycd, at_project, at_job,
                             at_bic, at_iban, at_memo, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {atran_id_start}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                             {at_type}, '{post_date}', '{post_date}', 1, {net_entry_value},
                             0, '   ', 1.0, 0, 2,
                             '{nominal_account}', '{nominal_name[:35]}', '{desc_clean[:50].replace("'", "''")}', '        ', '',
@@ -3548,7 +3623,7 @@ class OperaSQLImport:
                     # at_cntr='   1' marks this as a second analysis line (matches GoCardless pattern)
                     atran_vat_sql = f"""
                         INSERT INTO atran (
-                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                             at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                             at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                             at_account, at_name, at_comment, at_payee, at_payname,
@@ -3559,7 +3634,7 @@ class OperaSQLImport:
                             at_bsref, at_bsname, at_vattycd, at_project, at_job,
                             at_bic, at_iban, at_memo, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '   1', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {atran_id_start + 1}, '{bank_account}', '   1', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                             {at_type}, '{post_date}', '{post_date}', 1, {vat_entry_value},
                             0, '   ', 1.0, 0, 2,
                             '{vat_nominal_account}', '{nominal_name[:31]} VAT', '{desc_clean[:50].replace("'", "''")}', '        ', '',
@@ -3574,9 +3649,11 @@ class OperaSQLImport:
                     conn.execute(text(atran_vat_sql))
                 else:
                     # No VAT: single atran line with full amount
+                    atran_row_id = self._get_next_id(conn, 'atran')
+
                     atran_sql = f"""
                         INSERT INTO atran (
-                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                             at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                             at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                             at_account, at_name, at_comment, at_payee, at_payname,
@@ -3587,7 +3664,7 @@ class OperaSQLImport:
                             at_bsref, at_bsname, at_vattycd, at_project, at_job,
                             at_bic, at_iban, at_memo, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {atran_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                             {at_type}, '{post_date}', '{post_date}', 1, {entry_value},
                             0, '   ', 1.0, 0, 2,
                             '{nominal_account}', '{nominal_name[:35]}', '{desc_clean[:50].replace("'", "''")}', '        ', '',
@@ -3628,10 +3705,14 @@ class OperaSQLImport:
                     bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BB')
                     nominal_type = self._get_nacnt_type(conn, nominal_account) or ('B ', 'BB')
 
+                    # Allocate ntran IDs (2 base + 1 if VAT)
+                    ntran_count = 3 if has_vat else 2
+                    ntran_id_start = self._get_next_id(conn, 'ntran', ntran_count)
+
                     # Bank account ntran (GROSS amount)
                     ntran_bank_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -3640,7 +3721,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
+                            {ntran_id_start}, '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {bank_ntran_value}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -3656,7 +3737,7 @@ class OperaSQLImport:
                     # Nominal account ntran (NET amount when VAT, GROSS when no VAT)
                     ntran_nominal_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -3665,7 +3746,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{nominal_account}', '    ', '{nominal_type[0]}', '{nominal_type[1]}', {next_journal},
+                            {ntran_id_start + 1}, '{nominal_account}', '    ', '{nominal_type[0]}', '{nominal_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {nominal_ntran_value}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -3683,7 +3764,7 @@ class OperaSQLImport:
                         vat_acct_type = self._get_nacnt_type(conn, vat_nominal_account) or ('B ', 'BB')
                         ntran_vat_sql = f"""
                             INSERT INTO ntran (
-                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                 nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                 nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                                 nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -3692,7 +3773,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{vat_nominal_account}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
+                                {ntran_id_start + 2}, '{vat_nominal_account}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{ntran_comment} VAT', '{ntran_trnref}',
                                 '{post_date}', {vat_ntran_value}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -3713,15 +3794,19 @@ class OperaSQLImport:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
+                    # Allocate anoml IDs (2 base + 1 if VAT)
+                    anoml_count = 3 if has_vat else 2
+                    anoml_id_start = self._get_next_id(conn, 'anoml', anoml_count)
+
                     # anoml record 1 - Bank account (GROSS)
                     anoml_bank_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'A', '{post_date}', {bank_ntran_value}, '{reference[:20]}',
+                            {anoml_id_start}, '{bank_account}', '    ', 'A', '{post_date}', {bank_ntran_value}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -3732,12 +3817,12 @@ class OperaSQLImport:
                     # anoml record 2 - Nominal account (NET when VAT, GROSS when no VAT)
                     anoml_nominal_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{nominal_account}', '    ', 'A', '{post_date}', {nominal_ntran_value}, '{reference[:20]}',
+                            {anoml_id_start + 1}, '{nominal_account}', '    ', 'A', '{post_date}', {nominal_ntran_value}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '{project_padded}', '{department_padded}', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -3749,12 +3834,12 @@ class OperaSQLImport:
                     if has_vat:
                         anoml_vat_sql = f"""
                             INSERT INTO anoml (
-                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                 ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{vat_nominal_account}', '    ', 'A', '{post_date}', {vat_ntran_value}, '{reference[:20]}',
+                                {anoml_id_start + 2}, '{vat_nominal_account}', '    ', 'A', '{post_date}', {vat_ntran_value}, '{reference[:20]}',
                                 '{ntran_comment[:36]} VAT', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_vat_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
@@ -3776,11 +3861,12 @@ class OperaSQLImport:
                         nv_vattype = 'P'
                         box1, box2, box4, box6, box7 = 0, 0, 1, 0, 1
 
+                    zvtran_row_id = self._get_next_id(conn, 'zvtran')
                     # zvtran - VAT analysis record
                     # va_account for N/L entries = nominal account code (matches Opera native)
                     zvtran_sql = f"""
                         INSERT INTO zvtran (
-                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            id, va_source, va_account, va_laccnt, va_trdate, va_taxdate,
                             va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                             va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
                             va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
@@ -3788,7 +3874,7 @@ class OperaSQLImport:
                             va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
-                            'N', '{nominal_account}', '{nominal_account}', '{post_date}', '{post_date}',
+                            {zvtran_row_id}, 'N', '{nominal_account}', '{nominal_account}', '{post_date}', '{post_date}',
                             '{post_date}', '{reference[:20]}', 'I', 'GB', '   ',
                             {net_amount}, 0, {vat_amount}, 0, 'H',
                             '{va_vattype}', '{vat_code.strip()}', {vat_rate}, {box1}, {box2},
@@ -3799,15 +3885,16 @@ class OperaSQLImport:
                     """
                     conn.execute(text(zvtran_sql))
 
+                    nvat_row_id = self._get_next_id(conn, 'nvat')
                     # nvat - VAT return tracking record
                     nvat_sql = f"""
                         INSERT INTO nvat (
-                            nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                            id, nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
                             nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
                             nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
+                            {nvat_row_id}, '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
                             '{reference[:20]}', '{nv_vattype}', 0, {net_amount}, {vat_amount},
                             ' ', '{nv_vattype}', '{vat_code.strip()}', {vat_rate}, '{desc_clean[:40].replace("'", "''")} VAT',
                             '{now_str}', '{now_str}', 1
@@ -4537,16 +4624,21 @@ class OperaSQLImport:
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
+                # Allocate IDs from nextid table
+                aentry_row_id = self._get_next_id(conn, 'aentry')
+                atran_row_id = self._get_next_id(conn, 'atran')
+                ptran_row_id = self._get_next_id(conn, 'ptran')
+
                 # 1. aentry - POSITIVE amount (money coming in)
                 aentry_sql = f"""
                     INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        id, ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        {aentry_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', '{safe_comment[:40]}',
@@ -4558,7 +4650,7 @@ class OperaSQLImport:
                 # 2. atran - at_type=6 (PURCHASE_REFUND), POSITIVE amount
                 atran_sql = f"""
                     INSERT INTO atran (
-                        at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                        id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                         at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                         at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                         at_account, at_name, at_comment, at_payee, at_payname,
@@ -4569,7 +4661,7 @@ class OperaSQLImport:
                         at_bsref, at_bsname, at_vattycd, at_project, at_job,
                         at_bic, at_iban, at_memo, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                        {atran_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                         {at_type}, '{post_date}', '{post_date}', 1, {amount_pence},
                         0, '   ', 1.0, 0, 2,
                         '{supplier_account}', '{supplier_name[:35]}', '{safe_comment[:50]}', '        ', '',
@@ -4589,10 +4681,13 @@ class OperaSQLImport:
                     bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
                     control_type = self._get_nacnt_type(conn, creditors_control) or ('C ', 'CA')
 
+                    # Allocate 2 ntran IDs
+                    ntran_id_start = self._get_next_id(conn, 'ntran', 2)
+
                     # Bank account DEBIT (+amount, money coming in)
                     ntran_bank_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -4601,7 +4696,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
+                            {ntran_id_start}, '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -4618,7 +4713,7 @@ class OperaSQLImport:
                     # Creditors control CREDIT (-amount, reducing liability)
                     ntran_control_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -4627,7 +4722,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{creditors_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
+                            {ntran_id_start + 1}, '{creditors_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -4649,15 +4744,16 @@ class OperaSQLImport:
                     done_flag = posting_decision.transfer_file_done_flag
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
+                    anoml_id_start = self._get_next_id(conn, 'anoml', 2)
                     # Bank account (debit - money coming in)
                     anoml_bank_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                            {anoml_id_start}, '{bank_account}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -4668,12 +4764,12 @@ class OperaSQLImport:
                     # Creditors control (credit - reducing liability)
                     anoml_control_sql = f"""
                         INSERT INTO anoml (
-                            ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                            id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{creditors_control}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                            {anoml_id_start + 1}, '{creditors_control}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
@@ -4684,7 +4780,7 @@ class OperaSQLImport:
                 # 5. ptran - pt_trtype='F' (Refund), POSITIVE value
                 ptran_sql = f"""
                     INSERT INTO ptran (
-                        pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
+                        id, pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
                         pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
                         pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
                         pt_set2, pt_held, pt_fcurr, pt_fcrate, pt_fcdec,
@@ -4694,7 +4790,7 @@ class OperaSQLImport:
                         pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
                         datecreated, datemodified, state
                     ) VALUES (
-                        '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'F',
+                        {ptran_row_id}, '{supplier_account}', '{post_date}', '{reference[:20]}', '{payment_type[:20]}', 'F',
                         {amount_pounds}, 0, {amount_pounds}, ' ', '{post_date}',
                         'N', 0, 0, 0, 0,
                         0, ' ', '   ', 0, 0,
@@ -4924,6 +5020,11 @@ class OperaSQLImport:
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
+                # Allocate IDs from nextid table
+                stran_row_id = self._get_next_id(conn, 'stran')
+                ntran_id_start = self._get_next_id(conn, 'ntran', 3)
+                nhist_row_id = self._get_next_id(conn, 'nhist')
+
                 # Look up nominal account types before ntran INSERTs
                 vat_type = self._get_nacnt_type(conn, vat_nominal) or ('C ', 'CA')
                 sales_type = self._get_nacnt_type(conn, sales_nominal) or ('E ', sales_nominal[:2] if len(sales_nominal) >= 2 else 'E4')
@@ -4932,7 +5033,7 @@ class OperaSQLImport:
                 # 1. INSERT INTO stran (Sales Ledger Transaction)
                 stran_sql = f"""
                     INSERT INTO stran (
-                        st_account, st_trdate, st_trref, st_custref, st_trtype,
+                        id, st_account, st_trdate, st_trref, st_custref, st_trtype,
                         st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
                         st_advance, st_memo, st_payflag, st_set1day, st_set1,
                         st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
@@ -4945,7 +5046,7 @@ class OperaSQLImport:
                         st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
                         datecreated, datemodified, state
                     ) VALUES (
-                        '{customer_account}', '{post_date}', '{invoice_number[:20]}', '{customer_ref[:20]}', 'I',
+                        {stran_row_id}, '{customer_account}', '{post_date}', '{invoice_number[:20]}', '{customer_ref[:20]}', 'I',
                         {gross_amount}, {vat_amount}, {gross_amount}, ' ', '{post_date}',
                         'N', '{stran_memo[:2000]}', 0, 0, 0,
                         0, 0, '{due_date}', '   ', 0,
@@ -4965,7 +5066,7 @@ class OperaSQLImport:
                 if vat_amount > 0:
                     ntran_vat_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -4974,7 +5075,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_nominal}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
+                            {ntran_id_start}, '{vat_nominal}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
                             '          ', '{input_by[:10]}', 'S', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-vat_amount}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -4991,7 +5092,7 @@ class OperaSQLImport:
                 # 3. INSERT INTO ntran - CREDIT Sales (type from nacnt lookup)
                 ntran_sales_sql = f"""
                     INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                         nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                         nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                         nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -5000,7 +5101,7 @@ class OperaSQLImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{sales_nominal}', '    ', '{sales_type[0]}', '{sales_type[1]}', {next_journal},
+                        {ntran_id_start + 1}, '{sales_nominal}', '    ', '{sales_type[0]}', '{sales_type[1]}', {next_journal},
                         '          ', '{input_by[:10]}', 'S', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {-net_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -5017,7 +5118,7 @@ class OperaSQLImport:
                 # 4. INSERT INTO ntran - DEBIT Debtors Control (type from nacnt lookup)
                 ntran_control_sql = f"""
                     INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                         nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                         nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                         nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -5026,7 +5127,7 @@ class OperaSQLImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{debtors_control}', '    ', '{debtors_type[0]}', '{debtors_type[1]}', {next_journal},
+                        {ntran_id_start + 2}, '{debtors_control}', '    ', '{debtors_type[0]}', '{debtors_type[1]}', {next_journal},
                         '          ', '{input_by[:10]}', 'S', '', 'Sales Ledger Transfer (RT)                        ',
                         '{post_date}', {gross_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -5043,12 +5144,12 @@ class OperaSQLImport:
                 # 5. INSERT INTO nhist (Nominal History for P&L account)
                 nhist_sql = f"""
                     INSERT INTO nhist (
-                        nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
+                        id, nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
                         nh_job, nh_project, nh_year, nh_period, nh_bal,
                         nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
                         datecreated, datemodified, state
                     ) VALUES (
-                        1, '{sales_type[0]}', '{sales_type[1]}', '{sales_nominal}', '    ',
+                        {nhist_row_id}, 1, '{sales_type[0]}', '{sales_type[1]}', '{sales_nominal}', '    ',
                         '{department}', '{customer_account}', {year}, {period}, {-net_amount},
                         0, 0, 0, {-net_amount}, 0,
                         '{now_str}', '{now_str}', 1
@@ -5059,10 +5160,12 @@ class OperaSQLImport:
                 # 6. zvtran - VAT analysis record (for VAT reporting)
                 if vat_amount > 0:
                     zvtran_unique = OperaUniqueIdGenerator.generate()
+                    zvtran_row_id = self._get_next_id(conn, 'zvtran')
+                    nvat_row_id = self._get_next_id(conn, 'nvat')
                     vat_rate = (vat_amount / net_amount * 100) if net_amount > 0 else 20.0
                     zvtran_sql = f"""
                         INSERT INTO zvtran (
-                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            id, va_source, va_account, va_laccnt, va_trdate, va_taxdate,
                             va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                             va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
                             va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
@@ -5070,7 +5173,7 @@ class OperaSQLImport:
                             va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
-                            'S', '{customer_account}', '{sales_nominal}', '{post_date}', '{post_date}',
+                            {zvtran_row_id}, 'S', '{customer_account}', '{sales_nominal}', '{post_date}', '{post_date}',
                             '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
                             {net_amount}, 0, {vat_amount}, 0, 'H',
                             'S', '2', {vat_rate}, 1, 0,
@@ -5085,12 +5188,12 @@ class OperaSQLImport:
                     # nv_vattype: 'S' = Sales (output VAT, payable to HMRC)
                     nvat_sql = f"""
                         INSERT INTO nvat (
-                            nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                            id, nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
                             nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
                             nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_nominal}', '', '{post_date}', '{post_date}', '{post_date}',
+                            {nvat_row_id}, '{vat_nominal}', '', '{post_date}', '{post_date}', '{post_date}',
                             '{invoice_number[:20]}', 'S', 0, {net_amount}, {vat_amount},
                             ' ', 'S', 'S', {vat_rate}, 'Sales Invoice VAT',
                             '{now_str}', '{now_str}', 1
@@ -5276,6 +5379,9 @@ class OperaSQLImport:
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
+                # Allocate IDs from nextid table
+                ntran_id_start = self._get_next_id(conn, 'ntran', 3)
+
                 # Look up nominal account types before ntran INSERTs
                 purchase_control_type = self._get_nacnt_type(conn, purchase_ledger_control) or ('B ', 'BB')
                 nominal_type = self._get_nacnt_type(conn, nominal_account) or ('P ', 'HA')
@@ -5284,7 +5390,7 @@ class OperaSQLImport:
                 # 1. CREDIT Purchase Ledger Control (Gross - we owe this)
                 ntran_control_sql = f"""
                     INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                         nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                         nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                         nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -5293,7 +5399,7 @@ class OperaSQLImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{purchase_ledger_control}', '    ', '{purchase_control_type[0]}', '{purchase_control_type[1]}', {next_journal},
+                        {ntran_id_start}, '{purchase_ledger_control}', '    ', '{purchase_control_type[0]}', '{purchase_control_type[1]}', {next_journal},
                         '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {-gross_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -5310,7 +5416,7 @@ class OperaSQLImport:
                 # 2. DEBIT Expense Account (Net - cost incurred)
                 ntran_expense_sql = f"""
                     INSERT INTO ntran (
-                        nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                        id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                         nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                         nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                         nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -5319,7 +5425,7 @@ class OperaSQLImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
-                        '{nominal_account}', '    ', '{nominal_type[0]}', '{nominal_type[1]}', {next_journal},
+                        {ntran_id_start + 1}, '{nominal_account}', '    ', '{nominal_type[0]}', '{nominal_type[1]}', {next_journal},
                         '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {net_amount}, {year}, {period}, 0,
                         0, 0, '   ', 0, 0,
@@ -5337,7 +5443,7 @@ class OperaSQLImport:
                 if vat_amount > 0:
                     ntran_vat_sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -5346,7 +5452,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_account}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
+                            {ntran_id_start + 2}, '{vat_account}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
                             '{invoice_number[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {vat_amount}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -5362,9 +5468,10 @@ class OperaSQLImport:
 
                     # 4. zvtran - VAT analysis record (for VAT reporting)
                     vat_rate = (vat_amount / net_amount * 100) if net_amount > 0 else 20.0
+                    zvtran_row_id = self._get_next_id(conn, 'zvtran')
                     zvtran_sql = f"""
                         INSERT INTO zvtran (
-                            va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                            id, va_source, va_account, va_laccnt, va_trdate, va_taxdate,
                             va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                             va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
                             va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
@@ -5372,7 +5479,7 @@ class OperaSQLImport:
                             va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
-                            'P', '{supplier_account}', '{nominal_account}', '{post_date}', '{post_date}',
+                            {zvtran_row_id}, 'P', '{supplier_account}', '{nominal_account}', '{post_date}', '{post_date}',
                             '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
                             {net_amount}, 0, {vat_amount}, 0, 'H',
                             'P', '{vat_code}', {vat_rate}, 0, 0,
@@ -5387,12 +5494,12 @@ class OperaSQLImport:
                     # nv_vattype: 'P' = Purchase (input VAT, reclaimable from HMRC)
                     nvat_sql = f"""
                         INSERT INTO nvat (
-                            nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                            id, nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
                             nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
                             nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{vat_account}', '', '{post_date}', '{post_date}', '{post_date}',
+                            {nvat_row_id}, '{vat_account}', '', '{post_date}', '{post_date}', '{post_date}',
                             '{invoice_number[:20]}', 'P', 0, {net_amount}, {vat_amount},
                             ' ', 'P', '{vat_code}', {vat_rate}, 'Purchase Invoice VAT',
                             '{now_str}', '{now_str}', 1
@@ -5545,6 +5652,7 @@ class OperaSQLImport:
                 # Insert all journal lines
                 for line in lines:
                     unique_id = OperaUniqueIdGenerator.generate()
+                    ntran_row_id = self._get_next_id(conn, 'ntran')
                     amount = float(line['amount'])
                     line_desc = line.get('description', description)[:50]
                     ntran_comment = f"{reference[:20]} {line_desc:<29}"
@@ -5554,7 +5662,7 @@ class OperaSQLImport:
 
                     sql = f"""
                         INSERT INTO ntran (
-                            nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                            id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                             nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -5563,7 +5671,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
-                            '{line['account']}', '    ', '{line_type[0]}', '{line_type[1]}', {next_journal},
+                            {ntran_row_id}, '{line['account']}', '    ', '{line_type[0]}', '{line_type[1]}', {next_journal},
                             '{reference[:10]}', '{input_by[:10]}', 'A', '{ntran_comment}', 'Journal             ',
                             '{post_date}', {amount}, {year}, {period}, 0,
                             0, 0, '   ', 0, 0,
@@ -5828,6 +5936,9 @@ class OperaSQLImport:
                 # Get next entry number from atype
                 entry_number = self.increment_atype_entry(conn, cbtype)
 
+                # Allocate aentry ID for batch header
+                aentry_row_id = self._get_next_id(conn, 'aentry')
+
                 # Get next journal number from nparm — allocate enough for all payments + fees
                 # Each payment gets its own journal, fees get one more
                 journal_count = len(payments) + (1 if gocardless_fees > 0 else 0)
@@ -5837,13 +5948,13 @@ class OperaSQLImport:
                 # ae_complet = 1 if completing, 0 if leaving for review
                 aentry_sql = f"""
                     INSERT INTO aentry (
-                        ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                        id, ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
-                        '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
+                        {aentry_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {total_pence}, 0, 0, 0, {1 if complete_batch else 0},
                         0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', 'GoCardless batch import',
@@ -5862,6 +5973,10 @@ class OperaSQLImport:
                     cust = customer_info[customer_account]
                     customer_name = cust['name'].replace("'", "''")
 
+                    # Allocate IDs for this payment's atran and stran
+                    atran_row_id = self._get_next_id(conn, 'atran')
+                    stran_row_id = self._get_next_id(conn, 'stran')
+
                     # Get unique IDs for this payment
                     atran_unique = unique_ids[idx * 2]
                     stran_unique = atran_unique  # Must match atran — Opera shares unique ID
@@ -5874,7 +5989,7 @@ class OperaSQLImport:
                     # INSERT atran
                     atran_sql = f"""
                         INSERT INTO atran (
-                            at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                            id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                             at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                             at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                             at_account, at_name, at_comment, at_payee, at_payname,
@@ -5885,7 +6000,7 @@ class OperaSQLImport:
                             at_bsref, at_bsname, at_vattycd, at_project, at_job,
                             at_bic, at_iban, at_memo, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
+                            {atran_row_id}, '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                             {CashbookTransactionType.SALES_RECEIPT}, '{post_date}', '{post_date}', 1, {amount_pence},
                             0, '   ', 1.0, 0, 2,
                             '{customer_account}', '{customer_name[:35]}', '{description}', '        ', '',
@@ -5903,7 +6018,7 @@ class OperaSQLImport:
                     stran_memo = f"GoCardless - {description}".replace("'", "''")
                     stran_sql = f"""
                         INSERT INTO stran (
-                            st_account, st_trdate, st_trref, st_custref, st_trtype,
+                            id, st_account, st_trdate, st_trref, st_custref, st_trtype,
                             st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
                             st_advance, st_memo, st_payflag, st_set1day, st_set1,
                             st_set2day, st_set2, st_dueday, st_fcurr, st_fcrate,
@@ -5916,7 +6031,7 @@ class OperaSQLImport:
                             st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
                             datecreated, datemodified, state
                         ) VALUES (
-                            '{customer_account}', '{post_date}', '{reference[:20]}', 'GoCardless', 'R',
+                            {stran_row_id}, '{customer_account}', '{post_date}', '{reference[:20]}', 'GoCardless', 'R',
                             {-amount_pounds}, 0, {-amount_pounds}, ' ', '{post_date}',
                             'N', '{stran_memo[:200]}', 0, 0, 0,
                             0, 0, '{post_date}', '   ', 0,
@@ -5947,10 +6062,13 @@ class OperaSQLImport:
                         bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
                         control_type = self._get_nacnt_type(conn, sales_ledger_control) or ('B ', 'BB')
 
+                        # Allocate 2 ntran IDs for this payment
+                        ntran_id_start = self._get_next_id(conn, 'ntran', 2)
+
                         # ntran DEBIT (Bank +amount)
                         ntran_debit_sql = f"""
                             INSERT INTO ntran (
-                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                 nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                 nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                                 nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -5959,7 +6077,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
+                                {ntran_id_start}, '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                                 '{post_date}', {amount_pounds}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -5976,7 +6094,7 @@ class OperaSQLImport:
                         # ntran CREDIT (Debtors Control -amount)
                         ntran_credit_sql = f"""
                             INSERT INTO ntran (
-                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                 nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                 nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                                 nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -5985,7 +6103,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
+                                {ntran_id_start + 1}, '{sales_ledger_control}', '    ', '{control_type[0]}', '{control_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                                 '{post_date}', {-amount_pounds}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -6004,16 +6122,19 @@ class OperaSQLImport:
                     if complete_batch and posting_decision.post_to_transfer_file:
                         jrnl_num = next_journal - 1 if posting_decision.post_to_nominal else 0
 
+                        # Allocate 2 anoml IDs for this payment
+                        anoml_id_start = self._get_next_id(conn, 'anoml', 2)
+
                         # anoml Bank account - ax_done flag from posting decision
                         done_flag = posting_decision.transfer_file_done_flag
                         anoml_bank_sql = f"""
                             INSERT INTO anoml (
-                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                 ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
+                                {anoml_id_start}, '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
                                 '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
@@ -6024,12 +6145,12 @@ class OperaSQLImport:
                         # anoml Debtors control - ax_done flag from posting decision
                         anoml_control_sql = f"""
                             INSERT INTO anoml (
-                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                 ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
+                                {anoml_id_start + 1}, '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
                                 '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
@@ -6075,10 +6196,14 @@ class OperaSQLImport:
                         fees_acct_type = self._get_nacnt_type(conn, fees_nominal_account) or ('P ', 'HA')
                         fees_bank_type = self._get_nacnt_type(conn, bank_account) or ('B ', 'BC')
 
+                        # Allocate ntran IDs for fees (expense + optional VAT + bank)
+                        fees_ntran_count = 3 if vat_on_fees > 0 else 2
+                        fees_ntran_id_start = self._get_next_id(conn, 'ntran', fees_ntran_count)
+
                         # DR Fees expense (NET amount only)
                         fees_dr_sql = f"""
                             INSERT INTO ntran (
-                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                 nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                 nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                                 nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -6087,7 +6212,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{fees_nominal_account}', '    ', '{fees_acct_type[0]}', '{fees_acct_type[1]}', {next_journal},
+                                {fees_ntran_id_start}, '{fees_nominal_account}', '    ', '{fees_acct_type[0]}', '{fees_acct_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{fees_comment}', '{fees_comment}',
                                 '{post_date}', {net_fees}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -6106,7 +6231,7 @@ class OperaSQLImport:
                             vat_acct_type = self._get_nacnt_type(conn, vat_nominal_account) or ('B ', 'BB')
                             vat_dr_sql = f"""
                                 INSERT INTO ntran (
-                                    nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                    id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                     nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                     nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                                     nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -6115,7 +6240,7 @@ class OperaSQLImport:
                                     nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                     nt_distrib, datecreated, datemodified, state
                                 ) VALUES (
-                                    '{vat_nominal_account}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
+                                    {fees_ntran_id_start + 1}, '{vat_nominal_account}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
                                     '', '{input_by[:10]}', 'A', '{fees_comment} VAT', '{fees_comment}',
                                     '{post_date}', {abs(vat_on_fees)}, {year}, {period}, 0,
                                     0, 0, '   ', 0, 0,
@@ -6132,7 +6257,7 @@ class OperaSQLImport:
                         # CR Bank (gross fees reduce bank receipt)
                         fees_cr_sql = f"""
                             INSERT INTO ntran (
-                                nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
+                                id, nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                 nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                 nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
                                 nt_prevyr, nt_consol, nt_fcurr, nt_fvalue, nt_fcrate,
@@ -6141,7 +6266,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', '{fees_bank_type[0]}', '{fees_bank_type[1]}', {next_journal},
+                                {fees_ntran_id_start + 2}, '{bank_account}', '    ', '{fees_bank_type[0]}', '{fees_bank_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{fees_comment}', '{fees_comment}',
                                 '{post_date}', {-gross_fees}, {year}, {period}, 0,
                                 0, 0, '   ', 0, 0,
@@ -6176,15 +6301,17 @@ class OperaSQLImport:
                     fees_entry_number = self.increment_atype_entry(conn, fees_cbtype)
 
                     # Create aentry header for fees
+                    fees_aentry_row_id = self._get_next_id(conn, 'aentry')
+
                     fees_aentry_sql = f"""
                         INSERT INTO aentry (
-                            ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
+                            id, ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                             ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                             ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                             ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                             ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                         ) VALUES (
-                            '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', 0,
+                            {fees_aentry_row_id}, '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', 0,
                             '{post_date}', 0, 0, 0, '{reference[:20]}',
                             {-gross_fees_pence}, 0, 0, 0, 1,
                             0, '{date_str}', '{time_str[:8]}', '{input_by[:8]}', 'GoCardless fees',
@@ -6199,9 +6326,10 @@ class OperaSQLImport:
                     if vat_on_fees > 0:
                         # Line 1: Net fees to expense account
                         net_fees_pence = int(round(net_fees * 100))
+                        atran_id_start = self._get_next_id(conn, 'atran', 2)
                         fees_atran_net_sql = f"""
                             INSERT INTO atran (
-                                at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                                id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                                 at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                                 at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                                 at_account, at_name, at_comment, at_payee, at_payname,
@@ -6212,7 +6340,7 @@ class OperaSQLImport:
                                 at_bsref, at_bsname, at_vattycd, at_project, at_job,
                                 at_bic, at_iban, at_memo, datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
+                                {atran_id_start}, '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
                                 {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-net_fees_pence},
                                 0, '   ', 1.0, 0, 2,
                                 '{fees_nominal_account}', '{fees_comment[:35]}', '', '        ', '',
@@ -6230,7 +6358,7 @@ class OperaSQLImport:
                         vat_pence = int(round(abs(vat_on_fees) * 100))
                         fees_atran_vat_sql = f"""
                             INSERT INTO atran (
-                                at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                                id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                                 at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                                 at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                                 at_account, at_name, at_comment, at_payee, at_payname,
@@ -6241,7 +6369,7 @@ class OperaSQLImport:
                                 at_bsref, at_bsname, at_vattycd, at_project, at_job,
                                 at_bic, at_iban, at_memo, datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '   1', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
+                                {atran_id_start + 1}, '{bank_account}', '   1', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
                                 {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-vat_pence},
                                 0, '   ', 1.0, 0, 2,
                                 '{vat_nominal_account}', '{fees_comment[:35]} VAT', '', '        ', '',
@@ -6257,9 +6385,10 @@ class OperaSQLImport:
                         logger.debug(f"Created 2 atran lines for fees: net £{net_fees:.2f} to {fees_nominal_account}, VAT £{vat_on_fees:.2f} to {vat_nominal_account}")
                     else:
                         # Single line for gross fees (no VAT)
+                        fees_atran_row_id = self._get_next_id(conn, 'atran')
                         fees_atran_sql = f"""
                             INSERT INTO atran (
-                                at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
+                                id, at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                                 at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                                 at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
                                 at_account, at_name, at_comment, at_payee, at_payname,
@@ -6270,7 +6399,7 @@ class OperaSQLImport:
                                 at_bsref, at_bsname, at_vattycd, at_project, at_job,
                                 at_bic, at_iban, at_memo, datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
+                                {fees_atran_row_id}, '{bank_account}', '    ', '{fees_cbtype}', '{fees_entry_number}', '{input_by[:8]}',
                                 {CashbookTransactionType.NOMINAL_PAYMENT}, '{post_date}', '{post_date}', 1, {-gross_fees_pence},
                                 0, '   ', 1.0, 0, 2,
                                 '{fees_nominal_account}', '{fees_comment[:35]}', '', '        ', '',
@@ -6292,15 +6421,16 @@ class OperaSQLImport:
                         jrnl_num = next_journal if posting_decision.post_to_nominal else 0
                         fees_done_flag = posting_decision.transfer_file_done_flag
 
+                        anoml_id_start = self._get_next_id(conn, 'anoml', 3)
                         # anoml Bank account (credit - fees reduce bank balance)
                         anoml_fees_bank_sql = f"""
                             INSERT INTO anoml (
-                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                 ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{bank_account}', '    ', 'A', '{post_date}', {-gross_fees}, '{reference[:20]}',
+                                {anoml_id_start}, '{bank_account}', '    ', 'A', '{post_date}', {-gross_fees}, '{reference[:20]}',
                                 '{fees_comment[:40]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
@@ -6311,12 +6441,12 @@ class OperaSQLImport:
                         # anoml Fees expense account (debit - net amount)
                         anoml_fees_expense_sql = f"""
                             INSERT INTO anoml (
-                                ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                 ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{fees_nominal_account}', '    ', 'A', '{post_date}', {net_fees}, '{reference[:20]}',
+                                {anoml_id_start + 1}, '{fees_nominal_account}', '    ', 'A', '{post_date}', {net_fees}, '{reference[:20]}',
                                 '{fees_comment[:40]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
@@ -6328,12 +6458,12 @@ class OperaSQLImport:
                         if vat_on_fees > 0:
                             anoml_fees_vat_sql = f"""
                                 INSERT INTO anoml (
-                                    ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
+                                    id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                     ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                     ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                     datecreated, datemodified, state
                                 ) VALUES (
-                                    '{vat_nominal_account}', '    ', 'A', '{post_date}', {abs(vat_on_fees)}, '{reference[:20]}',
+                                    {anoml_id_start + 2}, '{vat_nominal_account}', '    ', 'A', '{post_date}', {abs(vat_on_fees)}, '{reference[:20]}',
                                     '{fees_comment[:36]} VAT', '{fees_done_flag}', '   ', 0, 0, 0, 0,
                                     'I', '{fees_vat_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                     '{now_str}', '{now_str}', 1
@@ -6344,9 +6474,10 @@ class OperaSQLImport:
                     # Create zvtran entry for VAT tracking (for VAT return) — independent of transfer file
                     if vat_on_fees > 0:
                         zvtran_unique = OperaUniqueIdGenerator.generate()
+                        zvtran_row_id = self._get_next_id(conn, 'zvtran')
                         zvtran_sql = f"""
                             INSERT INTO zvtran (
-                                va_source, va_account, va_laccnt, va_trdate, va_taxdate,
+                                id, va_source, va_account, va_laccnt, va_trdate, va_taxdate,
                                 va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                                 va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
                                 va_vattype, va_anvat, va_vatrate, va_box1, va_box2,
@@ -6354,7 +6485,7 @@ class OperaSQLImport:
                                 va_done, va_import, va_export,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                'N', '{fees_nominal_account}', '{fees_nominal_account}', '{post_date}', '{post_date}',
+                                {zvtran_row_id}, 'N', '{fees_nominal_account}', '{fees_nominal_account}', '{post_date}', '{post_date}',
                                 '{post_date}', '{reference[:20]}', 'I', 'GB', '   ',
                                 {net_fees}, 0, {abs(vat_on_fees)}, 0, 'H',
                                 'P', '{fees_vat_code}', {vat_rate}, 0, 0,
@@ -6366,15 +6497,16 @@ class OperaSQLImport:
                         conn.execute(text(zvtran_sql))
                         logger.debug(f"Created zvtran for GoCardless fees VAT: £{vat_on_fees:.2f} (code={fees_vat_code}, rate={vat_rate}%, nominal={vat_nominal_account})")
 
+                        nvat_row_id = self._get_next_id(conn, 'nvat')
                         # Create nvat record for VAT return tracking
                         nvat_sql = f"""
                             INSERT INTO nvat (
-                                nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
+                                id, nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
                                 nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
                                 nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
+                                {nvat_row_id}, '{vat_nominal_account}', '', '{post_date}', '{post_date}', '{post_date}',
                                 '{reference[:20]}', 'P', 0, {net_fees}, {abs(vat_on_fees)},
                                 ' ', 'P', '{fees_vat_code.strip()}', {vat_rate}, 'GoCardless fees VAT',
                                 '{now_str}', '{now_str}', 1
@@ -6741,13 +6873,16 @@ class OperaSQLImport:
                 # al_ref2 indicates allocation method for audit trail
                 if receipt_fully_allocated:
                     alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
+                    salloc_id = self._get_next_id(conn, 'salloc')
                     conn.execute(text(f"""
                         INSERT INTO salloc (
+                            id,
                             al_account, al_date, al_ref1, al_ref2, al_type, al_val,
                             al_payind, al_payflag, al_payday, al_fcurr, al_fval, al_fdec,
                             al_advind, al_acnt, al_cntr, al_preprd, al_unique, al_adjsv,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {salloc_id},
                             '{customer_account}', '{receipt_df.iloc[0]["st_trdate"] if "st_trdate" in receipt_df.columns else alloc_date_str}',
                             '{receipt_ref}', '{alloc_ref2}', 'R', {-receipt_balance},
                             'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
@@ -6793,13 +6928,16 @@ class OperaSQLImport:
 
                         # Insert salloc record for invoice (if fully paid)
                         if new_inv_bal < 0.01:
+                            salloc_inv_id = self._get_next_id(conn, 'salloc')
                             conn.execute(text(f"""
                                 INSERT INTO salloc (
+                                    id,
                                     al_account, al_date, al_ref1, al_ref2, al_type, al_val,
                                     al_payind, al_payflag, al_payday, al_fcurr, al_fval, al_fdec,
                                     al_advind, al_acnt, al_cntr, al_preprd, al_unique, al_adjsv,
                                     datecreated, datemodified, state
                                 ) VALUES (
+                                    {salloc_inv_id},
                                     '{customer_account}', '{inv_date}',
                                     '{inv_ref}', '{inv_custref[:20]}', 'I', {alloc_amount},
                                     'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
@@ -7056,13 +7194,16 @@ class OperaSQLImport:
                 # pl_ref2 indicates allocation method for audit trail
                 if payment_fully_allocated:
                     alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
+                    palloc_id = self._get_next_id(conn, 'palloc')
                     conn.execute(text(f"""
                         INSERT INTO palloc (
+                            id,
                             pl_account, pl_date, pl_ref1, pl_ref2, pl_type, pl_val,
                             pl_payind, pl_payflag, pl_payday, pl_fcurr, pl_fval, pl_fdec,
                             pl_advind, pl_acnt, pl_cntr, pl_preprd, pl_unique, pl_adjsv,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {palloc_id},
                             '{supplier_account}', '{payment_df.iloc[0]["pt_trdate"] if "pt_trdate" in payment_df.columns else alloc_date_str}',
                             '{payment_ref}', '{alloc_ref2}', 'P', {-payment_balance},
                             'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
@@ -7108,13 +7249,16 @@ class OperaSQLImport:
 
                         # Insert palloc record for invoice (if fully paid)
                         if new_inv_bal < 0.01:
+                            palloc_inv_id = self._get_next_id(conn, 'palloc')
                             conn.execute(text(f"""
                                 INSERT INTO palloc (
+                                    id,
                                     pl_account, pl_date, pl_ref1, pl_ref2, pl_type, pl_val,
                                     pl_payind, pl_payflag, pl_payday, pl_fcurr, pl_fval, pl_fdec,
                                     pl_advind, pl_acnt, pl_cntr, pl_preprd, pl_unique, pl_adjsv,
                                     datecreated, datemodified, state
                                 ) VALUES (
+                                    {palloc_inv_id},
                                     '{supplier_account}', '{inv_date}',
                                     '{inv_ref}', '{inv_suppref[:20]}', 'I', {alloc_amount},
                                     'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
@@ -8119,8 +8263,10 @@ class OperaSQLImport:
                     ntran_trnref = f"{ax_comment[:30]:<30}{ax_tref[:10]:<10}(RT)     "
 
                     # Create ntran entry
+                    ntran_id = self._get_next_id(conn, 'ntran')
                     ntran_sql = f"""
                         INSERT INTO ntran (
+                            id,
                             nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -8130,6 +8276,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
+                            {ntran_id},
                             '{nacnt_code}', '    ', '{na_type}', '{na_subt}', {next_journal},
                             '{ax_tref[:10]}', 'IMPORT', '{ax_source}', '{ax_comment[:50]}', '{ntran_trnref[:50]}',
                             '{ax_date}', {ax_value}, {year}, {period}, 0,
@@ -8532,14 +8679,19 @@ class OperaSQLImport:
                 # =====================
                 # 1. INSERT SOURCE BANK aentry (NEGATIVE - money going OUT)
                 # =====================
+                aentry_id_start = self._get_next_id(conn, 'aentry', 2)
+                aentry_source_id = aentry_id_start
+                aentry_dest_id = aentry_id_start + 1
                 aentry_source_sql = f"""
                     INSERT INTO aentry (
+                        id,
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
+                        {aentry_source_id},
                         '{source_bank}', '    ', '{transfer_type}', '{source_entry}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {-amount_pence}, 0, 0, 0, {ae_complet_flag},
@@ -8554,12 +8706,14 @@ class OperaSQLImport:
                 # =====================
                 aentry_dest_sql = f"""
                     INSERT INTO aentry (
+                        id,
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
+                        {aentry_dest_id},
                         '{dest_bank}', '    ', '{transfer_type}', '{dest_entry}', 0,
                         '{post_date}', 0, 0, 0, '{reference[:20]}',
                         {amount_pence}, 0, 0, 0, {ae_complet_flag},
@@ -8572,8 +8726,12 @@ class OperaSQLImport:
                 # =====================
                 # 3. INSERT SOURCE BANK atran (at_type=8, at_account=dest bank)
                 # =====================
+                atran_id_start = self._get_next_id(conn, 'atran', 2)
+                atran_source_id = atran_id_start
+                atran_dest_id = atran_id_start + 1
                 atran_source_sql = f"""
                     INSERT INTO atran (
+                        id,
                         at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                         at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                         at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
@@ -8585,6 +8743,7 @@ class OperaSQLImport:
                         at_bsref, at_bsname, at_vattycd, at_project, at_job,
                         at_bic, at_iban, at_memo, datecreated, datemodified, state
                     ) VALUES (
+                        {atran_source_id},
                         '{source_bank}', '    ', '{transfer_type}', '{source_entry}', '{input_by[:8]}',
                         {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {-amount_pence},
                         0, '   ', 1.0, 0, 2,
@@ -8604,6 +8763,7 @@ class OperaSQLImport:
                 # =====================
                 atran_dest_sql = f"""
                     INSERT INTO atran (
+                        id,
                         at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                         at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                         at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
@@ -8615,6 +8775,7 @@ class OperaSQLImport:
                         at_bsref, at_bsname, at_vattycd, at_project, at_job,
                         at_bic, at_iban, at_memo, datecreated, datemodified, state
                     ) VALUES (
+                        {atran_dest_id},
                         '{dest_bank}', '    ', '{transfer_type}', '{dest_entry}', '{input_by[:8]}',
                         {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {amount_pence},
                         0, '   ', 1.0, 0, 2,
@@ -8648,8 +8809,12 @@ class OperaSQLImport:
                     second_bank_type = self._get_nacnt_type(conn, second_bank) or ('B ', 'BC')
 
                     # ntran for FIRST bank (in lock order)
+                    ntran_id_start = self._get_next_id(conn, 'ntran', 2)
+                    ntran_first_id = ntran_id_start
+                    ntran_second_id = ntran_id_start + 1
                     ntran_first_sql = f"""
                         INSERT INTO ntran (
+                            id,
                             nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -8659,6 +8824,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
+                            {ntran_first_id},
                             '{first_bank}', '    ', '{first_bank_type[0]}', '{first_bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{first_trnref}',
                             '{post_date}', {first_value}, {year}, {period}, 0,
@@ -8676,6 +8842,7 @@ class OperaSQLImport:
                     # ntran for SECOND bank (in lock order)
                     ntran_second_sql = f"""
                         INSERT INTO ntran (
+                            id,
                             nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -8685,6 +8852,7 @@ class OperaSQLImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
+                            {ntran_second_id},
                             '{second_bank}', '    ', '{second_bank_type[0]}', '{second_bank_type[1]}', {next_journal},
                             '', '{input_by[:10]}', 'A', '{ntran_comment}', '{second_trnref}',
                             '{post_date}', {second_value}, {year}, {period}, 0,
@@ -8712,14 +8880,19 @@ class OperaSQLImport:
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
                     # anoml for FIRST bank (in lock order)
+                    anoml_id_start = self._get_next_id(conn, 'anoml', 2)
+                    anoml_first_id = anoml_id_start
+                    anoml_second_id = anoml_id_start + 1
                     first_anoml_value = -amount_pounds if source_is_first else amount_pounds
                     anoml_first_sql = f"""
                         INSERT INTO anoml (
+                            id,
                             ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {anoml_first_id},
                             '{first_bank}', '    ', 'A', '{post_date}', {first_anoml_value}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
@@ -8732,11 +8905,13 @@ class OperaSQLImport:
                     second_anoml_value = amount_pounds if source_is_first else -amount_pounds
                     anoml_second_sql = f"""
                         INSERT INTO anoml (
+                            id,
                             ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                             ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                             ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {anoml_second_id},
                             '{second_bank}', '    ', 'A', '{post_date}', {second_anoml_value}, '{reference[:20]}',
                             '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
@@ -9047,14 +9222,17 @@ class OperaSQLImport:
                 ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
 
                 # 1. aentry header (total amount)
+                aentry_id = self._get_next_id(conn, 'aentry')
                 aentry_sql = f"""
                     INSERT INTO aentry (
+                        id,
                         ae_acnt, ae_cntr, ae_cbtype, ae_entry, ae_reclnum,
                         ae_lstdate, ae_frstat, ae_tostat, ae_statln, ae_entref,
                         ae_value, ae_recbal, ae_remove, ae_tmpstat, ae_complet,
                         ae_postgrp, sq_crdate, sq_crtime, sq_cruser, ae_comment,
                         ae_payid, ae_batchid, ae_brwptr, datecreated, datemodified, state
                     ) VALUES (
+                        {aentry_id},
                         '{bank_account}', '    ', '{cbtype}', '{entry_number}', 0,
                         '{post_date}', 0, 0, 0, '{parsed_lines[0]["reference"][:20]}',
                         {total_entry_value}, 0, 0, 0, {ae_complet_flag},
@@ -9107,8 +9285,10 @@ class OperaSQLImport:
                         acct_name = account_info.get(acct, {}).get('name', acct)[:35]
 
                     # 2a. atran
+                    atran_id = self._get_next_id(conn, 'atran')
                     atran_sql = f"""
                         INSERT INTO atran (
+                            id,
                             at_acnt, at_cntr, at_cbtype, at_entry, at_inputby,
                             at_type, at_pstdate, at_sysdate, at_tperiod, at_value,
                             at_disc, at_fcurr, at_fcexch, at_fcmult, at_fcdec,
@@ -9120,6 +9300,7 @@ class OperaSQLImport:
                             at_bsref, at_bsname, at_vattycd, at_project, at_job,
                             at_bic, at_iban, at_memo, datecreated, datemodified, state
                         ) VALUES (
+                            {atran_id},
                             '{bank_account}', '    ', '{cbtype}', '{entry_number}', '{input_by[:8]}',
                             {at_type_code}, '{post_date}', '{post_date}', 1, {atran_value_pence},
                             0, '   ', 1.0, 0, 2,
@@ -9140,8 +9321,10 @@ class OperaSQLImport:
                         # Sales Refund: stran type='F' POSITIVE value (increases customer debt)
                         info = account_info[acct]
                         stran_memo = f"Recurring refund - {reference[:50]}"
+                        stran_id = self._get_next_id(conn, 'stran')
                         stran_sql = f"""
                             INSERT INTO stran (
+                                id,
                                 st_account, st_trdate, st_trref, st_custref, st_trtype,
                                 st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
                                 st_advance, st_memo, st_payflag, st_set1day, st_set1,
@@ -9155,6 +9338,7 @@ class OperaSQLImport:
                                 st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
                                 datecreated, datemodified, state
                             ) VALUES (
+                                {stran_id},
                                 '{acct}', '{post_date}', '{reference}', 'BACS', 'F',
                                 {gross_pounds}, 0, {gross_pounds}, ' ', '{post_date}',
                                 'N', '{stran_memo[:200]}', 0, 0, 0,
@@ -9185,8 +9369,10 @@ class OperaSQLImport:
                         # Sales Receipt: stran type='R' NEGATIVE value (reduces customer debt)
                         info = account_info[acct]
                         stran_memo = f"Recurring receipt - {reference[:50]}"
+                        stran_id = self._get_next_id(conn, 'stran')
                         stran_sql = f"""
                             INSERT INTO stran (
+                                id,
                                 st_account, st_trdate, st_trref, st_custref, st_trtype,
                                 st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
                                 st_advance, st_memo, st_payflag, st_set1day, st_set1,
@@ -9200,6 +9386,7 @@ class OperaSQLImport:
                                 st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
                                 datecreated, datemodified, state
                             ) VALUES (
+                                {stran_id},
                                 '{acct}', '{post_date}', '{reference}', 'BACS', 'R',
                                 {-gross_pounds}, 0, {-gross_pounds}, ' ', '{post_date}',
                                 'N', '{stran_memo[:200]}', 0, 0, 0,
@@ -9230,8 +9417,10 @@ class OperaSQLImport:
                         # Purchase Payment: ptran type='P' NEGATIVE value (reduces supplier debt)
                         info = account_info[acct]
                         ptran_memo = f"Recurring payment - {reference[:50]}"
+                        ptran_id = self._get_next_id(conn, 'ptran')
                         ptran_sql = f"""
                             INSERT INTO ptran (
+                                id,
                                 pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
                                 pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
                                 pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
@@ -9242,6 +9431,7 @@ class OperaSQLImport:
                                 pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
                                 datecreated, datemodified, state
                             ) VALUES (
+                                {ptran_id},
                                 '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'P',
                                 {-gross_pounds}, 0, {-gross_pounds}, ' ', '{post_date}',
                                 'N', 0, 0, 0, 0,
@@ -9269,8 +9459,10 @@ class OperaSQLImport:
                         # Purchase Refund: ptran type='F' POSITIVE value (increases supplier debt back to us)
                         info = account_info[acct]
                         ptran_memo = f"Recurring refund - {reference[:50]}"
+                        ptran_id = self._get_next_id(conn, 'ptran')
                         ptran_sql = f"""
                             INSERT INTO ptran (
+                                id,
                                 pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
                                 pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
                                 pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
@@ -9281,6 +9473,7 @@ class OperaSQLImport:
                                 pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
                                 datecreated, datemodified, state
                             ) VALUES (
+                                {ptran_id},
                                 '{acct}', '{post_date}', '{reference}', 'Direct Cr', 'F',
                                 {gross_pounds}, 0, {gross_pounds}, ' ', '{post_date}',
                                 'N', 0, 0, 0, 0,
@@ -9341,8 +9534,10 @@ class OperaSQLImport:
                         ntran_trnref = f"{acct_name[:30]:<30}{reference:<20}"
 
                         # Bank ntran
+                        ntran_bank_id = self._get_next_id(conn, 'ntran')
                         conn.execute(text(f"""
                             INSERT INTO ntran (
+                                id,
                                 nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                 nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                 nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -9352,6 +9547,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
+                                {ntran_bank_id},
                                 '{bank_account}', '    ', '{bank_type[0]}', '{bank_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                                 '{post_date}', {bank_ntran_value}, {year}, {period}, 0,
@@ -9365,8 +9561,10 @@ class OperaSQLImport:
                         self.update_nacnt_balance(conn, bank_account, bank_ntran_value, period, year)
 
                         # Target ntran (nominal/control account)
+                        ntran_target_id = self._get_next_id(conn, 'ntran')
                         conn.execute(text(f"""
                             INSERT INTO ntran (
+                                id,
                                 nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                 nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                 nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -9376,6 +9574,7 @@ class OperaSQLImport:
                                 nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                 nt_distrib, datecreated, datemodified, state
                             ) VALUES (
+                                {ntran_target_id},
                                 '{target_account}', '    ', '{target_type[0]}', '{target_type[1]}', {next_journal},
                                 '', '{input_by[:10]}', 'A', '{ntran_comment}', '{ntran_trnref}',
                                 '{post_date}', {target_ntran_value}, {year}, {period}, 0,
@@ -9398,8 +9597,10 @@ class OperaSQLImport:
 
                             vat_ntran_value = vat_pounds if not is_receipt else -vat_pounds
 
+                            ntran_vat_id = self._get_next_id(conn, 'ntran')
                             conn.execute(text(f"""
                                 INSERT INTO ntran (
+                                    id,
                                     nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                                     nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                                     nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -9409,6 +9610,7 @@ class OperaSQLImport:
                                     nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                                     nt_distrib, datecreated, datemodified, state
                                 ) VALUES (
+                                    {ntran_vat_id},
                                     '{vat_nominal}', '    ', '{vat_acct_type[0]}', '{vat_acct_type[1]}', {next_journal},
                                     '', '{input_by[:10]}', 'A', '{ntran_comment} VAT', '{ntran_trnref}',
                                     '{post_date}', {vat_ntran_value}, {year}, {period}, 0,
@@ -9432,8 +9634,10 @@ class OperaSQLImport:
                                 va_box1, va_box4, va_box6, va_box7 = 1, 0, 1, 0
                             else:
                                 va_box1, va_box4, va_box6, va_box7 = 0, 1, 0, 1
+                            zvtran_id = self._get_next_id(conn, 'zvtran')
                             conn.execute(text(f"""
                                 INSERT INTO zvtran (
+                                    id,
                                     va_source, va_account, va_laccnt, va_trdate, va_taxdate,
                                     va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                                     va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
@@ -9442,6 +9646,7 @@ class OperaSQLImport:
                                     va_done, va_import, va_export,
                                     datecreated, datemodified, state
                                 ) VALUES (
+                                    {zvtran_id},
                                     '{va_source}', '{va_account}', '{target_account}', '{post_date}', '{post_date}',
                                     '{post_date}', '{reference}', 'I', 'GB', '   ',
                                     {net_pounds}, 0, {vat_pounds}, 0, 'H',
@@ -9453,13 +9658,16 @@ class OperaSQLImport:
                             """))
 
                             # nvat
+                            nvat_id = self._get_next_id(conn, 'nvat')
                             conn.execute(text(f"""
                                 INSERT INTO nvat (
+                                    id,
                                     nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
                                     nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
                                     nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
                                     datecreated, datemodified, state
                                 ) VALUES (
+                                    {nvat_id},
                                     '{vat_nominal}', '', '{post_date}', '{post_date}', '{post_date}',
                                     '{reference}', '{vat_type_code}', 0, {net_pounds}, {vat_pounds},
                                     ' ', '{vat_type_code}', '{ln["vat_code"]}', {vat_rate}, 'Recurring entry {entry_ref}',
@@ -9477,13 +9685,16 @@ class OperaSQLImport:
                         ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type in (3, 4) else 'P')
 
                         # Bank side anoml
+                        anoml_bank_id = self._get_next_id(conn, 'anoml')
                         conn.execute(text(f"""
                             INSERT INTO anoml (
+                                id,
                                 ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                 ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
+                                {anoml_bank_id},
                                 '{bank_account}', '    ', '{ax_source}', '{post_date}', {bank_ntran_value}, '{reference}',
                                 '{safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
@@ -9493,13 +9704,16 @@ class OperaSQLImport:
 
                         # Target side anoml — always use control/nominal account, not raw supplier/customer
                         target_anoml_val = target_ntran_value
+                        anoml_target_id = self._get_next_id(conn, 'anoml')
                         conn.execute(text(f"""
                             INSERT INTO anoml (
+                                id,
                                 ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                 ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                 ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                 datecreated, datemodified, state
                             ) VALUES (
+                                {anoml_target_id},
                                 '{target_account}', '    ', '{ax_source}', '{post_date}', {target_anoml_val}, '{reference}',
                                 '{safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '{project_padded}', '{department_padded}', {jrnl_num}, '{post_date}',
@@ -9509,13 +9723,16 @@ class OperaSQLImport:
 
                         # VAT anoml if applicable
                         if ln['has_vat'] and posting_decision.post_to_nominal:
+                            anoml_vat_id = self._get_next_id(conn, 'anoml')
                             conn.execute(text(f"""
                                 INSERT INTO anoml (
+                                    id,
                                     ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
                                     ax_comment, ax_done, ax_fcurr, ax_fvalue, ax_fcrate, ax_fcmult, ax_fcdec,
                                     ax_srcco, ax_unique, ax_project, ax_job, ax_jrnl, ax_nlpdate,
                                     datecreated, datemodified, state
                                 ) VALUES (
+                                    {anoml_vat_id},
                                     '{vat_nominal}', '    ', '{ax_source}', '{post_date}', {vat_ntran_value}, '{reference}',
                                     '{ntran_comment} VAT', '{done_flag}', '   ', 0, 0, 0, 0,
                                     'I', '{ntran_pstid_vat}', '        ', '        ', {jrnl_num}, '{post_date}',
@@ -9902,8 +10119,10 @@ class SalesInvoiceFileImport:
                 debtors_type = self._get_nacnt_type(conn, debtors_control) or ('B ', 'BB')
 
                 # 1. stran
+                stran_id = self._get_next_id(conn, 'stran')
                 stran_sql = f"""
                     INSERT INTO stran (
+                        id,
                         st_account, st_trdate, st_trref, st_custref, st_trtype,
                         st_trvalue, st_vatval, st_trbal, st_paid, st_crdate,
                         st_advance, st_memo, st_payflag, st_set1day, st_set1,
@@ -9917,6 +10136,7 @@ class SalesInvoiceFileImport:
                         st_nlpdate, st_adjsv, st_fcvat, st_taxpoin,
                         datecreated, datemodified, state
                     ) VALUES (
+                        {stran_id},
                         '{customer_account}', '{post_date}', '{invoice_number[:20]}', '{customer_ref[:20]}', 'I',
                         {gross_amount}, {vat_amount}, {gross_amount}, ' ', '{post_date}',
                         'N', '{stran_memo[:200]}', 0, 0, 0,
@@ -9935,8 +10155,10 @@ class SalesInvoiceFileImport:
 
                 # 2. ntran - VAT
                 if vat_amount > 0:
+                    ntran_vat_id = self._get_next_id(conn, 'ntran')
                     ntran_vat_sql = f"""
                         INSERT INTO ntran (
+                            id,
                             nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -9946,6 +10168,7 @@ class SalesInvoiceFileImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
+                            {ntran_vat_id},
                             '{vat_nominal}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
                             '          ', 'IMPORT', 'S', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {-vat_amount}, {year}, {period}, 0,
@@ -9961,8 +10184,10 @@ class SalesInvoiceFileImport:
                     self.update_nacnt_balance(conn, vat_nominal, -vat_amount, period, year)
 
                 # 3. ntran - Sales
+                ntran_sales_id = self._get_next_id(conn, 'ntran')
                 ntran_sales_sql = f"""
                     INSERT INTO ntran (
+                        id,
                         nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                         nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                         nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -9972,6 +10197,7 @@ class SalesInvoiceFileImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
+                        {ntran_sales_id},
                         '{sales_nominal}', '    ', '{sales_type[0]}', '{sales_type[1]}', {next_journal},
                         '          ', 'IMPORT', 'S', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {-net_amount}, {year}, {period}, 0,
@@ -9987,8 +10213,10 @@ class SalesInvoiceFileImport:
                 self.update_nacnt_balance(conn, sales_nominal, -net_amount, period, year)
 
                 # 4. ntran - Debtors Control
+                ntran_control_id = self._get_next_id(conn, 'ntran')
                 ntran_control_sql = f"""
                     INSERT INTO ntran (
+                        id,
                         nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                         nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                         nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -9998,6 +10226,7 @@ class SalesInvoiceFileImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
+                        {ntran_control_id},
                         '{debtors_control}', '    ', '{debtors_type[0]}', '{debtors_type[1]}', {next_journal},
                         '          ', 'IMPORT', 'S', '', 'Sales Ledger Transfer (RT)                        ',
                         '{post_date}', {gross_amount}, {year}, {period}, 0,
@@ -10014,8 +10243,10 @@ class SalesInvoiceFileImport:
 
                 # 5. zvtran - VAT transaction
                 if vat_amount > 0:
+                    zvtran_id = self._get_next_id(conn, 'zvtran')
                     zvtran_sql = f"""
                         INSERT INTO zvtran (
+                            id,
                             va_source, va_account, va_laccnt, va_trdate, va_taxdate,
                             va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                             va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
@@ -10024,6 +10255,7 @@ class SalesInvoiceFileImport:
                             va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {zvtran_id},
                             'S', '{customer_account}', '{sales_nominal}', '{post_date}', '{post_date}',
                             '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
                             {net_amount}, 0, {vat_amount}, 0, 'H',
@@ -10037,13 +10269,16 @@ class SalesInvoiceFileImport:
 
                     # 5b. nvat - VAT return tracking record
                     # nv_vattype: 'S' = Sales (output VAT, payable to HMRC)
+                    nvat_id = self._get_next_id(conn, 'nvat')
                     nvat_sql = f"""
                         INSERT INTO nvat (
+                            id,
                             nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
                             nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
                             nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {nvat_id},
                             '{vat_nominal}', '', '{post_date}', '{post_date}', '{post_date}',
                             '{invoice_number[:20]}', 'S', 0, {net_amount}, {vat_amount},
                             ' ', 'S', 'S', {vat_rate}, 'Sales Invoice VAT',
@@ -10317,8 +10552,10 @@ class PurchaseInvoiceFileImport:
                 vat_type = self._get_nacnt_type(conn, vat_input_account) or ('B ', 'BB')
 
                 # 1. ptran - Purchase Ledger Transaction
+                ptran_id = self._get_next_id(conn, 'ptran')
                 ptran_sql = f"""
                     INSERT INTO ptran (
+                        id,
                         pt_account, pt_trdate, pt_trref, pt_supref, pt_trtype,
                         pt_trvalue, pt_vatval, pt_trbal, pt_paid, pt_crdate,
                         pt_advance, pt_payflag, pt_set1day, pt_set1, pt_set2day,
@@ -10329,6 +10566,7 @@ class PurchaseInvoiceFileImport:
                         pt_adjsv, pt_vatset1, pt_vatset2, pt_pyroute, pt_fcvat,
                         datecreated, datemodified, state
                     ) VALUES (
+                        {ptran_id},
                         '{supplier_account}', '{post_date}', '{invoice_number[:20]}', '{supplier_ref[:20]}', 'I',
                         {gross_amount}, {vat_amount}, {gross_amount}, ' ', '{post_date}',
                         'N', 0, 0, 0, 0,
@@ -10343,8 +10581,10 @@ class PurchaseInvoiceFileImport:
                 conn.execute(text(ptran_sql))
 
                 # 2. ntran - Credit Purchase Ledger Control
+                ntran_control_id = self._get_next_id(conn, 'ntran')
                 ntran_control_sql = f"""
                     INSERT INTO ntran (
+                        id,
                         nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                         nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                         nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -10354,6 +10594,7 @@ class PurchaseInvoiceFileImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
+                        {ntran_control_id},
                         '{purchase_ledger_control}', '    ', '{purchase_control_type[0]}', '{purchase_control_type[1]}', {next_journal},
                         '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {-gross_amount}, {year}, {period}, 0,
@@ -10369,8 +10610,10 @@ class PurchaseInvoiceFileImport:
                 self.update_nacnt_balance(conn, purchase_ledger_control, -gross_amount, period, year)
 
                 # 3. ntran - Debit Expense Account
+                ntran_expense_id = self._get_next_id(conn, 'ntran')
                 ntran_expense_sql = f"""
                     INSERT INTO ntran (
+                        id,
                         nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                         nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                         nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -10380,6 +10623,7 @@ class PurchaseInvoiceFileImport:
                         nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                         nt_distrib, datecreated, datemodified, state
                     ) VALUES (
+                        {ntran_expense_id},
                         '{nominal_account}', '    ', '{nominal_type[0]}', '{nominal_type[1]}', {next_journal},
                         '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
                         '{post_date}', {net_amount}, {year}, {period}, 0,
@@ -10396,8 +10640,10 @@ class PurchaseInvoiceFileImport:
 
                 # 4. ntran - Debit VAT Input
                 if vat_amount > 0:
+                    ntran_vat_id = self._get_next_id(conn, 'ntran')
                     ntran_vat_sql = f"""
                         INSERT INTO ntran (
+                            id,
                             nt_acnt, nt_cntr, nt_type, nt_subt, nt_jrnl,
                             nt_ref, nt_inp, nt_trtype, nt_cmnt, nt_trnref,
                             nt_entr, nt_value, nt_year, nt_period, nt_rvrse,
@@ -10407,6 +10653,7 @@ class PurchaseInvoiceFileImport:
                             nt_recurr, nt_perpost, nt_rectify, nt_recjrnl, nt_vatanal,
                             nt_distrib, datecreated, datemodified, state
                         ) VALUES (
+                            {ntran_vat_id},
                             '{vat_input_account}', '    ', '{vat_type[0]}', '{vat_type[1]}', {next_journal},
                             '{invoice_number[:10]}', 'IMPORT', 'P', '{ntran_comment}', '{ntran_trnref}',
                             '{post_date}', {vat_amount}, {year}, {period}, 0,
@@ -10423,8 +10670,10 @@ class PurchaseInvoiceFileImport:
 
                 # 5. zvtran - VAT transaction
                 if vat_amount > 0:
+                    zvtran_id = self._get_next_id(conn, 'zvtran')
                     zvtran_sql = f"""
                         INSERT INTO zvtran (
+                            id,
                             va_source, va_account, va_laccnt, va_trdate, va_taxdate,
                             va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                             va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
@@ -10433,6 +10682,7 @@ class PurchaseInvoiceFileImport:
                             va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {zvtran_id},
                             'P', '{supplier_account}', '{nominal_account}', '{post_date}', '{post_date}',
                             '{post_date}', '{invoice_number[:20]}', 'I', 'GB', '   ',
                             {net_amount}, 0, {vat_amount}, 0, 'H',
@@ -10446,13 +10696,16 @@ class PurchaseInvoiceFileImport:
 
                     # 5b. nvat - VAT return tracking record
                     # nv_vattype: 'P' = Purchase (input VAT, reclaimable)
+                    nvat_id = self._get_next_id(conn, 'nvat')
                     nvat_sql = f"""
                         INSERT INTO nvat (
+                            id,
                             nv_acnt, nv_cntr, nv_date, nv_crdate, nv_taxdate,
                             nv_ref, nv_type, nv_advance, nv_value, nv_vatval,
                             nv_vatctry, nv_vattype, nv_vatcode, nv_vatrate, nv_comment,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {nvat_id},
                             '{vat_input_account}', '', '{post_date}', '{post_date}', '{post_date}',
                             '{invoice_number[:20]}', 'P', 0, {net_amount}, {vat_amount},
                             ' ', 'P', 'S', {vat_rate}, 'Purchase Invoice VAT',
@@ -10823,13 +11076,16 @@ class PurchaseInvoiceFileImport:
                 # =====================
                 # CREATE IHEAD (Quote Header)
                 # =====================
+                ihead_id = self._get_next_id(conn, 'ihead')
                 ihead_sql = f"""
                     INSERT INTO ihead (
+                        id,
                         ih_doc, ih_account, ih_name, ih_addr1, ih_addr2, ih_addr3, ih_addr4, ih_addpc,
                         ih_docstat, ih_date, ih_quodate, ih_quotat, ih_expiry, ih_validto,
                         ih_exvat, ih_vat, ih_custref, ih_loc, ih_origin,
                         ih_narr1, ih_raised, datecreated, datemodified, state
                     ) VALUES (
+                        {ihead_id},
                         '{doc_no}', '{customer_account}', '{cust_name}', '{cust_addr1}', '{cust_addr2}',
                         '{cust_addr3}', '{cust_addr4}', '{cust_postcode}',
                         'Q', '{quote_date}', '{quote_date}', '{quot_no}', '{expiry_date}', '{expiry_date}',
@@ -10843,13 +11099,16 @@ class PurchaseInvoiceFileImport:
                 # CREATE ITRAN (Quote Lines)
                 # =====================
                 for line in validated_lines:
+                    itran_id = self._get_next_id(conn, 'itran')
                     itran_sql = f"""
                         INSERT INTO itran (
+                            id,
                             it_doc, it_lineno, it_stock, it_desc, it_quan, it_price,
                             it_lineval, it_vat, it_vatval, it_vattyp, it_vatpct,
                             it_cwcode, it_exvat, it_cost, it_date,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {itran_id},
                             '{doc_no}', {line['line_no']}, '{line['stock_ref']}', '{line['description']}',
                             {line['quantity']}, {line['price']},
                             {line['line_val'] + line['vat_val']}, {line['vat_val']}, {line['vat_val']},
@@ -11200,13 +11459,16 @@ class PurchaseInvoiceFileImport:
                 # =====================
                 # CREATE IHEAD (Order Header)
                 # =====================
+                ihead_id = self._get_next_id(conn, 'ihead')
                 ihead_sql = f"""
                     INSERT INTO ihead (
+                        id,
                         ih_doc, ih_account, ih_name, ih_addr1, ih_addr2, ih_addr3, ih_addr4, ih_addpc,
                         ih_docstat, ih_date, ih_orddate, ih_sorder,
                         ih_exvat, ih_vat, ih_custref, ih_loc, ih_origin,
                         ih_narr1, ih_raised, datecreated, datemodified, state
                     ) VALUES (
+                        {ihead_id},
                         '{doc_no}', '{customer_account}', '{cust_name}', '{cust_addr1}', '{cust_addr2}',
                         '{cust_addr3}', '{cust_addr4}', '{cust_postcode}',
                         'O', '{order_date}', '{order_date}', '{ord_no}',
@@ -11222,14 +11484,17 @@ class PurchaseInvoiceFileImport:
                 for line in validated_lines:
                     qty_to_alloc = min(line['quantity'], line['available_stock']) if auto_allocate else 0
 
+                    itran_id = self._get_next_id(conn, 'itran')
                     itran_sql = f"""
                         INSERT INTO itran (
+                            id,
                             it_doc, it_lineno, it_stock, it_desc, it_quan, it_price,
                             it_lineval, it_vat, it_vatval, it_vattyp, it_vatpct,
                             it_cwcode, it_exvat, it_cost, it_date,
                             it_qtyallc, it_qtypick, it_qtydelv, it_qtyinv,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {itran_id},
                             '{doc_no}', {line['line_no']}, '{line['stock_ref']}', '{line['description']}',
                             {line['quantity']}, {line['price']},
                             {line['line_val'] + line['vat_val']}, {line['vat_val']}, {line['vat_val']},
@@ -11664,17 +11929,20 @@ class PurchaseInvoiceFileImport:
                         sales_nominal = str(prod_check[0]).strip() if prod_check and prod_check[0] else 'E1000'
 
                         # Create ctran record (stock issue)
-                        ctran_id = OperaUniqueIdGenerator.generate()
+                        ctran_unique = OperaUniqueIdGenerator.generate()
+                        ctran_id = self._get_next_id(conn, 'ctran')
                         conn.execute(text(f"""
                             INSERT INTO ctran (
+                                id,
                                 ct_ref, ct_loc, ct_type, ct_date, ct_crdate, ct_quan,
                                 ct_cost, ct_sell, ct_comnt, ct_referen, ct_account,
                                 ct_time, ct_unique, datecreated, datemodified, state
                             ) VALUES (
+                                {ctran_id},
                                 '{stock_ref}', '{line_wh}', 'S', '{invoice_date}', '{invoice_date}',
                                 -{qty_to_inv}, {line_cost}, {line_net / qty_to_inv if qty_to_inv > 0 else 0},
                                 'Invoice {inv_no}', '{inv_no[:10]}', '{customer_account[:8]}',
-                                '{now.strftime('%H:%M:%S')}', '{ctran_id}', '{now_str}', '{now_str}', 1
+                                '{now.strftime('%H:%M:%S')}', '{ctran_unique}', '{now_str}', '{now_str}', 1
                             )
                         """))
 
@@ -11709,12 +11977,15 @@ class PurchaseInvoiceFileImport:
                     vat_total += line_vat
 
                 # ----- 4. CREATE STRAN (Sales Ledger Transaction) -----
+                stran_id = self._get_next_id(conn, 'stran')
                 conn.execute(text(f"""
                     INSERT INTO stran (
+                        id,
                         st_account, st_type, st_trref, st_trdate, st_crdate, st_trvalue,
                         st_vatval, st_unique, st_taxpoin, st_fullamt, st_trbal,
                         datecreated, datemodified, state
                     ) VALUES (
+                        {stran_id},
                         '{customer_account}', '{invoice_type}', '{inv_no}', '{invoice_date}',
                         '{invoice_date}', {gross_value},
                         {vat_value}, '{unique_id}', '{tax_point_date}', {gross_value}, {gross_value},
@@ -11726,11 +11997,14 @@ class PurchaseInvoiceFileImport:
                 # One entry per sales account, plus one for VAT
                 for sales_acct, amounts in sales_by_account.items():
                     # Sales account entry (credit = positive in snoml but negative in ntran)
+                    snoml_id = self._get_next_id(conn, 'snoml')
                     conn.execute(text(f"""
                         INSERT INTO snoml (
+                            id,
                             sx_nacnt, sx_type, sx_tref, sx_date, sx_value, sx_unique,
                             sx_done, sx_comment, datecreated, datemodified, state
                         ) VALUES (
+                            {snoml_id},
                             '{sales_acct}', 'I', '{inv_no}', '{invoice_date}',
                             {amounts['net']}, '{unique_id}',
                             '{'Y' if post_to_nominal else 'N'}', '{customer_name[:30]} {amounts['desc'][:20]}',
@@ -11740,11 +12014,14 @@ class PurchaseInvoiceFileImport:
 
                 # VAT entry
                 if vat_total > 0:
+                    snoml_vat_id = self._get_next_id(conn, 'snoml')
                     conn.execute(text(f"""
                         INSERT INTO snoml (
+                            id,
                             sx_nacnt, sx_type, sx_tref, sx_date, sx_value, sx_unique,
                             sx_done, sx_comment, datecreated, datemodified, state
                         ) VALUES (
+                            {snoml_vat_id},
                             '{vat_output_acct}', 'I', '{inv_no}', '{invoice_date}',
                             {vat_total}, '{unique_id}',
                             '{'Y' if post_to_nominal else 'N'}', '{customer_name[:30]} VAT',
@@ -11762,12 +12039,15 @@ class PurchaseInvoiceFileImport:
                     vat_acct_type = self._get_nacnt_type(conn, vat_output_acct) or ('C ', 'CA')
 
                     # Debit debtors control account
+                    ntran_debtors_id = self._get_next_id(conn, 'ntran')
                     conn.execute(text(f"""
                         INSERT INTO ntran (
+                            id,
                             nt_acnt, nt_type, nt_subt, nt_trnref, nt_ref, nt_value, nt_posttyp,
                             nt_period, nt_year, nt_jrnl, nt_inp,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {ntran_debtors_id},
                             '{debtors_control}', '{debtors_type[0]}', '{debtors_type[1]}', '{customer_name[:30]}', '{inv_no}',
                             {gross_value}, 'I', {period}, {year}, {next_journal}, '{input_by[:8]}',
                             '{now_str}', '{now_str}', 1
@@ -11778,12 +12058,15 @@ class PurchaseInvoiceFileImport:
                     # Credit sales accounts
                     for sales_acct, amounts in sales_by_account.items():
                         sales_acct_type = self._get_nacnt_type(conn, sales_acct) or ('E ', 'E4')
+                        ntran_sales_id = self._get_next_id(conn, 'ntran')
                         conn.execute(text(f"""
                             INSERT INTO ntran (
+                                id,
                                 nt_acnt, nt_type, nt_subt, nt_trnref, nt_ref, nt_value, nt_posttyp,
                                 nt_period, nt_year, nt_jrnl, nt_inp,
                                 datecreated, datemodified, state
                             ) VALUES (
+                                {ntran_sales_id},
                                 '{sales_acct}', '{sales_acct_type[0]}', '{sales_acct_type[1]}', '{customer_name[:30]}', '{inv_no}',
                                 -{amounts['net']}, 'I', {period}, {year}, {next_journal}, '{input_by[:8]}',
                                 '{now_str}', '{now_str}', 1
@@ -11793,12 +12076,15 @@ class PurchaseInvoiceFileImport:
 
                     # Credit VAT output
                     if vat_total > 0:
+                        ntran_vat_id = self._get_next_id(conn, 'ntran')
                         conn.execute(text(f"""
                             INSERT INTO ntran (
+                                id,
                                 nt_acnt, nt_type, nt_subt, nt_trnref, nt_ref, nt_value, nt_posttyp,
                                 nt_period, nt_year, nt_jrnl, nt_inp,
                                 datecreated, datemodified, state
                             ) VALUES (
+                                {ntran_vat_id},
                                 '{vat_output_acct}', '{vat_acct_type[0]}', '{vat_acct_type[1]}', '{customer_name[:30]}', '{inv_no}',
                                 -{vat_total}, 'I', {period}, {year}, {next_journal}, '{input_by[:8]}',
                                 '{now_str}', '{now_str}', 1
@@ -11810,8 +12096,10 @@ class PurchaseInvoiceFileImport:
                 if vat_total > 0:
                     # Use first sales nominal for va_laccnt
                     primary_sales_nominal = list(sales_by_account.keys())[0] if sales_by_account else 'E1000'
+                    zvtran_id = self._get_next_id(conn, 'zvtran')
                     conn.execute(text(f"""
                         INSERT INTO zvtran (
+                            id,
                             va_source, va_account, va_laccnt, va_trdate, va_taxdate,
                             va_ovrdate, va_trref, va_trtype, va_country, va_fcurr,
                             va_trvalue, va_fcval, va_vatval, va_cost, va_vatctry,
@@ -11820,6 +12108,7 @@ class PurchaseInvoiceFileImport:
                             va_done, va_import, va_export,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {zvtran_id},
                             'S', '{customer_account}', '{primary_sales_nominal}', '{invoice_date}', '{tax_point_date}',
                             '{invoice_date}', '{inv_no}', 'I', 'GB', '   ',
                             {net_value}, 0, {vat_total}, 0, 'H',
@@ -11832,12 +12121,15 @@ class PurchaseInvoiceFileImport:
 
                 # ----- 8. CREATE NVAT (VAT Return Tracking) -----
                 if vat_total > 0:
+                    nvat_id = self._get_next_id(conn, 'nvat')
                     conn.execute(text(f"""
                         INSERT INTO nvat (
+                            id,
                             nv_acnt, nv_date, nv_crdate, nv_taxdate, nv_ref, nv_type,
                             nv_value, nv_vatval, nv_vattype, nv_vatcode, nv_vatrate,
                             nv_comment, datecreated, datemodified, state
                         ) VALUES (
+                            {nvat_id},
                             '{vat_output_acct}', '{invoice_date}', '{invoice_date}', '{tax_point_date}',
                             '{inv_no}', 'I', {net_value}, {vat_total}, 'S', 'S', 20,
                             'Sales Invoice', '{now_str}', '{now_str}', 1
@@ -12164,14 +12456,17 @@ class PurchaseInvoiceFileImport:
                     next_po_ref = 'CPO00002'
 
                 # Create PO header in dohead
+                dohead_id = self._get_next_id(conn, 'dohead')
                 conn.execute(text(f"""
                     INSERT INTO dohead (
+                        id,
                         dc_ref, dc_account, dc_totval, dc_odisc, dc_cwcode,
                         dc_delnam, dc_delad1, dc_delad2, dc_delad3, dc_delad4, dc_deladpc,
                         dc_contact, dc_currcy, dc_exrate, dc_ref2, dc_narr1,
                         dc_cancel, dc_printed, dc_porder,
                         sq_crdate, datecreated, datemodified, state
                     ) VALUES (
+                        {dohead_id},
                         '{po_ref}', '{supplier_account}', {total_value}, 0, '{warehouse}',
                         '{delivery_name[:30]}', '{delivery_address[0][:30]}', '{delivery_address[1][:30]}',
                         '{delivery_address[2][:30]}', '{delivery_address[3][:30]}', '{delivery_address[4][:10]}',
@@ -12202,13 +12497,16 @@ class PurchaseInvoiceFileImport:
 
                     line_value = qty * price * (1 - disc / 100)
 
+                    doline_id = self._get_next_id(conn, 'doline')
                     conn.execute(text(f"""
                         INSERT INTO doline (
+                            id,
                             do_dcref, do_dcline, do_account, do_cnref, do_supref,
                             do_desc, do_cwcode, do_reqqty, do_recqty, do_retqty, do_invqty,
                             do_price, do_value, do_discp, do_reqdat, do_ledger,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {doline_id},
                             '{po_ref}', {line_no}, '{supplier_account}', '{stock_ref}', '{supplier_ref}',
                             '{description}', '{line_wh}', {qty}, 0, 0, 0,
                             {price}, {line_value}, {disc}, '{req_date}', '{ledger_acct}',
@@ -12335,12 +12633,15 @@ class PurchaseInvoiceFileImport:
                 grn_ref = self._get_next_grn_ref(conn)
 
                 # Create GRN header
+                cghead_id = self._get_next_id(conn, 'cghead')
                 conn.execute(text(f"""
                     INSERT INTO cghead (
+                        id,
                         ch_ref, ch_date, ch_time, ch_dref, ch_user, ch_status,
                         ch_delchg, ch_vat,
                         sq_crdate, datecreated, datemodified, state
                     ) VALUES (
+                        {cghead_id},
                         '{grn_ref}', '{grn_date}', '{time_str}', '{delivery_ref[:20]}', '{received_by[:8]}', 0,
                         0, 0,
                         '{grn_date}', '{now_str}', '{now_str}', 1
@@ -12368,14 +12669,17 @@ class PurchaseInvoiceFileImport:
                     total_value += line_value
 
                     # Insert cgline
+                    cgline_id = self._get_next_id(conn, 'cgline')
                     conn.execute(text(f"""
                         INSERT INTO cgline (
+                            id,
                             ci_chref, ci_line, ci_account, ci_supref, ci_cnref, ci_desc,
                             ci_qtyrcv, ci_qtyrel, ci_qtyret, ci_qtymat,
                             ci_cost, ci_value, ci_bkware,
                             ci_dcref, ci_dcline,
                             datecreated, datemodified, state
                         ) VALUES (
+                            {cgline_id},
                             '{grn_ref}', {line_no}, '{supplier_account}', '{supplier_ref}', '{stock_ref}', '{description}',
                             {qty}, {qty if update_stock else 0}, 0, {qty if po_number else 0},
                             {cost}, {line_value}, '{warehouse}',
@@ -12387,17 +12691,20 @@ class PurchaseInvoiceFileImport:
                     # Update stock if enabled
                     if update_stock and stock_ref:
                         # Create ctran (stock receipt)
-                        ctran_id = OperaUniqueIdGenerator.generate()
+                        ctran_unique = OperaUniqueIdGenerator.generate()
+                        ctran_id = self._get_next_id(conn, 'ctran')
                         conn.execute(text(f"""
                             INSERT INTO ctran (
+                                id,
                                 ct_ref, ct_loc, ct_type, ct_date, ct_crdate, ct_quan,
                                 ct_cost, ct_sell, ct_comnt, ct_referen, ct_account,
                                 ct_time, ct_unique, datecreated, datemodified, state
                             ) VALUES (
+                                {ctran_id},
                                 '{stock_ref}', '{warehouse}', 'R', '{grn_date}', '{grn_date}',
                                 {qty}, {cost}, 0,
                                 'GRN {grn_ref}', '{grn_ref[:10]}', '{supplier_account[:8]}',
-                                '{time_str}', '{ctran_id}', '{now_str}', '{now_str}', 1
+                                '{time_str}', '{ctran_unique}', '{now_str}', '{now_str}', 1
                             )
                         """))
 
