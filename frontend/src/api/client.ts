@@ -1343,6 +1343,8 @@ export const apiClient = {
     api.get<MonthlyComparisonResponse>('/dashboard/monthly-comparison', { params: { year } }),
 
   // Reconciliation
+  getReconcileSummary: () =>
+    api.get<any>('/reconcile/summary'),
   reconcileCreditors: () =>
     api.get<ReconciliationResponse>('/reconcile/creditors'),
   reconcileDebtors: () =>
