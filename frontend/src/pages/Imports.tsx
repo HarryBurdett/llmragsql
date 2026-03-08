@@ -804,7 +804,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     open: boolean;
     transaction: BankImportTransaction | null;
     transactionType: TransactionType | null;
-    source: 'unmatched' | 'refund' | 'skipped';
+    source: 'unmatched' | 'refund' | 'skipped' | 'receipts' | 'payments';
   }>({ open: false, transaction: null, transactionType: null, source: 'unmatched' });
 
   // Nominal posting details - maps row number to detail
@@ -814,7 +814,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [bankTransferModal, setBankTransferModal] = useState<{
     open: boolean;
     transaction: BankImportTransaction | null;
-    source: 'unmatched' | 'refund' | 'skipped';
+    source: 'unmatched' | 'refund' | 'skipped' | 'receipts' | 'payments';
   }>({ open: false, transaction: null, source: 'unmatched' });
 
   // Bank transfer details - maps row number to full transfer info
@@ -2378,14 +2378,34 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const importReadiness = (() => {
     if (!bankPreview) return null;
 
-    // Matched receipts - selected and have account
+    // Matched receipts - selected and have account (account may be overridden or from original match)
     const receiptsSelected = (bankPreview.matched_receipts || []).filter(t => selectedForImport.has(t.row) && !t.is_duplicate);
-    const receiptsReady = receiptsSelected.length;
+    const receiptsReady = receiptsSelected.filter(t => {
+      const editedTxn = editedTransactions.get(t.row);
+      const txnType = transactionTypeOverrides.get(t.row);
+      const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
+      if (isNlOrTransfer) {
+        if (txnType === 'nominal_receipt' || txnType === 'nominal_payment') return !!nominalPostingDetails.get(t.row)?.nominalCode;
+        if (txnType === 'bank_transfer') return !!bankTransferDetails.get(t.row)?.destBankCode;
+      }
+      const currentAccount = editedTxn ? editedTxn.manual_account : t.account;
+      return !!currentAccount;
+    }).length;
     const receiptsTotal = (bankPreview.matched_receipts || []).length;
 
-    // Matched payments - selected and have account
+    // Matched payments - selected and have account (account may be overridden or from original match)
     const paymentsSelected = (bankPreview.matched_payments || []).filter(t => selectedForImport.has(t.row) && !t.is_duplicate);
-    const paymentsReady = paymentsSelected.length;
+    const paymentsReady = paymentsSelected.filter(t => {
+      const editedTxn = editedTransactions.get(t.row);
+      const txnType = transactionTypeOverrides.get(t.row);
+      const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
+      if (isNlOrTransfer) {
+        if (txnType === 'nominal_receipt' || txnType === 'nominal_payment') return !!nominalPostingDetails.get(t.row)?.nominalCode;
+        if (txnType === 'bank_transfer') return !!bankTransferDetails.get(t.row)?.destBankCode;
+      }
+      const currentAccount = editedTxn ? editedTxn.manual_account : t.account;
+      return !!currentAccount;
+    }).length;
     const paymentsTotal = (bankPreview.matched_payments || []).length;
 
     // Refunds - selected and have account
@@ -3967,7 +3987,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   };
 
   // Open nominal detail modal when selecting nominal type
-  const openNominalDetailModal = (txn: BankImportTransaction, txnType: TransactionType, source: 'unmatched' | 'refund' | 'skipped') => {
+  const openNominalDetailModal = (txn: BankImportTransaction, txnType: TransactionType, source: 'unmatched' | 'refund' | 'skipped' | 'receipts' | 'payments') => {
     // Initialize form state from existing detail or defaults
     const existingDetail = nominalPostingDetails.get(txn.row);
     const grossAmount = Math.abs(txn.amount);
@@ -4018,7 +4038,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     });
 
     // Also update the edited transaction with the nominal account
-    if (source === 'unmatched') {
+    if (source === 'unmatched' || source === 'receipts' || source === 'payments') {
       const updated = new Map(editedTransactions);
       updated.set(row, {
         ...txn,
@@ -4074,7 +4094,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   };
 
   // Open bank transfer modal
-  const openBankTransferModal = (txn: BankImportTransaction, source: 'unmatched' | 'refund' | 'skipped') => {
+  const openBankTransferModal = (txn: BankImportTransaction, source: 'unmatched' | 'refund' | 'skipped' | 'receipts' | 'payments') => {
     // Initialize form state from existing detail or defaults from transaction
     const existingDetail = bankTransferDetails.get(txn.row);
     setModalDestBank(existingDetail?.destBankCode || '');
@@ -4117,7 +4137,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     });
 
     // Update the appropriate state based on source
-    if (source === 'unmatched') {
+    if (source === 'unmatched' || source === 'receipts' || source === 'payments') {
       const updated = new Map(editedTransactions);
       updated.set(row, {
         ...txn,
@@ -6497,9 +6517,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-green-100 z-10">
                             <tr>
-                              <th className="p-2 w-16 text-center">
+                              <th className="p-1.5 w-12 text-center">
                                 <div className="flex flex-col items-center gap-1">
-                                  <span className="text-xs">Include</span>
+                                  <span className="text-xs">Incl</span>
                                   {!isImported && (
                                     <input
                                       type="checkbox"
@@ -6519,12 +6539,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   )}
                                 </div>
                               </th>
-                              <th className="text-left p-2">Date</th>
-                              <th className="text-left p-2">Name</th>
-                              <th className="text-left p-2 min-w-[140px]">Type</th>
-                              <th className="text-left p-2">Account</th>
-                              <th className="text-right p-2 min-w-[110px]">Amount</th>
-                              <th className="p-2 w-20 text-center">
+                              <th className="text-left p-1.5 w-24">Date</th>
+                              <th className="text-left p-1.5">Name</th>
+                              <th className="text-right p-1.5 w-24">Amount</th>
+                              <th className="text-left p-1.5 w-32">Type</th>
+                              <th className="text-left p-1.5 w-28">CB Type</th>
+                              <th className="text-left p-1.5 min-w-[150px]">Assign Account</th>
+                              <th className="text-center p-1.5 w-16" title="Auto-allocate to invoices after import">
                                 <div className="flex flex-col items-center gap-1">
                                   <span className="text-xs">Alloc</span>
                                   {!isImported && (
@@ -6546,17 +6567,30 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   )}
                                 </div>
                               </th>
-                              <th className="text-right p-2">Match</th>
+                              <th className="text-left p-1.5 w-20">Status</th>
                             </tr>
                           </thead>
                           <tbody>
                             {filtered.map((txn, idx) => {
                               const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
-                              const filteredReceiptTypes = filterCbtypesForAction(receiptTypes, txn.action || 'sales_receipt');
-                              const defaultCbtype = getBestCbtype(txn.action, filteredReceiptTypes, txn.name || txn.memo);
+                              const editedTxn = editedTransactions.get(txn.row);
+                              const isPositive = txn.amount > 0;
+                              const defaultTxnType = (txn.action || 'sales_receipt') as TransactionType;
+                              const currentTxnType = transactionTypeOverrides.get(txn.row) || defaultTxnType;
+                              const showCustomers = currentTxnType === 'sales_receipt' || currentTxnType === 'sales_refund';
+                              const isNominal = currentTxnType === 'nominal_receipt' || currentTxnType === 'nominal_payment';
+                              const isBankTransfer = currentTxnType === 'bank_transfer';
+                              const isNlOrTransfer = isNominal || isBankTransfer;
+                              const isTypeOverridden = transactionTypeOverrides.has(txn.row);
+                              const displayAccount = editedTxn?.manual_account || (!isTypeOverridden ? txn.account : '');
+                              const displayAccountName = editedTxn?.account_name || (!isTypeOverridden ? (txn.account_name || '') : '');
+                              const hasAccount = isNlOrTransfer || !!displayAccount;
+                              const isIncluded = selectedForImport.has(txn.row);
+                              const filteredCbtypes = filterCbtypesForAction(isPositive ? receiptTypes : paymentTypes, currentTxnType);
+                              const defaultCbtype = getBestCbtype(currentTxnType, filteredCbtypes, txn.name || txn.memo);
                               const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
-                              <tr key={idx} className={`border-t border-green-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
+                              <tr key={idx} className={`border-t border-green-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : isIncluded ? (editedTxn?.isEdited ? 'bg-green-50' : '') : 'opacity-50'}`}>
                                 <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
@@ -6569,7 +6603,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   ) : (
                                   <input
                                     type="checkbox"
-                                    checked={selectedForImport.has(txn.row)}
+                                    checked={isIncluded}
+                                    disabled={!hasAccount}
                                     onChange={(e) => {
                                       const updated = new Set(selectedForImport);
                                       if (e.target.checked) updated.add(txn.row);
@@ -6577,6 +6612,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       setSelectedForImport(updated);
                                     }}
                                     className="rounded border-green-400"
+                                    title={!hasAccount ? 'Assign an account first to include in import' : ''}
                                   />
                                   )}
                                 </td>
@@ -6628,30 +6664,90 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     txn.date
                                   )}
                                 </td>
-                                <td className="p-2">{txn.name}</td>
+                                <td className="p-2">
+                                  <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
+                                  {txn.reference && (
+                                    <div className="text-xs text-gray-500 truncate" title={txn.reference}>Ref: {txn.reference}</div>
+                                  )}
+                                </td>
+                                <td className="p-2 text-right font-medium text-green-700 whitespace-nowrap">+£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                                 <td className="p-2">
                                   {rowImported ? (
-                                    <span className="text-xs text-gray-700 font-mono">
-                                      {currentCbtype}{receiptTypes.find(t => t.code === currentCbtype)?.description ? ` - ${receiptTypes.find(t => t.code === currentCbtype)?.description}` : ''}
+                                    <span className="text-xs text-gray-700">
+                                      {currentTxnType === 'sales_receipt' ? 'Sales Receipt'
+                                        : currentTxnType === 'purchase_refund' ? 'Purchase Refund'
+                                        : currentTxnType === 'nominal_receipt' ? 'Nominal Receipt'
+                                        : currentTxnType === 'bank_transfer' ? 'Bank Transfer'
+                                        : currentTxnType}
                                     </span>
-                                  ) : filteredReceiptTypes.length > 0 ? (
+                                  ) : (
+                                  <select
+                                    value={currentTxnType}
+                                    onChange={(e) => {
+                                      const newType = e.target.value as TransactionType;
+                                      if (newType === 'ignore') {
+                                        openIgnoreConfirm(txn);
+                                        return;
+                                      }
+                                      // Reverting to original type - clear all overrides
+                                      if (newType === defaultTxnType) {
+                                        setTransactionTypeOverrides(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                        setEditedTransactions(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                        return;
+                                      }
+                                      const updated = new Map(transactionTypeOverrides);
+                                      updated.set(txn.row, newType);
+                                      setTransactionTypeOverrides(updated);
+                                      // Clear previous account edit for all type changes
+                                      const edits = new Map(editedTransactions);
+                                      edits.delete(txn.row);
+                                      setEditedTransactions(edits);
+                                      if (newType === 'nominal_receipt' || newType === 'nominal_payment') {
+                                        openNominalDetailModal(txn, newType, 'receipts');
+                                      } else if (newType === 'bank_transfer') {
+                                        openBankTransferModal(txn, 'receipts');
+                                      } else {
+                                        suggestAccountForTransaction(txn, newType);
+                                      }
+                                    }}
+                                    className={`text-xs px-2 py-1 border rounded bg-white w-full ${
+                                      isTypeOverridden ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                    }`}
+                                  >
+                                    {isPositive ? (
+                                      <>
+                                        <option value="sales_receipt">Sales Receipt</option>
+                                        <option value="purchase_refund">Purchase Refund</option>
+                                        <option value="nominal_receipt">Nominal Receipt</option>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <option value="purchase_payment">Purchase Payment</option>
+                                        <option value="sales_refund">Sales Refund</option>
+                                        <option value="nominal_payment">Nominal Payment</option>
+                                      </>
+                                    )}
+                                    <option value="bank_transfer">Bank Transfer</option>
+                                    <option value="ignore">Ignore (in Opera)</option>
+                                  </select>
+                                  )}
+                                </td>
+                                <td className="p-2">
+                                  {rowImported ? (
+                                    <span className="text-xs text-gray-500">{currentCbtype || '—'}</span>
+                                  ) : filteredCbtypes.length > 0 ? (
                                     <select
                                       value={currentCbtype}
                                       onChange={(e) => {
-                                        const newCbtype = e.target.value;
                                         const updated = new Map(cbtypeOverrides);
-                                        if (newCbtype === defaultCbtype) {
-                                          updated.delete(txn.row);
-                                        } else {
-                                          updated.set(txn.row, newCbtype);
-                                        }
+                                        updated.set(txn.row, e.target.value);
                                         setCbtypeOverrides(updated);
                                       }}
-                                      className={`text-xs px-2 py-1 border rounded bg-white w-full ${
+                                      className={`text-xs px-1 py-1 border rounded w-full ${
                                         cbtypeOverrides.has(txn.row) ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
                                       }`}
                                     >
-                                      {filteredReceiptTypes.map(t => (
+                                      {filteredCbtypes.map(t => (
                                         <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
                                       ))}
                                     </select>
@@ -6659,30 +6755,228 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     <span className="text-xs text-gray-400">Loading...</span>
                                   )}
                                 </td>
-                                <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
-                                <td className="p-2 text-right font-medium text-green-700 whitespace-nowrap">+£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                <td className="p-2">
+                                  {rowImported ? (
+                                    <span className="text-xs text-gray-700">
+                                      {isNominal && nominalPostingDetails.has(txn.row)
+                                        ? `${nominalPostingDetails.get(txn.row)?.nominalCode} - ${(() => { const nd = nominalPostingDetails.get(txn.row); const na = nominalAccounts.find(n => n.code === nd?.nominalCode); return na?.description || ''; })()}`
+                                        : isBankTransfer && bankTransferDetails.has(txn.row)
+                                          ? `Transfer → ${bankTransferDetails.get(txn.row)?.destBankCode}`
+                                          : displayAccount
+                                            ? `${displayAccount} - ${displayAccountName}`
+                                            : '—'}
+                                    </span>
+                                  ) : (
+                                  <>
+                                  {isNominal ? (
+                                    <div>
+                                      <button
+                                        onClick={() => openNominalDetailModal(txn, currentTxnType, 'receipts')}
+                                        className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                          nominalPostingDetails.has(txn.row)
+                                            ? 'border-green-400 bg-green-50 text-green-700'
+                                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        {nominalPostingDetails.has(txn.row) ? (
+                                          <>
+                                            <span className="truncate">
+                                              {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
+                                            </span>
+                                            <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span>Enter Details...</span>
+                                            <Edit3 className="h-3 w-3" />
+                                          </>
+                                        )}
+                                      </button>
+                                      {nominalPostingDetails.has(txn.row) && (() => {
+                                        const nominalDetail = nominalPostingDetails.get(txn.row);
+                                        const nominalAcc = nominalAccounts.find(n => n.code === nominalDetail?.nominalCode);
+                                        const hasVat = nominalDetail?.vatCode && nominalDetail.vatCode !== 'N/A' && nominalDetail.vatAmount > 0;
+                                        return (
+                                          <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                                            <span className="truncate" title={nominalAcc?.description}>{nominalAcc?.description || 'Unknown'}</span>
+                                            {hasVat && <span className="flex-shrink-0 text-green-600">+VAT</span>}
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                  ) : isBankTransfer ? (
+                                    <button
+                                      onClick={() => openBankTransferModal(txn, 'receipts')}
+                                      className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                        bankTransferDetails.has(txn.row)
+                                          ? 'border-green-400 bg-green-50 text-green-700'
+                                          : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      {bankTransferDetails.has(txn.row) ? (
+                                        <>
+                                          <span className="truncate">
+                                            {txn.amount < 0 ? 'To: ' : 'From: '}{bankTransferDetails.get(txn.row)?.destBankCode}
+                                          </span>
+                                          <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                        </>
+                                      ) : (
+                                        <>
+                                          <span>Select Bank...</span>
+                                          <Landmark className="h-3 w-3" />
+                                        </>
+                                      )}
+                                    </button>
+                                  ) : (() => {
+                                    const filteredAccounts = (showCustomers ? customers : suppliers)
+                                      .filter(acc => {
+                                        if (!inlineAccountSearchText) return true;
+                                        const search = inlineAccountSearchText.toLowerCase();
+                                        return acc.code.toLowerCase().includes(search) ||
+                                               acc.name.toLowerCase().includes(search);
+                                      })
+                                      .slice(0, 50);
+                                    return (
+                                    <div className="relative">
+                                      <input
+                                        type="text"
+                                        value={inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'receipts'
+                                          ? inlineAccountSearchText
+                                          : (displayAccount
+                                            ? `${displayAccount} - ${displayAccountName}`
+                                            : '')}
+                                        onChange={(e) => {
+                                          setInlineAccountSearchText(e.target.value);
+                                          setInlineAccountHighlightIndex(0);
+                                          if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                            setInlineAccountSearch({ row: txn.row, section: 'receipts' });
+                                          }
+                                        }}
+                                        onFocus={() => {
+                                          setInlineAccountSearch({ row: txn.row, section: 'receipts' });
+                                          setInlineAccountSearchText('');
+                                          setInlineAccountHighlightIndex(0);
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'ArrowDown') {
+                                            e.preventDefault();
+                                            if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                              setInlineAccountSearch({ row: txn.row, section: 'receipts' });
+                                            }
+                                            if (filteredAccounts.length === 1) {
+                                              handleAccountChange(txn, filteredAccounts[0].code, showCustomers ? 'C' : 'S');
+                                              setInlineAccountSearch(null);
+                                              setInlineAccountSearchText('');
+                                            } else if (filteredAccounts.length > 1) {
+                                              setInlineAccountHighlightIndex(prev => prev < filteredAccounts.length - 1 ? prev + 1 : prev);
+                                            }
+                                          } else if (e.key === 'ArrowUp') {
+                                            e.preventDefault();
+                                            setInlineAccountHighlightIndex(prev => prev > 0 ? prev - 1 : 0);
+                                          } else if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            if (inlineAccountSearchText.length > 0 && filteredAccounts.length > 0) {
+                                              const selIdx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
+                                              handleAccountChange(txn, filteredAccounts[selIdx].code, showCustomers ? 'C' : 'S');
+                                            }
+                                            setInlineAccountSearch(null);
+                                            setInlineAccountSearchText('');
+                                          } else if (e.key === 'Escape') {
+                                            setInlineAccountSearch(null);
+                                            setInlineAccountSearchText('');
+                                            (e.target as HTMLInputElement).blur();
+                                          } else if (e.key === 'Tab') {
+                                            if (inlineAccountSearchText.length > 0 && filteredAccounts.length > 0) {
+                                              const selIdx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
+                                              handleAccountChange(txn, filteredAccounts[selIdx].code, showCustomers ? 'C' : 'S');
+                                            }
+                                            setInlineAccountSearch(null);
+                                            setInlineAccountSearchText('');
+                                          }
+                                        }}
+                                        placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
+                                        data-account-input={`receipts-${txn.row}`}
+                                        className={`w-full text-sm px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
+                                          editedTxn?.isEdited ? 'border-green-400 bg-green-50' : displayAccount ? 'border-gray-300' : 'border-gray-300'
+                                        }`}
+                                      />
+                                      {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'receipts' && (
+                                        <>
+                                          <div
+                                            className="fixed inset-0 z-40"
+                                            onClick={() => {
+                                              setInlineAccountSearch(null);
+                                              setInlineAccountSearchText('');
+                                            }}
+                                          />
+                                          <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                                            {filteredAccounts.map((acc, accIdx) => (
+                                              <button
+                                                key={acc.code}
+                                                type="button"
+                                                ref={accIdx === inlineAccountHighlightIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                                                onClick={() => {
+                                                  handleAccountChange(txn, acc.code, showCustomers ? 'C' : 'S');
+                                                  setInlineAccountSearch(null);
+                                                  setInlineAccountSearchText('');
+                                                }}
+                                                className={`w-full text-left px-2 py-1.5 text-sm ${
+                                                  accIdx === inlineAccountHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                                                }`}
+                                              >
+                                                <span className="font-medium">{acc.code}</span>
+                                                <span className="text-gray-600"> - {acc.name}</span>
+                                              </button>
+                                            ))}
+                                            {filteredAccounts.length === 0 && (
+                                              <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
+                                            )}
+                                          </div>
+                                        </>
+                                      )}
+                                    </div>
+                                    );
+                                  })()}
+                                  </>
+                                  )}
+                                </td>
                                 <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="text-gray-400 text-xs">—</span>
+                                  ) : (() => {
+                                    const canAutoAllocate = currentTxnType === 'sales_receipt' || currentTxnType === 'purchase_payment' ||
+                                                           currentTxnType === 'sales_refund' || currentTxnType === 'purchase_refund';
+                                    if (!canAutoAllocate) return <span className="text-gray-400 text-xs">N/A</span>;
+                                    if (!hasAccount) return <span className="text-gray-400 text-xs">-</span>;
+                                    return (
+                                      <input
+                                        type="checkbox"
+                                        checked={!autoAllocateDisabled.has(txn.row)}
+                                        onChange={(e) => {
+                                          const updated = new Set(autoAllocateDisabled);
+                                          if (e.target.checked) updated.delete(txn.row);
+                                          else updated.add(txn.row);
+                                          setAutoAllocateDisabled(updated);
+                                        }}
+                                        className="rounded border-green-400 text-green-600 focus:ring-green-500"
+                                        title={!autoAllocateDisabled.has(txn.row) ? 'Auto-allocate to invoices' : 'Post on account (no allocation)'}
+                                      />
+                                    );
+                                  })()}
+                                </td>
+                                <td className="p-2">
+                                  {editedTxn?.isEdited || nominalPostingDetails.has(txn.row) || bankTransferDetails.has(txn.row) ? (
+                                    <span className="inline-flex items-center gap-1 text-blue-600 text-xs">
+                                      <Edit3 className="h-3 w-3" /> Modified
+                                    </span>
+                                  ) : txn.match_score ? (
+                                    <span className="inline-flex items-center gap-1 text-green-600 text-xs">
+                                      <CheckCircle className="h-3 w-3" /> {txn.match_score}%
+                                    </span>
                                   ) : (
-                                    <input
-                                      type="checkbox"
-                                      checked={!autoAllocateDisabled.has(txn.row)}
-                                      onChange={(e) => {
-                                        const updated = new Set(autoAllocateDisabled);
-                                        if (e.target.checked) {
-                                          updated.delete(txn.row);
-                                        } else {
-                                          updated.add(txn.row);
-                                        }
-                                        setAutoAllocateDisabled(updated);
-                                      }}
-                                      className="rounded border-green-400 text-green-600 focus:ring-green-500"
-                                      title={!autoAllocateDisabled.has(txn.row) ? 'Auto-allocate to invoices' : 'Post on account (no allocation)'}
-                                    />
+                                    <span className="text-green-600 text-xs">Matched</span>
                                   )}
                                 </td>
-                                <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
                               </tr>
                               );
                             })}
@@ -6720,9 +7014,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-red-100 z-10">
                             <tr>
-                              <th className="p-2 w-16 text-center">
+                              <th className="p-1.5 w-12 text-center">
                                 <div className="flex flex-col items-center gap-1">
-                                  <span className="text-xs">Include</span>
+                                  <span className="text-xs">Incl</span>
                                   {!isImported && (
                                     <input
                                       type="checkbox"
@@ -6742,12 +7036,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   )}
                                 </div>
                               </th>
-                              <th className="text-left p-2">Date</th>
-                              <th className="text-left p-2">Name</th>
-                              <th className="text-left p-2 min-w-[140px]">Type</th>
-                              <th className="text-left p-2">Account</th>
-                              <th className="text-right p-2 min-w-[110px]">Amount</th>
-                              <th className="p-2 w-20 text-center">
+                              <th className="text-left p-1.5 w-24">Date</th>
+                              <th className="text-left p-1.5">Name</th>
+                              <th className="text-right p-1.5 w-24">Amount</th>
+                              <th className="text-left p-1.5 w-32">Type</th>
+                              <th className="text-left p-1.5 w-28">CB Type</th>
+                              <th className="text-left p-1.5 min-w-[150px]">Assign Account</th>
+                              <th className="text-center p-1.5 w-16" title="Auto-allocate to invoices after import">
                                 <div className="flex flex-col items-center gap-1">
                                   <span className="text-xs">Alloc</span>
                                   {!isImported && (
@@ -6769,17 +7064,30 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   )}
                                 </div>
                               </th>
-                              <th className="text-right p-2">Match</th>
+                              <th className="text-left p-1.5 w-20">Status</th>
                             </tr>
                           </thead>
                           <tbody>
                             {filtered.map((txn, idx) => {
                               const rowImported = (isImported && importedRows.has(txn.row)) || alreadyPostedRows.has(txn.row);
-                              const filteredPaymentTypes = filterCbtypesForAction(paymentTypes, txn.action || 'purchase_payment');
-                              const defaultCbtype = getBestCbtype(txn.action, filteredPaymentTypes, txn.name || txn.memo);
+                              const editedTxn = editedTransactions.get(txn.row);
+                              const isPositive = txn.amount > 0;
+                              const defaultTxnType = (txn.action || 'purchase_payment') as TransactionType;
+                              const currentTxnType = transactionTypeOverrides.get(txn.row) || defaultTxnType;
+                              const showCustomers = currentTxnType === 'sales_receipt' || currentTxnType === 'sales_refund';
+                              const isNominal = currentTxnType === 'nominal_receipt' || currentTxnType === 'nominal_payment';
+                              const isBankTransfer = currentTxnType === 'bank_transfer';
+                              const isNlOrTransfer = isNominal || isBankTransfer;
+                              const isTypeOverridden = transactionTypeOverrides.has(txn.row);
+                              const displayAccount = editedTxn?.manual_account || (!isTypeOverridden ? txn.account : '');
+                              const displayAccountName = editedTxn?.account_name || (!isTypeOverridden ? (txn.account_name || '') : '');
+                              const hasAccount = isNlOrTransfer || !!displayAccount;
+                              const isIncluded = selectedForImport.has(txn.row);
+                              const filteredCbtypes = filterCbtypesForAction(isPositive ? receiptTypes : paymentTypes, currentTxnType);
+                              const defaultCbtype = getBestCbtype(currentTxnType, filteredCbtypes, txn.name || txn.memo);
                               const currentCbtype = cbtypeOverrides.get(txn.row) || defaultCbtype;
                               return (
-                              <tr key={idx} className={`border-t border-red-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : selectedForImport.has(txn.row) ? '' : 'opacity-50'}`}>
+                              <tr key={idx} className={`border-t border-red-200 ${rowImported ? 'bg-green-50' : txn.is_duplicate ? 'bg-amber-50' : isIncluded ? (editedTxn?.isEdited ? 'bg-green-50' : '') : 'opacity-50'}`}>
                                 <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="inline-flex items-center gap-1 text-green-700 text-xs font-medium">
@@ -6792,7 +7100,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   ) : (
                                   <input
                                     type="checkbox"
-                                    checked={selectedForImport.has(txn.row)}
+                                    checked={isIncluded}
+                                    disabled={!hasAccount}
                                     onChange={(e) => {
                                       const updated = new Set(selectedForImport);
                                       if (e.target.checked) updated.add(txn.row);
@@ -6800,6 +7109,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       setSelectedForImport(updated);
                                     }}
                                     className="rounded border-red-400"
+                                    title={!hasAccount ? 'Assign an account first to include in import' : ''}
                                   />
                                   )}
                                 </td>
@@ -6851,30 +7161,92 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     txn.date
                                   )}
                                 </td>
-                                <td className="p-2">{txn.name}</td>
+                                <td className="p-2">
+                                  <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
+                                  {txn.reference && (
+                                    <div className="text-xs text-gray-500 truncate" title={txn.reference}>Ref: {txn.reference}</div>
+                                  )}
+                                </td>
+                                <td className={`p-2 text-right font-medium whitespace-nowrap ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
+                                  {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </td>
                                 <td className="p-2">
                                   {rowImported ? (
-                                    <span className="text-xs text-gray-700 font-mono">
-                                      {currentCbtype}{paymentTypes.find(t => t.code === currentCbtype)?.description ? ` - ${paymentTypes.find(t => t.code === currentCbtype)?.description}` : ''}
+                                    <span className="text-xs text-gray-700">
+                                      {currentTxnType === 'purchase_payment' ? 'Purchase Payment'
+                                        : currentTxnType === 'sales_refund' ? 'Sales Refund'
+                                        : currentTxnType === 'nominal_payment' ? 'Nominal Payment'
+                                        : currentTxnType === 'bank_transfer' ? 'Bank Transfer'
+                                        : currentTxnType}
                                     </span>
-                                  ) : filteredPaymentTypes.length > 0 ? (
+                                  ) : (
+                                  <select
+                                    value={currentTxnType}
+                                    onChange={(e) => {
+                                      const newType = e.target.value as TransactionType;
+                                      if (newType === 'ignore') {
+                                        openIgnoreConfirm(txn);
+                                        return;
+                                      }
+                                      // Reverting to original type - clear all overrides
+                                      if (newType === defaultTxnType) {
+                                        setTransactionTypeOverrides(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                        setEditedTransactions(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                        return;
+                                      }
+                                      const updated = new Map(transactionTypeOverrides);
+                                      updated.set(txn.row, newType);
+                                      setTransactionTypeOverrides(updated);
+                                      // Clear previous account edit for all type changes
+                                      const edits = new Map(editedTransactions);
+                                      edits.delete(txn.row);
+                                      setEditedTransactions(edits);
+                                      if (newType === 'nominal_receipt' || newType === 'nominal_payment') {
+                                        openNominalDetailModal(txn, newType, 'payments');
+                                      } else if (newType === 'bank_transfer') {
+                                        openBankTransferModal(txn, 'payments');
+                                      } else {
+                                        suggestAccountForTransaction(txn, newType);
+                                      }
+                                    }}
+                                    className={`text-xs px-2 py-1 border rounded bg-white w-full ${
+                                      isTypeOverridden ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
+                                    }`}
+                                  >
+                                    {isPositive ? (
+                                      <>
+                                        <option value="sales_receipt">Sales Receipt</option>
+                                        <option value="purchase_refund">Purchase Refund</option>
+                                        <option value="nominal_receipt">Nominal Receipt</option>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <option value="purchase_payment">Purchase Payment</option>
+                                        <option value="sales_refund">Sales Refund</option>
+                                        <option value="nominal_payment">Nominal Payment</option>
+                                      </>
+                                    )}
+                                    <option value="bank_transfer">Bank Transfer</option>
+                                    <option value="ignore">Ignore (in Opera)</option>
+                                  </select>
+                                  )}
+                                </td>
+                                <td className="p-2">
+                                  {rowImported ? (
+                                    <span className="text-xs text-gray-500">{currentCbtype || '—'}</span>
+                                  ) : filteredCbtypes.length > 0 ? (
                                     <select
                                       value={currentCbtype}
                                       onChange={(e) => {
-                                        const newCbtype = e.target.value;
                                         const updated = new Map(cbtypeOverrides);
-                                        if (newCbtype === defaultCbtype) {
-                                          updated.delete(txn.row);
-                                        } else {
-                                          updated.set(txn.row, newCbtype);
-                                        }
+                                        updated.set(txn.row, e.target.value);
                                         setCbtypeOverrides(updated);
                                       }}
-                                      className={`text-xs px-2 py-1 border rounded bg-white w-full ${
+                                      className={`text-xs px-1 py-1 border rounded w-full ${
                                         cbtypeOverrides.has(txn.row) ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
                                       }`}
                                     >
-                                      {filteredPaymentTypes.map(t => (
+                                      {filteredCbtypes.map(t => (
                                         <option key={t.code} value={t.code}>{t.code} - {t.description}</option>
                                       ))}
                                     </select>
@@ -6882,30 +7254,228 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     <span className="text-xs text-gray-400">Loading...</span>
                                   )}
                                 </td>
-                                <td className="p-2 font-mono">{txn.account} <span className="text-gray-500 text-xs">{txn.account_name}</span></td>
-                                <td className="p-2 text-right font-medium text-red-700 whitespace-nowrap">-£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                <td className="p-2">
+                                  {rowImported ? (
+                                    <span className="text-xs text-gray-700">
+                                      {isNominal && nominalPostingDetails.has(txn.row)
+                                        ? `${nominalPostingDetails.get(txn.row)?.nominalCode} - ${(() => { const nd = nominalPostingDetails.get(txn.row); const na = nominalAccounts.find(n => n.code === nd?.nominalCode); return na?.description || ''; })()}`
+                                        : isBankTransfer && bankTransferDetails.has(txn.row)
+                                          ? `Transfer → ${bankTransferDetails.get(txn.row)?.destBankCode}`
+                                          : displayAccount
+                                            ? `${displayAccount} - ${displayAccountName}`
+                                            : '—'}
+                                    </span>
+                                  ) : (
+                                  <>
+                                  {isNominal ? (
+                                    <div>
+                                      <button
+                                        onClick={() => openNominalDetailModal(txn, currentTxnType, 'payments')}
+                                        className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                          nominalPostingDetails.has(txn.row)
+                                            ? 'border-green-400 bg-green-50 text-green-700'
+                                            : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        {nominalPostingDetails.has(txn.row) ? (
+                                          <>
+                                            <span className="truncate">
+                                              {nominalPostingDetails.get(txn.row)?.nominalCode} - £{nominalPostingDetails.get(txn.row)?.netAmount.toFixed(2)}
+                                            </span>
+                                            <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                          </>
+                                        ) : (
+                                          <>
+                                            <span>Enter Details...</span>
+                                            <Edit3 className="h-3 w-3" />
+                                          </>
+                                        )}
+                                      </button>
+                                      {nominalPostingDetails.has(txn.row) && (() => {
+                                        const nominalDetail = nominalPostingDetails.get(txn.row);
+                                        const nominalAcc = nominalAccounts.find(n => n.code === nominalDetail?.nominalCode);
+                                        const hasVat = nominalDetail?.vatCode && nominalDetail.vatCode !== 'N/A' && nominalDetail.vatAmount > 0;
+                                        return (
+                                          <div className="text-xs text-gray-500 mt-1 flex items-center gap-2">
+                                            <span className="truncate" title={nominalAcc?.description}>{nominalAcc?.description || 'Unknown'}</span>
+                                            {hasVat && <span className="flex-shrink-0 text-green-600">+VAT</span>}
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                  ) : isBankTransfer ? (
+                                    <button
+                                      onClick={() => openBankTransferModal(txn, 'payments')}
+                                      className={`w-full text-sm px-2 py-1 border rounded flex items-center justify-between ${
+                                        bankTransferDetails.has(txn.row)
+                                          ? 'border-green-400 bg-green-50 text-green-700'
+                                          : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      {bankTransferDetails.has(txn.row) ? (
+                                        <>
+                                          <span className="truncate">
+                                            {txn.amount < 0 ? 'To: ' : 'From: '}{bankTransferDetails.get(txn.row)?.destBankCode}
+                                          </span>
+                                          <Edit3 className="h-3 w-3 flex-shrink-0" />
+                                        </>
+                                      ) : (
+                                        <>
+                                          <span>Select Bank...</span>
+                                          <Landmark className="h-3 w-3" />
+                                        </>
+                                      )}
+                                    </button>
+                                  ) : (() => {
+                                    const filteredAccounts = (showCustomers ? customers : suppliers)
+                                      .filter(acc => {
+                                        if (!inlineAccountSearchText) return true;
+                                        const search = inlineAccountSearchText.toLowerCase();
+                                        return acc.code.toLowerCase().includes(search) ||
+                                               acc.name.toLowerCase().includes(search);
+                                      })
+                                      .slice(0, 50);
+                                    return (
+                                    <div className="relative">
+                                      <input
+                                        type="text"
+                                        value={inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'payments'
+                                          ? inlineAccountSearchText
+                                          : (displayAccount
+                                            ? `${displayAccount} - ${displayAccountName}`
+                                            : '')}
+                                        onChange={(e) => {
+                                          setInlineAccountSearchText(e.target.value);
+                                          setInlineAccountHighlightIndex(0);
+                                          if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                            setInlineAccountSearch({ row: txn.row, section: 'payments' });
+                                          }
+                                        }}
+                                        onFocus={() => {
+                                          setInlineAccountSearch({ row: txn.row, section: 'payments' });
+                                          setInlineAccountSearchText('');
+                                          setInlineAccountHighlightIndex(0);
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'ArrowDown') {
+                                            e.preventDefault();
+                                            if (!inlineAccountSearch || inlineAccountSearch.row !== txn.row) {
+                                              setInlineAccountSearch({ row: txn.row, section: 'payments' });
+                                            }
+                                            if (filteredAccounts.length === 1) {
+                                              handleAccountChange(txn, filteredAccounts[0].code, showCustomers ? 'C' : 'S');
+                                              setInlineAccountSearch(null);
+                                              setInlineAccountSearchText('');
+                                            } else if (filteredAccounts.length > 1) {
+                                              setInlineAccountHighlightIndex(prev => prev < filteredAccounts.length - 1 ? prev + 1 : prev);
+                                            }
+                                          } else if (e.key === 'ArrowUp') {
+                                            e.preventDefault();
+                                            setInlineAccountHighlightIndex(prev => prev > 0 ? prev - 1 : 0);
+                                          } else if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            if (inlineAccountSearchText.length > 0 && filteredAccounts.length > 0) {
+                                              const selIdx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
+                                              handleAccountChange(txn, filteredAccounts[selIdx].code, showCustomers ? 'C' : 'S');
+                                            }
+                                            setInlineAccountSearch(null);
+                                            setInlineAccountSearchText('');
+                                          } else if (e.key === 'Escape') {
+                                            setInlineAccountSearch(null);
+                                            setInlineAccountSearchText('');
+                                            (e.target as HTMLInputElement).blur();
+                                          } else if (e.key === 'Tab') {
+                                            if (inlineAccountSearchText.length > 0 && filteredAccounts.length > 0) {
+                                              const selIdx = Math.min(inlineAccountHighlightIndex, filteredAccounts.length - 1);
+                                              handleAccountChange(txn, filteredAccounts[selIdx].code, showCustomers ? 'C' : 'S');
+                                            }
+                                            setInlineAccountSearch(null);
+                                            setInlineAccountSearchText('');
+                                          }
+                                        }}
+                                        placeholder={`Search ${showCustomers ? 'customer' : 'supplier'}...`}
+                                        data-account-input={`payments-${txn.row}`}
+                                        className={`w-full text-sm px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
+                                          editedTxn?.isEdited ? 'border-green-400 bg-green-50' : displayAccount ? 'border-gray-300' : 'border-gray-300'
+                                        }`}
+                                      />
+                                      {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'payments' && (
+                                        <>
+                                          <div
+                                            className="fixed inset-0 z-40"
+                                            onClick={() => {
+                                              setInlineAccountSearch(null);
+                                              setInlineAccountSearchText('');
+                                            }}
+                                          />
+                                          <div className="absolute z-50 w-64 mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                                            {filteredAccounts.map((acc, accIdx) => (
+                                              <button
+                                                key={acc.code}
+                                                type="button"
+                                                ref={accIdx === inlineAccountHighlightIndex ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                                                onClick={() => {
+                                                  handleAccountChange(txn, acc.code, showCustomers ? 'C' : 'S');
+                                                  setInlineAccountSearch(null);
+                                                  setInlineAccountSearchText('');
+                                                }}
+                                                className={`w-full text-left px-2 py-1.5 text-sm ${
+                                                  accIdx === inlineAccountHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                                                }`}
+                                              >
+                                                <span className="font-medium">{acc.code}</span>
+                                                <span className="text-gray-600"> - {acc.name}</span>
+                                              </button>
+                                            ))}
+                                            {filteredAccounts.length === 0 && (
+                                              <div className="px-2 py-1.5 text-sm text-gray-500">No matches found</div>
+                                            )}
+                                          </div>
+                                        </>
+                                      )}
+                                    </div>
+                                    );
+                                  })()}
+                                  </>
+                                  )}
+                                </td>
                                 <td className="p-2 text-center">
                                   {rowImported ? (
                                     <span className="text-gray-400 text-xs">—</span>
+                                  ) : (() => {
+                                    const canAutoAllocate = currentTxnType === 'sales_receipt' || currentTxnType === 'purchase_payment' ||
+                                                           currentTxnType === 'sales_refund' || currentTxnType === 'purchase_refund';
+                                    if (!canAutoAllocate) return <span className="text-gray-400 text-xs">N/A</span>;
+                                    if (!hasAccount) return <span className="text-gray-400 text-xs">-</span>;
+                                    return (
+                                      <input
+                                        type="checkbox"
+                                        checked={!autoAllocateDisabled.has(txn.row)}
+                                        onChange={(e) => {
+                                          const updated = new Set(autoAllocateDisabled);
+                                          if (e.target.checked) updated.delete(txn.row);
+                                          else updated.add(txn.row);
+                                          setAutoAllocateDisabled(updated);
+                                        }}
+                                        className="rounded border-red-400 text-red-600 focus:ring-red-500"
+                                        title={!autoAllocateDisabled.has(txn.row) ? 'Auto-allocate to invoices' : 'Post on account (no allocation)'}
+                                      />
+                                    );
+                                  })()}
+                                </td>
+                                <td className="p-2">
+                                  {editedTxn?.isEdited || nominalPostingDetails.has(txn.row) || bankTransferDetails.has(txn.row) ? (
+                                    <span className="inline-flex items-center gap-1 text-blue-600 text-xs">
+                                      <Edit3 className="h-3 w-3" /> Modified
+                                    </span>
+                                  ) : txn.match_score ? (
+                                    <span className="inline-flex items-center gap-1 text-green-600 text-xs">
+                                      <CheckCircle className="h-3 w-3" /> {txn.match_score}%
+                                    </span>
                                   ) : (
-                                    <input
-                                      type="checkbox"
-                                      checked={!autoAllocateDisabled.has(txn.row)}
-                                      onChange={(e) => {
-                                        const updated = new Set(autoAllocateDisabled);
-                                        if (e.target.checked) {
-                                          updated.delete(txn.row);
-                                        } else {
-                                          updated.add(txn.row);
-                                        }
-                                        setAutoAllocateDisabled(updated);
-                                      }}
-                                      className="rounded border-red-400 text-red-600 focus:ring-red-500"
-                                      title={!autoAllocateDisabled.has(txn.row) ? 'Auto-allocate to invoices' : 'Post on account (no allocation)'}
-                                    />
+                                    <span className="text-green-600 text-xs">Matched</span>
                                   )}
                                 </td>
-                                <td className="p-2 text-right">{txn.match_score ? `${txn.match_score}%` : '-'}</td>
                               </tr>
                               );
                             })}
