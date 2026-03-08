@@ -87,6 +87,16 @@ export function Installations() {
   const systems = systemsData?.data?.systems || [];
   const activeSystemId = systemsData?.data?.active_system_id;
 
+  // Auto-expand the active (or default) installation on first load
+  useEffect(() => {
+    if (systems.length > 0 && expandedId === null) {
+      const active = systems.find(s => s.id === activeSystemId);
+      const dflt = systems.find(s => s.is_default);
+      const pick = active || dflt || systems[0];
+      if (pick) setExpandedId(pick.id);
+    }
+  }, [systems.length, activeSystemId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Load form when expanding an installation
   useEffect(() => {
     if (expandedId) {
