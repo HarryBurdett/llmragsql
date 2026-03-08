@@ -1,16 +1,19 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, Plus, Pencil, Trash2, Star, CheckCircle, AlertCircle, X, Server } from 'lucide-react';
+import { Monitor, Plus, Pencil, Trash2, Star, CheckCircle, AlertCircle, X, Server, ArrowRight } from 'lucide-react';
 import apiClient from '../api/client';
 import type { SystemProfile } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
 
 export function Installations() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [editingSystem, setEditingSystem] = useState<SystemProfile | null>(null);
   const [editName, setEditName] = useState('');
   const [newSystemName, setNewSystemName] = useState('');
   const [showAddSystem, setShowAddSystem] = useState(false);
+  const [showSettingsPrompt, setShowSettingsPrompt] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const { data: systemsData, refetch } = useQuery({
@@ -103,12 +106,14 @@ export function Installations() {
     try {
       const response = await apiClient.activateSystem(sys.id);
       if (response.data.success) {
-        setMessage({ type: 'success', text: `Switched to "${sys.name}"` });
         invalidate();
         // Refresh config-dependent queries
         queryClient.invalidateQueries({ queryKey: ['config'] });
         queryClient.invalidateQueries({ queryKey: ['operaConfig'] });
         queryClient.invalidateQueries({ queryKey: ['companies'] });
+        // Show prompt to configure settings
+        setMessage(null);
+        setShowSettingsPrompt(sys.name);
       }
     } catch {
       setMessage({ type: 'error', text: 'Failed to switch installation' });
@@ -276,6 +281,38 @@ export function Installations() {
               <button onClick={() => setMessage(null)} className="ml-auto text-gray-400 hover:text-gray-600">
                 <X className="h-3.5 w-3.5" />
               </button>
+            </div>
+          )}
+
+          {/* Settings prompt after activation */}
+          {showSettingsPrompt && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-amber-800">
+                    Connected to "{showSettingsPrompt}"
+                  </p>
+                  <p className="text-sm text-amber-700 mt-1">
+                    Review the database and Opera settings to ensure they point to the correct installation.
+                  </p>
+                  <div className="flex items-center gap-2 mt-3">
+                    <button
+                      onClick={() => navigate('/settings')}
+                      className="px-3 py-1.5 text-sm font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-1.5"
+                    >
+                      Go to Settings
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setShowSettingsPrompt(null)}
+                      className="px-3 py-1.5 text-sm font-medium text-amber-700 bg-amber-100 rounded-lg hover:bg-amber-200 transition-colors"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>
