@@ -403,16 +403,7 @@ export function Layout({ children }: LayoutProps) {
   // Build nav items — two top-level groups mirroring Opera
   const filteredNavItems: NavEntry[] = [];
 
-  // --- Administration (left) ---
-  if (hasPermission('administration')) {
-    filteredNavItems.push({
-      label: 'Administration',
-      icon: Settings,
-      submenu: getAdministrationSubmenu(user?.is_admin || false),
-    });
-  }
-
-  // --- Financials (right) ---
+  // --- Financials (left) ---
   const financialsSubmenu: (NavItem | NavItemWithSubmenu)[] = [];
   if (hasPermission('cashbook')) {
     financialsSubmenu.push({ label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu });
@@ -428,6 +419,15 @@ export function Layout({ children }: LayoutProps) {
   }
   if (financialsSubmenu.length > 0) {
     filteredNavItems.push({ label: 'Financials', icon: Landmark, submenu: financialsSubmenu });
+  }
+
+  // --- Administration (right) ---
+  if (hasPermission('administration')) {
+    filteredNavItems.push({
+      label: 'Administration',
+      icon: Settings,
+      submenu: getAdministrationSubmenu(user?.is_admin || false),
+    });
   }
 
   // Handle action items from menus (e.g. Switch User)
