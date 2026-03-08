@@ -712,7 +712,7 @@ class OperaSQLImport:
             # Row exists — UPDATE by id (targets exactly one row)
             if value >= 0:
                 update_sql = f"""
-                    UPDATE nhist
+                    UPDATE nhist WITH (ROWLOCK)
                     SET nh_bal = ISNULL(nh_bal, 0) + {value},
                         nh_ptddr = ISNULL(nh_ptddr, 0) + {value},
                         datemodified = GETDATE()
@@ -720,7 +720,7 @@ class OperaSQLImport:
                 """
             else:
                 update_sql = f"""
-                    UPDATE nhist
+                    UPDATE nhist WITH (ROWLOCK)
                     SET nh_bal = ISNULL(nh_bal, 0) + {value},
                         nh_ptdcr = ISNULL(nh_ptdcr, 0) + {value},
                         datemodified = GETDATE()
@@ -917,7 +917,7 @@ class OperaSQLImport:
         """))
         next_journal = int(result.scalar() or 1)
         conn.execute(text(f"""
-            UPDATE nparm SET np_nexjrnl = {next_journal + count}
+            UPDATE nparm WITH (ROWLOCK) SET np_nexjrnl = {next_journal + count}
         """))
         logger.debug(f"Allocated journal number(s) {next_journal}..{next_journal + count - 1} from nparm")
         return next_journal
@@ -1160,7 +1160,7 @@ class OperaSQLImport:
         try:
             query = """
                 SELECT ay_cbtype, ay_desc, ay_type, ay_entry
-                FROM atype
+                FROM atype WITH (NOLOCK)
             """
             if category:
                 query += f" WHERE RTRIM(ay_type) = '{category}'"
@@ -1207,7 +1207,7 @@ class OperaSQLImport:
         try:
             df = self.sql.execute_query(f"""
                 SELECT ay_cbtype, ay_desc, ay_type, ay_entry
-                FROM atype
+                FROM atype WITH (NOLOCK)
                 WHERE RTRIM(ay_cbtype) = '{cbtype}'
             """)
 
@@ -1263,7 +1263,7 @@ class OperaSQLImport:
         try:
             df = self.sql.execute_query(f"""
                 SELECT ay_entry
-                FROM atype
+                FROM atype WITH (NOLOCK)
                 WHERE RTRIM(ay_cbtype) = '{cbtype}'
             """)
 
@@ -1341,7 +1341,7 @@ class OperaSQLImport:
         # Update atype to one past the entry we're using
         next_entry = f"{cbtype}{entry_num + 1:08d}"
         conn.execute(text(f"""
-            UPDATE atype
+            UPDATE atype WITH (ROWLOCK)
             SET ay_entry = '{next_entry}',
                 datemodified = GETDATE()
             WHERE RTRIM(ay_cbtype) = '{cbtype}'
@@ -4973,7 +4973,7 @@ class OperaSQLImport:
             # Validate customer exists in sname (Sales Ledger Name/Master)
             customer_check = self.sql.execute_query(f"""
                 SELECT TOP 1 sn_name, sn_region, sn_terrtry, sn_custype
-                FROM sname
+                FROM sname WITH (NOLOCK)
                 WHERE RTRIM(sn_account) = '{customer_account}'
             """)
             if customer_check.empty:
@@ -5340,7 +5340,7 @@ class OperaSQLImport:
 
             # Validate supplier exists by checking pname (Purchase Ledger Master) first
             pname_check = self.sql.execute_query(f"""
-                SELECT pn_name FROM pname
+                SELECT pn_name FROM pname WITH (NOLOCK)
                 WHERE RTRIM(pn_account) = '{supplier_account}'
             """)
             if not pname_check.empty:
@@ -5348,7 +5348,7 @@ class OperaSQLImport:
             else:
                 # Fall back to atran history if not in pname
                 supplier_check = self.sql.execute_query(f"""
-                    SELECT TOP 1 at_account, at_name FROM atran
+                    SELECT TOP 1 at_account, at_name FROM atran WITH (NOLOCK)
                     WHERE RTRIM(at_account) = '{supplier_account}'
                 """)
                 if not supplier_check.empty:
@@ -5628,7 +5628,7 @@ class OperaSQLImport:
                     continue
 
                 account_check = self.sql.execute_query(f"""
-                    SELECT TOP 1 nt_acnt FROM ntran
+                    SELECT TOP 1 nt_acnt FROM ntran WITH (NOLOCK)
                     WHERE RTRIM(nt_acnt) = '{line['account']}'
                 """)
                 if account_check.empty:
@@ -5843,7 +5843,7 @@ class OperaSQLImport:
         if cbtype is None:
             # Try to find a GoCardless type, or use a batched receipt type
             cbtype_result = self.sql.execute_query("""
-                SELECT ay_cbtype FROM atype
+                SELECT ay_cbtype FROM atype WITH (NOLOCK)
                 WHERE ay_type = 'R' AND ay_batched = 1
                 AND (ay_desc LIKE '%GoCardless%' OR ay_desc LIKE '%gocardless%')
             """)
@@ -5852,7 +5852,7 @@ class OperaSQLImport:
             else:
                 # Fall back to any batched receipt type
                 cbtype_result = self.sql.execute_query("""
-                    SELECT TOP 1 ay_cbtype FROM atype
+                    SELECT TOP 1 ay_cbtype FROM atype WITH (NOLOCK)
                     WHERE ay_type = 'R' AND ay_batched = 1
                 """)
                 if cbtype_result is not None and len(cbtype_result) > 0:
@@ -6313,7 +6313,7 @@ class OperaSQLImport:
                         logger.debug(f"Using configured fees payment type: {fees_cbtype}")
                     else:
                         fees_cbtype_result = conn.execute(text("""
-                            SELECT TOP 1 ay_cbtype FROM atype
+                            SELECT TOP 1 ay_cbtype FROM atype WITH (NOLOCK)
                             WHERE ay_type = 'P' AND ay_batched = 0
                             ORDER BY ay_cbtype
                         """))
@@ -6863,13 +6863,13 @@ class OperaSQLImport:
 
                 # Get next al_unique values
                 max_unique_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(al_unique), 0) as max_unique FROM salloc WITH (UPDLOCK)
+                    SELECT ISNULL(MAX(al_unique), 0) as max_unique FROM salloc WITH (UPDLOCK, ROWLOCK)
                 """))
                 next_unique = int(max_unique_result.scalar() or 0) + 1
 
                 # Get next al_payflag (sequential, links receipt to invoice(s))
                 max_payflag_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(al_payflag), 0) FROM salloc WITH (UPDLOCK)
+                    SELECT ISNULL(MAX(al_payflag), 0) FROM salloc WITH (UPDLOCK, ROWLOCK)
                     WHERE al_account = :account
                 """), {"account": customer_account})
                 next_payflag = int(max_payflag_result.scalar() or 0) + 1
@@ -7185,13 +7185,13 @@ class OperaSQLImport:
 
                 # Get next pl_unique values
                 max_unique_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(pl_unique), 0) as max_unique FROM palloc WITH (UPDLOCK)
+                    SELECT ISNULL(MAX(pl_unique), 0) as max_unique FROM palloc WITH (UPDLOCK, ROWLOCK)
                 """))
                 next_unique = int(max_unique_result.scalar() or 0) + 1
 
                 # Get next pl_payflag (sequential, links payment to invoice(s))
                 max_payflag_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(pl_payflag), 0) FROM palloc WITH (UPDLOCK)
+                    SELECT ISNULL(MAX(pl_payflag), 0) FROM palloc WITH (UPDLOCK, ROWLOCK)
                     WHERE pl_account = :account
                 """), {"account": supplier_account})
                 next_payflag = int(max_payflag_result.scalar() or 0) + 1
@@ -7385,6 +7385,8 @@ class OperaSQLImport:
             with self.sql.engine.connect() as conn:
                 trans = conn.begin()
                 try:
+                    conn.execute(text(get_lock_timeout_sql()))
+
                     # 1. Get current nbank state
                     nbank_result = conn.execute(text(f"""
                         SELECT nk_lstrecl, nk_recbal, nk_curbal, nk_lststno
@@ -9011,7 +9013,7 @@ class OperaSQLImport:
         try:
             df = self.sql.execute_query("""
                 SELECT ay_cbtype
-                FROM atype
+                FROM atype WITH (NOLOCK)
                 WHERE ay_type = 'T'
                 ORDER BY ay_cbtype
             """)
@@ -9032,7 +9034,7 @@ class OperaSQLImport:
         try:
             df = self.sql.execute_query("""
                 SELECT nk_acnt, nk_desc, nk_fcurr
-                FROM nbank
+                FROM nbank WITH (NOLOCK)
                 ORDER BY nk_acnt
             """)
             if df.empty:
@@ -10079,7 +10081,7 @@ class SalesInvoiceFileImport:
             # Validate customer
             customer_check = self.sql.execute_query(f"""
                 SELECT TOP 1 sn_name, sn_region, sn_terrtry, sn_custype
-                FROM sname
+                FROM sname WITH (NOLOCK)
                 WHERE RTRIM(sn_account) = '{customer_account}'
             """)
             if customer_check.empty:
@@ -10517,7 +10519,7 @@ class PurchaseInvoiceFileImport:
         try:
             # Validate supplier
             supplier_check = self.sql.execute_query(f"""
-                SELECT TOP 1 pn_name FROM pname
+                SELECT TOP 1 pn_name FROM pname WITH (NOLOCK)
                 WHERE RTRIM(pn_account) = '{supplier_account}'
             """)
             if supplier_check.empty:
@@ -11092,7 +11094,7 @@ class PurchaseInvoiceFileImport:
 
                 # Update iparm
                 conn.execute(text(f"""
-                    UPDATE iparm SET ip_docno = '{next_doc}', ip_quotno = '{next_quot}',
+                    UPDATE iparm WITH (ROWLOCK) SET ip_docno = '{next_doc}', ip_quotno = '{next_quot}',
                     datemodified = '{now_str}'
                 """))
 
@@ -11249,7 +11251,7 @@ class PurchaseInvoiceFileImport:
 
                 # Update iparm
                 conn.execute(text(f"""
-                    UPDATE iparm SET ip_orderno = '{next_ord}', datemodified = '{now_str}'
+                    UPDATE iparm WITH (ROWLOCK) SET ip_orderno = '{next_ord}', datemodified = '{now_str}'
                 """))
 
                 # Update ihead - change status to Order
@@ -11475,7 +11477,7 @@ class PurchaseInvoiceFileImport:
 
                 # Update iparm
                 conn.execute(text(f"""
-                    UPDATE iparm SET ip_docno = '{next_doc}', ip_orderno = '{next_ord}',
+                    UPDATE iparm WITH (ROWLOCK) SET ip_docno = '{next_doc}', ip_orderno = '{next_ord}',
                     datemodified = '{now_str}'
                 """))
 
@@ -11898,7 +11900,7 @@ class PurchaseInvoiceFileImport:
                 next_inv = self._increment_sop_number(inv_no)
 
                 conn.execute(text(f"""
-                    UPDATE iparm SET ip_invno = '{next_inv}', datemodified = '{now_str}'
+                    UPDATE iparm WITH (ROWLOCK) SET ip_invno = '{next_inv}', datemodified = '{now_str}'
                 """))
 
                 # ----- 2. UPDATE IHEAD -----
@@ -12472,7 +12474,7 @@ class PurchaseInvoiceFileImport:
                     next_po_ref = self._increment_pop_number(po_ref)
 
                     conn.execute(text(f"""
-                        UPDATE dparm SET dp_dcref = '{next_po_ref}', datemodified = '{now_str}'
+                        UPDATE dparm WITH (ROWLOCK) SET dp_dcref = '{next_po_ref}', datemodified = '{now_str}'
                     """))
                 else:
                     po_ref = 'CPO00001'

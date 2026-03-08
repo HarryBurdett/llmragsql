@@ -2806,16 +2806,24 @@ async def recalculate_nominal_balances(request: Request):
                             "new": {"dr": correct_dr, "cr": correct_nhist_cr, "bal": correct_bal}
                         })
                 else:
-                    # No nhist row exists — insert
+                    # No nhist row exists — insert (must get id from nextid table)
                     if not dry_run:
+                        next_id_row = conn.execute(text(
+                            "SELECT nextid FROM nextid WITH (UPDLOCK, ROWLOCK) WHERE RTRIM(tablename) = 'nhist'"
+                        )).fetchone()
+                        if next_id_row:
+                            nhist_id = int(next_id_row[0])
+                            conn.execute(text(f"UPDATE nextid WITH (ROWLOCK) SET nextid = {nhist_id + 1} WHERE RTRIM(tablename) = 'nhist'"))
+                        else:
+                            nhist_id = 1
                         conn.execute(text(f"""
                             INSERT INTO nhist (
-                                nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
+                                id, nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
                                 nh_job, nh_project, nh_year, nh_period,
                                 nh_bal, nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
                                 datecreated, datemodified, state
                             ) VALUES (
-                                1, '{na_type}', '{na_subt}', '{acnt:<8}', '    ',
+                                {nhist_id}, 1, '{na_type}', '{na_subt}', '{acnt:<8}', '    ',
                                 '        ', '        ', {fin_year}, {period},
                                 {correct_bal}, 0, 0, {correct_dr}, {correct_nhist_cr}, 0,
                                 GETDATE(), GETDATE(), 1

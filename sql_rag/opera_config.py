@@ -54,7 +54,7 @@ def get_control_accounts(sql_connector, use_cache: bool = True) -> OperaControlA
     try:
         sprfls_query = """
             SELECT TOP 1 RTRIM(ISNULL(sc_dbtctrl, '')) as debtors_control
-            FROM sprfls
+            FROM sprfls WITH (NOLOCK)
         """
         df = sql_connector.execute_query(sprfls_query)
 
@@ -69,7 +69,7 @@ def get_control_accounts(sql_connector, use_cache: bool = True) -> OperaControlA
     try:
         pprfls_query = """
             SELECT TOP 1 RTRIM(ISNULL(pc_crdctrl, '')) as creditors_control
-            FROM pprfls
+            FROM pprfls WITH (NOLOCK)
         """
         df = sql_connector.execute_query(pprfls_query)
 
@@ -88,7 +88,7 @@ def get_control_accounts(sql_connector, use_cache: bool = True) -> OperaControlA
                 SELECT TOP 1
                     RTRIM(ISNULL(np_dca, '')) as debtors_control,
                     RTRIM(ISNULL(np_cca, '')) as creditors_control
-                FROM nparm
+                FROM nparm WITH (NOLOCK)
             """
             df = sql_connector.execute_query(nparm_query)
 
@@ -154,8 +154,8 @@ def get_supplier_control_account(sql_connector, supplier_account: str) -> str:
             SELECT
                 RTRIM(ISNULL(p.pn_sprfl, '')) as profile_code,
                 RTRIM(ISNULL(pp.pc_crdctrl, '')) as control_account
-            FROM pname p
-            LEFT JOIN pprfls pp ON RTRIM(p.pn_sprfl) = RTRIM(pp.pc_code)
+            FROM pname p WITH (NOLOCK)
+            LEFT JOIN pprfls pp WITH (NOLOCK) ON RTRIM(p.pn_sprfl) = RTRIM(pp.pc_code)
             WHERE RTRIM(p.pn_account) = '{supplier_account}'
         """
         df = sql_connector.execute_query(query)
@@ -198,8 +198,8 @@ def get_customer_control_account(sql_connector, customer_account: str) -> str:
             SELECT
                 RTRIM(ISNULL(s.sn_cprfl, '')) as profile_code,
                 RTRIM(ISNULL(sp.sc_dbtctrl, '')) as control_account
-            FROM sname s
-            LEFT JOIN sprfls sp ON RTRIM(s.sn_cprfl) = RTRIM(sp.sc_code)
+            FROM sname s WITH (NOLOCK)
+            LEFT JOIN sprfls sp WITH (NOLOCK) ON RTRIM(s.sn_cprfl) = RTRIM(sp.sc_code)
             WHERE RTRIM(s.sn_account) = '{customer_account}'
         """
         df = sql_connector.execute_query(query)
@@ -241,7 +241,7 @@ def get_bank_account_nominal(sql_connector, bank_code: str) -> Optional[str]:
         # Verify the bank account exists
         query = f"""
             SELECT RTRIM(nk_acnt) as bank_code
-            FROM nbank
+            FROM nbank WITH (NOLOCK)
             WHERE RTRIM(nk_acnt) = '{bank_code}'
         """
         df = sql_connector.execute_query(query)
@@ -279,7 +279,7 @@ def get_next_reference_number(sql_connector, ref_type: str) -> int:
     table, field = ref_map[ref_type]
 
     try:
-        query = f"SELECT {field} as next_ref FROM {table}"
+        query = f"SELECT {field} as next_ref FROM {table} WITH (NOLOCK)"
         df = sql_connector.execute_query(query)
         if not df.empty:
             return int(df.iloc[0]['next_ref'])
@@ -297,7 +297,7 @@ def get_current_financial_year(sql_connector) -> Optional[int]:
         Current financial year number or None
     """
     try:
-        query = "SELECT TOP 1 sp_year as current_year FROM sysparm"
+        query = "SELECT TOP 1 sp_year as current_year FROM sysparm WITH (NOLOCK)"
         df = sql_connector.execute_query(query)
         if not df.empty:
             return int(df.iloc[0]['current_year'])
@@ -335,7 +335,7 @@ def get_opera_system_info(sql_connector) -> Dict[str, Any]:
 
     # Get company info from seqco if available
     try:
-        query = "SELECT TOP 1 co_name as company_name FROM seqco"
+        query = "SELECT TOP 1 co_name as company_name FROM seqco WITH (NOLOCK)"
         df = sql_connector.execute_query(query)
         if not df.empty:
             info['company_name'] = df.iloc[0]['company_name'].strip()
@@ -378,7 +378,7 @@ def is_open_period_accounting_enabled(sql_connector, ledger_type: str = 'NL') ->
     try:
         query = """
             SELECT co_opanl
-            FROM Opera3SESystem.dbo.seqco
+            FROM Opera3SESystem.dbo.seqco WITH (NOLOCK)
             WHERE co_code = RIGHT(DB_NAME(), 1)
         """
         df = sql_connector.execute_query(query)
@@ -395,7 +395,7 @@ def is_open_period_accounting_enabled(sql_connector, ledger_type: str = 'NL') ->
     try:
         query = """
             SELECT TOP 1 np_opawarn
-            FROM nparm
+            FROM nparm WITH (NOLOCK)
         """
         df = sql_connector.execute_query(query)
         if not df.empty:
@@ -429,7 +429,7 @@ def is_real_time_update_enabled(sql_connector) -> bool:
     try:
         query = """
             SELECT co_rtupdnl
-            FROM Opera3SESystem.dbo.seqco
+            FROM Opera3SESystem.dbo.seqco WITH (NOLOCK)
             WHERE co_code = RIGHT(DB_NAME(), 1)
         """
         df = sql_connector.execute_query(query)
@@ -460,7 +460,7 @@ def get_advanced_nominal_config(sql_connector) -> Dict[str, Any]:
     try:
         query = """
             SELECT co_advproj, co_advjob
-            FROM Opera3SESystem.dbo.seqco
+            FROM Opera3SESystem.dbo.seqco WITH (NOLOCK)
             WHERE co_code = RIGHT(DB_NAME(), 1)
         """
         df = sql_connector.execute_query(query)
@@ -474,7 +474,7 @@ def get_advanced_nominal_config(sql_connector) -> Dict[str, Any]:
 
     # Fallback: try local seqco
     try:
-        query = "SELECT TOP 1 co_advproj, co_advjob FROM seqco"
+        query = "SELECT TOP 1 co_advproj, co_advjob FROM seqco WITH (NOLOCK)"
         df = sql_connector.execute_query(query)
         if not df.empty:
             result["project_enabled"] = bool(df.iloc[0].get('co_advproj', False))
@@ -512,7 +512,7 @@ def get_period_for_date(sql_connector, post_date) -> Tuple[int, int]:
     try:
         query = f"""
             SELECT ncd_period, ncd_year
-            FROM nclndd
+            FROM nclndd WITH (NOLOCK)
             WHERE ncd_stdate <= '{post_date.strftime('%Y-%m-%d')}'
               AND ncd_endate >= '{post_date.strftime('%Y-%m-%d')}'
         """
@@ -544,7 +544,7 @@ def get_current_period_info(sql_connector) -> Dict[str, Any]:
                 np_year,
                 np_perno,
                 np_periods
-            FROM nparm
+            FROM nparm WITH (NOLOCK)
         """
         df = sql_connector.execute_query(query)
         if not df.empty:
@@ -590,7 +590,7 @@ def get_period_status(sql_connector, year: int, period: int, ledger_type: str) -
     try:
         query = f"""
             SELECT {status_field} as period_status
-            FROM nclndd
+            FROM nclndd WITH (NOLOCK)
             WHERE ncd_year = {year} AND ncd_period = {period}
         """
         df = sql_connector.execute_query(query)

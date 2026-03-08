@@ -621,7 +621,7 @@ class BankStatementImport:
                     WHEN nk_petty = 1 THEN 'Petty Cash'
                     ELSE 'Bank Account'
                 END as type
-            FROM nbank
+            FROM nbank WITH (NOLOCK)
             ORDER BY nk_acnt
         """)
         return df.to_dict('records') if not df.empty else []

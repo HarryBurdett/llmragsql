@@ -65,7 +65,7 @@ class OperaSQLProvider(OperaDataProvider):
                 RTRIM(sn_teleno) AS phone,
                 RTRIM(sn_contact) AS contact,
                 RTRIM(sn_email) AS email
-            FROM sname
+            FROM sname WITH (NOLOCK)
         """
         if active_only:
             query += " WHERE ISNULL(sn_dormant, 0) = 0"
@@ -80,7 +80,7 @@ class OperaSQLProvider(OperaDataProvider):
                 sn_currbal AS balance,
                 sn_crlim AS credit_limit,
                 sn_stop AS on_stop
-            FROM sname
+            FROM sname WITH (NOLOCK)
             WHERE sn_currbal <> 0
         """
         return self._execute_query(query)
@@ -100,8 +100,8 @@ class OperaSQLProvider(OperaDataProvider):
                 RTRIM(sn.sn_teleno) AS phone,
                 RTRIM(sn.sn_contact) AS contact,
                 sn.sn_stop AS on_stop
-            FROM sname sn
-            LEFT JOIN shist sh ON sn.sn_account = sh.si_account AND sh.si_age = 1
+            FROM sname sn WITH (NOLOCK)
+            LEFT JOIN shist sh WITH (NOLOCK) ON sn.sn_account = sh.si_account AND sh.si_age = 1
             WHERE sn.sn_currbal <> 0
         """
         if account:
@@ -126,7 +126,7 @@ class OperaSQLProvider(OperaDataProvider):
                 st_trvalue AS value,
                 st_trbal AS balance,
                 st_dueday AS due_date
-            FROM stran
+            FROM stran WITH (NOLOCK)
             WHERE 1=1
         """
         if account:
@@ -146,7 +146,7 @@ class OperaSQLProvider(OperaDataProvider):
 
         # Total outstanding balance
         result = self._execute_query(
-            "SELECT COUNT(*) AS count, SUM(sn_currbal) AS total FROM sname WHERE sn_currbal > 0"
+            "SELECT COUNT(*) AS count, SUM(sn_currbal) AS total FROM sname WITH (NOLOCK) WHERE sn_currbal > 0"
         )
         if result:
             metrics["total_debt"] = {
@@ -158,7 +158,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Over credit limit
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(sn_currbal - sn_crlim) AS total
-               FROM sname WHERE sn_currbal > sn_crlim AND sn_crlim > 0"""
+               FROM sname WITH (NOLOCK) WHERE sn_currbal > sn_crlim AND sn_crlim > 0"""
         )
         if result:
             metrics["over_credit_limit"] = {
@@ -169,7 +169,7 @@ class OperaSQLProvider(OperaDataProvider):
 
         # Accounts on stop
         result = self._execute_query(
-            "SELECT COUNT(*) AS count, SUM(sn_currbal) AS total FROM sname WHERE sn_stop = 1"
+            "SELECT COUNT(*) AS count, SUM(sn_currbal) AS total FROM sname WITH (NOLOCK) WHERE sn_stop = 1"
         )
         if result:
             metrics["accounts_on_stop"] = {
@@ -181,7 +181,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Overdue invoices
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(st_trbal) AS total
-               FROM stran WHERE st_trtype = 'I' AND st_trbal > 0 AND st_dueday < GETDATE()"""
+               FROM stran WITH (NOLOCK) WHERE st_trtype = 'I' AND st_trbal > 0 AND st_dueday < GETDATE()"""
         )
         if result:
             metrics["overdue_invoices"] = {
@@ -193,7 +193,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Recent payments (last 7 days)
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(ABS(st_trvalue)) AS total
-               FROM stran WHERE st_trtype = 'R' AND st_trdate >= DATEADD(day, -7, GETDATE())"""
+               FROM stran WITH (NOLOCK) WHERE st_trtype = 'R' AND st_trdate >= DATEADD(day, -7, GETDATE())"""
         )
         if result:
             metrics["recent_payments"] = {
@@ -205,7 +205,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Promises due today or overdue
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(st_trbal) AS total
-               FROM stran WHERE st_payday IS NOT NULL
+               FROM stran WITH (NOLOCK) WHERE st_payday IS NOT NULL
                AND st_payday <= GETDATE() AND st_trbal > 0"""
         )
         if result:
@@ -218,7 +218,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Disputed invoices
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(st_trbal) AS total
-               FROM stran WHERE st_dispute = 1 AND st_trbal > 0"""
+               FROM stran WITH (NOLOCK) WHERE st_dispute = 1 AND st_trbal > 0"""
         )
         if result:
             metrics["disputed"] = {
@@ -230,7 +230,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Unallocated cash
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(ABS(st_trbal)) AS total
-               FROM stran WHERE st_trtype = 'R' AND st_trbal < 0"""
+               FROM stran WITH (NOLOCK) WHERE st_trtype = 'R' AND st_trbal < 0"""
         )
         if result:
             metrics["unallocated_cash"] = {
@@ -254,7 +254,7 @@ class OperaSQLProvider(OperaDataProvider):
                 CASE WHEN sn_stop = 1 THEN 'ON_STOP'
                      WHEN sn_currbal > sn_crlim AND sn_crlim > 0 THEN 'OVER_LIMIT'
                      ELSE 'HIGH_BALANCE' END AS priority_reason
-            FROM sname
+            FROM sname WITH (NOLOCK)
             WHERE sn_currbal > 0 AND (sn_stop = 1 OR sn_currbal > sn_crlim)
             ORDER BY sn_currbal DESC
         """
@@ -273,7 +273,7 @@ class OperaSQLProvider(OperaDataProvider):
                 pn_currbal AS balance,
                 RTRIM(pn_teleno) AS phone,
                 RTRIM(pn_contact) AS contact
-            FROM pname
+            FROM pname WITH (NOLOCK)
         """
         return self._execute_query(query)
 
@@ -286,7 +286,7 @@ class OperaSQLProvider(OperaDataProvider):
                 pn_currbal AS balance,
                 RTRIM(pn_teleno) AS phone,
                 RTRIM(pn_contact) AS contact
-            FROM pname
+            FROM pname WITH (NOLOCK)
             WHERE pn_currbal <> 0
         """
         return self._execute_query(query)
@@ -304,8 +304,8 @@ class OperaSQLProvider(OperaDataProvider):
                 ISNULL(ph.pi_period3, 0) + ISNULL(ph.pi_period4, 0) + ISNULL(ph.pi_period5, 0) AS month3_plus,
                 RTRIM(pn.pn_teleno) AS phone,
                 RTRIM(pn.pn_contact) AS contact
-            FROM pname pn
-            LEFT JOIN phist ph ON pn.pn_account = ph.pi_account AND ph.pi_age = 1
+            FROM pname pn WITH (NOLOCK)
+            LEFT JOIN phist ph WITH (NOLOCK) ON pn.pn_account = ph.pi_account AND ph.pi_age = 1
             WHERE pn.pn_currbal <> 0
         """
         if account:
@@ -330,7 +330,7 @@ class OperaSQLProvider(OperaDataProvider):
                 pt_trvalue AS value,
                 pt_trbal AS balance,
                 pt_dueday AS due_date
-            FROM ptran
+            FROM ptran WITH (NOLOCK)
             WHERE 1=1
         """
         if account:
@@ -351,7 +351,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Total creditors balance
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(pn_currbal) AS total
-               FROM pname WHERE pn_currbal <> 0"""
+               FROM pname WITH (NOLOCK) WHERE pn_currbal <> 0"""
         )
         if result:
             metrics["total_creditors"] = {
@@ -363,7 +363,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Overdue invoices
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(pt_trbal) AS total
-               FROM ptran WHERE pt_trtype = 'I' AND pt_trbal > 0 AND pt_dueday < GETDATE()"""
+               FROM ptran WITH (NOLOCK) WHERE pt_trtype = 'I' AND pt_trbal > 0 AND pt_dueday < GETDATE()"""
         )
         if result:
             metrics["overdue_invoices"] = {
@@ -375,7 +375,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Due within 7 days
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(pt_trbal) AS total
-               FROM ptran WHERE pt_trtype = 'I' AND pt_trbal > 0
+               FROM ptran WITH (NOLOCK) WHERE pt_trtype = 'I' AND pt_trbal > 0
                AND pt_dueday >= GETDATE() AND pt_dueday < DATEADD(day, 7, GETDATE())"""
         )
         if result:
@@ -388,7 +388,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Due within 30 days
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(pt_trbal) AS total
-               FROM ptran WHERE pt_trtype = 'I' AND pt_trbal > 0
+               FROM ptran WITH (NOLOCK) WHERE pt_trtype = 'I' AND pt_trbal > 0
                AND pt_dueday >= GETDATE() AND pt_dueday < DATEADD(day, 30, GETDATE())"""
         )
         if result:
@@ -401,7 +401,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Recent payments (last 7 days)
         result = self._execute_query(
             """SELECT COUNT(*) AS count, SUM(ABS(pt_trvalue)) AS total
-               FROM ptran WHERE pt_trtype = 'P' AND pt_trdate >= DATEADD(day, -7, GETDATE())"""
+               FROM ptran WITH (NOLOCK) WHERE pt_trtype = 'P' AND pt_trdate >= DATEADD(day, -7, GETDATE())"""
         )
         if result:
             metrics["recent_payments"] = {
@@ -421,7 +421,7 @@ class OperaSQLProvider(OperaDataProvider):
                 pn_currbal AS balance,
                 RTRIM(pn_teleno) AS phone,
                 RTRIM(pn_contact) AS contact
-            FROM pname
+            FROM pname WITH (NOLOCK)
             WHERE pn_currbal > 0
             ORDER BY pn_currbal DESC
         """
@@ -439,7 +439,7 @@ class OperaSQLProvider(OperaDataProvider):
                 RTRIM(na_desc) AS description,
                 RTRIM(na_type) AS type,
                 RTRIM(na_subt) AS subtype
-            FROM nacnt
+            FROM nacnt WITH (NOLOCK)
         """
         return self._execute_query(query)
 
@@ -461,8 +461,8 @@ class OperaSQLProvider(OperaDataProvider):
                     WHEN ISNULL(SUM(t.nt_value), 0) < 0 THEN ABS(ISNULL(SUM(t.nt_value), 0))
                     ELSE 0
                 END AS credit
-            FROM ntran t
-            LEFT JOIN nacnt n ON RTRIM(t.nt_acnt) = RTRIM(n.na_acnt)
+            FROM ntran t WITH (NOLOCK)
+            LEFT JOIN nacnt n WITH (NOLOCK) ON RTRIM(t.nt_acnt) = RTRIM(n.na_acnt)
             WHERE t.nt_year = {year}
             GROUP BY t.nt_acnt, n.na_desc, t.nt_type, t.nt_subt
             HAVING ISNULL(SUM(t.nt_value), 0) <> 0
@@ -477,7 +477,7 @@ class OperaSQLProvider(OperaDataProvider):
             SELECT
                 RTRIM(nt_type) AS type,
                 SUM(nt_value) AS total
-            FROM ntran
+            FROM ntran WITH (NOLOCK)
             WHERE nt_year = {year}
             AND RTRIM(nt_type) IN ('{type_list}')
             GROUP BY RTRIM(nt_type)
@@ -505,7 +505,7 @@ class OperaSQLProvider(OperaDataProvider):
                     WHEN RTRIM(nt_type) = '45' THEN nt_value
                     ELSE 0
                 END) as overheads
-            FROM ntran
+            FROM ntran WITH (NOLOCK)
             WHERE nt_year = {year}
             AND RTRIM(nt_type) IN ('E', 'F', 'H', '30', '35', '45')
             GROUP BY nt_period
@@ -545,7 +545,7 @@ class OperaSQLProvider(OperaDataProvider):
             SELECT
                 RTRIM(nt_type) as type,
                 SUM(nt_value) as ytd_movement
-            FROM ntran
+            FROM ntran WITH (NOLOCK)
             WHERE RTRIM(nt_type) IN ('30', '35', '40', '45', 'E', 'F', 'G', 'H')
             AND nt_year = {year}
             GROUP BY RTRIM(nt_type)
@@ -566,7 +566,7 @@ class OperaSQLProvider(OperaDataProvider):
             SELECT
                 RTRIM(na_type) as type,
                 SUM(na_ytddr - na_ytdcr) as balance
-            FROM nacnt
+            FROM nacnt WITH (NOLOCK)
             WHERE RTRIM(na_type) IN ('A', 'B', 'C', 'D', '05', '10', '15', '20', '25')
             GROUP BY RTRIM(na_type)
         """
@@ -630,7 +630,7 @@ class OperaSQLProvider(OperaDataProvider):
                 nt_year,
                 nt_period as month,
                 SUM(CASE WHEN RTRIM(nt_type) IN ('E', '30') THEN -nt_value ELSE 0 END) as revenue
-            FROM ntran
+            FROM ntran WITH (NOLOCK)
             WHERE RTRIM(nt_type) IN ('E', 'F', '30', '35')
             AND nt_year IN ({year}, {year - 1}, {year - 2})
             GROUP BY nt_year, nt_period
@@ -753,7 +753,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Sales Ledger totals
         sl_result = self._execute_query("""
             SELECT COUNT(*) AS count, ISNULL(SUM(st_trbal), 0) AS total
-            FROM stran WHERE st_trbal <> 0
+            FROM stran WITH (NOLOCK) WHERE st_trbal <> 0
         """)
         sl_total = float(sl_result[0]['total']) if sl_result else 0
         sl_count = int(sl_result[0]['count']) if sl_result else 0
@@ -761,7 +761,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Breakdown by type
         sl_breakdown = self._execute_query("""
             SELECT st_trtype AS type, COUNT(*) AS count, SUM(st_trbal) AS total
-            FROM stran WHERE st_trbal <> 0
+            FROM stran WITH (NOLOCK) WHERE st_trbal <> 0
             GROUP BY st_trtype
         """)
         type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'R': 'Receipts', 'B': 'Brought Forward'}
@@ -778,7 +778,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Customer master check
         sname_result = self._execute_query("""
             SELECT COUNT(*) AS count, ISNULL(SUM(sn_currbal), 0) AS total
-            FROM sname WHERE sn_currbal <> 0
+            FROM sname WITH (NOLOCK) WHERE sn_currbal <> 0
         """)
         sname_total = float(sname_result[0]['total']) if sname_result else 0
         sname_count = int(sname_result[0]['count']) if sname_result else 0
@@ -788,7 +788,7 @@ class OperaSQLProvider(OperaDataProvider):
             SELECT
                 CASE WHEN sx_done = 'Y' THEN 'Posted' ELSE 'Pending' END AS status,
                 COUNT(*) AS count, ISNULL(SUM(sx_value), 0) AS total
-            FROM snoml
+            FROM snoml WITH (NOLOCK)
             GROUP BY CASE WHEN sx_done = 'Y' THEN 'Posted' ELSE 'Pending' END
         """)
         posted_count, posted_total = 0, 0.0
@@ -818,12 +818,12 @@ class OperaSQLProvider(OperaDataProvider):
         }
 
         # Nominal Ledger - get control account balance
-        current_year_result = self._execute_query("SELECT MAX(nt_year) AS year FROM ntran")
+        current_year_result = self._execute_query("SELECT MAX(nt_year) AS year FROM ntran WITH (NOLOCK)")
         current_year = int(current_year_result[0]['year']) if current_year_result and current_year_result[0]['year'] else datetime.now().year
 
         nl_result = self._execute_query(f"""
             SELECT ISNULL(SUM(nt_value), 0) AS total
-            FROM ntran
+            FROM ntran WITH (NOLOCK)
             WHERE RTRIM(nt_acnt) = '{debtors_control}' AND nt_year = {current_year}
         """)
         nl_total = float(nl_result[0]['total']) if nl_result else 0
@@ -872,7 +872,7 @@ class OperaSQLProvider(OperaDataProvider):
                     ELSE 'Over 90 days'
                 END AS age_band,
                 COUNT(*) AS count, SUM(st_trbal) AS total
-            FROM stran WHERE st_trbal <> 0
+            FROM stran WITH (NOLOCK) WHERE st_trbal <> 0
             GROUP BY CASE
                 WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
                 WHEN DATEDIFF(day, st_trdate, GETDATE()) <= 60 THEN '31-60 days'
@@ -889,7 +889,7 @@ class OperaSQLProvider(OperaDataProvider):
         top_result = self._execute_query("""
             SELECT TOP 10 RTRIM(s.sn_account) AS account, RTRIM(s.sn_name) AS name,
                    COUNT(*) AS invoice_count, SUM(t.st_trbal) AS outstanding
-            FROM stran t JOIN sname s ON t.st_account = s.sn_account
+            FROM stran t WITH (NOLOCK) JOIN sname s WITH (NOLOCK) ON t.st_account = s.sn_account
             WHERE t.st_trbal <> 0
             GROUP BY s.sn_account, s.sn_name
             ORDER BY SUM(t.st_trbal) DESC
@@ -917,7 +917,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Purchase Ledger totals
         pl_result = self._execute_query("""
             SELECT COUNT(*) AS count, ISNULL(SUM(pt_trbal), 0) AS total
-            FROM ptran WHERE pt_trbal <> 0
+            FROM ptran WITH (NOLOCK) WHERE pt_trbal <> 0
         """)
         pl_total = float(pl_result[0]['total']) if pl_result else 0
         pl_count = int(pl_result[0]['count']) if pl_result else 0
@@ -925,7 +925,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Breakdown by type
         pl_breakdown = self._execute_query("""
             SELECT pt_trtype AS type, COUNT(*) AS count, SUM(pt_trbal) AS total
-            FROM ptran WHERE pt_trbal <> 0
+            FROM ptran WITH (NOLOCK) WHERE pt_trbal <> 0
             GROUP BY pt_trtype
         """)
         type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'P': 'Payments', 'B': 'Brought Forward'}
@@ -942,7 +942,7 @@ class OperaSQLProvider(OperaDataProvider):
         # Supplier master check
         pname_result = self._execute_query("""
             SELECT COUNT(*) AS count, ISNULL(SUM(pn_currbal), 0) AS total
-            FROM pname WHERE pn_currbal <> 0
+            FROM pname WITH (NOLOCK) WHERE pn_currbal <> 0
         """)
         pname_total = float(pname_result[0]['total']) if pname_result else 0
         pname_count = int(pname_result[0]['count']) if pname_result else 0
@@ -952,7 +952,7 @@ class OperaSQLProvider(OperaDataProvider):
             SELECT
                 CASE WHEN px_done = 'Y' THEN 'Posted' ELSE 'Pending' END AS status,
                 COUNT(*) AS count, ISNULL(SUM(px_value), 0) AS total
-            FROM pnoml
+            FROM pnoml WITH (NOLOCK)
             GROUP BY CASE WHEN px_done = 'Y' THEN 'Posted' ELSE 'Pending' END
         """)
         posted_count, posted_total = 0, 0.0
@@ -982,12 +982,12 @@ class OperaSQLProvider(OperaDataProvider):
         }
 
         # Nominal Ledger - get control account balance
-        current_year_result = self._execute_query("SELECT MAX(nt_year) AS year FROM ntran")
+        current_year_result = self._execute_query("SELECT MAX(nt_year) AS year FROM ntran WITH (NOLOCK)")
         current_year = int(current_year_result[0]['year']) if current_year_result and current_year_result[0]['year'] else datetime.now().year
 
         nl_result = self._execute_query(f"""
             SELECT ISNULL(SUM(nt_value), 0) AS total
-            FROM ntran
+            FROM ntran WITH (NOLOCK)
             WHERE RTRIM(nt_acnt) = '{creditors_control}' AND nt_year = {current_year}
         """)
         nl_total = float(nl_result[0]['total']) if nl_result else 0
@@ -1036,7 +1036,7 @@ class OperaSQLProvider(OperaDataProvider):
                     ELSE 'Over 90 days'
                 END AS age_band,
                 COUNT(*) AS count, SUM(pt_trbal) AS total
-            FROM ptran WHERE pt_trbal <> 0
+            FROM ptran WITH (NOLOCK) WHERE pt_trbal <> 0
             GROUP BY CASE
                 WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 30 THEN 'Current (0-30 days)'
                 WHEN DATEDIFF(day, pt_trdate, GETDATE()) <= 60 THEN '31-60 days'
@@ -1053,7 +1053,7 @@ class OperaSQLProvider(OperaDataProvider):
         top_result = self._execute_query("""
             SELECT TOP 10 RTRIM(p.pn_account) AS account, RTRIM(p.pn_name) AS name,
                    COUNT(*) AS invoice_count, SUM(t.pt_trbal) AS outstanding
-            FROM ptran t JOIN pname p ON t.pt_account = p.pn_account
+            FROM ptran t WITH (NOLOCK) JOIN pname p WITH (NOLOCK) ON t.pt_account = p.pn_account
             WHERE t.pt_trbal <> 0
             GROUP BY p.pn_account, p.pn_name
             ORDER BY SUM(t.pt_trbal) DESC

@@ -863,6 +863,7 @@ class Opera3FoxProImport:
                     break
         except Exception as e:
             logger.error(f"Error updating supplier balance: {e}")
+            raise  # Fail the transaction - supplier balance must be updated correctly
 
     def _update_customer_balance(self, customer_account: str, amount_change: float):
         """Update customer balance in sname"""
@@ -875,6 +876,7 @@ class Opera3FoxProImport:
                     break
         except Exception as e:
             logger.error(f"Error updating customer balance: {e}")
+            raise  # Fail the transaction - customer balance must be updated correctly
 
     def _update_nacnt_balance(self, account: str, value: float, period: int, year: int = None):
         """
@@ -1123,9 +1125,9 @@ class Opera3FoxProImport:
             # Equivalent to SQL SE's BEGIN TRAN with UPDLOCK, ROWLOCK
             # =====================
             # Include transfer file tables in lock list
-            tables_to_lock = ['aentry', 'atran', 'ptran', 'pname']
+            tables_to_lock = ['aentry', 'atran', 'ptran', 'pname', 'nparm']
             if posting_decision.post_to_nominal:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])  # Include balance tables
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'nhist'])  # Include balance tables
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')  # Opera uses anoml for both sides of payment
 
@@ -1577,9 +1579,9 @@ class Opera3FoxProImport:
             # Equivalent to SQL SE's BEGIN TRAN with UPDLOCK, ROWLOCK
             # =====================
             # Include transfer file tables in lock list
-            tables_to_lock = ['aentry', 'atran', 'stran', 'sname', 'atype']
+            tables_to_lock = ['aentry', 'atran', 'stran', 'sname', 'atype', 'nparm']
             if posting_decision.post_to_nominal:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])  # Include balance tables
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'nhist'])  # Include balance tables
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')  # Opera uses anoml for both sides of receipt
 
@@ -1975,9 +1977,9 @@ class Opera3FoxProImport:
             ntran_pstid_bank = unique_ids[1]
             ntran_pstid_control = unique_ids[2]
 
-            tables_to_lock = ['aentry', 'atran', 'stran', 'sname', 'atype']
+            tables_to_lock = ['aentry', 'atran', 'stran', 'sname', 'atype', 'nparm']
             if posting_decision.post_to_nominal:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'nhist'])
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')
 
@@ -2286,9 +2288,9 @@ class Opera3FoxProImport:
             ntran_pstid_bank = unique_ids[1]
             ntran_pstid_control = unique_ids[2]
 
-            tables_to_lock = ['aentry', 'atran', 'ptran', 'pname', 'atype']
+            tables_to_lock = ['aentry', 'atran', 'ptran', 'pname', 'atype', 'nparm']
             if posting_decision.post_to_nominal:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'nhist'])
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')
 
@@ -2594,9 +2596,9 @@ class Opera3FoxProImport:
             ntran_pstid_source = unique_ids[1]
             ntran_pstid_dest = unique_ids[2]
 
-            tables_to_lock = ['aentry', 'atran', 'atype']
+            tables_to_lock = ['aentry', 'atran', 'atype', 'nparm']
             if post_to_nominal and posting_decision.post_to_nominal:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'nhist'])
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')
 
@@ -3161,9 +3163,9 @@ class Opera3FoxProImport:
             now = datetime.now()
 
             # Tables to lock - always include nominal tables for complete posting
-            tables_to_lock = ['aentry', 'atran', 'stran', 'sname', 'atype']
+            tables_to_lock = ['aentry', 'atran', 'stran', 'sname', 'atype', 'nparm']
             if posting_decision.post_to_nominal:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'nhist'])
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')
 
@@ -3672,11 +3674,13 @@ class Opera3FoxProImport:
                         fees_cbtype = fees_payment_type.strip()
                     else:
                         # Find a non-batched payment type from atype
-                        atype_data = self.foxpro.read_table('atype')
+                        atype_table = self._open_table('atype')
                         fees_cbtype = 'NP'  # fallback
-                        for at in atype_data:
-                            if at.get('ay_type', '').strip() == 'P' and not at.get('ay_batched', False):
-                                fees_cbtype = at.get('ay_cbtype', 'NP').strip()
+                        for at in atype_table:
+                            ay_type = str(getattr(at, 'ay_type', '') or '').strip()
+                            ay_batched = getattr(at, 'ay_batched', False)
+                            if ay_type == 'P' and not ay_batched:
+                                fees_cbtype = str(getattr(at, 'ay_cbtype', 'NP') or 'NP').strip()
                                 break
 
                     fees_entry_number = self.increment_atype_entry(fees_cbtype)
@@ -4328,9 +4332,9 @@ class Opera3FoxProImport:
             # =====================
             # ACQUIRE LOCKS AND EXECUTE
             # =====================
-            tables_to_lock = ['aentry', 'atran', 'atype']
+            tables_to_lock = ['aentry', 'atran', 'atype', 'nparm']
             if posting_decision.post_to_nominal:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'nhist'])
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')
             if has_vat:
@@ -4994,120 +4998,121 @@ class Opera3FoxProImport:
             if isinstance(allocation_date, str):
                 allocation_date = datetime.strptime(allocation_date, '%Y-%m-%d').date()
 
-            # Get next al_payflag from salloc
-            salloc_table = self._open_table('salloc')
-            max_payflag = 0
-            for record in salloc_table:
-                if record.al_account.strip().upper() == customer_account.upper():
-                    pf = int(record.al_payflag or 0)
-                    if pf > max_payflag:
-                        max_payflag = pf
-            next_payflag = max_payflag + 1
+            with self._transaction_lock(['stran', 'salloc']):
+                # Get next al_payflag from salloc
+                salloc_table = self._open_table('salloc')
+                max_payflag = 0
+                for record in salloc_table:
+                    if record.al_account.strip().upper() == customer_account.upper():
+                        pf = int(record.al_payflag or 0)
+                        if pf > max_payflag:
+                            max_payflag = pf
+                next_payflag = max_payflag + 1
 
-            # Update receipt in stran
-            new_receipt_bal = receipt_balance - total_to_allocate
-            receipt_paid_flag = 'A' if receipt_fully_allocated else ' '
-
-            for record in stran_table:
-                if (record.st_account.strip().upper() == customer_account.upper()
-                        and record.st_trref.strip() == receipt_ref
-                        and record.st_trtype.strip() == 'R'
-                        and (not receipt_unique or (hasattr(record, 'st_unique') and record.st_unique.strip() == receipt_unique))):
-                    with record:
-                        record.st_trbal = -new_receipt_bal
-                        record.st_paid = receipt_paid_flag
-                        if receipt_fully_allocated:
-                            record.st_payday = allocation_date
-                        record.st_payflag = next_payflag
-                    break
-
-            # Insert salloc record for receipt
-            if receipt_fully_allocated:
-                alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
-                salloc_table.append({
-                    'al_account': customer_account[:8],
-                    'al_date': allocation_date,
-                    'al_ref1': receipt_ref[:20],
-                    'al_ref2': alloc_ref2[:20],
-                    'al_type': 'R',
-                    'al_val': -receipt_balance,
-                    'al_dval': 0,
-                    'al_origval': -receipt_balance,
-                    'al_payind': 'A',
-                    'al_payflag': next_payflag,
-                    'al_payday': allocation_date,
-                    'al_ctype': 'O',
-                    'al_rem': ' ',
-                    'al_cheq': ' ',
-                    'al_payee': customer_account[:30],
-                    'al_fcurr': '   ',
-                    'al_fval': 0,
-                    'al_fdval': 0,
-                    'al_forigvl': 0,
-                    'al_fdec': 0,
-                    'al_unique': 0,
-                    'al_acnt': bank_account[:8],
-                    'al_cntr': '    ',
-                    'al_advind': 0,
-                    'al_advtran': 0,
-                    'al_preprd': 0,
-                    'al_bacsid': 0,
-                    'al_adjsv': 0,
-                })
-
-            # Update each invoice and create salloc records
-            for alloc in invoices_to_allocate:
-                inv_ref = alloc['ref']
-                alloc_amount = alloc['amount']
+                # Update receipt in stran
+                new_receipt_bal = receipt_balance - total_to_allocate
+                receipt_paid_flag = 'A' if receipt_fully_allocated else ' '
 
                 for record in stran_table:
                     if (record.st_account.strip().upper() == customer_account.upper()
-                            and record.st_trref.strip() == inv_ref
-                            and record.st_trtype.strip() == 'I'):
-                        new_inv_bal = float(record.st_trbal) - alloc_amount
-                        inv_paid_flag = 'P' if new_inv_bal < 0.01 else ' '
-                        inv_date = record.st_trdate
-
+                            and record.st_trref.strip() == receipt_ref
+                            and record.st_trtype.strip() == 'R'
+                            and (not receipt_unique or (hasattr(record, 'st_unique') and record.st_unique.strip() == receipt_unique))):
                         with record:
-                            record.st_trbal = new_inv_bal
-                            record.st_paid = inv_paid_flag
-                            if new_inv_bal < 0.01:
+                            record.st_trbal = -new_receipt_bal
+                            record.st_paid = receipt_paid_flag
+                            if receipt_fully_allocated:
                                 record.st_payday = allocation_date
                             record.st_payflag = next_payflag
-
-                        # Insert salloc record for invoice (if fully paid)
-                        if new_inv_bal < 0.01:
-                            salloc_table.append({
-                                'al_account': customer_account[:8],
-                                'al_date': inv_date,
-                                'al_ref1': inv_ref[:20],
-                                'al_ref2': alloc['custref'][:20] if alloc['custref'] else ' ',
-                                'al_type': 'I',
-                                'al_val': alloc_amount,
-                                'al_dval': 0,
-                                'al_origval': alloc_amount,
-                                'al_payind': 'A',
-                                'al_payflag': next_payflag,
-                                'al_payday': allocation_date,
-                                'al_ctype': 'O',
-                                'al_rem': ' ',
-                                'al_cheq': ' ',
-                                'al_payee': customer_account[:30],
-                                'al_fcurr': '   ',
-                                'al_fval': 0,
-                                'al_fdval': 0,
-                                'al_forigvl': 0,
-                                'al_fdec': 0,
-                                'al_unique': 0,
-                                'al_acnt': bank_account[:8],
-                                'al_cntr': '    ',
-                                'al_advind': 0,
-                                'al_advtran': 0,
-                                'al_preprd': 0,
-                                'al_bacsid': 0,
-                                'al_adjsv': 0,
-                            })
                         break
+
+                # Insert salloc record for receipt
+                if receipt_fully_allocated:
+                    alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
+                    salloc_table.append({
+                        'al_account': customer_account[:8],
+                        'al_date': allocation_date,
+                        'al_ref1': receipt_ref[:20],
+                        'al_ref2': alloc_ref2[:20],
+                        'al_type': 'R',
+                        'al_val': -receipt_balance,
+                        'al_dval': 0,
+                        'al_origval': -receipt_balance,
+                        'al_payind': 'A',
+                        'al_payflag': next_payflag,
+                        'al_payday': allocation_date,
+                        'al_ctype': 'O',
+                        'al_rem': ' ',
+                        'al_cheq': ' ',
+                        'al_payee': customer_account[:30],
+                        'al_fcurr': '   ',
+                        'al_fval': 0,
+                        'al_fdval': 0,
+                        'al_forigvl': 0,
+                        'al_fdec': 0,
+                        'al_unique': 0,
+                        'al_acnt': bank_account[:8],
+                        'al_cntr': '    ',
+                        'al_advind': 0,
+                        'al_advtran': 0,
+                        'al_preprd': 0,
+                        'al_bacsid': 0,
+                        'al_adjsv': 0,
+                    })
+
+                # Update each invoice and create salloc records
+                for alloc in invoices_to_allocate:
+                    inv_ref = alloc['ref']
+                    alloc_amount = alloc['amount']
+
+                    for record in stran_table:
+                        if (record.st_account.strip().upper() == customer_account.upper()
+                                and record.st_trref.strip() == inv_ref
+                                and record.st_trtype.strip() == 'I'):
+                            new_inv_bal = float(record.st_trbal) - alloc_amount
+                            inv_paid_flag = 'P' if new_inv_bal < 0.01 else ' '
+                            inv_date = record.st_trdate
+
+                            with record:
+                                record.st_trbal = new_inv_bal
+                                record.st_paid = inv_paid_flag
+                                if new_inv_bal < 0.01:
+                                    record.st_payday = allocation_date
+                                record.st_payflag = next_payflag
+
+                            # Insert salloc record for invoice (if fully paid)
+                            if new_inv_bal < 0.01:
+                                salloc_table.append({
+                                    'al_account': customer_account[:8],
+                                    'al_date': inv_date,
+                                    'al_ref1': inv_ref[:20],
+                                    'al_ref2': alloc['custref'][:20] if alloc['custref'] else ' ',
+                                    'al_type': 'I',
+                                    'al_val': alloc_amount,
+                                    'al_dval': 0,
+                                    'al_origval': alloc_amount,
+                                    'al_payind': 'A',
+                                    'al_payflag': next_payflag,
+                                    'al_payday': allocation_date,
+                                    'al_ctype': 'O',
+                                    'al_rem': ' ',
+                                    'al_cheq': ' ',
+                                    'al_payee': customer_account[:30],
+                                    'al_fcurr': '   ',
+                                    'al_fval': 0,
+                                    'al_fdval': 0,
+                                    'al_forigvl': 0,
+                                    'al_fdec': 0,
+                                    'al_unique': 0,
+                                    'al_acnt': bank_account[:8],
+                                    'al_cntr': '    ',
+                                    'al_advind': 0,
+                                    'al_advtran': 0,
+                                    'al_preprd': 0,
+                                    'al_bacsid': 0,
+                                    'al_adjsv': 0,
+                                })
+                            break
 
             result["success"] = True
             result["allocated_amount"] = total_to_allocate
@@ -5292,119 +5297,120 @@ class Opera3FoxProImport:
             if isinstance(allocation_date, str):
                 allocation_date = datetime.strptime(allocation_date, '%Y-%m-%d').date()
 
-            # Get next al_payflag from palloc
-            palloc_table = self._open_table('palloc')
-            max_payflag = 0
-            for record in palloc_table:
-                if record.al_account.strip().upper() == supplier_account.upper():
-                    pf = int(record.al_payflag or 0)
-                    if pf > max_payflag:
-                        max_payflag = pf
-            next_payflag = max_payflag + 1
+            with self._transaction_lock(['ptran', 'palloc']):
+                # Get next al_payflag from palloc
+                palloc_table = self._open_table('palloc')
+                max_payflag = 0
+                for record in palloc_table:
+                    if record.al_account.strip().upper() == supplier_account.upper():
+                        pf = int(record.al_payflag or 0)
+                        if pf > max_payflag:
+                            max_payflag = pf
+                next_payflag = max_payflag + 1
 
-            # Update payment in ptran
-            new_payment_bal = payment_balance - total_to_allocate
-            payment_paid_flag = 'A' if payment_fully_allocated else ' '
-
-            for record in ptran_table:
-                if (record.pt_account.strip().upper() == supplier_account.upper()
-                        and record.pt_trref.strip() == payment_ref
-                        and record.pt_trtype.strip() == 'P'):
-                    with record:
-                        record.pt_trbal = -new_payment_bal
-                        record.pt_paid = payment_paid_flag
-                        if payment_fully_allocated:
-                            record.pt_payday = allocation_date
-                        record.pt_payflag = next_payflag
-                    break
-
-            # Insert palloc record for payment
-            if payment_fully_allocated:
-                alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
-                palloc_table.append({
-                    'al_account': supplier_account[:8],
-                    'al_date': allocation_date,
-                    'al_ref1': payment_ref[:20],
-                    'al_ref2': alloc_ref2[:20],
-                    'al_type': 'P',
-                    'al_val': -payment_balance,
-                    'al_dval': 0,
-                    'al_origval': -payment_balance,
-                    'al_payind': 'A',
-                    'al_payflag': next_payflag,
-                    'al_payday': allocation_date,
-                    'al_ctype': 'O',
-                    'al_rem': ' ',
-                    'al_cheq': ' ',
-                    'al_payee': supplier_account[:30],
-                    'al_fcurr': '   ',
-                    'al_fval': 0,
-                    'al_fdval': 0,
-                    'al_forigvl': 0,
-                    'al_fdec': 0,
-                    'al_unique': 0,
-                    'al_acnt': bank_account[:8],
-                    'al_cntr': '    ',
-                    'al_advind': 0,
-                    'al_advtran': 0,
-                    'al_preprd': 0,
-                    'al_bacsid': 0,
-                    'al_adjsv': 0,
-                })
-
-            # Update each invoice and create palloc records
-            for alloc in invoices_to_allocate:
-                inv_ref = alloc['ref']
-                alloc_amount = alloc['amount']
+                # Update payment in ptran
+                new_payment_bal = payment_balance - total_to_allocate
+                payment_paid_flag = 'A' if payment_fully_allocated else ' '
 
                 for record in ptran_table:
                     if (record.pt_account.strip().upper() == supplier_account.upper()
-                            and record.pt_trref.strip() == inv_ref
-                            and record.pt_trtype.strip() == 'I'):
-                        new_inv_bal = float(record.pt_trbal) - alloc_amount
-                        inv_paid_flag = 'P' if new_inv_bal < 0.01 else ' '
-                        inv_date = record.pt_trdate
-
+                            and record.pt_trref.strip() == payment_ref
+                            and record.pt_trtype.strip() == 'P'):
                         with record:
-                            record.pt_trbal = new_inv_bal
-                            record.pt_paid = inv_paid_flag
-                            if new_inv_bal < 0.01:
+                            record.pt_trbal = -new_payment_bal
+                            record.pt_paid = payment_paid_flag
+                            if payment_fully_allocated:
                                 record.pt_payday = allocation_date
                             record.pt_payflag = next_payflag
-
-                        # Insert palloc record for invoice (if fully paid)
-                        if new_inv_bal < 0.01:
-                            palloc_table.append({
-                                'al_account': supplier_account[:8],
-                                'al_date': inv_date,
-                                'al_ref1': inv_ref[:20],
-                                'al_ref2': alloc['suppref'][:20] if alloc['suppref'] else ' ',
-                                'al_type': 'I',
-                                'al_val': alloc_amount,
-                                'al_dval': 0,
-                                'al_origval': alloc_amount,
-                                'al_payind': 'A',
-                                'al_payflag': next_payflag,
-                                'al_payday': allocation_date,
-                                'al_ctype': 'O',
-                                'al_rem': ' ',
-                                'al_cheq': ' ',
-                                'al_payee': supplier_account[:30],
-                                'al_fcurr': '   ',
-                                'al_fval': 0,
-                                'al_fdval': 0,
-                                'al_forigvl': 0,
-                                'al_fdec': 0,
-                                'al_unique': 0,
-                                'al_acnt': bank_account[:8],
-                                'al_cntr': '    ',
-                                'al_advind': 0,
-                                'al_advtran': 0,
-                                'al_preprd': 0,
-                                'al_bacsid': 0,
-                                'al_adjsv': 0,
-                            })
                         break
+
+                # Insert palloc record for payment
+                if payment_fully_allocated:
+                    alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
+                    palloc_table.append({
+                        'al_account': supplier_account[:8],
+                        'al_date': allocation_date,
+                        'al_ref1': payment_ref[:20],
+                        'al_ref2': alloc_ref2[:20],
+                        'al_type': 'P',
+                        'al_val': -payment_balance,
+                        'al_dval': 0,
+                        'al_origval': -payment_balance,
+                        'al_payind': 'A',
+                        'al_payflag': next_payflag,
+                        'al_payday': allocation_date,
+                        'al_ctype': 'O',
+                        'al_rem': ' ',
+                        'al_cheq': ' ',
+                        'al_payee': supplier_account[:30],
+                        'al_fcurr': '   ',
+                        'al_fval': 0,
+                        'al_fdval': 0,
+                        'al_forigvl': 0,
+                        'al_fdec': 0,
+                        'al_unique': 0,
+                        'al_acnt': bank_account[:8],
+                        'al_cntr': '    ',
+                        'al_advind': 0,
+                        'al_advtran': 0,
+                        'al_preprd': 0,
+                        'al_bacsid': 0,
+                        'al_adjsv': 0,
+                    })
+
+                # Update each invoice and create palloc records
+                for alloc in invoices_to_allocate:
+                    inv_ref = alloc['ref']
+                    alloc_amount = alloc['amount']
+
+                    for record in ptran_table:
+                        if (record.pt_account.strip().upper() == supplier_account.upper()
+                                and record.pt_trref.strip() == inv_ref
+                                and record.pt_trtype.strip() == 'I'):
+                            new_inv_bal = float(record.pt_trbal) - alloc_amount
+                            inv_paid_flag = 'P' if new_inv_bal < 0.01 else ' '
+                            inv_date = record.pt_trdate
+
+                            with record:
+                                record.pt_trbal = new_inv_bal
+                                record.pt_paid = inv_paid_flag
+                                if new_inv_bal < 0.01:
+                                    record.pt_payday = allocation_date
+                                record.pt_payflag = next_payflag
+
+                            # Insert palloc record for invoice (if fully paid)
+                            if new_inv_bal < 0.01:
+                                palloc_table.append({
+                                    'al_account': supplier_account[:8],
+                                    'al_date': inv_date,
+                                    'al_ref1': inv_ref[:20],
+                                    'al_ref2': alloc['suppref'][:20] if alloc['suppref'] else ' ',
+                                    'al_type': 'I',
+                                    'al_val': alloc_amount,
+                                    'al_dval': 0,
+                                    'al_origval': alloc_amount,
+                                    'al_payind': 'A',
+                                    'al_payflag': next_payflag,
+                                    'al_payday': allocation_date,
+                                    'al_ctype': 'O',
+                                    'al_rem': ' ',
+                                    'al_cheq': ' ',
+                                    'al_payee': supplier_account[:30],
+                                    'al_fcurr': '   ',
+                                    'al_fval': 0,
+                                    'al_fdval': 0,
+                                    'al_forigvl': 0,
+                                    'al_fdec': 0,
+                                    'al_unique': 0,
+                                    'al_acnt': bank_account[:8],
+                                    'al_cntr': '    ',
+                                    'al_advind': 0,
+                                    'al_advtran': 0,
+                                    'al_preprd': 0,
+                                    'al_bacsid': 0,
+                                    'al_adjsv': 0,
+                                })
+                            break
 
             result["success"] = True
             result["allocated_amount"] = total_to_allocate
@@ -5473,6 +5479,7 @@ class Opera3FoxProImport:
             reconciliation_date = date.today()
 
         try:
+          with self._transaction_lock(['aentry', 'nbank']):
             # Open required tables
             aentry_table = self._open_table('aentry', mode=dbf.READ_WRITE)
             nbank_table = self._open_table('nbank', mode=dbf.READ_WRITE)
@@ -5993,9 +6000,9 @@ class Opera3FoxProImport:
                             )
 
             # Build tables to lock — include arhead for atomic advancement
-            tables_to_lock = ['aentry', 'atran', 'atype', 'arhead']
+            tables_to_lock = ['aentry', 'atran', 'atype', 'arhead', 'nparm']
             if posting_decision.post_to_nominal:
-                tables_to_lock.extend(['ntran', 'nacnt', 'nbank'])
+                tables_to_lock.extend(['ntran', 'nacnt', 'nbank', 'nhist'])
             if posting_decision.post_to_transfer_file:
                 tables_to_lock.append('anoml')
             if ae_type in (3, 4):
