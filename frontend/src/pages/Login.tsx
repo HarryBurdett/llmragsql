@@ -71,10 +71,10 @@ export function Login() {
         const data = response.data;
         setSystems(data.systems || []);
         setActiveSystemId(data.active_system_id);
-        // Pre-select the active or default system
-        const active = data.systems?.find((s: SystemProfile) => s.id === data.active_system_id);
+        // Pre-select the default system, falling back to active then first
         const dflt = data.systems?.find((s: SystemProfile) => s.is_default);
-        const pick = active || dflt || data.systems?.[0];
+        const active = data.systems?.find((s: SystemProfile) => s.id === data.active_system_id);
+        const pick = dflt || active || data.systems?.[0];
         if (pick) setSelectedSystem(pick.id);
       } catch (err) {
         console.error('Failed to fetch systems:', err);
