@@ -54,6 +54,7 @@ import { SystemReset } from './pages/SystemReset';
 import { Home } from './pages/Home';
 import CashbookOptions from './pages/CashbookOptions';
 import { GoCardlessSettings } from './pages/GoCardlessSettings';
+import { Installations } from './pages/Installations';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -121,6 +122,7 @@ function AppRoutes() {
                   <Route path="/" element={<Home />} />
                   <Route path="/archive" element={<Archive />} />
                   <Route path="/settings" element={<Settings />} />
+                  <Route path="/admin/installations" element={<Installations />} />
 
                   {/* Administration routes */}
                   <Route path="/admin/company" element={<Company />} />

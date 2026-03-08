@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, Pencil, X, Settings as SettingsIcon, Monitor, Plus, Star } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, Pencil, X, Settings as SettingsIcon } from 'lucide-react';
 import apiClient from '../api/client';
-import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company, SystemProfile } from '../api/client';
+import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
 
 export function Settings() {
@@ -57,11 +57,6 @@ export function Settings() {
   const [opera3BasePath, setOpera3BasePath] = useState('C:\\Apps\\O3 Server VFP');
   const [opera3CompanyCode, setOpera3CompanyCode] = useState('');
 
-  // Systems State
-  const [editingSystem, setEditingSystem] = useState<SystemProfile | null>(null);
-  const [newSystemName, setNewSystemName] = useState('');
-  const [showAddSystem, setShowAddSystem] = useState(false);
-  const [systemMessage, setSystemMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Queries
   const { data: providers } = useQuery({
@@ -98,13 +93,12 @@ export function Settings() {
     enabled: operaVersion === 'opera3' && !!opera3BasePath,
   });
 
-  // Systems query
-  const { data: systemsData, refetch: refetchSystems } = useQuery({
-    queryKey: ['systems'],
-    queryFn: () => apiClient.getSystems(),
+  // Active system (for Settings page header)
+  const { data: activeSystemData } = useQuery({
+    queryKey: ['activeSystem'],
+    queryFn: () => apiClient.getActiveSystem(),
   });
-  const systemsList = systemsData?.data?.systems || [];
-  const activeSystemId = systemsData?.data?.active_system_id;
+  const activeSystemName = activeSystemData?.data?.system?.name;
 
   // Load config into state
   useEffect(() => {
@@ -237,79 +231,6 @@ export function Settings() {
     },
   });
 
-  // System handlers
-  const handleAddSystem = async () => {
-    if (!newSystemName.trim()) return;
-    try {
-      const response = await apiClient.createSystem({
-        name: newSystemName.trim(),
-        database: {},
-        opera: {},
-        is_default: systemsList.length === 0,
-      });
-      if (response.data.success) {
-        setNewSystemName('');
-        setShowAddSystem(false);
-        setSystemMessage({ type: 'success', text: `System "${newSystemName.trim()}" created` });
-        refetchSystems();
-        queryClient.invalidateQueries({ queryKey: ['activeSystem'] });
-      } else {
-        setSystemMessage({ type: 'error', text: response.data.error || 'Failed to create system' });
-      }
-    } catch {
-      setSystemMessage({ type: 'error', text: 'Failed to create system' });
-    }
-  };
-
-  const handleDeleteSystem = async (id: string) => {
-    try {
-      const response = await apiClient.deleteSystem(id);
-      if (response.data.success) {
-        setSystemMessage({ type: 'success', text: 'System deleted' });
-        refetchSystems();
-        queryClient.invalidateQueries({ queryKey: ['activeSystem'] });
-      } else {
-        setSystemMessage({ type: 'error', text: response.data.error || 'Failed to delete system' });
-      }
-    } catch {
-      setSystemMessage({ type: 'error', text: 'Failed to delete system' });
-    }
-  };
-
-  const handleSetDefault = async (system: SystemProfile) => {
-    try {
-      await apiClient.updateSystem(system.id, {
-        name: system.name,
-        database: system.database,
-        opera: system.opera,
-        is_default: true,
-      });
-      setSystemMessage({ type: 'success', text: `"${system.name}" set as default` });
-      refetchSystems();
-      queryClient.invalidateQueries({ queryKey: ['activeSystem'] });
-    } catch {
-      setSystemMessage({ type: 'error', text: 'Failed to update default' });
-    }
-  };
-
-  const handleRenameSystem = async (system: SystemProfile, name: string) => {
-    if (!name.trim()) return;
-    try {
-      await apiClient.updateSystem(system.id, {
-        name: name.trim(),
-        database: system.database,
-        opera: system.opera,
-        is_default: system.is_default,
-      });
-      setEditingSystem(null);
-      setSystemMessage({ type: 'success', text: 'System renamed' });
-      refetchSystems();
-      queryClient.invalidateQueries({ queryKey: ['activeSystem'] });
-    } catch {
-      setSystemMessage({ type: 'error', text: 'Failed to rename system' });
-    }
-  };
-
   const handleEditProvider = async (provider: EmailProvider) => {
     setEditingProviderId(provider.id);
     setEmailProviderName(provider.name);
@@ -434,143 +355,11 @@ export function Settings() {
 
   return (
     <div className="space-y-6">
-      <PageHeader icon={SettingsIcon} title="Settings" subtitle="Configure your LLM provider and database connection" />
-
-      {/* Systems Management */}
-      <Card title="Systems" icon={Monitor}>
-        <div className="space-y-3">
-          <p className="text-sm text-gray-500">
-            Each system points to a different Opera installation. The active system determines which database and Opera version is used.
-          </p>
-
-          {/* System list */}
-          <div className="divide-y divide-gray-100">
-            {systemsList.map((sys: SystemProfile) => (
-              <div key={sys.id} className="flex items-center justify-between py-2.5">
-                <div className="flex items-center gap-3">
-                  {sys.id === activeSystemId && (
-                    <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" title="Active" />
-                  )}
-                  {sys.id !== activeSystemId && (
-                    <span className="w-2 h-2 rounded-full bg-gray-300 flex-shrink-0" />
-                  )}
-                  {editingSystem?.id === sys.id ? (
-                    <input
-                      type="text"
-                      className="input py-1 px-2 text-sm w-48"
-                      defaultValue={sys.name}
-                      autoFocus
-                      onBlur={(e) => handleRenameSystem(sys, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleRenameSystem(sys, (e.target as HTMLInputElement).value);
-                        if (e.key === 'Escape') setEditingSystem(null);
-                      }}
-                    />
-                  ) : (
-                    <div>
-                      <span className="text-sm font-medium text-gray-900">{sys.name}</span>
-                      {sys.is_default && (
-                        <span className="ml-2 text-xs text-amber-600 font-medium">Default</span>
-                      )}
-                      {sys.opera?.version && (
-                        <span className="ml-2 text-xs text-gray-400">
-                          {sys.opera.version === 'sql_se' ? 'SQL SE' : 'Opera 3'}
-                        </span>
-                      )}
-                      {sys.database?.server && (
-                        <span className="ml-1 text-xs text-gray-400">
-                          — {sys.database.server}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div className="flex items-center gap-1">
-                  {!sys.is_default && (
-                    <button
-                      onClick={() => handleSetDefault(sys)}
-                      title="Set as default"
-                      className="p-1.5 rounded text-gray-400 hover:text-amber-500 hover:bg-amber-50 transition-colors"
-                    >
-                      <Star className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setEditingSystem(sys)}
-                    title="Rename"
-                    className="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                  {sys.id !== activeSystemId && systemsList.length > 1 && (
-                    <button
-                      onClick={() => handleDeleteSystem(sys.id)}
-                      title="Delete"
-                      className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Add new system */}
-          {showAddSystem ? (
-            <div className="flex items-center gap-2 pt-2">
-              <input
-                type="text"
-                className="input py-1.5 px-3 text-sm flex-1"
-                placeholder="System name (e.g. Training Server)"
-                value={newSystemName}
-                onChange={(e) => setNewSystemName(e.target.value)}
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleAddSystem();
-                  if (e.key === 'Escape') { setShowAddSystem(false); setNewSystemName(''); }
-                }}
-              />
-              <button
-                onClick={handleAddSystem}
-                disabled={!newSystemName.trim()}
-                className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-              >
-                Add
-              </button>
-              <button
-                onClick={() => { setShowAddSystem(false); setNewSystemName(''); }}
-                className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setShowAddSystem(true)}
-              className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-medium pt-1"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add System
-            </button>
-          )}
-
-          {/* System message */}
-          {systemMessage && (
-            <div className={`flex items-center gap-2 text-sm ${systemMessage.type === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-              {systemMessage.type === 'success' ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
-              <span>{systemMessage.text}</span>
-              <button onClick={() => setSystemMessage(null)} className="ml-auto text-gray-400 hover:text-gray-600">
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
-
-          <p className="text-xs text-gray-400">
-            Select a system on the login screen. The Database and Opera settings below apply to the currently active system.
-          </p>
-        </div>
-      </Card>
+      <PageHeader
+        icon={SettingsIcon}
+        title={activeSystemName ? `Settings — ${activeSystemName}` : 'Settings'}
+        subtitle="Configure your LLM provider and database connection"
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* LLM Settings */}

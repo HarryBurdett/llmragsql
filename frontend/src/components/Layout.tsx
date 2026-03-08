@@ -106,6 +106,7 @@ const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
     { path: '/admin/company', label: 'Company', icon: Building2 },
     { path: '/admin/projects', label: 'Projects', icon: FolderKanban },
     { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock },
+    { path: '/admin/installations', label: 'Installations', icon: Monitor },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 
