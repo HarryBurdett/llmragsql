@@ -382,10 +382,19 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     errors: string[];
   } | null>(null);
 
-  // Balance mismatch detection - blocks processing if Opera reconciled balance doesn't match statement opening balance
+  // Balance mismatch detection - warns if Opera reconciled balance doesn't match statement opening balance
   const [balanceMismatch, setBalanceMismatch] = useState<{
     operaBalance: number;
     statementBalance: number;
+  } | null>(null);
+  const [balanceMismatchAcknowledged, setBalanceMismatchAcknowledged] = useState(false);
+
+  // Reconciliation completion confirmation state (Task 2: show success before navigating back)
+  const [reconcileCompleteInfo, setReconcileCompleteInfo] = useState<{
+    entriesReconciled: number;
+    closingBalance: number | null;
+    isPartial: boolean;
+    closingBalanceMismatch?: { expected: number; actual: number } | null;
   } | null>(null);
 
   // Statement data passed from Imports page (via sessionStorage) after import
@@ -830,6 +839,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     setClosingBalance('');
     setActiveImportId(null);
     setBalanceMismatch(null);
+    setBalanceMismatchAcknowledged(false);
+    setReconcileCompleteInfo(null);
     setImportedStatementData(null as any);
   };
 
@@ -1381,11 +1392,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     if (operaRecBal != null && stmtOpenBal != null) {
       if (Math.abs(operaRecBal - stmtOpenBal) > 0.01) {
         setBalanceMismatch({ operaBalance: operaRecBal, statementBalance: stmtOpenBal });
-        setMatchingResult(null);
+        // Don't block matching — only set the warning state
         return false;
       }
     }
     setBalanceMismatch(null);
+    setBalanceMismatchAcknowledged(false);
     return true;
   };
 
@@ -1456,9 +1468,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const completeEnhancedReconciliation = async () => {
     if (!matchingResult || isReconciling) return;
 
-    // Guard: re-check balance alignment before committing
-    if (!checkBalanceAlignment()) {
-      alert('Cannot complete reconciliation: Opera reconciled balance has changed and no longer matches the statement opening balance. The Opera data may have been restored.');
+    // Advisory: re-check balance alignment before committing (warn but allow if acknowledged)
+    if (!checkBalanceAlignment() && !balanceMismatchAcknowledged) {
+      // User hasn't acknowledged the mismatch yet — they need to click "Proceed Anyway" first
       return;
     }
 
@@ -1637,36 +1649,21 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         // Validate closing balance against Opera's new reconciled balance
         const newRecBal = data.new_reconciled_balance;
         const expectedClosing = parseFloat(closingBalance);
-        if (isPartial) {
-          showDialog({
-            title: 'Partial Reconciliation Complete',
-            message: `${data.entries_reconciled} entries marked with statement line numbers.\n\nReconciled balance unchanged: £${newRecBal != null ? newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 }) : 'N/A'}\n\nComplete the remaining items in Opera Cashbook > Reconcile.`,
-            type: 'success',
-            onConfirm: () => { closeDialog(); if (onReconcileComplete) onReconcileComplete(); },
-            confirmLabel: 'OK',
-          });
-          // Skip the auto-navigate below — user must dismiss dialog first
-          return;
-        } else if (newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01) {
-          showDialog({
-            title: 'Balance Mismatch',
-            message: `Reconciliation posted ${data.entries_reconciled} entries, but the closing balance does not match.\n\nOpera reconciled balance: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\nStatement closing balance: £${expectedClosing.toLocaleString('en-GB', { minimumFractionDigits: 2 })}\nDifference: £${Math.abs(newRecBal - expectedClosing).toLocaleString('en-GB', { minimumFractionDigits: 2 })}\n\nThis may indicate unmatched items. Review in Opera Cashbook > Reconcile.`,
-            type: 'warning',
-          });
-        } else {
-          showDialog({
-            title: 'Reconciliation Complete',
-            message: `Successfully reconciled ${data.entries_reconciled} entries!${newRecBal != null ? `\nClosing balance verified: £${newRecBal.toLocaleString('en-GB', { minimumFractionDigits: 2 })}` : ''}`,
-            type: 'success',
-          });
-        }
-        // Reset state - clear all statement preview data
+        // Detect closing balance mismatch (was previously a separate dialog)
+        const hasClosingMismatch = newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01;
+
+        // Show completion confirmation with stats instead of auto-redirecting
+        setReconcileCompleteInfo({
+          entriesReconciled: data.entries_reconciled || 0,
+          closingBalance: newRecBal,
+          isPartial: isPartial,
+          closingBalanceMismatch: hasClosingMismatch ? { expected: expectedClosing, actual: newRecBal! } : null,
+        });
+        // Reset matching state but keep completion info visible
         setMatchingResult(null);
         setValidationResult(null);
         setSelectedAutoMatches(new Set());
         setSelectedSuggestedMatches(new Set());
-        setOpeningBalance('');
-        setClosingBalance('');
         // Clear statement preview data
         setStatementResult(null);
         setStatementPath('');
@@ -1675,10 +1672,6 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
         queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
         queryClient.invalidateQueries({ queryKey: ['statementFiles'] });
-        // Notify hub parent if in hub mode
-        if (onReconcileComplete) {
-          onReconcileComplete();
-        }
       } else {
         showDialog({ title: 'Reconciliation Failed', message: data.error || data.messages?.join(', ') || 'Unknown error', type: 'error' });
       }
@@ -2474,6 +2467,132 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         </div>
       )}
 
+      {/* Reconciliation Complete Confirmation (Task 2) */}
+      {reconcileCompleteInfo && (
+        <div className={`mb-4 p-4 border-2 rounded-lg ${
+          reconcileCompleteInfo.closingBalanceMismatch
+            ? 'bg-amber-50 border-amber-400'
+            : 'bg-green-50 border-green-400'
+        }`}>
+          <div className="flex items-start gap-3">
+            {reconcileCompleteInfo.closingBalanceMismatch ? (
+              <AlertCircle className="w-6 h-6 text-amber-600 flex-shrink-0 mt-0.5" />
+            ) : (
+              <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0 mt-0.5" />
+            )}
+            <div className="flex-1">
+              <h3 className={`font-semibold ${reconcileCompleteInfo.closingBalanceMismatch ? 'text-amber-800' : 'text-green-800'}`}>
+                {reconcileCompleteInfo.isPartial
+                  ? 'Partial Reconciliation Complete'
+                  : reconcileCompleteInfo.closingBalanceMismatch
+                    ? 'Reconciliation Complete — Closing Balance Mismatch'
+                    : 'Statement Fully Reconciled'}
+              </h3>
+              <div className="mt-2 grid grid-cols-2 gap-4 text-sm">
+                <div className={`bg-white rounded p-2 border ${reconcileCompleteInfo.closingBalanceMismatch ? 'border-amber-200' : 'border-green-200'}`}>
+                  <span className="text-gray-600">Entries reconciled:</span>
+                  <span className={`ml-2 font-bold ${reconcileCompleteInfo.closingBalanceMismatch ? 'text-amber-800' : 'text-green-800'}`}>
+                    {reconcileCompleteInfo.entriesReconciled}
+                  </span>
+                </div>
+                {reconcileCompleteInfo.closingBalance != null && (
+                  <div className={`bg-white rounded p-2 border ${reconcileCompleteInfo.closingBalanceMismatch ? 'border-amber-200' : 'border-green-200'}`}>
+                    <span className="text-gray-600">{reconcileCompleteInfo.isPartial ? 'Reconciled balance:' : 'Closing balance:'}</span>
+                    <span className={`ml-2 font-bold ${reconcileCompleteInfo.closingBalanceMismatch ? 'text-amber-800' : 'text-green-800'}`}>
+                      {'\u00A3'}{reconcileCompleteInfo.closingBalance.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                )}
+              </div>
+              {reconcileCompleteInfo.closingBalanceMismatch && (
+                <p className="text-sm text-amber-700 mt-2">
+                  Opera reconciled balance ({'\u00A3'}{reconcileCompleteInfo.closingBalanceMismatch.actual.toLocaleString('en-GB', { minimumFractionDigits: 2 })})
+                  differs from statement closing balance ({'\u00A3'}{reconcileCompleteInfo.closingBalanceMismatch.expected.toLocaleString('en-GB', { minimumFractionDigits: 2 })})
+                  by {'\u00A3'}{Math.abs(reconcileCompleteInfo.closingBalanceMismatch.actual - reconcileCompleteInfo.closingBalanceMismatch.expected).toLocaleString('en-GB', { minimumFractionDigits: 2 })}.
+                  This may indicate unmatched items. Review in Opera Cashbook &gt; Reconcile.
+                </p>
+              )}
+              {reconcileCompleteInfo.isPartial && !reconcileCompleteInfo.closingBalanceMismatch && (
+                <p className="text-sm text-green-700 mt-2">
+                  Complete the remaining items in Opera Cashbook &gt; Reconcile.
+                </p>
+              )}
+              <div className="mt-3">
+                <button
+                  onClick={() => {
+                    setReconcileCompleteInfo(null);
+                    setOpeningBalance('');
+                    setClosingBalance('');
+                    setImportedStatementData(null as any);
+                    setActiveImportId(null);
+                    if (onReconcileComplete) {
+                      onReconcileComplete();
+                    }
+                  }}
+                  className={`px-4 py-2 text-sm text-white rounded ${
+                    reconcileCompleteInfo.closingBalanceMismatch ? 'bg-amber-600 hover:bg-amber-700' : 'bg-green-600 hover:bg-green-700'
+                  }`}
+                >
+                  Back to Statements
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Balance Mismatch Warning Banner (Task 1) */}
+      {balanceMismatch && !balanceMismatchAcknowledged && !reconcileCompleteInfo && (
+        <div className="mb-4 p-4 bg-red-50 border-2 border-red-400 rounded-lg">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-red-800">
+                Balance Mismatch Detected
+              </h3>
+              <p className="text-sm text-red-700 mt-1">
+                The Opera reconciled balance does not match the opening balance of this statement.
+                This can happen if the Opera data has been restored to an earlier or later point.
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
+                <div className="bg-white rounded p-2 border border-red-200">
+                  <span className="text-gray-600">Opera reconciled balance:</span>
+                  <span className="ml-2 font-bold text-red-800">{'\u00A3'}{formatCurrency(balanceMismatch.operaBalance)}</span>
+                </div>
+                <div className="bg-white rounded p-2 border border-red-200">
+                  <span className="text-gray-600">Statement opening balance:</span>
+                  <span className="ml-2 font-bold text-red-800">{'\u00A3'}{formatCurrency(balanceMismatch.statementBalance)}</span>
+                </div>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => setBalanceMismatchAcknowledged(true)}
+                  className="px-4 py-2 text-sm text-white bg-amber-600 rounded hover:bg-amber-700"
+                >
+                  Proceed Anyway
+                </button>
+                <p className="text-xs text-red-600 self-center">
+                  You may also clear this statement and re-import once the Opera data aligns.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Persistent amber warning when balance mismatch has been acknowledged */}
+      {balanceMismatch && balanceMismatchAcknowledged && !reconcileCompleteInfo && (
+        <div className="mb-4 p-3 bg-amber-50 border border-amber-300 rounded-lg flex items-center gap-2">
+          <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0" />
+          <p className="text-sm text-amber-800">
+            <span className="font-medium">Balance mismatch acknowledged.</span>{' '}
+            Opera reconciled balance ({'\u00A3'}{formatCurrency(balanceMismatch.operaBalance)}) differs from
+            statement opening balance ({'\u00A3'}{formatCurrency(balanceMismatch.statementBalance)}).
+            Reconciliation results may not balance correctly.
+          </p>
+        </div>
+      )}
+
       {/* Bank Selector Row */}
       <div className="bg-gray-100 border border-gray-300 rounded p-3 mb-4">
         <div className="flex items-center gap-6 flex-wrap">
@@ -2667,6 +2786,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                               setClosingBalance('');
                               setActiveImportId(null);
                               setBalanceMismatch(null);
+                              setBalanceMismatchAcknowledged(false);
+                              setReconcileCompleteInfo(null);
                               setImportedStatementData(null as any);
                             }
                           } catch (err) {

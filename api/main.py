@@ -20104,35 +20104,36 @@ async def scan_all_banks_for_statements(
         from_date = datetime.utcnow() - timedelta(days=days_back)
         emails_with_atts = email_storage.get_emails_with_attachments(from_date=from_date, page_size=500)
 
-        # Get reconciled keys (fully done — skip from scan unless include_processed)
-        # Get imported-not-reconciled keys (show with 'imported' status so user can resume)
+        # --- Load all statement tracking data in a single consolidated SQLite query ---
         try:
-            reconciled_keys = email_storage.get_reconciled_statement_keys()
-            reconciled_filenames = email_storage.get_reconciled_filenames()
+            _tracking = email_storage.get_all_statement_tracking_data()
+            reconciled_keys = _tracking['reconciled_keys']
+            reconciled_filenames = _tracking['reconciled_filenames']
+            imported_nr_keys = _tracking['imported_nr_keys']
+            imported_nr_filenames = _tracking['imported_nr_filenames']
+            reconciled_closing_balances = _tracking['reconciled_closing_balances']
+            reconciled_opening_balances = _tracking['reconciled_opening_balances']
+            managed_keys = _tracking['managed_keys']
+            managed_filenames = _tracking['managed_filenames']
+            cached_stmt_info = _tracking['cached_stmt_info']
+            imported_hashes = _tracking['imported_hashes']
+            imported_identities = _tracking['imported_identities']
+            logger.info(f"Loaded all statement tracking data in single query: "
+                        f"{len(reconciled_keys)} reconciled, {len(imported_nr_keys)} imported-nr, "
+                        f"{len(managed_keys)} managed, {len(cached_stmt_info)} cached info, "
+                        f"{len(imported_hashes)} hashes, {len(imported_identities)} identities")
         except Exception:
             reconciled_keys = set()
             reconciled_filenames = set()
-
-        try:
-            imported_nr_keys = email_storage.get_imported_not_reconciled_keys()
-            imported_nr_filenames = email_storage.get_imported_not_reconciled_filenames()
-        except Exception:
             imported_nr_keys = set()
             imported_nr_filenames = set()
-
-        # Load reconciled statement balances for chain-based completion detection.
-        # - closing balances: "watermark" per bank (max reconciled closing)
-        # - opening balances: if a statement's closing matches a reconciled opening,
-        #   the chain continued past it → statement is complete (works even when
-        #   balances decrease between statements)
-        try:
-            reconciled_closing_balances = email_storage.get_reconciled_closing_balances()
-        except Exception:
             reconciled_closing_balances = {}
-        try:
-            reconciled_opening_balances = email_storage.get_reconciled_opening_balances()
-        except Exception:
             reconciled_opening_balances = {}
+            managed_keys = set()
+            managed_filenames = set()
+            cached_stmt_info = {}
+            imported_hashes = {}
+            imported_identities = set()
 
         unidentified = []
         non_current = {
@@ -20144,23 +20145,8 @@ async def scan_all_banks_for_statements(
         total_emails_scanned = 0
         total_pdfs_found = 0
 
-        # Load managed statement keys (archived/deleted/retained) to skip
-        try:
-            managed_keys = email_storage.get_managed_statement_keys()
-            managed_filenames = email_storage.get_managed_filenames()
-        except Exception:
-            managed_keys = set()
-            managed_filenames = set()
-
         from sql_rag.pdf_extraction_cache import get_extraction_cache
         scan_cache = get_extraction_cache()
-
-        # Pre-load cached statement info to skip IMAP downloads for known PDFs
-        try:
-            cached_stmt_info = email_storage.get_cached_statement_info()  # {filename: {bank_code, sort_code, ...}}
-            logger.info(f"Loaded {len(cached_stmt_info)} cached statement info records for fast scan")
-        except Exception:
-            cached_stmt_info = {}
 
         # Build detected_bank_name → bank_code lookup from previous imports
         # This allows Tide/fintech matching even with generic filenames like "attachment.pdf"
@@ -20175,15 +20161,6 @@ async def scan_all_banks_for_statements(
         if detected_name_to_bank:
             logger.info(f"Scan-all-banks: built detected name→bank mapping: {detected_name_to_bank}")
 
-        # Load duplicate detection data
-        try:
-            imported_hashes = email_storage.get_imported_pdf_hashes()  # {hash: import_id}
-        except Exception:
-            imported_hashes = {}
-        try:
-            imported_identities = email_storage.get_imported_statement_identities()  # set of tuples
-        except Exception:
-            imported_identities = set()
         seen_hashes = {}  # Track hashes within this scan: {hash: first_filename}
         seen_identities = {}  # Track statement identities: {(sort,acct,opening,closing): first_filename}
         duplicates_archived = 0
@@ -25046,6 +25023,28 @@ async def get_vat_codes(
     except Exception as e:
         logger.error(f"Error fetching VAT codes: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/import-config")
+async def get_gocardless_import_config(
+    as_of_date: str = Query(None, description="Date to determine applicable VAT rate (YYYY-MM-DD). Defaults to today.")
+):
+    """
+    Consolidated endpoint returning batch_types, nominal_accounts, and vat_codes
+    in a single response to reduce frontend round-trips.
+    """
+    batch_result = await get_gocardless_batch_types()
+    nominal_result = await get_nominal_accounts()
+    vat_result = await get_vat_codes(as_of_date=as_of_date)
+
+    return {
+        "success": True,
+        "batch_types": batch_result.get("batch_types", []),
+        "batch_types_recommended": batch_result.get("recommended"),
+        "nominal_accounts": nominal_result.get("accounts", []),
+        "vat_codes": vat_result.get("codes", []),
+        "vat_as_of_date": vat_result.get("as_of_date"),
+    }
 
 
 @app.get("/api/gocardless/payment-types")
@@ -29986,6 +29985,29 @@ async def opera3_get_vat_codes(
     except Exception as e:
         logger.error(f"Error fetching Opera 3 VAT codes: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/import-config")
+async def opera3_get_gocardless_import_config(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    as_of_date: str = Query(None, description="Date to determine applicable VAT rate (YYYY-MM-DD). Defaults to today.")
+):
+    """
+    Consolidated Opera 3 endpoint returning batch_types, nominal_accounts, and vat_codes
+    in a single response to reduce frontend round-trips.
+    """
+    batch_result = await opera3_get_gocardless_batch_types(data_path=data_path)
+    nominal_result = await opera3_get_nominal_accounts(data_path=data_path)
+    vat_result = await opera3_get_vat_codes(data_path=data_path, as_of_date=as_of_date)
+
+    return {
+        "success": True,
+        "batch_types": batch_result.get("batch_types", []),
+        "batch_types_recommended": batch_result.get("recommended"),
+        "nominal_accounts": nominal_result.get("accounts", []),
+        "vat_codes": vat_result.get("codes", []),
+        "vat_as_of_date": vat_result.get("as_of_date"),
+    }
 
 
 @app.get("/api/opera3/gocardless/payment-types")

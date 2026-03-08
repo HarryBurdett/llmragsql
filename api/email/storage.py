@@ -1440,6 +1440,147 @@ class EmailStorage:
                 cursor.execute("SELECT DISTINCT email_id, attachment_id FROM bank_statement_imports")
             return [{'email_id': row['email_id'], 'attachment_id': row['attachment_id']} for row in cursor.fetchall()]
 
+    def get_all_statement_tracking_data(self) -> dict:
+        """Consolidated query that returns all statement tracking data in a single
+        database round-trip.  Used by the scan-all-banks endpoint to replace 11
+        individual SQLite queries against bank_statement_imports.
+
+        Returns a dict with the following keys:
+            reconciled_keys:           set of (email_id, attachment_id)
+            reconciled_filenames:      set of filename strings
+            imported_nr_keys:          set of (email_id, attachment_id)
+            imported_nr_filenames:     set of filename strings
+            reconciled_closing_balances: dict  bank_code -> max closing balance
+            reconciled_opening_balances: dict  bank_code -> set of opening balances
+            managed_keys:              set of (email_id, attachment_id)
+            managed_filenames:         set of filename strings
+            cached_stmt_info:          dict  filename -> row dict (latest per filename)
+            imported_hashes:           dict  pdf_hash -> import_id (earliest per hash)
+            imported_identities:       set of (sort_code, account_number, opening_bal_str, closing_bal_str)
+        """
+        reconciled_keys: set = set()
+        reconciled_filenames: set = set()
+        imported_nr_keys: set = set()
+        imported_nr_filenames: set = set()
+        reconciled_closing: dict = {}   # bank_code -> max closing
+        reconciled_opening: dict = {}   # bank_code -> set of opening balances
+        managed_keys: set = set()
+        managed_filenames: set = set()
+        cached_stmt_info: dict = {}     # filename -> row dict (latest first)
+        imported_hashes: dict = {}      # pdf_hash -> min id
+        imported_identities: set = set()
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # Single query: fetch every row we might need.  The table is
+            # small (hundreds of rows at most) so a full scan is fine.
+            cursor.execute("""
+                SELECT id, email_id, attachment_id, filename, bank_code,
+                       sort_code, account_number, opening_balance,
+                       closing_balance, statement_date, period_start,
+                       period_end, target_system, pdf_hash,
+                       COALESCE(is_reconciled, 0) as is_reconciled
+                FROM bank_statement_imports
+                ORDER BY id DESC
+            """)
+            rows = cursor.fetchall()
+
+        for row in rows:
+            email_id = row['email_id']
+            attachment_id = row['attachment_id']
+            filename = row['filename']
+            bank_code = row['bank_code']
+            sort_code = row['sort_code']
+            account_number = row['account_number']
+            opening_balance = row['opening_balance']
+            closing_balance = row['closing_balance']
+            target_system = row['target_system'] or ''
+            pdf_hash = row['pdf_hash']
+            is_reconciled = row['is_reconciled']
+            row_id = row['id']
+            is_managed = target_system in ('archived', 'deleted', 'retained')
+
+            # --- reconciled keys / filenames ---
+            if is_reconciled == 1:
+                if email_id is not None:
+                    reconciled_keys.add((email_id, attachment_id))
+                if filename is not None:
+                    reconciled_filenames.add(filename)
+
+                # --- reconciled closing balances (max per bank) ---
+                if bank_code and bank_code != 'DEDUP' and closing_balance is not None:
+                    cur = reconciled_closing.get(bank_code)
+                    if cur is None or closing_balance > cur:
+                        reconciled_closing[bank_code] = float(closing_balance)
+
+                # --- reconciled opening balances (set per bank) ---
+                if bank_code and bank_code != 'DEDUP' and opening_balance is not None:
+                    reconciled_opening.setdefault(bank_code, set()).add(
+                        round(float(opening_balance), 2)
+                    )
+
+            # --- imported-not-reconciled keys / filenames ---
+            if is_reconciled == 0 and not is_managed:
+                if email_id is not None:
+                    imported_nr_keys.add((email_id, attachment_id))
+                if filename is not None:
+                    imported_nr_filenames.add(filename)
+
+            # --- managed keys / filenames ---
+            if is_managed:
+                if email_id is not None:
+                    managed_keys.add((email_id, attachment_id))
+                if filename is not None:
+                    managed_filenames.add(filename)
+
+            # --- cached statement info (latest per filename, skip archived/deleted) ---
+            if (filename is not None
+                    and sort_code is not None and account_number is not None
+                    and opening_balance is not None and closing_balance is not None
+                    and target_system not in ('archived', 'deleted')
+                    and bank_code != 'DEDUP'):
+                if filename not in cached_stmt_info:  # ORDER BY id DESC → first seen = latest
+                    cached_stmt_info[filename] = {
+                        'filename': filename,
+                        'bank_code': bank_code,
+                        'sort_code': sort_code,
+                        'account_number': account_number,
+                        'opening_balance': opening_balance,
+                        'closing_balance': closing_balance,
+                        'statement_date': row['statement_date'],
+                        'period_start': row['period_start'],
+                        'period_end': row['period_end'],
+                    }
+
+            # --- imported pdf hashes (earliest/min id per hash) ---
+            if pdf_hash and pdf_hash != '':
+                if pdf_hash not in imported_hashes or row_id < imported_hashes[pdf_hash]:
+                    imported_hashes[pdf_hash] = row_id
+
+            # --- imported statement identities ---
+            if (sort_code is not None and account_number is not None
+                    and opening_balance is not None and closing_balance is not None
+                    and not is_managed):
+                imported_identities.add((
+                    sort_code, account_number,
+                    str(round(opening_balance, 2)),
+                    str(round(closing_balance, 2)),
+                ))
+
+        return {
+            'reconciled_keys': reconciled_keys,
+            'reconciled_filenames': reconciled_filenames,
+            'imported_nr_keys': imported_nr_keys,
+            'imported_nr_filenames': imported_nr_filenames,
+            'reconciled_closing_balances': reconciled_closing,
+            'reconciled_opening_balances': reconciled_opening,
+            'managed_keys': managed_keys,
+            'managed_filenames': managed_filenames,
+            'cached_stmt_info': cached_stmt_info,
+            'imported_hashes': imported_hashes,
+            'imported_identities': imported_identities,
+        }
+
     def get_reconciled_statement_keys(self) -> set:
         """Get (email_id, attachment_id) pairs for fully reconciled statements."""
         with self._get_connection() as conn:

@@ -207,18 +207,22 @@ export function GoCardlessSettings() {
   useEffect(() => {
     if (!operaConfigData) return;
 
-    // Fetch batch types
-    authFetch(gcImportUrl('/batch-types'))
+    // Fetch batch types, nominal accounts, and VAT codes in a single request
+    authFetch(gcImportUrl('/import-config'))
       .then(res => res.json())
       .then(data => {
-        if (data.success && data.batch_types) {
-          setBatchTypes(data.batch_types.map((t: { code: string; description: string }) => ({
-            code: t.code,
-            description: t.description
-          })));
+        if (data.success) {
+          if (data.batch_types) {
+            setBatchTypes(data.batch_types.map((t: { code: string; description: string }) => ({
+              code: t.code,
+              description: t.description
+            })));
+          }
+          if (data.nominal_accounts) setNominalAccounts(data.nominal_accounts);
+          if (data.vat_codes) setVatCodes(data.vat_codes);
         }
       })
-      .catch(err => console.error('Failed to load batch types:', err));
+      .catch(err => console.error('Failed to load GoCardless import config:', err));
 
     // Fetch transfer types (ay_type='T') for GC→bank transfer
     authFetch('/api/bank-import/cashbook-types?category=T')
@@ -269,22 +273,6 @@ export function GoCardlessSettings() {
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
-
-    // Fetch nominal accounts
-    authFetch(gcImportUrl('/nominal-accounts'))
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.accounts) setNominalAccounts(data.accounts);
-      })
-      .catch(err => console.error('Failed to load nominal accounts:', err));
-
-    // Fetch VAT codes
-    authFetch(gcImportUrl('/vat-codes'))
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.codes) setVatCodes(data.codes);
-      })
-      .catch(err => console.error('Failed to load VAT codes:', err));
 
     // Fetch payment types
     authFetch(gcImportUrl('/payment-types'))

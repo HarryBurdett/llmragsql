@@ -662,6 +662,25 @@ export function BankStatementHub() {
                     {recurringCheck.totalDue} recurring {recurringCheck.totalDue === 1 ? 'entry is' : 'entries are'} due for bank {recurringCheck.bankCode}.
                     These must be posted before importing this statement to avoid duplicate entries.
                   </p>
+                  {(() => {
+                    const postableCount = recurringCheck.entries.filter((e: any) => e.can_post).length;
+                    const blockedCount = recurringCheck.entries.filter((e: any) => !e.can_post).length;
+                    if (postableCount > 0 && blockedCount > 0) {
+                      return (
+                        <p className="text-xs text-red-600 mt-1.5 bg-red-100/70 rounded px-2 py-1.5">
+                          <strong>{postableCount}</strong> {postableCount === 1 ? 'entry can' : 'entries can'} be posted now (select and post below).{' '}
+                          <strong>{blockedCount}</strong> {blockedCount === 1 ? 'entry is' : 'entries are'} period-blocked and greyed out — {blockedCount === 1 ? 'it' : 'they'} cannot be posted until the posting period is opened in Opera.
+                        </p>
+                      );
+                    } else if (postableCount > 0) {
+                      return (
+                        <p className="text-xs text-red-600 mt-1.5 bg-red-100/70 rounded px-2 py-1.5">
+                          Select the entries below and click &quot;Post Selected&quot; to post them, or if you have already run these in Opera, click &quot;Check Again&quot; to refresh.
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()}
                   {recurringCheck.entries.length > 0 && (
                     <div className="mt-3 bg-white/60 border border-red-200 rounded-lg overflow-hidden">
                       <table className="w-full text-xs">
@@ -771,12 +790,23 @@ export function BankStatementHub() {
               <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
               <div className="flex-1">
                 <p className="text-sm font-semibold text-amber-800">Recurring Entries Due</p>
-                <p className="text-sm text-amber-700 mt-0.5">
-                  {recurringCheck.totalDue} recurring {recurringCheck.totalDue === 1 ? 'entry is' : 'entries are'} due for this bank.
-                  {recurringCheck.entries.every((e: any) => !e.can_post)
-                    ? ' All entries are period-blocked and cannot be posted until their periods are opened.'
-                    : ' Consider running recurring entries in Opera first to avoid duplicate postings.'}
-                </p>
+                {recurringCheck.entries.every((e: any) => !e.can_post) ? (
+                  <>
+                    <p className="text-sm text-amber-700 mt-0.5">
+                      {recurringCheck.totalDue} recurring {recurringCheck.totalDue === 1 ? 'entry is' : 'entries are'} due for this bank, but {recurringCheck.totalDue === 1 ? 'it is' : 'all are'} period-blocked.
+                    </p>
+                    <p className="text-xs text-amber-600 mt-1 bg-amber-100/60 rounded px-2 py-1.5">
+                      The posting period for {recurringCheck.totalDue === 1 ? 'this entry' : 'these entries'} is not currently open in Opera.
+                      You can safely continue with the bank statement import — these recurring entries will not cause duplicates because they cannot be posted until the period is opened.
+                      If the period has since been opened, click &quot;Check Again&quot; to refresh.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm text-amber-700 mt-0.5">
+                    {recurringCheck.totalDue} recurring {recurringCheck.totalDue === 1 ? 'entry is' : 'entries are'} due for this bank.
+                    Consider running recurring entries in Opera first to avoid duplicate postings.
+                  </p>
+                )}
                 <div className="mt-2 flex items-center gap-2">
                   <button
                     onClick={handleRecurringRecheck}
@@ -786,9 +816,9 @@ export function BankStatementHub() {
                   </button>
                   <button
                     onClick={handleDismissRecurringWarning}
-                    className="px-3 py-1.5 text-xs font-medium text-amber-600 hover:text-amber-800"
+                    className="px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded hover:bg-amber-700 flex items-center gap-1"
                   >
-                    Dismiss & Continue
+                    Continue with Import
                   </button>
                 </div>
               </div>
