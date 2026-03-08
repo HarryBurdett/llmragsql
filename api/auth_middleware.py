@@ -36,6 +36,7 @@ PUBLIC_PREFIXES: tuple = (
     '/openapi',
     '/redoc',
     '/api/email/',  # Allow email operations without auth
+    '/api/systems/',  # Allow system switching from login page (pre-auth)
 )
 
 
