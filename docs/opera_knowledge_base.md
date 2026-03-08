@@ -559,6 +559,9 @@ The following patterns were verified by before/after snapshot testing in a live 
 | `ptran` | 1 | pt_trtype = 'P', pt_trvalue = -amount_pounds, pt_paid=' ', pt_trbal=-amount, pt_payflag=0 |
 | `anoml` | 2 | Bank + Creditors control (ax_source = 'P') |
 | `pname` | Modified | pn_currbal reduced |
+| `nbank` | Modified | nk_curbal -= amount_pence (ALWAYS, regardless of post_to_nominal) |
+| `nacnt` | 2 Modified | Period/YTD balances updated (conditional on post_to_nominal) |
+| `nhist` | 2 Modified | Nominal history updated (conditional on post_to_nominal) |
 | `atype` | Modified | ay_entry incremented |
 
 **No palloc at posting time.** Allocation happens separately — see "Allocation Pattern" below.
@@ -575,6 +578,9 @@ The following patterns were verified by before/after snapshot testing in a live 
 | `stran` | 1 | st_trtype = 'R', st_trvalue = -amount_pounds, st_paid=' ', st_trbal=-amount, st_payflag=0 |
 | `anoml` | 2 | Bank + Debtors control (ax_source = 'S') |
 | `sname` | Modified | sn_currbal reduced |
+| `nbank` | Modified | nk_curbal += amount_pence (ALWAYS, regardless of post_to_nominal) |
+| `nacnt` | 2 Modified | Period/YTD balances updated (conditional on post_to_nominal) |
+| `nhist` | 2 Modified | Nominal history updated (conditional on post_to_nominal) |
 | `atype` | Modified | ay_entry incremented |
 
 **No salloc at posting time.** Allocation happens separately — see "Allocation Pattern" below.
@@ -591,6 +597,9 @@ The following patterns were verified by before/after snapshot testing in a live 
 | `ptran` | 1 | pt_trtype = 'F', pt_trvalue = +amount_pounds, pt_paid=' ', pt_trbal=+amount, pt_payflag=0 |
 | `anoml` | 2 | Bank + Creditors control (ax_source = 'P') |
 | `pname` | Modified | pn_currbal increased (refund reduces what we owe) |
+| `nbank` | Modified | nk_curbal += amount_pence (ALWAYS, regardless of post_to_nominal) |
+| `nacnt` | 2 Modified | Period/YTD balances updated (conditional on post_to_nominal) |
+| `nhist` | 2 Modified | Nominal history updated (conditional on post_to_nominal) |
 | `atype` | Modified | ay_entry incremented |
 
 **No palloc at posting time.** Allocation happens separately — see "Allocation Pattern" below.
@@ -607,6 +616,9 @@ The following patterns were verified by before/after snapshot testing in a live 
 | `stran` | 1 | st_trtype = 'F', st_trvalue = +amount_pounds, st_paid=' ', st_trbal=+amount, st_payflag=0 |
 | `anoml` | 2 | Bank + Debtors control (ax_source = 'S') |
 | `sname` | Modified | sn_currbal increased (refund increases what they owe) |
+| `nbank` | Modified | nk_curbal -= amount_pence (ALWAYS, regardless of post_to_nominal) |
+| `nacnt` | 2 Modified | Period/YTD balances updated (conditional on post_to_nominal) |
+| `nhist` | 2 Modified | Nominal history updated (conditional on post_to_nominal) |
 | `atype` | Modified | ay_entry incremented |
 
 **No salloc at posting time.** Allocation happens separately — see "Allocation Pattern" below.
@@ -621,6 +633,9 @@ The following patterns were verified by before/after snapshot testing in a live 
 | `atran` | 1 | at_type = 1, at_value = -amount_pence |
 | `ntran` | 2 | Bank (CR, -amount_pounds), Nominal account (DR, +amount_pounds) |
 | `anoml` | 2 | Bank + Nominal account (ax_source = 'A') |
+| `nbank` | Modified | nk_curbal -= amount_pence (ALWAYS) |
+| `nacnt` | 2 Modified | Period/YTD balances updated (conditional on post_to_nominal) |
+| `nhist` | 2 Modified | Nominal history updated (conditional on post_to_nominal) |
 | `atype` | Modified | ay_entry incremented |
 
 Note: No ptran/stran records - payment is directly to nominal account.
@@ -635,8 +650,14 @@ Note: No ptran/stran records - payment is directly to nominal account.
 | `atran` | 1 | at_type = 2, at_value = +amount_pence |
 | `ntran` | 2 | Bank (DR, +amount_pounds), Nominal account (CR, -amount_pounds) |
 | `anoml` | 2 | Bank + Nominal account (ax_source = 'A') |
+| `zvtran` | 1 | If VAT applicable — VAT analysis record |
 | `nvat` | 1 | If VAT applicable (nv_vattype = 'S' for sales, 'P' for purchase) |
+| `nbank` | Modified | nk_curbal += amount_pence (ALWAYS) |
+| `nacnt` | 2-3 Modified | Period/YTD balances updated (conditional on post_to_nominal; 3 if VAT) |
+| `nhist` | 2-3 Modified | Nominal history updated (conditional on post_to_nominal; 3 if VAT) |
 | `atype` | Modified | ay_entry incremented |
+
+Note: If VAT is present, atran gets 2 records (net + VAT), ntran gets 3 (bank + nominal + VAT account), and zvtran/nvat are created.
 
 ---
 
@@ -1082,8 +1103,7 @@ Updated via `update_nbank_balance()` for every cashbook transaction.
 - Receipts (sales receipt, purchase refund): `nk_curbal += amount_pence` (increases)
 - Payments (purchase payment, sales refund): `nk_curbal -= amount_pence` (decreases)
 
-**IMPORTANT: nbank is ONLY updated when `post_to_nominal = True`.**
-In transfer-file-only mode (future period), the nbank update is deferred to Opera's period-end processing. This matches how nacnt/ntran are handled — all nominal-side updates happen together.
+**IMPORTANT: nbank is ALWAYS updated when a cashbook transaction (atran) is created**, regardless of whether `post_to_nominal` is True or False. The bank balance must always reflect actual transactions. Only nacnt/ntran/nhist are conditional on the posting decision.
 
 ---
 

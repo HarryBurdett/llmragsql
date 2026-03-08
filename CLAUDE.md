@@ -113,10 +113,13 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 **Cashbook Transaction Types (at_type)**:
 | at_type | Description | atran.at_value | Bank Effect |
 |---------|-------------|----------------|-------------|
-| 1 | Sales Receipt | +amount (pence) | Increases |
-| 2 | Purchase Payment | -amount (pence) | Decreases |
+| 1 | Nominal Payment | -amount (pence) | Decreases |
+| 2 | Nominal Receipt | +amount (pence) | Increases |
 | 3 | Sales Refund | -amount (pence) | Decreases |
+| 4 | Sales Receipt | +amount (pence) | Increases |
+| 5 | Purchase Payment | -amount (pence) | Decreases |
 | 6 | Purchase Refund | +amount (pence) | Increases |
+| 8 | Bank Transfer | ±amount (pence) | Source decreases, Dest increases |
 
 **Refund Detection** (auto-detects refunds during bank import via credit note lookup — NOT keywords):
 - `_check_customer_refund()` in `bank_import.py` - queries stran for unallocated credit notes (`st_trtype IN ('C', 'R'), st_trbal < 0`)
@@ -205,7 +208,7 @@ When posting to **Nominal Ledger (ntran)**, you MUST also update:
    - DEBIT (positive nt_value): `na_ptddr += value`, `na_ytddr += value`, `na_balc{period} += value`
    - CREDIT (negative nt_value): `na_ptdcr += ABS(value)`, `na_ytdcr += ABS(value)`, `na_balc{period} += value`
 
-2. **ae_complet flag**: Only set to 1 if ntran entries are created (post_to_nominal=True)
+2. **ae_complet flag**: Always set to 1 — NL transfer is handled via anoml when real-time NL update is off
 
 When posting **Sales Ledger transactions**:
 - `stran` - Transaction record
@@ -279,7 +282,7 @@ When posting transactions **with VAT**, you MUST also create:
 □ nbank balances updated via update_nbank_balance() (if cashbook)
 □ Customer/supplier balances updated (sname.sn_currbal / pname.pn_currbal)
 □ Transfer files created (anoml/snoml/pnoml) with correct ax_done flag
-□ ae_complet flag set correctly (1 only if posted to nominal)
+□ ae_complet flag always set to 1 (NL transfer via anoml when real-time off)
 □ VAT tracking: zvtran AND nvat created (if transaction has VAT)
 □ Unique IDs generated correctly (shared where Opera shares them)
 □ Period/year from nominal calendar via get_period_for_date() — NEVER use post_date.month
