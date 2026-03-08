@@ -29,16 +29,18 @@ export function Installations() {
   const handleAdd = async () => {
     if (!newSystemName.trim()) return;
     try {
+      // Clone settings from the active installation so the new one has working defaults
+      const activeSystem = systems.find(s => s.id === activeSystemId);
       const response = await apiClient.createSystem({
         name: newSystemName.trim(),
-        database: {},
-        opera: {},
+        database: activeSystem?.database || {},
+        opera: activeSystem?.opera || {},
         is_default: systems.length === 0,
       });
       if (response.data.success) {
         setNewSystemName('');
         setShowAddSystem(false);
-        setMessage({ type: 'success', text: `"${newSystemName.trim()}" created. Configure it via Settings once activated.` });
+        setMessage({ type: 'success', text: `"${newSystemName.trim()}" created with current settings. Connect to it, then update via Settings.` });
         invalidate();
       } else {
         setMessage({ type: 'error', text: response.data.error || 'Failed to create' });

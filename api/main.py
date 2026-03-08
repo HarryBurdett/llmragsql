@@ -300,6 +300,11 @@ def apply_system_to_config(system: Dict[str, Any]):
     save_config(config)
     active_system_id = system["id"]
 
+    # If the system had empty settings, backfill from what's now in config.ini
+    # so future activations restore the correct values
+    if not system.get("database") or not system.get("opera"):
+        _sync_active_system_config()
+
     # Reinitialize SQL connector
     try:
         sql_connector = SQLConnector(CONFIG_PATH)
