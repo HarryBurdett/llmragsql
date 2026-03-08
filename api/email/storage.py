@@ -160,7 +160,7 @@ class EmailStorage:
                     vat_on_fees REAL,
                     payment_count INTEGER,
                     payments_json TEXT,
-                    target_system TEXT NOT NULL CHECK (target_system IN ('opera_se', 'opera3')),
+                    target_system TEXT NOT NULL CHECK (target_system IN ('opera_se', 'opera3', 'archived', 'deleted', 'retained')),
                     batch_ref TEXT,
                     import_date TEXT NOT NULL,
                     imported_by TEXT,
@@ -197,7 +197,7 @@ class EmailStorage:
                             vat_on_fees REAL,
                             payment_count INTEGER,
                             payments_json TEXT,
-                            target_system TEXT NOT NULL CHECK (target_system IN ('opera_se', 'opera3')),
+                            target_system TEXT NOT NULL CHECK (target_system IN ('opera_se', 'opera3', 'archived', 'deleted', 'retained')),
                             batch_ref TEXT,
                             import_date TEXT NOT NULL,
                             imported_by TEXT,
@@ -234,6 +234,10 @@ class EmailStorage:
                 cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN fx_amount REAL")
             except:
                 pass
+            try:
+                cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN customer_name TEXT")
+            except:
+                pass
 
             # Bank statement import tracking
             # Tracks bank statement imports from both email attachments and file uploads
@@ -249,7 +253,7 @@ class EmailStorage:
                     total_receipts REAL DEFAULT 0,
                     total_payments REAL DEFAULT 0,
                     transactions_imported INTEGER DEFAULT 0,
-                    target_system TEXT NOT NULL DEFAULT 'opera_se' CHECK (target_system IN ('opera_se', 'opera3')),
+                    target_system TEXT NOT NULL DEFAULT 'opera_se' CHECK (target_system IN ('opera_se', 'opera3', 'archived', 'deleted', 'retained')),
                     import_date TEXT DEFAULT CURRENT_TIMESTAMP,
                     imported_by TEXT,
                     is_reconciled INTEGER DEFAULT 0,
@@ -291,7 +295,7 @@ class EmailStorage:
                             total_receipts REAL DEFAULT 0,
                             total_payments REAL DEFAULT 0,
                             transactions_imported INTEGER DEFAULT 0,
-                            target_system TEXT NOT NULL DEFAULT 'opera_se' CHECK (target_system IN ('opera_se', 'opera3')),
+                            target_system TEXT NOT NULL DEFAULT 'opera_se' CHECK (target_system IN ('opera_se', 'opera3', 'archived', 'deleted', 'retained')),
                             import_date TEXT DEFAULT CURRENT_TIMESTAMP,
                             imported_by TEXT,
                             FOREIGN KEY (email_id) REFERENCES emails(id)
@@ -405,6 +409,133 @@ class EmailStorage:
                     cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN period_end TEXT")
             except Exception as e:
                 logger.warning(f"Period columns migration: {e}")
+
+            # Migration: Update CHECK constraint on target_system to allow 'archived', 'deleted', 'retained'
+            # SQLite doesn't support ALTER CONSTRAINT, so we must rebuild the table
+            try:
+                # Check if bank_statement_imports has the old constraint
+                cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='bank_statement_imports'")
+                row = cursor.fetchone()
+                if row and row[0] and "'deleted'" not in row[0]:
+                    logger.info("Migrating bank_statement_imports: updating target_system CHECK constraint")
+                    cursor.execute("SELECT * FROM bank_statement_imports")
+                    existing_data = cursor.fetchall()
+                    col_names = [desc[0] for desc in cursor.description] if cursor.description else []
+
+                    cursor.execute("DROP TABLE bank_statement_imports")
+                    cursor.execute("""
+                        CREATE TABLE bank_statement_imports (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            email_id INTEGER,
+                            attachment_id TEXT,
+                            source TEXT DEFAULT 'email' CHECK (source IN ('email', 'file')),
+                            bank_code TEXT NOT NULL,
+                            filename TEXT,
+                            total_receipts REAL DEFAULT 0,
+                            total_payments REAL DEFAULT 0,
+                            transactions_imported INTEGER DEFAULT 0,
+                            target_system TEXT NOT NULL DEFAULT 'opera_se' CHECK (target_system IN ('opera_se', 'opera3', 'archived', 'deleted', 'retained')),
+                            import_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                            imported_by TEXT,
+                            is_reconciled INTEGER DEFAULT 0,
+                            reconciled_date TEXT,
+                            reconciled_count INTEGER DEFAULT 0,
+                            pdf_hash TEXT,
+                            opening_balance REAL,
+                            closing_balance REAL,
+                            statement_date TEXT,
+                            account_number TEXT,
+                            sort_code TEXT,
+                            period_start TEXT,
+                            period_end TEXT,
+                            FOREIGN KEY (email_id) REFERENCES emails(id)
+                        )
+                    """)
+
+                    for r in existing_data:
+                        rd = dict(zip(col_names, r)) if col_names else {}
+                        cursor.execute("""
+                            INSERT INTO bank_statement_imports
+                            (id, email_id, attachment_id, source, bank_code, filename,
+                             total_receipts, total_payments, transactions_imported,
+                             target_system, import_date, imported_by,
+                             is_reconciled, reconciled_date, reconciled_count, pdf_hash,
+                             opening_balance, closing_balance, statement_date, account_number, sort_code,
+                             period_start, period_end)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """, (
+                            rd.get('id'), rd.get('email_id'), rd.get('attachment_id'),
+                            rd.get('source', 'email'), rd.get('bank_code', ''),
+                            rd.get('filename'), rd.get('total_receipts', 0),
+                            rd.get('total_payments', 0), rd.get('transactions_imported', 0),
+                            rd.get('target_system', 'opera_se'), rd.get('import_date'),
+                            rd.get('imported_by'), rd.get('is_reconciled', 0),
+                            rd.get('reconciled_date'), rd.get('reconciled_count', 0),
+                            rd.get('pdf_hash'), rd.get('opening_balance'),
+                            rd.get('closing_balance'), rd.get('statement_date'),
+                            rd.get('account_number'), rd.get('sort_code'),
+                            rd.get('period_start'), rd.get('period_end'),
+                        ))
+                    logger.info(f"Migrated {len(existing_data)} bank_statement_imports records with updated constraint")
+            except Exception as e:
+                logger.warning(f"target_system constraint migration (bank_statement_imports): {e}")
+
+            try:
+                # Check if gocardless_imports has the old constraint
+                cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='gocardless_imports'")
+                row = cursor.fetchone()
+                if row and row[0] and "'deleted'" not in row[0]:
+                    logger.info("Migrating gocardless_imports: updating target_system CHECK constraint")
+                    cursor.execute("SELECT * FROM gocardless_imports")
+                    existing_data = cursor.fetchall()
+                    col_names = [desc[0] for desc in cursor.description] if cursor.description else []
+
+                    cursor.execute("DROP TABLE gocardless_imports")
+                    cursor.execute("""
+                        CREATE TABLE gocardless_imports (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            email_id INTEGER,
+                            payout_id TEXT,
+                            source TEXT DEFAULT 'email' CHECK (source IN ('email', 'api')),
+                            bank_reference TEXT,
+                            gross_amount REAL,
+                            net_amount REAL,
+                            gocardless_fees REAL,
+                            vat_on_fees REAL,
+                            payment_count INTEGER,
+                            payments_json TEXT,
+                            target_system TEXT NOT NULL CHECK (target_system IN ('opera_se', 'opera3', 'archived', 'deleted', 'retained')),
+                            batch_ref TEXT,
+                            import_date TEXT NOT NULL,
+                            imported_by TEXT,
+                            fx_amount REAL,
+                            customer_name TEXT,
+                            FOREIGN KEY (email_id) REFERENCES emails(id)
+                        )
+                    """)
+
+                    for r in existing_data:
+                        rd = dict(zip(col_names, r)) if col_names else {}
+                        cursor.execute("""
+                            INSERT INTO gocardless_imports
+                            (id, email_id, payout_id, source, bank_reference,
+                             gross_amount, net_amount, gocardless_fees, vat_on_fees,
+                             payment_count, payments_json, target_system, batch_ref,
+                             import_date, imported_by, fx_amount, customer_name)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """, (
+                            rd.get('id'), rd.get('email_id'), rd.get('payout_id'),
+                            rd.get('source', 'email'), rd.get('bank_reference'),
+                            rd.get('gross_amount'), rd.get('net_amount'),
+                            rd.get('gocardless_fees'), rd.get('vat_on_fees'),
+                            rd.get('payment_count'), rd.get('payments_json'),
+                            rd.get('target_system', 'opera_se'), rd.get('batch_ref'),
+                            rd.get('import_date', ''), rd.get('imported_by'),
+                            rd.get('fx_amount'), rd.get('customer_name'),
+                        ))
+                    logger.info(f"Migrated {len(existing_data)} gocardless_imports records with updated constraint")
+            except Exception as e:
+                logger.warning(f"target_system constraint migration (gocardless_imports): {e}")
 
             # Bank import drafts table — persists work-in-progress state for resume across sessions
             cursor.execute("""

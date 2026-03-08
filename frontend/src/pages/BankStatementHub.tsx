@@ -1538,20 +1538,20 @@ function CategorySection({
                       <div className="flex items-center gap-1 justify-end">
                         {actions.includes('archive') && (
                           <button onClick={() => onAction('archive', [stmt])} disabled={actionLoading}
-                            title="Archive" className="p-1 text-gray-400 hover:text-gray-600 disabled:opacity-50">
-                            <Archive className="h-3.5 w-3.5" />
+                            title="Archive" className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-gray-600 bg-gray-50 border border-gray-200 rounded-md hover:bg-gray-100 hover:border-gray-300 disabled:opacity-50 transition-colors">
+                            <Archive className="h-3.5 w-3.5" /> Archive
                           </button>
                         )}
                         {actions.includes('delete') && (
                           <button onClick={() => onAction('delete', [stmt])} disabled={actionLoading}
-                            title="Delete" className="p-1 text-gray-400 hover:text-red-600 disabled:opacity-50">
-                            <Trash2 className="h-3.5 w-3.5" />
+                            title="Delete" className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 hover:border-red-300 disabled:opacity-50 transition-colors">
+                            <Trash2 className="h-3.5 w-3.5" /> Delete
                           </button>
                         )}
                         {actions.includes('retain') && (
                           <button onClick={() => onAction('retain', [stmt])} disabled={actionLoading}
-                            title="Retain (keep but hide from scan)" className="p-1 text-gray-400 hover:text-blue-600 disabled:opacity-50">
-                            <Eye className="h-3.5 w-3.5" />
+                            title="Retain (keep but hide from scan)" className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 hover:border-blue-300 disabled:opacity-50 transition-colors">
+                            <Eye className="h-3.5 w-3.5" /> Retain
                           </button>
                         )}
                         {onProcess && stmt.matched_bank_code && (
@@ -1844,9 +1844,10 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
           <span className="text-gray-800 font-medium truncate max-w-[250px]" title={stmt.filename}>{stmt.filename}</span>
           {onView && (
             <button onClick={onView}
-              className="p-0.5 text-gray-300 hover:text-blue-600 rounded hover:bg-blue-50 transition-colors flex-shrink-0"
-              title="View statement">
+              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 hover:border-blue-300 transition-colors flex-shrink-0"
+              title="View statement PDF">
               <Eye className="h-3.5 w-3.5" />
+              View
             </button>
           )}
         </div>
@@ -1922,9 +1923,9 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
               </div>
             ) : (
               <button onClick={() => setConfirmingDelete(true)}
-                className="p-1 text-gray-400 hover:text-red-600 rounded hover:bg-red-50 transition-colors"
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 hover:border-red-300 transition-colors"
                 title="Delete statement">
-                <Trash2 className="h-3.5 w-3.5" />
+                <Trash2 className="h-3.5 w-3.5" /> Delete
               </button>
             )
           )}

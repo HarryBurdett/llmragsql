@@ -1280,17 +1280,19 @@ class OperaSQLImport:
 
     def increment_atype_entry(self, conn, cbtype: str) -> str:
         """
-        Increment the ay_entry counter for a type code and return the current value.
+        Increment the ay_entry counter for a type code and return the next available entry.
 
         This should be called within a transaction to ensure atomicity.
-        The returned entry number is the one to use for the current transaction.
+        Includes a defensive check: if the entry number from atype already exists
+        in aentry (e.g. Opera created it directly, or counter was reset), skip
+        forward until an unused entry number is found.
 
         Args:
             conn: Active database connection (within transaction)
             cbtype: Type code (e.g., 'P1', 'R2', 'P5')
 
         Returns:
-            Entry number to use for this transaction
+            Entry number to use for this transaction (guaranteed not in aentry)
         """
         from sqlalchemy import text
 
@@ -1307,7 +1309,7 @@ class OperaSQLImport:
 
         current_entry = row[0].strip() if row[0] else f"{cbtype}{0:08d}"
 
-        # Parse and increment
+        # Parse entry number
         # Entry format is like 'P100008024' - prefix + 8-digit number
         prefix_len = len(cbtype)
         try:
@@ -1315,10 +1317,29 @@ class OperaSQLImport:
         except ValueError:
             current_num = 0
 
-        next_num = current_num + 1
-        next_entry = f"{cbtype}{next_num:08d}"
+        # Defensive check: verify entry doesn't already exist in aentry.
+        # If ay_entry got out of sync (e.g. Opera created entries directly,
+        # counter was manually reset), skip forward to avoid batch collision.
+        entry_to_use = current_entry
+        entry_num = current_num
+        skipped = 0
+        while True:
+            existing = conn.execute(text(f"""
+                SELECT 1 FROM aentry WITH (NOLOCK)
+                WHERE RTRIM(ae_cbtype) = '{cbtype}' AND RTRIM(ae_entry) = '{entry_to_use}'
+            """))
+            if existing.fetchone() is None:
+                break  # Entry doesn't exist in aentry, safe to use
+            # Entry already exists — skip forward
+            logger.warning(f"Entry {entry_to_use} already exists in aentry for cbtype {cbtype}, skipping")
+            skipped += 1
+            entry_num += 1
+            entry_to_use = f"{cbtype}{entry_num:08d}"
+            if skipped > 100:
+                raise ValueError(f"Unable to find unused entry number for cbtype '{cbtype}' after 100 attempts")
 
-        # Update atype with new entry number
+        # Update atype to one past the entry we're using
+        next_entry = f"{cbtype}{entry_num + 1:08d}"
         conn.execute(text(f"""
             UPDATE atype
             SET ay_entry = '{next_entry}',
@@ -1326,10 +1347,12 @@ class OperaSQLImport:
             WHERE RTRIM(ay_cbtype) = '{cbtype}'
         """))
 
-        logger.debug(f"Incremented atype entry for {cbtype}: {current_entry} -> {next_entry}")
+        if skipped > 0:
+            logger.warning(f"Skipped {skipped} existing entries for {cbtype}: atype counter was behind. Using {entry_to_use}, updated atype to {next_entry}")
+        else:
+            logger.debug(f"Incremented atype entry for {cbtype}: {current_entry} -> {next_entry}")
 
-        # Return the entry number to USE (the one before increment)
-        return current_entry
+        return entry_to_use
 
     def get_default_cbtype(self, transaction_type: str) -> Optional[str]:
         """

@@ -646,13 +646,17 @@ class Opera3FoxProImport:
 
     def increment_atype_entry(self, cbtype: str) -> str:
         """
-        Increment the ay_entry counter for a type code and return the current value.
+        Increment the ay_entry counter for a type code and return the next available entry.
+
+        Includes a defensive check: if the entry number from atype already exists
+        in aentry (e.g. Opera created it directly, or counter was reset), skip
+        forward until an unused entry number is found.
 
         Args:
             cbtype: Type code (e.g., 'P1', 'R2', 'P5')
 
         Returns:
-            Entry number to use for this transaction
+            Entry number to use for this transaction (guaranteed not in aentry)
         """
         try:
             table = self._open_table('atype')
@@ -662,24 +666,50 @@ class Opera3FoxProImport:
                 if code == cbtype:
                     current_entry = record.ay_entry.strip() if hasattr(record, 'ay_entry') else f"{cbtype}{0:08d}"
 
-                    # Parse and increment
+                    # Parse entry number
                     prefix_len = len(cbtype)
                     try:
                         current_num = int(current_entry[prefix_len:])
                     except ValueError:
                         current_num = 0
 
-                    next_num = current_num + 1
-                    next_entry = f"{cbtype}{next_num:08d}"
+                    # Defensive check: verify entry doesn't already exist in aentry.
+                    # If ay_entry got out of sync, skip forward to avoid batch collision.
+                    entry_to_use = current_entry
+                    entry_num = current_num
+                    skipped = 0
+                    try:
+                        aentry_table = self._open_table('aentry')
+                        existing_entries = set()
+                        for ae_rec in aentry_table:
+                            ae_cbtype = ae_rec.ae_cbtype.strip() if hasattr(ae_rec, 'ae_cbtype') else ''
+                            ae_entry = ae_rec.ae_entry.strip() if hasattr(ae_rec, 'ae_entry') else ''
+                            if ae_cbtype == cbtype:
+                                existing_entries.add(ae_entry)
 
-                    # Update the record
+                        while entry_to_use in existing_entries:
+                            logger.warning(f"Entry {entry_to_use} already exists in aentry for cbtype {cbtype}, skipping")
+                            skipped += 1
+                            entry_num += 1
+                            entry_to_use = f"{cbtype}{entry_num:08d}"
+                            if skipped > 100:
+                                raise ValueError(f"Unable to find unused entry number for cbtype '{cbtype}' after 100 attempts")
+                    except ValueError:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"Could not verify aentry for collision check: {e}, proceeding with {entry_to_use}")
+
+                    # Update atype to one past the entry we're using
+                    next_entry = f"{cbtype}{entry_num + 1:08d}"
                     with record:
                         record.ay_entry = next_entry
 
-                    logger.debug(f"Incremented atype entry for {cbtype}: {current_entry} -> {next_entry}")
+                    if skipped > 0:
+                        logger.warning(f"Skipped {skipped} existing entries for {cbtype}: atype counter was behind. Using {entry_to_use}, updated atype to {next_entry}")
+                    else:
+                        logger.debug(f"Incremented atype entry for {cbtype}: {current_entry} -> {next_entry}")
 
-                    # Return the entry number to USE (the one before increment)
-                    return current_entry
+                    return entry_to_use
 
             raise ValueError(f"Type code '{cbtype}' not found in atype")
 

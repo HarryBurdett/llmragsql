@@ -305,12 +305,13 @@ def apply_system_to_config(system: Dict[str, Any]):
     if not system.get("database") or not system.get("opera"):
         _sync_active_system_config()
 
-    # Reinitialize SQL connector
+    # Reinitialize SQL connector — propagate errors so callers can report them
     try:
         sql_connector = SQLConnector(CONFIG_PATH)
         logger.info(f"Switched to system: {system['name']} (id={system['id']})")
     except Exception as e:
         logger.warning(f"SQL connector reinit failed after system switch: {e}")
+        raise ConnectionError(f"Database connection failed: {e}") from e
 
 
 def _sync_active_system_config():
@@ -2014,7 +2015,18 @@ async def activate_system(system_id: str):
     if not target:
         raise HTTPException(status_code=404, detail="System not found")
 
-    apply_system_to_config(target)
+    try:
+        apply_system_to_config(target)
+    except ConnectionError as e:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": friendly_db_error(str(e)),
+                "detail": f"Switched configuration to {target['name']} but the database connection failed. "
+                          "Please check the server address and credentials in Installation settings.",
+            },
+        )
 
     return {"success": True, "message": f"Switched to {target['name']}"}
 
@@ -17457,15 +17469,16 @@ async def preview_bank_import_from_pdf(
             "closing_balance": statement_info.closing_balance
         }
 
-        # Get bank account details for validation
+        # Get bank account details for validation (sort code, account number, reconciled balance)
         bank_df = sql_connector.execute_query(f"""
             SELECT
-                RTRIM(ba_code) as code,
-                RTRIM(ba_name) as description,
-                RTRIM(ISNULL(ba_sort, '')) as sort_code,
-                RTRIM(ISNULL(ba_bankac, '')) as account_number
-            FROM bankacnt WITH (NOLOCK)
-            WHERE ba_code = '{bank_code}'
+                RTRIM(nk_acnt) as code,
+                RTRIM(nk_desc) as description,
+                RTRIM(ISNULL(nk_sort, '')) as sort_code,
+                RTRIM(ISNULL(nk_number, '')) as account_number,
+                nk_recbal / 100.0 as reconciled_balance
+            FROM nbank WITH (NOLOCK)
+            WHERE nk_acnt = '{bank_code}'
         """)
 
         if bank_df.empty:
@@ -17474,6 +17487,7 @@ async def preview_bank_import_from_pdf(
         opera_bank = bank_df.iloc[0]
         opera_sort = opera_bank['sort_code'].replace('-', '').replace(' ', '')
         opera_acct = opera_bank['account_number'].replace('-', '').replace(' ', '')
+        reconciled_balance = float(opera_bank['reconciled_balance']) if opera_bank['reconciled_balance'] is not None else None
 
         # Validate bank account match
         stmt_sort = (statement_info_dict.get('sort_code') or '').replace('-', '').replace(' ', '')
@@ -17489,44 +17503,30 @@ async def preview_bank_import_from_pdf(
                     "error": "Bank account mismatch"
                 }
 
-        # Check statement sequence (opening balance vs reconciled balance)
+        # Check statement sequence (opening balance vs reconciled balance from nbank)
         opening_balance = statement_info_dict.get('opening_balance')
-        if opening_balance is not None:
-            try:
-                rec_status_df = sql_connector.execute_query(f"""
-                    SELECT
-                        ISNULL(SUM(CASE WHEN ae_recline > 0 THEN ae_value ELSE 0 END), 0) as reconciled_total,
-                        MAX(ae_recline) as last_rec_line
-                    FROM auditent WITH (NOLOCK)
-                    WHERE ae_bank = '{bank_code}'
-                """)
-
-                if not rec_status_df.empty:
-                    reconciled_balance = float(rec_status_df.iloc[0]['reconciled_total']) / 100.0
-
-                    # Allow small tolerance for rounding
-                    tolerance = 0.02
-                    if abs(opening_balance - reconciled_balance) > tolerance:
-                        if opening_balance < reconciled_balance - tolerance:
-                            # Opening balance is less than reconciled - already processed
-                            return {
-                                "success": False,
-                                "status": "skipped",
-                                "message": f"This statement appears to have already been processed. Opening balance (£{opening_balance:,.2f}) is less than current reconciled balance (£{reconciled_balance:,.2f}).",
-                                "statement_info": statement_info_dict,
-                                "reconciled_balance": reconciled_balance
-                            }
-                        else:
-                            # Opening balance is greater - out of sequence
-                            return {
-                                "success": False,
-                                "status": "out_of_sequence",
-                                "message": f"Statement is out of sequence. Opening balance (£{opening_balance:,.2f}) does not match current reconciled balance (£{reconciled_balance:,.2f}). Please import earlier statements first.",
-                                "statement_info": statement_info_dict,
-                                "reconciled_balance": reconciled_balance
-                            }
-            except Exception as e:
-                logger.warning(f"Could not check reconciliation status: {e}")
+        if opening_balance is not None and reconciled_balance is not None:
+            # Allow small tolerance for rounding
+            tolerance = 0.02
+            if abs(opening_balance - reconciled_balance) > tolerance:
+                if opening_balance < reconciled_balance - tolerance:
+                    # Opening balance is less than reconciled - already processed
+                    return {
+                        "success": False,
+                        "status": "skipped",
+                        "message": f"This statement appears to have already been processed. Opening balance (£{opening_balance:,.2f}) is less than current reconciled balance (£{reconciled_balance:,.2f}).",
+                        "statement_info": statement_info_dict,
+                        "reconciled_balance": reconciled_balance
+                    }
+                else:
+                    # Opening balance is greater - out of sequence
+                    return {
+                        "success": False,
+                        "status": "out_of_sequence",
+                        "message": f"Statement is out of sequence. Opening balance (£{opening_balance:,.2f}) does not match current reconciled balance (£{reconciled_balance:,.2f}). Please import earlier statements first.",
+                        "statement_info": statement_info_dict,
+                        "reconciled_balance": reconciled_balance
+                    }
 
         # Convert StatementTransaction to BankTransaction objects
         logger.info(f"preview-from-pdf: Converting {len(stmt_transactions)} StatementTransactions to BankTransactions")
@@ -21265,52 +21265,93 @@ async def manage_bank_statements(request: Request):
 
                 elif action == 'delete':
                     if source == 'email' and email_id:
-                        email_detail = email_storage.get_email_by_id(email_id)
-                        if email_detail:
-                            provider_id = email_detail.get('provider_id')
-                            message_id = email_detail.get('message_id')
-                            folder_id = email_detail.get('folder_id', 'INBOX')
+                        if not email_storage:
+                            result_entry['error'] = "Email storage not initialised"
+                        else:
+                            email_detail = email_storage.get_email_by_id(email_id)
+                            if not email_detail:
+                                # Email not in local DB — treat as already deleted, just record it
+                                result_entry['success'] = True
+                                logger.info(f"Manage: email {email_id} not in DB (already deleted?), marking as deleted for {filename}")
+                            else:
+                                provider_id = email_detail.get('provider_id')
+                                message_id = email_detail.get('message_id')
+                                folder_id = email_detail.get('folder_id', 'INBOX')
 
-                            if isinstance(folder_id, int):
-                                with email_storage._get_connection() as conn:
-                                    cursor = conn.cursor()
-                                    cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
-                                    row = cursor.fetchone()
-                                    if row:
-                                        folder_id = row['folder_id']
+                                if isinstance(folder_id, int):
+                                    with email_storage._get_connection() as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                        row = cursor.fetchone()
+                                        if row:
+                                            folder_id = row['folder_id']
 
-                            if provider_id and message_id and provider_id in email_sync_manager.providers:
-                                provider = email_sync_manager.providers[provider_id]
-                                moved = await provider.move_email(message_id, folder_id, 'Trash')
-                                result_entry['success'] = moved
-                                if moved:
-                                    logger.info(f"Manage: deleted email statement {filename}")
+                                if not email_sync_manager:
+                                    result_entry['error'] = "Email sync not configured — cannot move email to Trash"
+                                elif not provider_id or not message_id:
+                                    result_entry['error'] = f"Email missing provider or message ID"
+                                elif provider_id not in email_sync_manager.providers:
+                                    result_entry['error'] = f"Email provider '{provider_id}' not connected — check email settings"
+                                else:
+                                    provider = email_sync_manager.providers[provider_id]
+                                    try:
+                                        moved = await provider.move_email(message_id, folder_id, 'Trash')
+                                    except Exception as move_err:
+                                        moved = False
+                                        result_entry['error'] = f"Failed to move email to Trash: {move_err}"
+                                    result_entry['success'] = moved
+                                    if moved:
+                                        logger.info(f"Manage: deleted email statement {filename}")
+                                    elif 'error' not in result_entry:
+                                        result_entry['error'] = "Failed to move email to Trash folder"
                     elif source == 'pdf' and full_path:
                         fp = Path(full_path)
                         if fp.exists():
                             fp.unlink()
                             result_entry['success'] = True
                             logger.info(f"Manage: deleted file {filename}")
+                        else:
+                            # File already gone — treat as success
+                            result_entry['success'] = True
+                            logger.info(f"Manage: file already deleted {filename}")
+                    else:
+                        result_entry['error'] = f"Cannot delete: source={source}, email_id={email_id}, path={full_path}"
 
                 elif action == 'retain':
                     # Just record — no email/file movement
                     result_entry['success'] = True
 
-                # Record action in tracking database
-                if result_entry['success'] and email_storage:
+                # Record action in tracking database — ALWAYS record for delete/retain
+                # so the scan excludes the statement even if the server-side move failed.
+                # For archive, only record on success (we need the file to actually move).
+                should_record = (result_entry['success'] or action in ('delete', 'retain'))
+                if should_record and email_storage:
                     try:
+                        # Map action verb to past tense for CHECK constraint
+                        target_system_map = {'archive': 'archived', 'delete': 'deleted', 'retain': 'retained'}
                         email_storage.record_bank_statement_import(
                             bank_code=bank_code,
                             filename=filename,
                             transactions_imported=0,
                             source=source,
-                            target_system=action,  # 'archived', 'deleted', 'retained'
+                            target_system=target_system_map[action],
                             email_id=email_id if source == 'email' else None,
                             attachment_id=attachment_id,
                             imported_by=f'MANAGE_{action.upper()}'
                         )
+                        # For delete/retain: marking locally is the primary action
+                        # The IMAP move is best-effort, so treat local record as success
+                        if action in ('delete', 'retain') and not result_entry['success']:
+                            imap_warning = result_entry.get('error', '')
+                            result_entry['success'] = True
+                            if imap_warning:
+                                result_entry['warning'] = f"Excluded from scan. Note: {imap_warning}"
+                                del result_entry['error']
+                            logger.info(f"Manage: recorded {action} locally for {filename} (server-side move skipped)")
                     except Exception as rec_err:
                         logger.warning(f"Could not record manage action: {rec_err}")
+                        if not result_entry['success']:
+                            result_entry['error'] = f"Failed to record {action}: {rec_err}"
 
             except Exception as stmt_err:
                 result_entry['error'] = str(stmt_err)
@@ -24681,8 +24722,8 @@ async def import_gocardless_batch(
             banks_to_check.append(destination_bank)
         for check_bank in banks_to_check:
             bank_check = sql_connector.execute_query(f"""
-                SELECT nk_account FROM nbank WITH (NOLOCK)
-                WHERE RTRIM(nk_account) = '{check_bank.strip()}'
+                SELECT nk_acnt FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_acnt) = '{check_bank.strip()}'
             """)
             if bank_check is None or len(bank_check) == 0:
                 label = "GC Control bank" if check_bank == posting_bank else "Destination bank"
@@ -24767,17 +24808,29 @@ async def import_gocardless_batch(
             }
 
     except AttributeError as e:
-        release_import_lock(_bank_lock_key(posting_bank))
+        try:
+            from sql_rag.import_lock import release_import_lock as _rel
+            _rel(_bank_lock_key(posting_bank))
+        except Exception:
+            pass
         logger.error(f"Error importing GoCardless batch: {e}")
         if "import_gocardless_batch" in str(e):
             return {"success": False, "error": "GoCardless batch import not available. Please restart the API server."}
         return {"success": False, "error": f"Configuration error: {e}"}
     except ConnectionError as e:
-        release_import_lock(_bank_lock_key(posting_bank))
+        try:
+            from sql_rag.import_lock import release_import_lock as _rel
+            _rel(_bank_lock_key(posting_bank))
+        except Exception:
+            pass
         logger.error(f"Database connection error: {e}")
         return {"success": False, "error": "Cannot connect to Opera database. Please check the connection."}
     except Exception as e:
-        release_import_lock(_bank_lock_key(posting_bank))
+        try:
+            from sql_rag.import_lock import release_import_lock as _rel
+            _rel(_bank_lock_key(posting_bank))
+        except Exception:
+            pass
         logger.error(f"Error importing GoCardless batch: {e}")
         error_msg = str(e)
         # Make common errors more readable
@@ -26483,6 +26536,7 @@ async def delete_gocardless_import_record(record_id: int):
 
 @app.post("/api/gocardless/skip-payout")
 async def skip_gocardless_payout(
+    request: Request,
     payout_id: str = Query(..., description="GoCardless payout ID"),
     bank_reference: str = Query(..., description="Bank reference (e.g., INTSYSUKLTD-XM5XEF)"),
     gross_amount: float = Query(..., description="Gross amount"),
@@ -26518,6 +26572,20 @@ async def skip_gocardless_payout(
         if currency and currency.upper() != 'GBP':
             display_reference = f"{bank_reference} ({currency})"
 
+        # Save payment details if provided in request body
+        payments_json = None
+        try:
+            body = await request.json()
+            if isinstance(body, list) and len(body) > 0:
+                payments_json = json.dumps([{
+                    "customer_account": p.get('matched_account') or p.get('customer_account', ''),
+                    "gc_customer_name": p.get('customer_name', ''),
+                    "amount": p.get('amount', 0),
+                    "description": p.get('description', ''),
+                } for p in body])
+        except Exception:
+            pass  # No body or invalid JSON — payments_json stays None
+
         record_id = email_storage.record_gocardless_import(
             target_system='opera_se',
             payout_id=payout_id,
@@ -26528,7 +26596,7 @@ async def skip_gocardless_payout(
             gocardless_fees=0,
             vat_on_fees=0,
             payment_count=payment_count,
-            payments_json=None,
+            payments_json=payments_json,
             batch_ref=None,
             imported_by=imported_by,
             fx_amount=fx_amount
@@ -26657,8 +26725,8 @@ async def import_gocardless_from_email(
         # Validate all bank accounts exist in Opera before posting
         for check_bank in ([posting_bank] + ([destination_bank] if destination_bank else [])):
             bank_check = sql_connector.execute_query(f"""
-                SELECT nk_account FROM nbank WITH (NOLOCK)
-                WHERE RTRIM(nk_account) = '{check_bank.strip()}'
+                SELECT nk_acnt FROM nbank WITH (NOLOCK)
+                WHERE RTRIM(nk_acnt) = '{check_bank.strip()}'
             """)
             if bank_check is None or len(bank_check) == 0:
                 label = "GC Control bank" if check_bank == posting_bank else "Destination bank"
@@ -28443,47 +28511,92 @@ async def opera3_preview_bank_import_from_pdf(
         # Initialize Opera 3 reader
         reader = Opera3Reader(data_path)
 
-        # Get reconciled balance from Opera 3
+        # Get bank details from Opera 3 (reconciled balance, sort code, account number)
         reconciled_balance = None
+        opera_sort = ''
+        opera_acct = ''
         try:
             nbank_records = reader.read_table("nbank")
             for record in nbank_records:
-                nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', ''))).strip().upper()
+                nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', record.get('nk_acnt', '')))).strip().upper()
                 if nb_acnt == bank_code.upper():
                     nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
                     reconciled_balance = nk_recbal / 100.0
+                    opera_sort = str(record.get('NK_SORT', record.get('nk_sort', ''))).strip()
+                    opera_acct = str(record.get('NK_NUMBER', record.get('nk_number', ''))).strip()
                     break
         except Exception as e:
-            logger.warning(f"Could not get Opera 3 reconciled balance: {e}")
+            logger.warning(f"Could not get Opera 3 bank details: {e}")
 
         # Use StatementReconcilerOpera3 for AI extraction
         reconciler = StatementReconcilerOpera3(reader, config=config)
         statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(file_path)
 
-        # Validate statement sequence
+        # Validate bank account match (sort code / account number)
+        if statement_info and opera_sort and opera_acct:
+            stmt_sort = (statement_info.sort_code or '').replace('-', '').replace(' ', '')
+            stmt_acct = (statement_info.account_number or '').replace('-', '').replace(' ', '')
+            opera_sort_norm = opera_sort.replace('-', '').replace(' ', '')
+            opera_acct_norm = opera_acct.replace('-', '').replace(' ', '')
+            if stmt_sort and stmt_acct and opera_sort_norm and opera_acct_norm:
+                if stmt_sort != opera_sort_norm or stmt_acct != opera_acct_norm:
+                    return {
+                        "success": False,
+                        "source": "opera3",
+                        "bank_mismatch": True,
+                        "detected_bank": f"{stmt_sort} / {stmt_acct}",
+                        "selected_bank": f"{opera_sort_norm} / {opera_acct_norm} ({bank_code})",
+                        "error": "Bank account mismatch"
+                    }
+
+        # Validate statement sequence (opening balance must match reconciled balance)
         if statement_info and statement_info.opening_balance is not None and reconciled_balance is not None:
-            if statement_info.opening_balance < reconciled_balance - 0.01:
-                return {
-                    "success": False,
-                    "source": "opera3",
-                    "status": "skipped",
-                    "reason": "already_processed",
-                    "bank_code": bank_code,
-                    "filename": filename,
-                    "statement_info": {
-                        "bank_name": statement_info.bank_name if statement_info else None,
-                        "account_number": statement_info.account_number if statement_info else None,
-                        "opening_balance": statement_info.opening_balance if statement_info else None,
-                        "closing_balance": statement_info.closing_balance if statement_info else None,
-                    },
-                    "reconciled_balance": reconciled_balance,
-                    "errors": [
-                        "STATEMENT ALREADY PROCESSED",
-                        f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
-                        f"Opera 3 Reconciled Balance: £{reconciled_balance:,.2f}",
-                        "This statement has a lower opening balance than Opera's reconciled balance, indicating it has already been processed."
-                    ]
-                }
+            tolerance = 0.02
+            if abs(statement_info.opening_balance - reconciled_balance) > tolerance:
+                if statement_info.opening_balance < reconciled_balance - tolerance:
+                    return {
+                        "success": False,
+                        "source": "opera3",
+                        "status": "skipped",
+                        "reason": "already_processed",
+                        "bank_code": bank_code,
+                        "filename": filename,
+                        "statement_info": {
+                            "bank_name": statement_info.bank_name if statement_info else None,
+                            "account_number": statement_info.account_number if statement_info else None,
+                            "opening_balance": statement_info.opening_balance if statement_info else None,
+                            "closing_balance": statement_info.closing_balance if statement_info else None,
+                        },
+                        "reconciled_balance": reconciled_balance,
+                        "errors": [
+                            "STATEMENT ALREADY PROCESSED",
+                            f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
+                            f"Opera 3 Reconciled Balance: £{reconciled_balance:,.2f}",
+                            "This statement has a lower opening balance than Opera's reconciled balance, indicating it has already been processed."
+                        ]
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "source": "opera3",
+                        "status": "out_of_sequence",
+                        "reason": "out_of_sequence",
+                        "bank_code": bank_code,
+                        "filename": filename,
+                        "statement_info": {
+                            "bank_name": statement_info.bank_name if statement_info else None,
+                            "account_number": statement_info.account_number if statement_info else None,
+                            "opening_balance": statement_info.opening_balance if statement_info else None,
+                            "closing_balance": statement_info.closing_balance if statement_info else None,
+                        },
+                        "reconciled_balance": reconciled_balance,
+                        "errors": [
+                            "STATEMENT OUT OF SEQUENCE",
+                            f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
+                            f"Opera 3 Reconciled Balance: £{reconciled_balance:,.2f}",
+                            "Statement opening balance does not match Opera's reconciled balance. Please import earlier statements first."
+                        ]
+                    }
 
         # Use matcher to categorize transactions
         matcher = BankStatementMatcherOpera3(data_path)
