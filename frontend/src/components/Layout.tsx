@@ -6,7 +6,7 @@ import {
   CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck,
   FileText, MessageSquare, Shield, LayoutDashboard, Receipt,
   Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList,
-  Cog, Activity, Boxes, LogOut, KeyRound, Send, RotateCcw, Monitor
+  Cog, Activity, Boxes, LogOut, KeyRound, Send, RotateCcw, Monitor, CalendarDays
 } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
 import { useAuth } from '../context/AuthContext';
@@ -45,6 +45,8 @@ function isItemActive(item: NavEntry, pathname: string): boolean {
 
 // ============ MENU DEFINITIONS ============
 
+// --- Financials sub-groups ---
+
 const cashbookUtilitiesSubmenu: NavItem[] = [
   { path: '/cashbook/options', label: 'Bank Rec Settings', icon: Settings },
   { path: '/cashbook/gocardless-settings', label: 'GoCardless Settings', icon: CreditCard },
@@ -63,7 +65,6 @@ const payrollSubmenu: NavItem[] = [
   { path: '/payroll/settings', label: 'Parameters', icon: Settings },
 ];
 
-// Suppliers (AP Automation) - Flattened structure
 const suppliersSubmenu: NavItem[] = [
   { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/supplier/account', label: 'Account Lookup', icon: Receipt },
@@ -76,7 +77,15 @@ const suppliersSubmenu: NavItem[] = [
   { path: '/supplier/settings', label: 'Settings', icon: Settings },
 ];
 
-// Balance Check submenu
+const operaModulesSubmenu: NavItem[] = [
+  { path: '/stock', label: 'Stock', icon: Package },
+  { path: '/sop', label: 'Sales Orders', icon: ShoppingCart },
+  { path: '/pop', label: 'Purchase Orders', icon: ClipboardList },
+  { path: '/bom', label: 'Works Orders', icon: Cog },
+];
+
+// --- Administration sub-groups ---
+
 const balanceCheckSubmenu: NavItem[] = [
   { path: '/reconcile/summary', label: 'Summary', icon: Scale },
   { path: '/reconcile/trial-balance', label: 'Trial Balance', icon: Database },
@@ -86,24 +95,15 @@ const balanceCheckSubmenu: NavItem[] = [
   { path: '/reconcile/vat', label: 'VAT', icon: Receipt },
 ];
 
-// Utilities - simplified
 const utilitiesSubmenu: (NavItem | NavItemWithSubmenu)[] = [
   { label: 'Balance Check', icon: Scale, submenu: balanceCheckSubmenu },
   { path: '/utilities/user-activity', label: 'User Activity', icon: Activity },
 ];
 
-// Opera Modules (was Development > Opera SE)
-const operaModulesSubmenu: NavItem[] = [
-  { path: '/stock', label: 'Stock', icon: Package },
-  { path: '/sop', label: 'Sales Orders', icon: ShoppingCart },
-  { path: '/pop', label: 'Purchase Orders', icon: ClipboardList },
-  { path: '/bom', label: 'Works Orders', icon: Cog },
-];
-
-// Administration submenu
-const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
-  const baseMenu: NavItem[] = [
-    { path: '/admin/company', label: 'Company', icon: Building2 },
+const getAdministrationSubmenu = (isAdmin: boolean): (NavItem | NavItemWithSubmenu)[] => {
+  const menu: (NavItem | NavItemWithSubmenu)[] = [
+    { path: '/admin/company', label: 'Date & Company', icon: CalendarDays },
+    { label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu },
     { path: '/admin/projects', label: 'Projects', icon: FolderKanban },
     { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock },
     { path: '/admin/installations', label: 'Installations', icon: Monitor },
@@ -111,17 +111,22 @@ const getAdministrationSubmenu = (isAdmin: boolean): NavItem[] => {
   ];
 
   if (isAdmin) {
-    baseMenu.splice(2, 0, { path: '/admin/users', label: 'Users', icon: Users });
-    baseMenu.splice(3, 0, { path: '/admin/licenses', label: 'Licenses', icon: KeyRound });
-    // Routines Cleardown moved to Cashbook > Utilities
+    menu.push({ path: '/admin/users', label: 'Users', icon: Users });
+    menu.push({ path: '/admin/licenses', label: 'Licenses', icon: KeyRound });
   }
 
-  return baseMenu;
+  // Switch User is handled as a special action item — see SWITCH_USER_PATH
+  menu.push({ path: '/action/switch-user', label: 'Switch User', icon: RotateCcw });
+
+  return menu;
 };
+
+// Sentinel path used to detect "Switch User" clicks in the menu
+const SWITCH_USER_PATH = '/action/switch-user';
 
 // ============ COMPONENTS ============
 
-function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: () => void }) {
+function NestedSubmenu({ item, onClose, onAction }: { item: NavItemWithSubmenu; onClose: () => void; onAction?: (path: string) => boolean }) {
   const [isOpen, setIsOpen] = useState(false);
   const location = useLocation();
   const Icon = item.icon;
@@ -151,10 +156,23 @@ function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: (
         <div className="absolute left-full top-0 ml-1 w-52 bg-white rounded-lg shadow-lg border border-gray-200 py-1.5 z-50">
           {item.submenu.map((subItem) => {
             if (isNavItemWithSubmenu(subItem)) {
-              return <NestedSubmenu key={subItem.label} item={subItem} onClose={onClose} />;
+              return <NestedSubmenu key={subItem.label} item={subItem} onClose={onClose} onAction={onAction} />;
             }
             const SubIcon = subItem.icon;
             const isSubActive = location.pathname === subItem.path;
+            // Check if this is an action item (e.g. Switch User)
+            if (onAction && subItem.path.startsWith('/action/')) {
+              return (
+                <button
+                  key={subItem.path}
+                  onClick={() => { onClose(); onAction(subItem.path); }}
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  <SubIcon className="h-4 w-4 text-gray-400" />
+                  <span>{subItem.label}</span>
+                </button>
+              );
+            }
             return (
               <Link
                 key={subItem.path}
@@ -177,7 +195,7 @@ function NestedSubmenu({ item, onClose }: { item: NavItemWithSubmenu; onClose: (
   );
 }
 
-function DropdownMenu({ item, isActive, onOpenChange }: { item: NavItemWithSubmenu; isActive: boolean; onOpenChange?: (open: boolean) => void }) {
+function DropdownMenu({ item, isActive, onOpenChange, onAction }: { item: NavItemWithSubmenu; isActive: boolean; onOpenChange?: (open: boolean) => void; onAction?: (path: string) => boolean }) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -208,7 +226,6 @@ function DropdownMenu({ item, isActive, onOpenChange }: { item: NavItemWithSubme
         event.preventDefault();
         event.stopPropagation();
         setIsOpen(false);
-        // Blur the button to prevent focus issues
         buttonRef.current?.blur();
       }
     }
@@ -249,11 +266,25 @@ function DropdownMenu({ item, isActive, onOpenChange }: { item: NavItemWithSubme
                   key={subItem.label}
                   item={subItem}
                   onClose={() => setIsOpen(false)}
+                  onAction={onAction}
                 />
               );
             }
             const SubIcon = subItem.icon;
             const isSubActive = location.pathname === subItem.path;
+            // Action items (e.g. Switch User)
+            if (onAction && subItem.path.startsWith('/action/')) {
+              return (
+                <button
+                  key={subItem.path}
+                  onClick={() => { setIsOpen(false); onAction(subItem.path); }}
+                  className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  <SubIcon className="h-4 w-4 text-gray-400" />
+                  <span>{subItem.label}</span>
+                </button>
+              );
+            }
             return (
               <Link
                 key={subItem.path}
@@ -369,42 +400,44 @@ export function Layout({ children }: LayoutProps) {
     setHasUnsavedChanges(false);
   }, [location.pathname, setHasUnsavedChanges]);
 
-  // Build nav items based on permissions
+  // Build nav items — two top-level groups mirroring Opera
   const filteredNavItems: NavEntry[] = [];
 
-  // Cashbook
-  if (hasPermission('cashbook')) {
-    filteredNavItems.push({ label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu });
-  }
-
-  // Payroll
-  if (hasPermission('payroll')) {
-    filteredNavItems.push({ label: 'Payroll', icon: Briefcase, submenu: payrollSubmenu });
-  }
-
-  // Suppliers (was AP Automation)
-  if (hasPermission('ap_automation')) {
-    filteredNavItems.push({ label: 'Suppliers', icon: Truck, submenu: suppliersSubmenu });
-  }
-
-  // Utilities
-  if (hasPermission('utilities')) {
-    filteredNavItems.push({ label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu });
-  }
-
-  // Opera Modules (was Development)
-  if (hasPermission('development')) {
-    filteredNavItems.push({ label: 'Opera', icon: Boxes, submenu: operaModulesSubmenu });
-  }
-
-  // Administration
+  // --- Administration (left) ---
   if (hasPermission('administration')) {
     filteredNavItems.push({
-      label: 'System',
+      label: 'Administration',
       icon: Settings,
       submenu: getAdministrationSubmenu(user?.is_admin || false),
     });
   }
+
+  // --- Financials (right) ---
+  const financialsSubmenu: (NavItem | NavItemWithSubmenu)[] = [];
+  if (hasPermission('cashbook')) {
+    financialsSubmenu.push({ label: 'Cashbook', icon: BookOpen, submenu: cashbookSubmenu });
+  }
+  if (hasPermission('payroll')) {
+    financialsSubmenu.push({ label: 'Payroll', icon: Briefcase, submenu: payrollSubmenu });
+  }
+  if (hasPermission('ap_automation')) {
+    financialsSubmenu.push({ label: 'Suppliers', icon: Truck, submenu: suppliersSubmenu });
+  }
+  if (hasPermission('development')) {
+    financialsSubmenu.push({ label: 'Opera Modules', icon: Boxes, submenu: operaModulesSubmenu });
+  }
+  if (financialsSubmenu.length > 0) {
+    filteredNavItems.push({ label: 'Financials', icon: Landmark, submenu: financialsSubmenu });
+  }
+
+  // Handle action items from menus (e.g. Switch User)
+  const handleMenuAction = (path: string): boolean => {
+    if (path === SWITCH_USER_PATH) {
+      setShowLogonConfirm(true);
+      return true;
+    }
+    return false;
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -412,42 +445,8 @@ export function Layout({ children }: LayoutProps) {
       <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-14">
-            {/* Logo, Brand & Logout */}
+            {/* Logo & Brand */}
             <div className="flex items-center gap-4">
-              {/* Logon button on far left - allows switching users */}
-              {user && (
-                <div className="relative" ref={logonRef}>
-                  <button
-                    onClick={() => setShowLogonConfirm(prev => !prev)}
-                    className="px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-gray-200 flex items-center gap-1.5"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />
-                    Switch User
-                  </button>
-                  {showLogonConfirm && (
-                    <div className="absolute top-full left-0 mt-1.5 w-72 bg-white rounded-xl shadow-xl border border-gray-200 p-4 z-50">
-                      <p className="text-sm text-gray-700 mb-1">
-                        <span className="font-medium">Sign out</span> of <span className="font-semibold text-gray-900">{user.display_name || user.username}</span>?
-                      </p>
-                      <p className="text-xs text-gray-500 mb-3">You will be returned to the sign-in screen to log in as a different user.</p>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => { setShowLogonConfirm(false); logout(); }}
-                          className="flex-1 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-                        >
-                          Sign Out
-                        </button>
-                        <button
-                          onClick={() => setShowLogonConfirm(false)}
-                          className="flex-1 px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
               <Link to="/" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
                 <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg flex items-center justify-center">
                   <Database className="h-4.5 w-4.5 text-white" />
@@ -468,6 +467,7 @@ export function Layout({ children }: LayoutProps) {
                       item={item}
                       isActive={isActive}
                       onOpenChange={(open) => handleMenuOpenChange(item.label, open)}
+                      onAction={handleMenuAction}
                     />
                   );
                 }
@@ -519,6 +519,33 @@ export function Layout({ children }: LayoutProps) {
           </div>
         </div>
       </header>
+
+      {/* Switch User confirmation overlay */}
+      {showLogonConfirm && user && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
+          <div className="fixed inset-0 bg-black/20" onClick={() => setShowLogonConfirm(false)} />
+          <div ref={logonRef} className="relative w-80 bg-white rounded-xl shadow-xl border border-gray-200 p-5 z-10">
+            <p className="text-sm text-gray-700 mb-1">
+              <span className="font-medium">Sign out</span> of <span className="font-semibold text-gray-900">{user.display_name || user.username}</span>?
+            </p>
+            <p className="text-xs text-gray-500 mb-4">You will be returned to the sign-in screen to log in as a different user.</p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { setShowLogonConfirm(false); logout(); }}
+                className="flex-1 px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Sign Out
+              </button>
+              <button
+                onClick={() => setShowLogonConfirm(false)}
+                className="flex-1 px-3 py-2 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-14">
