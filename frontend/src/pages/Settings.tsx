@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, Pencil, X, Settings as SettingsIcon } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, TestTube, Database, Server, Pencil, X, Settings as SettingsIcon, Monitor } from 'lucide-react';
 import apiClient from '../api/client';
 import type { ProviderConfig, DatabaseConfig, EmailProviderCreate, EmailProvider, OperaConfig, Opera3Company } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
@@ -357,9 +357,18 @@ export function Settings() {
     <div className="space-y-6">
       <PageHeader
         icon={SettingsIcon}
-        title={activeSystemName ? `Settings — ${activeSystemName}` : 'Settings'}
+        title="Settings"
         subtitle="Configure your LLM provider and database connection"
       />
+
+      {activeSystemName && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-lg">
+          <Monitor className="h-4 w-4 text-blue-600 flex-shrink-0" />
+          <span className="text-sm text-blue-800">
+            Configuring: <span className="font-semibold">{activeSystemName}</span>
+          </span>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* LLM Settings */}
