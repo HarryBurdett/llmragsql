@@ -57,13 +57,16 @@ export function Home() {
         <p className="text-sm text-gray-500 mt-1">Here's your overview for today</p>
       </div>
 
-      {/* System Health Strip */}
-      <div className="flex items-center gap-4 px-4 py-2.5 bg-white border border-gray-200 rounded-lg">
-        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">System</span>
-        <StatusDot label="Database" ok={status?.sql_connector} />
-        <StatusDot label="Vectors" ok={status?.vector_db} />
-        <StatusDot label="AI" ok={status?.llm} />
-      </div>
+      {/* System Health Strip — only show when something is down */}
+      {status && (!status.sql_connector || !status.vector_db || !status.llm) && (
+        <div className="flex items-center gap-4 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-lg">
+          <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0" />
+          <span className="text-xs font-medium text-amber-800">System issue:</span>
+          {!status.sql_connector && <StatusDot label="Database" ok={false} />}
+          {!status.vector_db && <StatusDot label="Vectors" ok={false} />}
+          {!status.llm && <StatusDot label="AI" ok={false} />}
+        </div>
+      )}
 
       {/* Finance Summary Cards */}
       {pl && (
