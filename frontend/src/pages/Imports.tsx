@@ -284,8 +284,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [showRawPreview, setShowRawPreview] = useState(false);
   const [validateOnly, setValidateOnly] = useState(true);
 
-  // PDF viewer popup state (supports base64 data or direct URL)
-  const [pdfViewerData, setPdfViewerData] = useState<{ data: string; filename: string; viewUrl?: string } | null>(null);
 
   // Data source derived from Opera settings configuration
   const { data: operaConfigData } = useQuery({
@@ -1281,7 +1279,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         // Clear UI state
         setShowRawPreview(false);
         setRawFilePreview(null);
-        setPdfViewerData(null);
         setShowReconcilePrompt(false);
         setShowImportHistory(false);
         setImportHistoryData([]);
@@ -2245,7 +2242,27 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     }
   };
 
+  // Open PDF in a new browser tab from base64 data (preserves current page state)
+  const openPdfInNewTab = (base64Data: string, filename: string) => {
+    try {
+      const byteChars = atob(base64Data);
+      const byteNumbers = new Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) {
+        byteNumbers[i] = byteChars.charCodeAt(i);
+      }
+      const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl, '_blank');
+      // Clean up blob URL after a delay (browser needs time to load it)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+    } catch {
+      // Fallback: open as data URL (less reliable but works in most browsers)
+      window.open(`data:application/pdf;base64,${base64Data}`, '_blank');
+    }
+  };
+
   // Preview raw file contents (first 50 lines) - works for all source types
+  // PDFs open in a new tab so the analysis page is not disrupted
   const handleRawFilePreview = async () => {
     try {
       let response;
@@ -2256,8 +2273,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         const data = await response.json();
         if (data.success) {
           if (data.is_pdf && data.pdf_data) {
-            // PDF - show in PDF viewer popup
-            setPdfViewerData({ data: data.pdf_data, filename: data.filename || 'document.pdf' });
+            // PDF - open in new tab to preserve analysis state
+            openPdfInNewTab(data.pdf_data, data.filename || 'document.pdf');
           } else {
             setRawFilePreview(data.lines);
             setShowRawPreview(true);
@@ -2267,11 +2284,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           setShowRawPreview(true);
         }
       } else if (statementSource === 'pdf' && selectedPdfFile) {
-        // PDF source - open the PDF file in viewer
+        // PDF source - open in new tab to preserve analysis state
         response = await authFetch(`${API_BASE}/bank-import/pdf-content?filename=${encodeURIComponent(selectedPdfFile.filename)}`);
         const data = await response.json();
         if (data.success && data.pdf_data) {
-          setPdfViewerData({ data: data.pdf_data, filename: selectedPdfFile.filename });
+          openPdfInNewTab(data.pdf_data, selectedPdfFile.filename);
         } else {
           setRawFilePreview([`Error: ${data.error || 'Failed to read PDF'}`]);
           setShowRawPreview(true);
@@ -2294,15 +2311,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     }
   };
 
-  // Preview raw email attachment contents (first 50 lines) or PDF in popup
+  // Preview raw email attachment contents (first 50 lines) or PDF in new tab
   const handleEmailAttachmentRawPreview = async (emailId: number, attachmentId: string) => {
     try {
       const response = await authFetch(`${API_BASE}/bank-import/raw-preview-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&lines=50`);
       const data = await response.json();
       if (data.success) {
-        // If it's a PDF, show in PDF viewer popup
+        // If it's a PDF, open in new tab to preserve page state
         if (data.is_pdf && data.pdf_data) {
-          setPdfViewerData({ data: data.pdf_data, filename: data.filename || 'document.pdf' });
+          openPdfInNewTab(data.pdf_data, data.filename || 'document.pdf');
         } else {
           setRawFilePreview(data.lines);
           setShowRawPreview(true);
@@ -3061,7 +3078,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     }
   };
 
-  // View PDF file from filesystem in popup
+  // View PDF file from filesystem in new tab (preserves analysis state)
   const handlePdfFileView = (filename: string) => {
     if (!pdfDirectory || !filename) return;
 
@@ -3069,9 +3086,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       ? pdfDirectory + filename
       : pdfDirectory + '/' + filename;
 
-    // Open PDF directly using the file view API
+    // Open PDF directly in new tab using the file view API
     const viewUrl = `${API_BASE}/file/view?path=${encodeURIComponent(fullPath)}`;
-    setPdfViewerData({ data: '', filename, viewUrl });
+    window.open(viewUrl, '_blank');
   };
 
   // Preview bank statement from PDF file (similar to email preview)
@@ -6125,32 +6142,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     </div>
                   )}
 
-                  {/* PDF Viewer Modal */}
-                  {pdfViewerData && (
-                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl w-[90vw] h-[90vh] flex flex-col">
-                        <div className="bg-gray-100 px-4 py-3 border-b border-gray-200 flex items-center justify-between rounded-t-lg">
-                          <h4 className="font-medium text-gray-700 flex items-center gap-2">
-                            <FileText className="h-4 w-4" />
-                            {pdfViewerData.filename}
-                          </h4>
-                          <button
-                            onClick={() => setPdfViewerData(null)}
-                            className="text-gray-500 hover:text-gray-700 p-1"
-                          >
-                            <X className="h-5 w-5" />
-                          </button>
-                        </div>
-                        <div className="flex-1 overflow-hidden">
-                          <iframe
-                            src={pdfViewerData.viewUrl || `data:application/pdf;base64,${pdfViewerData.data}`}
-                            className="w-full h-full"
-                            title={pdfViewerData.filename}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
 
                   {/* Import Readiness Summary */}
                   {importReadiness && bankPreview && (
