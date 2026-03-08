@@ -6,7 +6,7 @@ import {
   CreditCard, BookOpen, Users, Building2, Scale, Wrench, Truck,
   FileText, MessageSquare, Shield, LayoutDashboard, Receipt,
   Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList,
-  Cog, Activity, Boxes, LogOut, KeyRound, Send, RotateCcw
+  Cog, Activity, Boxes, LogOut, KeyRound, Send, RotateCcw, Monitor
 } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
 import { useAuth } from '../context/AuthContext';
@@ -309,6 +309,16 @@ export function Layout({ children }: LayoutProps) {
   });
   const currentCompany = companiesData?.current_company;
 
+  // Get active system name
+  const { data: activeSystemData } = useQuery({
+    queryKey: ['activeSystem'],
+    queryFn: async () => {
+      const response = await apiClient.getActiveSystem();
+      return response.data;
+    },
+  });
+  const activeSystem = activeSystemData?.system;
+
   // Track which menus are open
   const handleMenuOpenChange = (menuLabel: string, isOpen: boolean) => {
     if (isOpen) {
@@ -522,6 +532,12 @@ export function Layout({ children }: LayoutProps) {
       <footer className="fixed bottom-0 left-0 right-0 bg-gray-900 text-white px-4 py-1.5 z-30">
         <div className="max-w-7xl mx-auto flex items-center justify-between text-xs">
           <div className="flex items-center gap-4">
+            {activeSystem && (
+              <div className="flex items-center gap-1.5">
+                <Monitor className="h-3.5 w-3.5 text-gray-500" />
+                <span className="text-gray-400">{activeSystem.name}</span>
+              </div>
+            )}
             {license && (
               <div className="flex items-center gap-1.5">
                 <KeyRound className="h-3.5 w-3.5 text-gray-500" />

@@ -94,6 +94,10 @@ user_auth: Optional[UserAuth] = None
 # Get the config path relative to the project root
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.ini")
 COMPANIES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "companies")
+SYSTEMS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "systems.json")
+
+# Currently active system ID (set on startup and when switching)
+active_system_id: Optional[str] = None
 
 
 def load_config(config_path: str = None) -> configparser.ConfigParser:
@@ -228,15 +232,136 @@ def save_config(cfg: configparser.ConfigParser, config_path: str = None):
         cfg.write(f)
 
 
+# ============ Systems (Named Config Profiles) ============
+
+def load_systems() -> List[Dict[str, Any]]:
+    """Load all system profiles. Auto-creates from config.ini if none exist."""
+    if os.path.exists(SYSTEMS_PATH):
+        try:
+            with open(SYSTEMS_PATH, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Could not load systems.json: {e}")
+    # Auto-create a default system from the current config.ini
+    systems = [_system_from_current_config("default", "Default System", True)]
+    save_systems(systems)
+    return systems
+
+
+def save_systems(systems: List[Dict[str, Any]]):
+    """Persist systems list to disk."""
+    with open(SYSTEMS_PATH, 'w') as f:
+        json.dump(systems, f, indent=2)
+
+
+def _system_from_current_config(system_id: str, name: str, is_default: bool) -> Dict[str, Any]:
+    """Build a system profile dict from the current config.ini values."""
+    cfg = load_config()
+    db = {}
+    if cfg.has_section("database"):
+        for key in ("type", "server", "port", "database", "username", "password",
+                     "use_windows_auth", "pool_size", "max_overflow", "pool_timeout",
+                     "connection_timeout", "command_timeout", "ssl", "trust_server_certificate"):
+            db[key] = cfg.get("database", key, fallback="")
+    opera = {}
+    if cfg.has_section("opera"):
+        for key in ("version", "opera3_server_path", "opera3_base_path"):
+            opera[key] = cfg.get("opera", key, fallback="")
+    return {
+        "id": system_id,
+        "name": name,
+        "is_default": is_default,
+        "database": db,
+        "opera": opera,
+    }
+
+
+def apply_system_to_config(system: Dict[str, Any]):
+    """Write a system profile's database/opera settings into config.ini and reload."""
+    global config, sql_connector, active_system_id
+
+    if not config:
+        config = load_config()
+
+    # Apply database settings
+    if "database" in system:
+        if not config.has_section("database"):
+            config.add_section("database")
+        for key, value in system["database"].items():
+            config["database"][key] = str(value)
+
+    # Apply opera settings
+    if "opera" in system:
+        if not config.has_section("opera"):
+            config.add_section("opera")
+        for key, value in system["opera"].items():
+            config["opera"][key] = str(value)
+
+    save_config(config)
+    active_system_id = system["id"]
+
+    # Reinitialize SQL connector
+    try:
+        sql_connector = SQLConnector(CONFIG_PATH)
+        logger.info(f"Switched to system: {system['name']} (id={system['id']})")
+    except Exception as e:
+        logger.warning(f"SQL connector reinit failed after system switch: {e}")
+
+
+def _sync_active_system_config():
+    """Sync the active system's database/opera fields from the current config.ini.
+    Called after Settings saves database or opera config so the system profile stays in sync."""
+    if not active_system_id:
+        return
+    try:
+        systems = load_systems()
+        for s in systems:
+            if s["id"] == active_system_id:
+                # Read current database config from config.ini
+                if config and config.has_section("database"):
+                    s["database"] = {k: v for k, v in config.items("database")}
+                if config and config.has_section("opera"):
+                    s["opera"] = {k: v for k, v in config.items("opera")}
+                save_systems(systems)
+                break
+    except Exception as e:
+        logger.warning(f"Could not sync system config: {e}")
+
+
+def get_active_system() -> Optional[Dict[str, Any]]:
+    """Return the currently active system profile."""
+    systems = load_systems()
+    if active_system_id:
+        for s in systems:
+            if s["id"] == active_system_id:
+                return s
+    # Fall back to default
+    for s in systems:
+        if s.get("is_default"):
+            return s
+    return systems[0] if systems else None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     global config, sql_connector, vector_db, llm, user_auth, current_company
     global email_storage, email_sync_manager, email_categorizer, customer_linker
+    global active_system_id
 
     # Startup
     logger.info("Starting SQL RAG API...")
     config = load_config()
+
+    # Initialise active system from systems.json (creates default if missing)
+    try:
+        systems = load_systems()
+        default_sys = next((s for s in systems if s.get("is_default")), systems[0] if systems else None)
+        if default_sys:
+            active_system_id = default_sys["id"]
+            logger.info(f"Active system: {default_sys['name']} (id={default_sys['id']})")
+    except Exception as e:
+        logger.warning(f"Could not initialise systems: {e}")
 
     # Detect current company from config and set up per-company data directory
     try:
@@ -1613,6 +1738,9 @@ async def update_database_config(db_config: DatabaseConfig):
 
     save_config(config)
 
+    # Sync the active system profile with the updated config
+    _sync_active_system_config()
+
     # Reinitialize SQL connector
     try:
         sql_connector = SQLConnector(config)
@@ -1663,6 +1791,9 @@ async def update_opera_config(opera_config: OperaConfig):
         config["opera"]["opera3_company_code"] = opera_config.opera3_company_code
 
     save_config(config)
+
+    # Sync the active system profile with the updated config
+    _sync_active_system_config()
 
     return {"success": True, "message": "Opera configuration updated"}
 
@@ -1749,6 +1880,138 @@ async def test_opera_connection(opera_config: OperaConfig):
             return {"success": False, "error": f"Path not found: {str(e)}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+# ============ Systems (Named Config Profiles) ============
+
+@app.get("/api/systems")
+async def get_systems():
+    """List all configured systems and which is active."""
+    systems = load_systems()
+    return {
+        "systems": systems,
+        "active_system_id": active_system_id,
+    }
+
+
+@app.get("/api/systems/active")
+async def get_active_system_endpoint():
+    """Get the currently active system profile."""
+    system = get_active_system()
+    if not system:
+        return {"system": None}
+    return {"system": system}
+
+
+class SystemCreate(BaseModel):
+    name: str
+    database: Dict[str, Any] = {}
+    opera: Dict[str, Any] = {}
+    is_default: bool = False
+
+
+@app.post("/api/systems")
+async def create_system(body: SystemCreate):
+    """Create a new system profile."""
+    systems = load_systems()
+
+    # Generate a simple ID from the name
+    system_id = body.name.lower().replace(" ", "_").replace("-", "_")
+    # Ensure unique
+    existing_ids = {s["id"] for s in systems}
+    base_id = system_id
+    counter = 1
+    while system_id in existing_ids:
+        system_id = f"{base_id}_{counter}"
+        counter += 1
+
+    # If this is marked as default, clear default from others
+    if body.is_default:
+        for s in systems:
+            s["is_default"] = False
+
+    new_system = {
+        "id": system_id,
+        "name": body.name,
+        "is_default": body.is_default,
+        "database": body.database,
+        "opera": body.opera,
+    }
+    systems.append(new_system)
+    save_systems(systems)
+
+    return {"success": True, "system": new_system}
+
+
+@app.put("/api/systems/{system_id}")
+async def update_system(system_id: str, body: SystemCreate):
+    """Update an existing system profile."""
+    systems = load_systems()
+    target = None
+    for s in systems:
+        if s["id"] == system_id:
+            target = s
+            break
+
+    if not target:
+        raise HTTPException(status_code=404, detail="System not found")
+
+    # If setting as default, clear others
+    if body.is_default:
+        for s in systems:
+            s["is_default"] = False
+
+    target["name"] = body.name
+    target["is_default"] = body.is_default
+    target["database"] = body.database
+    target["opera"] = body.opera
+
+    save_systems(systems)
+
+    # If this is the active system, re-apply config
+    if active_system_id == system_id:
+        apply_system_to_config(target)
+
+    return {"success": True, "system": target}
+
+
+@app.delete("/api/systems/{system_id}")
+async def delete_system(system_id: str):
+    """Delete a system profile. Cannot delete the last one."""
+    systems = load_systems()
+
+    if len(systems) <= 1:
+        return {"success": False, "error": "Cannot delete the only system."}
+
+    if system_id == active_system_id:
+        return {"success": False, "error": "Cannot delete the currently active system. Switch to another system first."}
+
+    systems = [s for s in systems if s["id"] != system_id]
+
+    # Ensure at least one default
+    if not any(s.get("is_default") for s in systems):
+        systems[0]["is_default"] = True
+
+    save_systems(systems)
+    return {"success": True}
+
+
+@app.post("/api/systems/{system_id}/activate")
+async def activate_system(system_id: str):
+    """Switch to a different system. Updates config.ini and reinitialises the SQL connector."""
+    systems = load_systems()
+    target = None
+    for s in systems:
+        if s["id"] == system_id:
+            target = s
+            break
+
+    if not target:
+        raise HTTPException(status_code=404, detail="System not found")
+
+    apply_system_to_config(target)
+
+    return {"success": True, "message": f"Switched to {target['name']}"}
 
 
 # ============ Company Management Endpoints ============

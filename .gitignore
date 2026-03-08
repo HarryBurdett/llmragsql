@@ -10,6 +10,7 @@ build/
 # Environment and secrets
 .env
 config.ini
+systems.json
 *.key
 *.pem
 

@@ -2,8 +2,9 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
-import { Building2, User, Lock, Briefcase, ChevronDown, LogIn, AlertCircle, X } from 'lucide-react';
+import { Building2, User, Lock, Briefcase, ChevronDown, LogIn, AlertCircle, X, Monitor } from 'lucide-react';
 import apiClient from '../api/client';
+import type { SystemProfile } from '../api/client';
 
 interface Company {
   id: string;
@@ -46,6 +47,12 @@ export function Login() {
   const [selectedLicense, setSelectedLicense] = useState<number | null>(null);
   const [licensesLoading, setLicensesLoading] = useState(true);
 
+  // System selection state
+  const [systems, setSystems] = useState<SystemProfile[]>([]);
+  const [selectedSystem, setSelectedSystem] = useState<string | null>(null);
+  const [systemsLoading, setSystemsLoading] = useState(true);
+  const [activeSystemId, setActiveSystemId] = useState<string | null>(null);
+
   // Company selection state
   const [companies, setCompanies] = useState<Company[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
@@ -56,8 +63,26 @@ export function Login() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  // Fetch licenses and companies on mount
+  // Fetch systems, licenses, and companies on mount
   useEffect(() => {
+    async function fetchSystems() {
+      try {
+        const response = await apiClient.getSystems();
+        const data = response.data;
+        setSystems(data.systems || []);
+        setActiveSystemId(data.active_system_id);
+        // Pre-select the active or default system
+        const active = data.systems?.find((s: SystemProfile) => s.id === data.active_system_id);
+        const dflt = data.systems?.find((s: SystemProfile) => s.is_default);
+        const pick = active || dflt || data.systems?.[0];
+        if (pick) setSelectedSystem(pick.id);
+      } catch (err) {
+        console.error('Failed to fetch systems:', err);
+      } finally {
+        setSystemsLoading(false);
+      }
+    }
+
     async function fetchLicenses() {
       try {
         const response = await fetch('http://localhost:8000/api/licenses');
@@ -90,6 +115,7 @@ export function Login() {
       }
     }
 
+    fetchSystems();
     fetchLicenses();
     fetchCompanies();
   }, []);
@@ -131,6 +157,11 @@ export function Login() {
     setIsLoading(true);
 
     try {
+      // Activate the selected system if it differs from the current active one
+      if (selectedSystem && selectedSystem !== activeSystemId && systems.length > 1) {
+        await apiClient.activateSystem(selectedSystem);
+      }
+
       const result = await login(username, password);
 
       if (result.success) {
@@ -178,10 +209,42 @@ export function Login() {
           <p className="text-center text-sm text-gray-500">
             Sign in with your Opera credentials
           </p>
+          {systems.length === 1 && systems[0]?.name && (
+            <p className="text-center text-xs text-gray-400 mt-1.5">
+              {systems[0].name}
+            </p>
+          )}
         </div>
 
         <div className="px-8 py-6">
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* System Selection - only show if multiple systems */}
+            {systems.length > 1 && (
+              <div>
+                <label htmlFor="system" className="block text-sm font-medium text-gray-700 mb-1.5">
+                  System
+                </label>
+                <div className="relative">
+                  <Monitor className="absolute left-3 top-1/2 -translate-y-1/2 h-4.5 w-4.5 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
+                  <select
+                    id="system"
+                    value={selectedSystem || ''}
+                    onChange={(e) => setSelectedSystem(e.target.value || null)}
+                    className="w-full pl-10 pr-10 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all outline-none bg-white cursor-pointer appearance-none text-sm"
+                    disabled={systemsLoading}
+                  >
+                    <option value="">Select system...</option>
+                    {systems.map((sys) => (
+                      <option key={sys.id} value={sys.id}>
+                        {sys.name}{sys.is_default ? ' (Default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" tabIndex={-1} aria-hidden="true" focusable="false" />
+                </div>
+              </div>
+            )}
+
             {/* Client Selection - only show if multiple licenses */}
             {licenses.length > 1 && (
               <div>
@@ -288,7 +351,7 @@ export function Login() {
 
             <button
               type="submit"
-              disabled={isLoading || companiesLoading || licensesLoading}
+              disabled={isLoading || companiesLoading || licensesLoading || systemsLoading}
               className="w-full py-2.5 px-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold rounded-lg shadow-md hover:from-blue-700 hover:to-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-2"
             >
               {isLoading ? (

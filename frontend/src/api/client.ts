@@ -389,6 +389,14 @@ export interface OperaConfig {
   opera3_company_code?: string;
 }
 
+export interface SystemProfile {
+  id: string;
+  name: string;
+  is_default: boolean;
+  database: Record<string, string>;
+  opera: Record<string, string>;
+}
+
 export interface Opera3Company {
   code: string;
   name: string;
@@ -1064,6 +1072,18 @@ export const apiClient = {
   getModels: (provider: string) => api.get<{ provider: string; models: string[] }>(`/config/models/${provider}`),
   updateLLMConfig: (config: ProviderConfig) => api.post('/config/llm', config),
   updateDatabaseConfig: (config: DatabaseConfig) => api.post('/config/database', config),
+
+  // Systems (named config profiles)
+  getSystems: () => api.get<{ systems: SystemProfile[]; active_system_id: string | null }>('/systems'),
+  getActiveSystem: () => api.get<{ system: SystemProfile | null }>('/systems/active'),
+  createSystem: (data: { name: string; database: Record<string, string>; opera: Record<string, string>; is_default?: boolean }) =>
+    api.post<{ success: boolean; system: SystemProfile; error?: string }>('/systems', data),
+  updateSystem: (id: string, data: { name: string; database: Record<string, string>; opera: Record<string, string>; is_default?: boolean }) =>
+    api.put<{ success: boolean; system: SystemProfile; error?: string }>(`/systems/${id}`, data),
+  deleteSystem: (id: string) =>
+    api.delete<{ success: boolean; error?: string }>(`/systems/${id}`),
+  activateSystem: (id: string) =>
+    api.post<{ success: boolean; message?: string }>(`/systems/${id}/activate`),
 
   // Opera Configuration
   getOperaConfig: () => api.get<OperaConfig>('/config/opera'),
