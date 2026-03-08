@@ -397,6 +397,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     closingBalanceMismatch?: { expected: number; actual: number } | null;
   } | null>(null);
 
+  // Partial update success indicator — shows confirmation without clearing the view
+  const [lastPartialUpdateInfo, setLastPartialUpdateInfo] = useState<{
+    timestamp: string;
+    entriesReconciled: number;
+  } | null>(null);
+
   // Statement data passed from Imports page (via sessionStorage) after import
   // Contains the real PDF-extracted transactions for matching
   const [importedStatementData, setImportedStatementData] = useState<{
@@ -1475,6 +1481,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
 
     setIsReconciling(true);
+    setLastPartialUpdateInfo(null); // Clear previous indicator while updating
 
     // Gather all selected entries (using entry_number as key), respecting manual overrides
     const selectedEntriesToReconcile: { entry_number: string; statement_line: number }[] = [];
@@ -1652,26 +1659,39 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         // Detect closing balance mismatch (was previously a separate dialog)
         const hasClosingMismatch = newRecBal != null && !isNaN(expectedClosing) && Math.abs(newRecBal - expectedClosing) > 0.01;
 
-        // Show completion confirmation with stats instead of auto-redirecting
-        setReconcileCompleteInfo({
-          entriesReconciled: data.entries_reconciled || 0,
-          closingBalance: newRecBal,
-          isPartial: isPartial,
-          closingBalanceMismatch: hasClosingMismatch ? { expected: expectedClosing, actual: newRecBal! } : null,
-        });
-        // Reset matching state but keep completion info visible
-        setMatchingResult(null);
-        setValidationResult(null);
-        setSelectedAutoMatches(new Set());
-        setSelectedSuggestedMatches(new Set());
-        // Clear statement preview data
-        setStatementResult(null);
-        setStatementPath('');
-        setProcessingError(null);
-        // Refresh queries
-        queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
-        queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
-        queryClient.invalidateQueries({ queryKey: ['statementFiles'] });
+        if (isPartial) {
+          // Partial update: keep the matching view intact, show success indicator
+          const now = new Date();
+          setLastPartialUpdateInfo({
+            timestamp: now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+            entriesReconciled: data.entries_reconciled || 0,
+          });
+          // Refresh queries so the table reflects updated reconciliation state
+          queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
+          queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+          queryClient.invalidateQueries({ queryKey: ['statementFiles'] });
+        } else {
+          // Full reconciliation: show completion confirmation and clear the view
+          setReconcileCompleteInfo({
+            entriesReconciled: data.entries_reconciled || 0,
+            closingBalance: newRecBal,
+            isPartial: false,
+            closingBalanceMismatch: hasClosingMismatch ? { expected: expectedClosing, actual: newRecBal! } : null,
+          });
+          // Reset matching state but keep completion info visible
+          setMatchingResult(null);
+          setValidationResult(null);
+          setSelectedAutoMatches(new Set());
+          setSelectedSuggestedMatches(new Set());
+          // Clear statement preview data
+          setStatementResult(null);
+          setStatementPath('');
+          setProcessingError(null);
+          // Refresh queries
+          queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
+          queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+          queryClient.invalidateQueries({ queryKey: ['statementFiles'] });
+        }
       } else {
         showDialog({ title: 'Reconciliation Failed', message: data.error || data.messages?.join(', ') || 'Unknown error', type: 'error' });
       }
@@ -2367,7 +2387,21 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             }
           </button>
         </div>
-        {!allMatched && selectedCount > 0 && (
+        {lastPartialUpdateInfo && (
+          <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded px-3 py-1.5 text-sm text-green-800">
+            <CheckCircle className="w-4 h-4 text-green-600 flex-shrink-0" />
+            <span>
+              Opera updated at {lastPartialUpdateInfo.timestamp} — {lastPartialUpdateInfo.entriesReconciled} {lastPartialUpdateInfo.entriesReconciled === 1 ? 'entry' : 'entries'} reconciled
+            </span>
+            <button
+              onClick={() => setLastPartialUpdateInfo(null)}
+              className="ml-auto text-green-400 hover:text-green-600"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+        {!allMatched && selectedCount > 0 && !lastPartialUpdateInfo && (
           <p className="text-xs text-amber-700 text-right mt-1">
             {matchingResult.summary?.unmatched_statement_count || 0} unmatched line(s) — complete remaining in Opera Cashbook &gt; Reconcile
           </p>
