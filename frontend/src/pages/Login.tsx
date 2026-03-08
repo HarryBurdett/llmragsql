@@ -85,7 +85,7 @@ export function Login() {
 
     async function fetchLicenses() {
       try {
-        const response = await fetch('http://localhost:8000/api/licenses');
+        const response = await fetch('/api/licenses');
         const data = await response.json();
         setLicenses(data.licenses || []);
         // Select first license by default if available
@@ -101,7 +101,7 @@ export function Login() {
 
     async function fetchCompanies() {
       try {
-        const response = await fetch('http://localhost:8000/api/companies/list');
+        const response = await fetch('/api/companies/list');
         const data = await response.json();
         setCompanies(data.companies || []);
         // Select first company by default if available
@@ -125,7 +125,7 @@ export function Login() {
   useEffect(() => {
     if (!username.trim()) return;
     const timer = setTimeout(() => {
-      fetch(`http://localhost:8000/api/auth/user-default-company?username=${encodeURIComponent(username)}`)
+      fetch(`/api/auth/user-default-company?username=${encodeURIComponent(username)}`)
         .then(response => response.ok ? response.json() : null)
         .then(data => {
           if (data?.default_company) {
