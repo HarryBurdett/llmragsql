@@ -19,6 +19,7 @@ PUBLIC_PATHS: Set[str] = {
     '/api/auth/user-default-company',  # For login page to get user's default company
     '/api/licenses',  # For login page client dropdown
     '/api/companies/list',  # For login page company dropdown
+    '/api/systems',  # For login page installation selector
     '/api/health',
     '/api/email/send',  # Allow sending emails without auth (for demos, notifications)
     '/api/email/sync',  # Allow syncing mailbox without auth

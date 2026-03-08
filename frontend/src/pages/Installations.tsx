@@ -1,20 +1,83 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Monitor, Plus, Pencil, Trash2, Star, CheckCircle, AlertCircle, X, Server, ArrowRight } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  Monitor, Plus, Pencil, Trash2, Star, CheckCircle, AlertCircle, X,
+  Server, Save, ChevronDown, ChevronRight, Database, RefreshCw, TestTube
+} from 'lucide-react';
 import apiClient from '../api/client';
-import type { SystemProfile } from '../api/client';
+import type { SystemProfile, DatabaseConfig, OperaConfig, Opera3Company } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
+
+interface SystemFormState {
+  // Database
+  dbType: string;
+  dbServer: string;
+  dbPort: string;
+  dbDatabase: string;
+  dbUsername: string;
+  dbPassword: string;
+  useWindowsAuth: boolean;
+  ssl: boolean;
+  // Opera
+  operaVersion: 'sql_se' | 'opera3';
+  opera3ServerPath: string;
+  opera3BasePath: string;
+  opera3CompanyCode: string;
+}
+
+function systemToForm(sys: SystemProfile): SystemFormState {
+  return {
+    dbType: sys.database?.type || 'mssql',
+    dbServer: sys.database?.server || '',
+    dbPort: sys.database?.port || '1433',
+    dbDatabase: sys.database?.database || '',
+    dbUsername: sys.database?.username || '',
+    dbPassword: sys.database?.password || '',
+    useWindowsAuth: sys.database?.use_windows_auth === 'True',
+    ssl: sys.database?.ssl === 'true',
+    operaVersion: (sys.opera?.version as 'sql_se' | 'opera3') || 'sql_se',
+    opera3ServerPath: sys.opera?.opera3_server_path || '',
+    opera3BasePath: sys.opera?.opera3_base_path || '',
+    opera3CompanyCode: sys.opera?.opera3_company_code || '',
+  };
+}
+
+function formToSystemData(form: SystemFormState) {
+  return {
+    database: {
+      type: form.dbType,
+      server: form.dbServer,
+      port: form.dbPort,
+      database: form.dbDatabase,
+      username: form.dbUsername,
+      password: form.dbPassword,
+      use_windows_auth: form.useWindowsAuth ? 'True' : 'False',
+      ssl: form.ssl ? 'true' : 'false',
+      trust_server_certificate: 'true',
+      pool_size: '5',
+      max_overflow: '10',
+      pool_timeout: '30',
+      connection_timeout: '30',
+      command_timeout: '60',
+    },
+    opera: {
+      version: form.operaVersion,
+      opera3_server_path: form.opera3ServerPath,
+      opera3_base_path: form.opera3BasePath,
+      opera3_company_code: form.opera3CompanyCode,
+    },
+  };
+}
 
 export function Installations() {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const [editingSystem, setEditingSystem] = useState<SystemProfile | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [newSystemName, setNewSystemName] = useState('');
   const [showAddSystem, setShowAddSystem] = useState(false);
-  const [showSettingsPrompt, setShowSettingsPrompt] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [form, setForm] = useState<SystemFormState | null>(null);
 
   const { data: systemsData, refetch } = useQuery({
     queryKey: ['systems'],
@@ -24,15 +87,52 @@ export function Installations() {
   const systems = systemsData?.data?.systems || [];
   const activeSystemId = systemsData?.data?.active_system_id;
 
+  // Load form when expanding an installation
+  useEffect(() => {
+    if (expandedId) {
+      const sys = systems.find(s => s.id === expandedId);
+      if (sys) setForm(systemToForm(sys));
+    } else {
+      setForm(null);
+    }
+  }, [expandedId, systems.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const invalidate = () => {
     refetch();
     queryClient.invalidateQueries({ queryKey: ['activeSystem'] });
   };
 
+  // Mutations for saving via the existing config endpoints (applies to active system)
+  const dbMutation = useMutation({
+    mutationFn: (data: DatabaseConfig) => apiClient.updateDatabaseConfig(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+      invalidate();
+    },
+  });
+
+  const operaMutation = useMutation({
+    mutationFn: (data: OperaConfig) => apiClient.updateOperaConfig(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['operaConfig'] });
+      invalidate();
+    },
+  });
+
+  const operaTestMutation = useMutation({
+    mutationFn: (data: OperaConfig) => apiClient.testOperaConnection(data),
+  });
+
+  // Opera 3 companies query
+  const { data: opera3Companies, refetch: refetchOpera3Companies } = useQuery({
+    queryKey: ['opera3Companies', form?.opera3BasePath],
+    queryFn: () => apiClient.getOpera3Companies(),
+    enabled: form?.operaVersion === 'opera3' && !!form?.opera3BasePath,
+  });
+
   const handleAdd = async () => {
     if (!newSystemName.trim()) return;
     try {
-      // Clone settings from the active installation so the new one has working defaults
       const activeSystem = systems.find(s => s.id === activeSystemId);
       const response = await apiClient.createSystem({
         name: newSystemName.trim(),
@@ -41,10 +141,13 @@ export function Installations() {
         is_default: systems.length === 0,
       });
       if (response.data.success) {
+        const newId = response.data.system?.id;
         setNewSystemName('');
         setShowAddSystem(false);
-        setMessage({ type: 'success', text: `"${newSystemName.trim()}" created with current settings. Connect to it, then update via Settings.` });
+        setMessage({ type: 'success', text: `"${newSystemName.trim()}" created` });
         invalidate();
+        // Auto-expand the new installation for editing
+        if (newId) setTimeout(() => setExpandedId(newId), 100);
       } else {
         setMessage({ type: 'error', text: response.data.error || 'Failed to create' });
       }
@@ -57,6 +160,7 @@ export function Installations() {
     try {
       const response = await apiClient.deleteSystem(sys.id);
       if (response.data.success) {
+        if (expandedId === sys.id) setExpandedId(null);
         setMessage({ type: 'success', text: `"${sys.name}" deleted` });
         invalidate();
       } else {
@@ -84,7 +188,7 @@ export function Installations() {
 
   const handleRename = async (sys: SystemProfile) => {
     if (!editName.trim() || editName.trim() === sys.name) {
-      setEditingSystem(null);
+      setEditingNameId(null);
       return;
     }
     try {
@@ -94,7 +198,7 @@ export function Installations() {
         opera: sys.opera,
         is_default: sys.is_default,
       });
-      setEditingSystem(null);
+      setEditingNameId(null);
       setMessage({ type: 'success', text: 'Renamed' });
       invalidate();
     } catch {
@@ -106,18 +210,77 @@ export function Installations() {
     try {
       const response = await apiClient.activateSystem(sys.id);
       if (response.data.success) {
+        setMessage({ type: 'success', text: `Switched to "${sys.name}"` });
         invalidate();
-        // Refresh config-dependent queries
         queryClient.invalidateQueries({ queryKey: ['config'] });
         queryClient.invalidateQueries({ queryKey: ['operaConfig'] });
         queryClient.invalidateQueries({ queryKey: ['companies'] });
-        // Show prompt to configure settings
-        setMessage(null);
-        setShowSettingsPrompt(sys.name);
       }
     } catch {
       setMessage({ type: 'error', text: 'Failed to switch installation' });
     }
+  };
+
+  const handleSaveSettings = async (sys: SystemProfile) => {
+    if (!form) return;
+
+    const isActive = sys.id === activeSystemId;
+    const data = formToSystemData(form);
+
+    if (isActive) {
+      // For active installation, use the config endpoints which also reinitialise the connector
+      try {
+        await apiClient.updateDatabaseConfig({
+          type: form.dbType,
+          server: form.dbServer,
+          port: form.dbPort ? parseInt(form.dbPort) : undefined,
+          database: form.dbDatabase,
+          username: form.dbUsername,
+          password: form.dbPassword,
+          use_windows_auth: form.useWindowsAuth,
+          ssl: form.ssl,
+        });
+        await apiClient.updateOperaConfig({
+          version: form.operaVersion,
+          opera3_server_path: form.opera3ServerPath,
+          opera3_base_path: form.opera3BasePath,
+          opera3_company_code: form.opera3CompanyCode,
+        });
+        setMessage({ type: 'success', text: `"${sys.name}" settings saved` });
+        invalidate();
+        queryClient.invalidateQueries({ queryKey: ['config'] });
+        queryClient.invalidateQueries({ queryKey: ['operaConfig'] });
+      } catch {
+        setMessage({ type: 'error', text: 'Failed to save settings' });
+      }
+    } else {
+      // For non-active installations, just update the systems.json entry
+      try {
+        await apiClient.updateSystem(sys.id, {
+          name: sys.name,
+          ...data,
+          is_default: sys.is_default,
+        });
+        setMessage({ type: 'success', text: `"${sys.name}" settings saved` });
+        invalidate();
+      } catch {
+        setMessage({ type: 'error', text: 'Failed to save settings' });
+      }
+    }
+  };
+
+  const handleTestConnection = () => {
+    if (!form) return;
+    operaTestMutation.mutate({
+      version: form.operaVersion,
+      opera3_server_path: form.opera3ServerPath,
+      opera3_base_path: form.opera3BasePath,
+      opera3_company_code: form.opera3CompanyCode,
+    });
+  };
+
+  const updateForm = (updates: Partial<SystemFormState>) => {
+    if (form) setForm({ ...form, ...updates });
   };
 
   return (
@@ -128,207 +291,379 @@ export function Installations() {
         subtitle="Manage the Opera installations this system can connect to"
       />
 
-      <Card>
-        <div className="space-y-4">
-          {/* Installation list */}
-          {systems.length === 0 ? (
-            <p className="text-sm text-gray-500 py-4 text-center">No installations configured.</p>
-          ) : (
-            <div className="divide-y divide-gray-100">
-              {systems.map((sys: SystemProfile) => {
-                const isActive = sys.id === activeSystemId;
-                const isEditing = editingSystem?.id === sys.id;
+      {/* Installation list */}
+      {systems.length === 0 ? (
+        <Card>
+          <p className="text-sm text-gray-500 py-4 text-center">No installations configured.</p>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {systems.map((sys: SystemProfile) => {
+            const isActive = sys.id === activeSystemId;
+            const isExpanded = expandedId === sys.id;
+            const isEditingName = editingNameId === sys.id;
 
-                return (
-                  <div key={sys.id} className={`flex items-center justify-between py-3 px-1 ${isActive ? 'bg-blue-50/50 -mx-1 px-2 rounded-lg' : ''}`}>
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <span
-                        className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isActive ? 'bg-green-500' : 'bg-gray-300'}`}
-                        title={isActive ? 'Active' : 'Inactive'}
+            return (
+              <Card key={sys.id} className={isActive ? 'ring-2 ring-blue-200' : ''}>
+                {/* Header row */}
+                <div className="flex items-center justify-between">
+                  <div
+                    className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+                    onClick={() => setExpandedId(isExpanded ? null : sys.id)}
+                  >
+                    {isExpanded
+                      ? <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                      : <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                    }
+                    <span
+                      className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isActive ? 'bg-green-500' : 'bg-gray-300'}`}
+                    />
+                    {isEditingName ? (
+                      <input
+                        type="text"
+                        className="input py-1 px-2 text-sm w-56"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        autoFocus
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={() => handleRename(sys)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleRename(sys);
+                          if (e.key === 'Escape') setEditingNameId(null);
+                        }}
                       />
-                      {isEditing ? (
-                        <input
-                          type="text"
-                          className="input py-1 px-2 text-sm w-56"
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                          autoFocus
-                          onBlur={() => handleRename(sys)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleRename(sys);
-                            if (e.key === 'Escape') setEditingSystem(null);
-                          }}
-                        />
-                      ) : (
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-gray-900">{sys.name}</span>
-                            {sys.is_default && (
-                              <span className="text-xs text-amber-600 font-medium bg-amber-50 px-1.5 py-0.5 rounded">Default</span>
-                            )}
-                            {isActive && (
-                              <span className="text-xs text-green-700 font-medium bg-green-100 px-1.5 py-0.5 rounded">Active</span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-400">
-                            {sys.opera?.version && (
-                              <span>{sys.opera.version === 'sql_se' ? 'Opera SQL SE' : 'Opera 3'}</span>
-                            )}
-                            {sys.database?.server && (
-                              <>
-                                <span className="text-gray-300">|</span>
-                                <span>{sys.database.server}</span>
-                              </>
-                            )}
-                            {sys.database?.database && (
-                              <>
-                                <span className="text-gray-300">|</span>
-                                <span>{sys.database.database}</span>
-                              </>
-                            )}
-                          </div>
+                    ) : (
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-gray-900">{sys.name}</span>
+                          {sys.is_default && (
+                            <span className="text-xs text-amber-600 font-medium bg-amber-50 px-1.5 py-0.5 rounded">Default</span>
+                          )}
+                          {isActive && (
+                            <span className="text-xs text-green-700 font-medium bg-green-100 px-1.5 py-0.5 rounded">Active</span>
+                          )}
                         </div>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-1 flex-shrink-0 ml-3">
-                      {!isActive && (
-                        <button
-                          onClick={() => handleActivate(sys)}
-                          className="px-2.5 py-1 text-xs font-medium text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors"
-                        >
-                          Connect
-                        </button>
-                      )}
-                      {!sys.is_default && (
-                        <button
-                          onClick={() => handleSetDefault(sys)}
-                          title="Set as default"
-                          className="p-1.5 rounded text-gray-400 hover:text-amber-500 hover:bg-amber-50 transition-colors"
-                        >
-                          <Star className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                      <button
-                        onClick={() => { setEditingSystem(sys); setEditName(sys.name); }}
-                        title="Rename"
-                        className="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      {!isActive && systems.length > 1 && (
-                        <button
-                          onClick={() => handleDelete(sys)}
-                          title="Delete"
-                          className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
+                        <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-400">
+                          {sys.opera?.version && (
+                            <span>{sys.opera.version === 'sql_se' ? 'Opera SQL SE' : 'Opera 3'}</span>
+                          )}
+                          {sys.database?.server && (
+                            <>
+                              <span className="text-gray-300">|</span>
+                              <span>{sys.database.server}</span>
+                            </>
+                          )}
+                          {sys.database?.database && (
+                            <>
+                              <span className="text-gray-300">|</span>
+                              <span>{sys.database.database}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          )}
 
-          {/* Add new */}
-          {showAddSystem ? (
-            <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
-              <input
-                type="text"
-                className="input py-1.5 px-3 text-sm flex-1"
-                placeholder="Installation name (e.g. Training Server, Opera 3 Live)"
-                value={newSystemName}
-                onChange={(e) => setNewSystemName(e.target.value)}
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleAdd();
-                  if (e.key === 'Escape') { setShowAddSystem(false); setNewSystemName(''); }
-                }}
-              />
-              <button
-                onClick={handleAdd}
-                disabled={!newSystemName.trim()}
-                className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-              >
-                Add
-              </button>
-              <button
-                onClick={() => { setShowAddSystem(false); setNewSystemName(''); }}
-                className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <div className="pt-2 border-t border-gray-100">
-              <button
-                onClick={() => setShowAddSystem(true)}
-                className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-medium"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add Installation
-              </button>
-            </div>
-          )}
-
-          {/* Message */}
-          {message && (
-            <div className={`flex items-center gap-2 text-sm ${message.type === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-              {message.type === 'success' ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
-              <span>{message.text}</span>
-              <button onClick={() => setMessage(null)} className="ml-auto text-gray-400 hover:text-gray-600">
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
-
-          {/* Settings prompt after activation */}
-          {showSettingsPrompt && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="h-5 w-5 text-amber-500 mt-0.5 flex-shrink-0" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-amber-800">
-                    Connected to "{showSettingsPrompt}"
-                  </p>
-                  <p className="text-sm text-amber-700 mt-1">
-                    Review the database and Opera settings to ensure they point to the correct installation.
-                  </p>
-                  <div className="flex items-center gap-2 mt-3">
+                  <div className="flex items-center gap-1 flex-shrink-0 ml-3">
+                    {!isActive && (
+                      <button
+                        onClick={() => handleActivate(sys)}
+                        className="px-2.5 py-1 text-xs font-medium text-blue-600 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors"
+                      >
+                        Connect
+                      </button>
+                    )}
+                    {!sys.is_default && (
+                      <button
+                        onClick={() => handleSetDefault(sys)}
+                        title="Set as default"
+                        className="p-1.5 rounded text-gray-400 hover:text-amber-500 hover:bg-amber-50 transition-colors"
+                      >
+                        <Star className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                     <button
-                      onClick={() => navigate('/settings')}
-                      className="px-3 py-1.5 text-sm font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-1.5"
+                      onClick={() => { setEditingNameId(sys.id); setEditName(sys.name); }}
+                      title="Rename"
+                      className="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
                     >
-                      Go to Settings
-                      <ArrowRight className="h-3.5 w-3.5" />
+                      <Pencil className="h-3.5 w-3.5" />
                     </button>
-                    <button
-                      onClick={() => setShowSettingsPrompt(null)}
-                      className="px-3 py-1.5 text-sm font-medium text-amber-700 bg-amber-100 rounded-lg hover:bg-amber-200 transition-colors"
-                    >
-                      Dismiss
-                    </button>
+                    {!isActive && systems.length > 1 && (
+                      <button
+                        onClick={() => handleDelete(sys)}
+                        title="Delete"
+                        className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </Card>
 
-      {/* Help text */}
-      <div className="bg-gray-50 border border-gray-200 rounded-xl p-5">
-        <div className="flex items-start gap-3">
-          <Server className="h-5 w-5 text-gray-400 mt-0.5 flex-shrink-0" />
-          <div className="text-sm text-gray-600 space-y-1.5">
-            <p className="font-medium text-gray-700">How installations work</p>
-            <p>Each installation points to a different Opera system (e.g. production, training, or a different Opera version).</p>
-            <p>Select an installation on the login screen or use the <strong>Connect</strong> button above. The <strong>Settings</strong> page configures the database and Opera connection for whichever installation is currently active.</p>
-            <p>The <strong>Default</strong> installation is pre-selected on the login screen.</p>
-          </div>
+                {/* Expanded settings panel */}
+                {isExpanded && form && (
+                  <div className="mt-4 pt-4 border-t border-gray-100 space-y-5">
+                    {/* Opera Version */}
+                    <div>
+                      <label className="label">Opera Version</label>
+                      <select
+                        className="select"
+                        value={form.operaVersion}
+                        onChange={(e) => updateForm({ operaVersion: e.target.value as 'sql_se' | 'opera3' })}
+                      >
+                        <option value="sql_se">Opera SQL SE (SQL Server)</option>
+                        <option value="opera3">Opera 3 (FoxPro/DBF)</option>
+                      </select>
+                    </div>
+
+                    {/* SQL SE Database Settings */}
+                    {form.operaVersion === 'sql_se' && (
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-medium text-gray-700 flex items-center gap-1.5">
+                          <Database className="h-4 w-4 text-gray-400" />
+                          SQL Server Connection
+                        </h4>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="col-span-2">
+                            <label className="label">Server</label>
+                            <input
+                              type="text"
+                              className="input"
+                              placeholder="IP address or hostname"
+                              value={form.dbServer}
+                              onChange={(e) => updateForm({ dbServer: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="label">Port</label>
+                            <input
+                              type="text"
+                              className="input"
+                              placeholder="1433"
+                              value={form.dbPort}
+                              onChange={(e) => updateForm({ dbPort: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="label">Database Name</label>
+                          <input
+                            type="text"
+                            className="input"
+                            placeholder="Opera3SECompany00X"
+                            value={form.dbDatabase}
+                            onChange={(e) => updateForm({ dbDatabase: e.target.value })}
+                          />
+                        </div>
+                        <div className="flex items-center">
+                          <input
+                            type="checkbox"
+                            id={`winAuth-${sys.id}`}
+                            checked={form.useWindowsAuth}
+                            onChange={(e) => updateForm({ useWindowsAuth: e.target.checked })}
+                            className="mr-2"
+                          />
+                          <label htmlFor={`winAuth-${sys.id}`} className="text-sm text-gray-700">
+                            Use Windows Authentication
+                          </label>
+                        </div>
+                        {!form.useWindowsAuth && (
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="label">Username</label>
+                              <input
+                                type="text"
+                                className="input"
+                                placeholder="Username"
+                                value={form.dbUsername}
+                                onChange={(e) => updateForm({ dbUsername: e.target.value })}
+                              />
+                            </div>
+                            <div>
+                              <label className="label">Password</label>
+                              <input
+                                type="password"
+                                className="input"
+                                placeholder="Password"
+                                value={form.dbPassword}
+                                onChange={(e) => updateForm({ dbPassword: e.target.value })}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex items-center">
+                          <input
+                            type="checkbox"
+                            id={`ssl-${sys.id}`}
+                            checked={form.ssl}
+                            onChange={(e) => updateForm({ ssl: e.target.checked })}
+                            className="mr-2"
+                          />
+                          <label htmlFor={`ssl-${sys.id}`} className="text-sm text-gray-700">
+                            Use SSL/TLS
+                          </label>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Opera 3 Settings */}
+                    {form.operaVersion === 'opera3' && (
+                      <div className="space-y-3">
+                        <h4 className="text-sm font-medium text-gray-700 flex items-center gap-1.5">
+                          <Server className="h-4 w-4 text-gray-400" />
+                          Opera 3 Connection
+                        </h4>
+                        <div>
+                          <label className="label">Server Path</label>
+                          <input
+                            type="text"
+                            className="input"
+                            placeholder="\\\\SERVER\\O3 Server VFP"
+                            value={form.opera3ServerPath}
+                            onChange={(e) => updateForm({ opera3ServerPath: e.target.value })}
+                          />
+                          <p className="text-xs text-gray-500 mt-1">UNC or network path to the Opera 3 server</p>
+                        </div>
+                        <div>
+                          <label className="label">Local Data Path</label>
+                          <input
+                            type="text"
+                            className="input"
+                            placeholder="C:\Apps\O3 Server VFP"
+                            value={form.opera3BasePath}
+                            onChange={(e) => updateForm({ opera3BasePath: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="label">Company</label>
+                          <div className="flex gap-2">
+                            <select
+                              className="select flex-1"
+                              value={form.opera3CompanyCode}
+                              onChange={(e) => updateForm({ opera3CompanyCode: e.target.value })}
+                            >
+                              <option value="">Select a company...</option>
+                              {opera3Companies?.data?.companies?.map((company: Opera3Company) => (
+                                <option key={company.code} value={company.code}>
+                                  {company.code} - {company.name}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              onClick={() => refetchOpera3Companies()}
+                              className="btn btn-secondary flex items-center"
+                              title="Refresh company list"
+                            >
+                              <RefreshCw className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
+                      <button
+                        onClick={() => handleSaveSettings(sys)}
+                        disabled={dbMutation.isPending || operaMutation.isPending}
+                        className="btn btn-primary flex items-center"
+                      >
+                        <Save className="h-4 w-4 mr-2" />
+                        {dbMutation.isPending || operaMutation.isPending ? 'Saving...' : 'Save'}
+                      </button>
+                      {isActive && (
+                        <button
+                          onClick={handleTestConnection}
+                          disabled={operaTestMutation.isPending}
+                          className="btn btn-secondary flex items-center"
+                        >
+                          <TestTube className="h-4 w-4 mr-2" />
+                          {operaTestMutation.isPending ? 'Testing...' : 'Test Connection'}
+                        </button>
+                      )}
+                      {!isActive && (
+                        <p className="text-xs text-gray-400">Connect to this installation first to test the connection.</p>
+                      )}
+                    </div>
+
+                    {/* Test result */}
+                    {operaTestMutation.isSuccess && isActive && (
+                      <div className={`p-3 rounded-md text-sm ${
+                        operaTestMutation.data?.data?.success
+                          ? 'bg-green-50 text-green-800'
+                          : 'bg-red-50 text-red-800'
+                      }`}>
+                        {operaTestMutation.data?.data?.success ? (
+                          <div className="flex items-center">
+                            <CheckCircle className="h-4 w-4 mr-2" />
+                            {operaTestMutation.data?.data?.message}
+                          </div>
+                        ) : (
+                          <div className="flex items-center">
+                            <AlertCircle className="h-4 w-4 mr-2" />
+                            {operaTestMutation.data?.data?.error || 'Connection test failed'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
         </div>
+      )}
+
+      {/* Add new / Messages */}
+      <div className="space-y-3">
+        {showAddSystem ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              className="input py-1.5 px-3 text-sm flex-1"
+              placeholder="Installation name (e.g. Training Server, Opera 3 Live)"
+              value={newSystemName}
+              onChange={(e) => setNewSystemName(e.target.value)}
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleAdd();
+                if (e.key === 'Escape') { setShowAddSystem(false); setNewSystemName(''); }
+              }}
+            />
+            <button
+              onClick={handleAdd}
+              disabled={!newSystemName.trim()}
+              className="px-3 py-1.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              Add
+            </button>
+            <button
+              onClick={() => { setShowAddSystem(false); setNewSystemName(''); }}
+              className="px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowAddSystem(true)}
+            className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-700 font-medium"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add Installation
+          </button>
+        )}
+
+        {message && (
+          <div className={`flex items-center gap-2 text-sm ${message.type === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+            {message.type === 'success' ? <CheckCircle className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+            <span>{message.text}</span>
+            <button onClick={() => setMessage(null)} className="ml-auto text-gray-400 hover:text-gray-600">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
