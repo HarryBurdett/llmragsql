@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, /* Upload - kept for CSV upload if re-enabled */ Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight, ArrowRight } from 'lucide-react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, /* Upload - kept for CSV upload if re-enabled */ Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight, ArrowRight, FolderOpen } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 
 interface ImportResult {
@@ -109,6 +109,9 @@ interface BankImportTransaction {
   gc_fx_original_amount?: number;
   gc_fx_gbp_amount?: number;
   gc_fx_reference?: string;
+  // Similarity grouping for "apply to all similar"
+  similarity_key?: string;
+  similar_count?: number;
 }
 
 interface PeriodViolation {
@@ -419,7 +422,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // =====================
   // EMAIL SCANNING STATE
   // =====================
-  type StatementSource = 'file' | 'email' | 'pdf';
+  type StatementSource = 'file' | 'email' | 'pdf' | 'folder';
   const [statementSource, setStatementSource] = useState<StatementSource>('email');
   const [emailScanLoading, setEmailScanLoading] = useState(false);
   const [emailScanDaysBack, setEmailScanDaysBack] = useState(30);
@@ -451,6 +454,50 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     attachmentId: string;
     filename: string;
   } | null>(null);
+
+  // =====================
+  // FOLDER SCANNING STATE
+  // =====================
+  const [folderScanLoading, setFolderScanLoading] = useState(false);
+  const [folderStatements, setFolderStatements] = useState<Array<{
+    filename: string;
+    full_path: string;
+    source: string;
+    status: string;
+    is_imported: boolean;
+    file_size: number;
+    file_modified: string;
+    opening_balance?: number;
+    closing_balance?: number;
+    period_start?: string;
+    period_end?: string;
+    bank_name?: string;
+    account_number?: string;
+    sort_code?: string;
+    import_sequence?: number;
+  }>>([]);
+  const [folderScanMessage, setFolderScanMessage] = useState<string | null>(null);
+  const [folderScanHasRun, setFolderScanHasRun] = useState(false);
+  const [folderEnabled, setFolderEnabled] = useState(false);
+  const [folderSettingsLoaded, setFolderSettingsLoaded] = useState(false);
+
+  // Load folder settings on mount to know if unified folder source should be available
+  useEffect(() => {
+    authFetch('/api/bank-import/folder-settings')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          const enabled = data.folder_enabled || false;
+          setFolderEnabled(enabled);
+          // Default to unified folder view when folders are configured
+          if (enabled) {
+            setStatementSource('folder');
+          }
+        }
+        setFolderSettingsLoaded(true);
+      })
+      .catch(() => setFolderSettingsLoaded(true));
+  }, []);
 
   // =====================
   // IMPORT HISTORY STATE
@@ -521,6 +568,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     filename: string;
     fullPath: string;
   } | null>(null);
+  const [folderSourcePath, setFolderSourcePath] = useState<string | null>(null);
 
   // =====================
   // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
@@ -807,6 +855,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Nominal posting details - maps row number to detail
   const [nominalPostingDetails, setNominalPostingDetails] = useState<Map<number, NominalPostingDetail>>(new Map());
+
+  // "Apply to all similar" confirmation banner state
+  const [applyAllSimilar, setApplyAllSimilar] = useState<{
+    show: boolean;
+    similarityKey: string;
+    sourceRow: number;
+    count: number;
+    accountCode: string;
+    ledgerType: 'C' | 'S' | 'N';
+    accountName: string;
+    transactionType?: TransactionType;
+    nominalDetail?: NominalPostingDetail;
+  } | null>(null);
 
   // Bank transfer modal state
   const [bankTransferModal, setBankTransferModal] = useState<{
@@ -1801,7 +1862,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         } else {
           url = `${API_BASE}/bank-import/preview-from-email?email_id=${selectedEmailStatement.emailId}&attachment_id=${encodeURIComponent(selectedEmailStatement.attachmentId)}&bank_code=${selectedBankCode}`;
         }
-      } else if (statementSource === 'pdf' && selectedPdfFile) {
+      } else if (selectedPdfFile) {
+        // Covers both 'pdf' and 'folder' sources — both use preview-from-pdf with file on disk
         if (dataSource === 'opera3') {
           url = `${API_BASE}/opera3/bank-import/preview-from-pdf?file_path=${encodeURIComponent(selectedPdfFile.fullPath)}&data_path=${encodeURIComponent(opera3DataPath)}&bank_code=${selectedBankCode}`;
         } else {
@@ -2283,8 +2345,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           setRawFilePreview([`Error: ${data.error || 'Failed to read attachment'}`]);
           setShowRawPreview(true);
         }
-      } else if (statementSource === 'pdf' && selectedPdfFile) {
-        // PDF source - open in new tab to preserve analysis state
+      } else if (selectedPdfFile) {
+        // PDF/folder source - open in new tab to preserve analysis state
         response = await authFetch(`${API_BASE}/bank-import/pdf-content?filename=${encodeURIComponent(selectedPdfFile.filename)}`);
         const data = await response.json();
         if (data.success && data.pdf_data) {
@@ -2358,9 +2420,90 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
     // Auto-select for import when account is assigned
     setSelectedForImport(prev => new Set(prev).add(txn.row));
-  }, [editedTransactions, customers, suppliers, nominalAccounts]);
+
+    // Check for similar unmatched transactions (by similarity_key)
+    if (txn.similarity_key && (txn.similar_count || 0) > 1 && bankPreview?.unmatched) {
+      const similarItems = bankPreview.unmatched.filter((u: BankImportTransaction) =>
+        u.similarity_key === txn.similarity_key &&
+        u.row !== txn.row &&
+        !editedTransactions.has(u.row) &&  // Not already assigned
+        !updated.has(u.row)
+      );
+      if (similarItems.length > 0) {
+        const currentTxnType = transactionTypeOverrides.get(txn.row);
+        setApplyAllSimilar({
+          show: true,
+          similarityKey: txn.similarity_key,
+          sourceRow: txn.row,
+          count: similarItems.length,
+          accountCode,
+          ledgerType,
+          accountName,
+          transactionType: currentTxnType,
+        });
+      }
+    }
+  }, [editedTransactions, customers, suppliers, nominalAccounts, bankPreview, transactionTypeOverrides]);
 
   // Suggest account based on transaction name and type
+  // Apply assignment to all similar unmatched transactions
+  const handleApplyToAllSimilar = useCallback(() => {
+    if (!applyAllSimilar || !bankPreview?.unmatched) return;
+
+    const { similarityKey, sourceRow, accountCode, ledgerType, accountName, transactionType, nominalDetail } = applyAllSimilar;
+    const updated = new Map(editedTransactions);
+    const updatedNominals = new Map(nominalPostingDetails);
+    const updatedTypes = new Map(transactionTypeOverrides);
+    const updatedSelected = new Set(selectedForImport);
+
+    const similarItems = bankPreview.unmatched.filter((u: BankImportTransaction) =>
+      u.similarity_key === similarityKey &&
+      u.row !== sourceRow &&
+      !updated.has(u.row)
+    );
+
+    for (const item of similarItems) {
+      updated.set(item.row, {
+        ...item,
+        manual_account: accountCode,
+        manual_ledger_type: ledgerType as 'C' | 'S',
+        account_name: accountName,
+        isEdited: true,
+        nominal_detail: nominalDetail,
+      });
+      updatedSelected.add(item.row);
+
+      if (transactionType) {
+        updatedTypes.set(item.row, transactionType);
+      }
+
+      // Copy nominal posting details if this is a nominal assignment
+      if (nominalDetail) {
+        // Scale net/vat amounts proportionally to each item's gross amount
+        const grossAmount = Math.abs(item.amount);
+        const hasVat = nominalDetail.vatCode && nominalDetail.vatCode !== 'N/A' && nominalDetail.vatAmount > 0;
+        let itemNet = grossAmount;
+        let itemVat = 0;
+        if (hasVat && nominalDetail.netAmount > 0) {
+          const vatRate = nominalDetail.vatAmount / nominalDetail.netAmount;
+          itemNet = parseFloat((grossAmount / (1 + vatRate)).toFixed(2));
+          itemVat = parseFloat((grossAmount - itemNet).toFixed(2));
+        }
+        updatedNominals.set(item.row, {
+          ...nominalDetail,
+          netAmount: itemNet,
+          vatAmount: itemVat,
+        });
+      }
+    }
+
+    setEditedTransactions(updated);
+    setNominalPostingDetails(updatedNominals);
+    setTransactionTypeOverrides(updatedTypes);
+    setSelectedForImport(updatedSelected);
+    setApplyAllSimilar(null);
+  }, [applyAllSimilar, bankPreview, editedTransactions, nominalPostingDetails, transactionTypeOverrides, selectedForImport]);
+
   const suggestAccountForTransaction = useCallback(async (txn: BankImportTransaction, transactionType: TransactionType) => {
     // Only suggest for customer/supplier types, not nominal or bank transfer
     const isCustomerType = transactionType === 'sales_receipt' || transactionType === 'sales_refund';
@@ -2523,7 +2666,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // Computed import state variables (used in both top button bar and bottom import section)
   const isEmailSource = statementSource === 'email';
   const isPdfSource = statementSource === 'pdf';
-  const bankReady = (isEmailSource || isPdfSource) ? !!selectedBankCode : (detectedBank?.detected || selectedBankCode);
+  const isFolderSource = statementSource === 'folder';
+  const bankReady = (isEmailSource || isPdfSource || isFolderSource) ? !!selectedBankCode : (detectedBank?.detected || selectedBankCode);
   const noBankSelected = !bankReady;
   const noPreview = !bankPreview;
   const hasIncomplete = !!(importReadiness?.totalIncomplete && importReadiness.totalIncomplete > 0);
@@ -2589,8 +2733,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Build tooltip message for import button
   const importTitle = (() => {
-    if (noBankSelected) return isEmailSource ? 'Select a bank account first' : isPdfSource ? 'Select a bank account first' : 'Please select a CSV file first to detect the bank account';
-    if (noPreview) return isEmailSource ? 'Select an email attachment to preview' : isPdfSource ? 'Select a PDF file to preview' : 'Run Analyse Transactions first to review';
+    if (noBankSelected) return 'Select a bank account first';
+    if (noPreview) return selectedPdfFile || isEmailSource ? 'Select a statement to preview' : 'Run Analyse Transactions first to review';
     if (dataSource === 'opera3') return 'Import not available for Opera 3 (read-only)';
     if (hasUnhandledRepeatEntries) return 'Cannot import - update repeat entry dates, run Opera Recurring Entries, then re-preview';
     if (hasPeriodViolations) return 'Cannot import - some transactions have dates outside the allowed posting period. Correct the dates below.';
@@ -2864,6 +3008,113 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     } finally {
       setEmailScanLoading(false);
       setEmailScanHasRun(true);
+    }
+  };
+
+  // Scan folder for bank statements
+  const handleScanFolder = async () => {
+    setFolderScanLoading(true);
+    setFolderStatements([]);
+    setFolderScanMessage(null);
+
+    try {
+      const baseUrl = dataSource === 'opera3'
+        ? `${API_BASE}/opera3/bank-import/scan-folder`
+        : `${API_BASE}/bank-import/scan-folder`;
+      const url = `${baseUrl}?bank_code=${selectedBankCode}&validate_balances=true`;
+
+      const response = await authFetch(url);
+      const data = await response.json();
+
+      if (data.success) {
+        setFolderStatements(data.statements_found || []);
+        setFolderScanMessage(data.message || null);
+      } else {
+        setFolderScanMessage(data.error || 'Error scanning folder.');
+      }
+    } catch (error) {
+      console.error('Error scanning folder:', error);
+      setFolderScanMessage('Error scanning folder. Please check settings.');
+    } finally {
+      setFolderScanLoading(false);
+      setFolderScanHasRun(true);
+    }
+  };
+
+  // Fetch email attachments to the bank folder, then refresh the folder scan
+  const [emailFetchLoading, setEmailFetchLoading] = useState(false);
+  const [emailFetchMessage, setEmailFetchMessage] = useState<string | null>(null);
+
+  const handleFetchEmailsToFolder = async () => {
+    if (!selectedBankCode) return;
+    setEmailFetchLoading(true);
+    setEmailFetchMessage(null);
+
+    try {
+      const baseUrl = dataSource === 'opera3'
+        ? `${API_BASE}/opera3/bank-import/fetch-emails-to-folder`
+        : `${API_BASE}/bank-import/fetch-emails-to-folder`;
+      const url = `${baseUrl}?bank_code=${selectedBankCode}&days_back=${emailScanDaysBack}`;
+
+      const response = await authFetch(url, { method: 'POST' });
+      const data = await response.json();
+
+      if (data.success) {
+        setEmailFetchMessage(data.message || null);
+        // Refresh folder scan to show new files
+        if (data.saved_count > 0) {
+          await handleScanFolder();
+        }
+      } else {
+        setEmailFetchMessage(data.error || 'Error fetching emails.');
+      }
+    } catch (error) {
+      console.error('Error fetching email statements:', error);
+      setEmailFetchMessage('Error checking email. Please try again.');
+    } finally {
+      setEmailFetchLoading(false);
+    }
+  };
+
+  // Preview bank statement from folder PDF (reuses preview-from-pdf endpoint)
+  const handleFolderPreview = async (filePath: string, filename: string) => {
+    setSequenceError(null);
+
+    try {
+      setAnalysing(true);
+
+      const baseUrl = dataSource === 'opera3'
+        ? `${API_BASE}/opera3/bank-import/preview-from-pdf`
+        : `${API_BASE}/bank-import/preview-from-pdf`;
+      const params = new URLSearchParams({
+        file_path: filePath,
+        bank_code: selectedBankCode,
+      });
+
+      const response = await authFetch(`${baseUrl}?${params.toString()}`, { method: 'POST' });
+      const data = await response.json();
+
+      if (data.success) {
+        setBankPreview(data);
+        // Set selectedPdfFile so handlePdfImport works for folder-sourced PDFs
+        setSelectedPdfFile({ filename, fullPath: filePath });
+        // Store folder source path for archiving after import
+        setFolderSourcePath(filePath);
+      } else {
+        if (data.status === 'skipped') {
+          setFolderStatements(prev => prev.filter(s => s.full_path !== filePath));
+          setFolderScanMessage(data.reason || 'Statement already processed');
+        } else if (data.status === 'pending') {
+          setSequenceError(data.reason || 'Import previous statement first');
+        } else {
+          setFolderScanMessage(data.error || 'Failed to analyse statement');
+        }
+      }
+    } catch (error) {
+      console.error('Error analysing folder statement:', error);
+      setFolderScanMessage('Error analysing statement');
+    } finally {
+      setAnalysing(false);
     }
   };
 
@@ -3509,8 +3760,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         setIsImporting(false);
         // Always show reconcile section to display imported transactions in statement order
         setShowReconcilePrompt(true);
-        // Refresh PDF list to show as processed
-        handleScanPdfFiles();
+        // Refresh statement list to show as processed
+        if (isFolderSource) {
+          handleScanFolder();
+        } else {
+          handleScanPdfFiles();
+        }
         // Re-analyse the statement so imported items move to "In Opera" tab
         // and remaining items stay in their tabs with user edits preserved
         await handleRefreshPreview();
@@ -4104,6 +4359,28 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         return updated;
       });
       setSelectedForImport(prev => new Set(prev).add(row));
+    }
+
+    // Check for similar unmatched transactions (by similarity_key) — nominal assignments
+    if (source === 'unmatched' && txn.similarity_key && (txn.similar_count || 0) > 1 && bankPreview?.unmatched) {
+      const similarItems = bankPreview.unmatched.filter((u: BankImportTransaction) =>
+        u.similarity_key === txn.similarity_key &&
+        u.row !== txn.row &&
+        !editedTransactions.has(u.row)
+      );
+      if (similarItems.length > 0) {
+        setApplyAllSimilar({
+          show: true,
+          similarityKey: txn.similarity_key,
+          sourceRow: txn.row,
+          count: similarItems.length,
+          accountCode: detail.nominalCode,
+          ledgerType: 'N',
+          accountName: detail.nominalDescription || '',
+          transactionType: txnType || undefined,
+          nominalDetail: detail,
+        });
+      }
     }
 
     // Close modal
@@ -5084,58 +5361,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             </div>
             )}
 
-            {/* Statement Source Toggle - hidden when statement pre-selected */}
+            {/* Action bar - hidden when statement pre-selected */}
             {!initialStatement && (
-            <div className="flex items-center justify-between gap-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-              <div className="flex items-center gap-4">
-                <span className="text-sm font-medium text-gray-700">Statement Source:</span>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setStatementSource('email')}
-                    disabled={!!bankPreview}
-                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                      statementSource === 'email'
-                        ? 'bg-blue-600 text-white'
-                        : bankPreview
-                          ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed'
-                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                    }`}
-                  >
-                    <FileText className="h-4 w-4 inline-block mr-1.5" />
-                    Email Inbox
-                  </button>
-                  <button
-                    onClick={() => setStatementSource('pdf')}
-                    disabled={!!bankPreview}
-                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                      statementSource === 'pdf'
-                        ? 'bg-blue-600 text-white'
-                        : bankPreview
-                          ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed'
-                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                    }`}
-                  >
-                    <FileText className="h-4 w-4 inline-block mr-1.5" />
-                    PDF Upload
-                  </button>
-                  {/* CSV Upload button hidden - code retained for future use
-                  <button
-                    onClick={() => setStatementSource('file')}
-                    disabled={!!bankPreview}
-                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                      statementSource === 'file'
-                        ? 'bg-blue-600 text-white'
-                        : bankPreview
-                          ? 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed'
-                          : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
-                    }`}
-                  >
-                    <Upload className="h-4 w-4 inline-block mr-1.5" />
-                    CSV Upload
-                  </button>
-                  */}
-                </div>
-              </div>
+            <div className="flex items-center justify-end gap-2 p-3 bg-gray-50 border border-gray-200 rounded-lg">
               {/* History Button */}
               <button
                 onClick={() => setShowImportHistory(true)}
@@ -5158,18 +5386,18 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             </div>
             )}
 
-            {/* ===== STAGE 1: SCAN INBOX ===== */}
-            {!initialStatement && statementSource === 'email' && (
+            {/* ===== STAGE 1: SELECT STATEMENT (Unified) ===== */}
+            {!initialStatement && statementSource !== 'file' && folderEnabled && (
               <StageSection
                 number={1}
-                title="Scan Inbox"
-                subtitle="Find statement emails from your bank"
-                isComplete={emailStatements.length > 0 && !!selectedEmailStatement}
+                title="Select Statement"
+                subtitle="Scan folder for statements or check email for new ones"
+                isComplete={!!bankPreview}
                 color="blue"
               >
                 <div className="space-y-4">
-                {/* Bank Selection for Email Scan */}
-                <div className="grid grid-cols-3 gap-4">
+                {/* Bank Selection + Action Buttons */}
+                <div className="grid grid-cols-2 gap-4">
                   {(() => {
                     const filteredBanks = bankAccounts.filter(bank => {
                       if (!bankSelectSearch) return true;
@@ -5183,7 +5411,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
                     <input
                       type="text"
-                      value={bankSelectOpen === 'email' ? bankSelectSearch : (
+                      value={bankSelectOpen === 'folder' ? bankSelectSearch : (
                         bankAccounts.find(b => b.code === selectedBankCode)
                           ? `${selectedBankCode} - ${bankAccounts.find(b => b.code === selectedBankCode)?.description}`
                           : ''
@@ -5191,15 +5419,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       onChange={(e) => {
                         setBankSelectSearch(e.target.value);
                         setBankSelectHighlightIndex(0);
-                        if (bankSelectOpen !== 'email') setBankSelectOpen('email');
+                        if (bankSelectOpen !== 'folder') setBankSelectOpen('folder');
                       }}
                       onFocus={() => {
-                        setBankSelectOpen('email');
+                        setBankSelectOpen('folder');
                         setBankSelectSearch('');
                         setBankSelectHighlightIndex(0);
                       }}
                       onKeyDown={(e) => {
-                        if (bankSelectOpen !== 'email') return;
+                        if (bankSelectOpen !== 'folder') return;
                         if (e.key === 'ArrowDown') {
                           e.preventDefault();
                           setBankSelectHighlightIndex(prev => Math.min(prev + 1, filteredBanks.length - 1));
@@ -5222,7 +5450,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       placeholder="Search bank account..."
                       className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
                     />
-                    {bankSelectOpen === 'email' && (
+                    {bankSelectOpen === 'folder' && (
                       <>
                         <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
                         <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
@@ -5252,506 +5480,154 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   </div>
                     );
                   })()}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Days Back</label>
-                    <select
-                      value={emailScanDaysBack}
-                      onChange={e => setEmailScanDaysBack(parseInt(e.target.value))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                    >
-                      <option value={7}>7 days</option>
-                      <option value={14}>14 days</option>
-                      <option value={30}>30 days</option>
-                      <option value={60}>60 days</option>
-                      <option value={90}>90 days</option>
-                    </select>
-                  </div>
-                  <div className="flex items-end">
+                  <div className="flex items-end gap-2">
                     <button
-                      onClick={handleScanEmails}
-                      disabled={emailScanLoading || !!bankPreview}
-                      className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                      title={bankPreview ? 'Clear current statement first' : 'Step 1: Scan inbox for bank statements'}
+                      onClick={handleScanFolder}
+                      disabled={folderScanLoading || !selectedBankCode || !!bankPreview}
+                      className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      title={bankPreview ? 'Clear current statement first' : !selectedBankCode ? 'Select a bank account first' : 'Scan statement folder for PDFs'}
                     >
-                      {emailScanLoading ? (
+                      {folderScanLoading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
-                        <Search className="h-4 w-4" />
-                      )}
-                      Scan Inbox
-                    </button>
-                  </div>
-                </div>
-
-                {/* Sequence error banner for email source */}
-                {sequenceError && !bankPreview && (
-                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
-                    <span className="text-amber-500 mt-0.5">⚠</span>
-                    <div className="flex-1">
-                      <p className="text-sm text-amber-800">{sequenceError}</p>
-                    </div>
-                    <button onClick={() => setSequenceError(null)} className="text-amber-400 hover:text-amber-600 text-lg leading-none">×</button>
-                  </div>
-                )}
-
-                {/* Email Statements List - hide when statement is being previewed/imported */}
-                {emailStatements.length > 0 && !bankPreview && (() => {
-                  // Find the first unprocessed statement (the one to import next)
-                  const firstUnprocessedIndex = emailStatements.findIndex(e => !e.already_processed);
-
-                  return (
-                  <div className="border border-gray-200 rounded-lg overflow-hidden">
-                    {duplicatesArchived > 0 && (
-                      <div className="bg-blue-50 px-4 py-2 border-b border-blue-200 text-xs text-blue-700">
-                        {duplicatesArchived} duplicate email(s) archived to Archive/Bank Statements
-                      </div>
-                    )}
-                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex justify-between items-center">
-                      <span className="text-sm font-medium text-gray-700">
-                        {emailScanMessage || `Found ${emailStatements.length} statement(s) — import in order`}
-                      </span>
-                      {emailStatements.length > 1 && (
-                        <span className="text-xs text-gray-500">
-                          Statements ordered by date/number
-                        </span>
-                      )}
-                    </div>
-                    <div className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
-                      {emailStatements.map((email, index) => {
-                        const isNextToImport = index === firstUnprocessedIndex;
-                        const canImport = isNextToImport || email.already_processed;
-                        const importSequence = (email as any).import_sequence || index + 1;
-                        const statementDate = (email as any).statement_date;
-
-                        return (
-                        <div
-                          key={email.email_id}
-                          className={`p-4 transition-all ${
-                            email.already_processed
-                              ? 'bg-green-50 opacity-75'
-                              : isNextToImport
-                                ? 'bg-blue-50 border-l-4 border-l-blue-500'
-                                : 'bg-gray-50 opacity-60'
-                          }`}
-                        >
-                          <div className="flex justify-between items-start">
-                            <div className="flex items-start gap-3 flex-1">
-                              {/* Sequence number badge */}
-                              <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
-                                email.already_processed
-                                  ? 'bg-green-500 text-white'
-                                  : isNextToImport
-                                    ? 'bg-blue-600 text-white'
-                                    : 'bg-gray-300 text-gray-600'
-                              }`}>
-                                {email.already_processed ? '✓' : importSequence}
-                              </div>
-
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  {/* Show bank name or detected bank or filename */}
-                                  <span className="font-medium text-gray-900">
-                                    {(email as any).bank_name || email.detected_bank?.toUpperCase() || email.attachments?.[0]?.filename || email.subject || '(Unknown)'}
-                                  </span>
-                                  {/* Show statement period dates if available */}
-                                  {((email as any).period_start || (email as any).period_end) ? (
-                                    <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full">
-                                      {(() => {
-                                        // Parse dates without timezone issues
-                                        const formatDate = (dateStr: string) => {
-                                          if (!dateStr) return '';
-                                          // Extract just the date part (YYYY-MM-DD) in case there's a time component
-                                          const datePart = dateStr.split(' ')[0].split('T')[0];
-                                          const d = new Date(datePart + 'T12:00:00');
-                                          return d.toLocaleDateString('en-GB');
-                                        };
-                                        const start = (email as any).period_start;
-                                        const end = (email as any).period_end;
-                                        if (start && end) {
-                                          return `${formatDate(start)} - ${formatDate(end)}`;
-                                        }
-                                        return formatDate(end || start);
-                                      })()}
-                                    </span>
-                                  ) : statementDate && (
-                                    <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded-full">
-                                      {statementDate}
-                                    </span>
-                                  )}
-                                  {!email.already_processed && email.attachments?.some((a: any) => a.has_draft) && (
-                                    <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-xs rounded-full font-medium">
-                                      In Progress
-                                    </span>
-                                  )}
-                                  {isNextToImport && !email.attachments?.some((a: any) => a.has_draft) && (
-                                    <span className="px-2 py-0.5 bg-blue-600 text-white text-xs rounded-full">
-                                      Next to import
-                                    </span>
-                                  )}
-                                </div>
-                                {/* Show opening/closing balance if available */}
-                                <div className="text-sm text-gray-500 mt-1 flex items-center gap-3">
-                                  {(email as any).opening_balance !== undefined && (email as any).opening_balance !== null ? (
-                                    <>
-                                      <span>Opening: £{(email as any).opening_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</span>
-                                      {(email as any).closing_balance !== undefined && (email as any).closing_balance !== null && (
-                                        <span>→ Closing: £{(email as any).closing_balance?.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</span>
-                                      )}
-                                    </>
-                                  ) : (
-                                    <span>{email.from_name || email.from_address}</span>
-                                  )}
-                                  <span className="text-gray-400">•</span>
-                                  <span className="text-gray-400">{new Date(email.received_at).toLocaleDateString()}</span>
-                                </div>
-                                <div className="mt-2 space-y-1">
-                                  {email.attachments.map(att => (
-                                    <div
-                                      key={att.attachment_id}
-                                      className={`flex items-center justify-between px-3 py-1.5 rounded text-sm ${
-                                        isNextToImport ? 'bg-white' : 'bg-gray-100'
-                                      }`}
-                                    >
-                                      <div className="flex items-center gap-2">
-                                        <FileText className="h-4 w-4 text-gray-400" />
-                                        <span className="text-gray-700">{att.filename}</span>
-                                        <span className="text-gray-400 text-xs">
-                                          ({(att.size_bytes / 1024).toFixed(1)} KB)
-                                        </span>
-                                        {att.already_processed && (
-                                          <span className="text-xs text-green-600 font-medium">(imported)</span>
-                                        )}
-                                        {!att.already_processed && (att as any).has_draft && (
-                                          <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-medium">In Progress</span>
-                                        )}
-                                        {(att as any).statement_date && !statementDate && (
-                                          <span className="text-xs text-purple-600">({(att as any).statement_date})</span>
-                                        )}
-                                      </div>
-                                      {!att.already_processed && (
-                                        <div className="flex gap-1">
-                                          <button
-                                            onClick={() => handleEmailAttachmentRawPreview(email.email_id, att.attachment_id)}
-                                            className="px-2 py-1 text-gray-600 text-xs rounded bg-gray-100 hover:bg-gray-200 border border-gray-300"
-                                            title="View raw file contents"
-                                          >
-                                            View
-                                          </button>
-                                          <button
-                                            onClick={() => handleEmailPreview(email.email_id, att.attachment_id, att.filename)}
-                                            disabled={isPreviewing || !canImport || !!bankPreview}
-                                            className={`px-3 py-1 text-white text-xs rounded ${
-                                              isNextToImport && !bankPreview
-                                                ? 'bg-blue-600 hover:bg-blue-700'
-                                                : 'bg-gray-400 cursor-not-allowed'
-                                            } disabled:bg-gray-400`}
-                                            title={bankPreview ? 'Clear current statement first' : (!canImport ? 'Import previous statements first' : '')}
-                                          >
-                                            {isPreviewing && selectedEmailStatement?.attachmentId === att.attachment_id ? (
-                                              <Loader2 className="h-3 w-3 animate-spin" />
-                                            ) : (
-                                              'Analyse'
-                                            )}
-                                          </button>
-                                        </div>
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )})}
-                    </div>
-                  </div>
-                );
-                })()}
-
-                {emailStatements.length === 0 && !emailScanLoading && (
-                  <div className="text-center py-8 text-gray-500">
-                    {emailScanHasRun ? (
-                      <>
-                        <FileText className="h-12 w-12 mx-auto text-amber-300 mb-3" />
-                        <p className="text-sm font-medium text-gray-700 mb-1">
-                          {emailScanMessage || 'No statements found'}
-                        </p>
-                        {duplicatesArchived > 0 && (
-                          <p className="text-xs text-blue-600 mt-1">
-                            {duplicatesArchived} duplicate email(s) archived to Archive/Bank Statements
-                          </p>
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        <FileText className="h-12 w-12 mx-auto text-gray-300 mb-3" />
-                        <p>Click "Scan Inbox" to search your inbox for bank statement attachments</p>
-                      </>
-                    )}
-                  </div>
-                )}
-                </div>
-              </StageSection>
-            )}
-
-            {/* ===== STAGE 1: PDF UPLOAD (Alternative) ===== */}
-            {!initialStatement && statementSource === 'pdf' && (
-              <StageSection
-                number={1}
-                title="Select Statement File"
-                subtitle="Choose a PDF bank statement to process"
-                isComplete={!!selectedPdfFile}
-                color="blue"
-              >
-                <div className="space-y-4">
-                {/* Bank Selection and Folder Path for PDF Scan */}
-                <div className="grid grid-cols-3 gap-4">
-                  {(() => {
-                    const filteredBanks = bankAccounts.filter(bank => {
-                      if (!bankSelectSearch) return true;
-                      const search = bankSelectSearch.toLowerCase();
-                      return bank.code.toLowerCase().includes(search) ||
-                             bank.description.toLowerCase().includes(search) ||
-                             (bank.sort_code && bank.sort_code.includes(search));
-                    });
-                    return (
-                  <div className="relative">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account</label>
-                    <input
-                      type="text"
-                      value={bankSelectOpen === 'pdf' ? bankSelectSearch : (
-                        bankAccounts.find(b => b.code === selectedBankCode)
-                          ? `${selectedBankCode} - ${bankAccounts.find(b => b.code === selectedBankCode)?.description}`
-                          : ''
-                      )}
-                      onChange={(e) => {
-                        setBankSelectSearch(e.target.value);
-                        setBankSelectHighlightIndex(0);
-                        if (bankSelectOpen !== 'pdf') setBankSelectOpen('pdf');
-                      }}
-                      onFocus={() => {
-                        setBankSelectOpen('pdf');
-                        setBankSelectSearch('');
-                        setBankSelectHighlightIndex(0);
-                      }}
-                      onKeyDown={(e) => {
-                        if (bankSelectOpen !== 'pdf') return;
-                        if (e.key === 'ArrowDown') {
-                          e.preventDefault();
-                          setBankSelectHighlightIndex(prev => Math.min(prev + 1, filteredBanks.length - 1));
-                        } else if (e.key === 'ArrowUp') {
-                          e.preventDefault();
-                          setBankSelectHighlightIndex(prev => Math.max(prev - 1, 0));
-                        } else if (e.key === 'Enter' && filteredBanks.length > 0) {
-                          e.preventDefault();
-                          const selectedBank = filteredBanks[bankSelectHighlightIndex];
-                          if (selectedBank) {
-                            setSelectedBankCode(selectedBank.code);
-                            setBankSelectOpen(null);
-                            setBankSelectSearch('');
-                          }
-                        } else if (e.key === 'Escape') {
-                          setBankSelectOpen(null);
-                          setBankSelectSearch('');
-                        }
-                      }}
-                      placeholder="Search bank account..."
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                    />
-                    {bankSelectOpen === 'pdf' && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => { setBankSelectOpen(null); setBankSelectSearch(''); }} />
-                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                          {filteredBanks.map((bank, idx) => (
-                              <button
-                                key={bank.code}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedBankCode(bank.code);
-                                  setBankSelectOpen(null);
-                                  setBankSelectSearch('');
-                                }}
-                                className={`w-full text-left px-3 py-2 text-sm ${
-                                  idx === bankSelectHighlightIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
-                                } ${selectedBankCode === bank.code ? 'text-blue-800' : ''}`}
-                              >
-                                <span className="font-medium">{bank.code}</span>
-                                <span className="text-gray-600"> - {bank.description}</span>
-                                {bank.sort_code && (
-                                  <span className="text-gray-400 text-xs block">Sort: {bank.sort_code}</span>
-                                )}
-                              </button>
-                            ))}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                    );
-                  })()}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">PDF Folder Path</label>
-                    <input
-                      type="text"
-                      value={pdfDirectory}
-                      onChange={e => setPdfDirectory(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="e.g. C:\Bank Statements"
-                    />
-                  </div>
-                  <div className="flex items-end">
-                    <button
-                      onClick={handleScanPdfFiles}
-                      disabled={pdfFilesLoading || !pdfDirectory || !!bankPreview}
-                      className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                      title={bankPreview ? 'Clear current statement first' : 'Step 1: Scan folder for PDF statements'}
-                    >
-                      {pdfFilesLoading ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Search className="h-4 w-4" />
+                        <FolderOpen className="h-4 w-4" />
                       )}
                       Scan Folder
                     </button>
+                    <button
+                      onClick={handleFetchEmailsToFolder}
+                      disabled={emailFetchLoading || !selectedBankCode || !!bankPreview}
+                      className="flex-1 px-4 py-2 bg-white text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      title={bankPreview ? 'Clear current statement first' : !selectedBankCode ? 'Select a bank account first' : 'Check email inbox for new statement attachments'}
+                    >
+                      {emailFetchLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <FileText className="h-4 w-4" />
+                      )}
+                      Check Email
+                    </button>
                   </div>
                 </div>
+
+                {/* Email fetch message */}
+                {emailFetchMessage && (
+                  <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2">
+                    <FileText className="h-4 w-4 text-blue-500 flex-shrink-0" />
+                    <p className="text-sm text-blue-700 flex-1">{emailFetchMessage}</p>
+                    <button onClick={() => setEmailFetchMessage(null)} className="text-blue-400 hover:text-blue-600 text-lg leading-none">&times;</button>
+                  </div>
+                )}
 
                 {/* Sequence error banner */}
                 {sequenceError && !bankPreview && (
                   <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
-                    <span className="text-amber-500 mt-0.5">⚠</span>
+                    <span className="text-amber-500 mt-0.5">&#9888;</span>
                     <div className="flex-1">
                       <p className="text-sm text-amber-800">{sequenceError}</p>
                     </div>
-                    <button onClick={() => setSequenceError(null)} className="text-amber-400 hover:text-amber-600 text-lg leading-none">×</button>
+                    <button onClick={() => setSequenceError(null)} className="text-amber-400 hover:text-amber-600 text-lg leading-none">&times;</button>
                   </div>
                 )}
 
-                {/* PDF Files List - hide when statement is being previewed/imported */}
-                {pdfFilesList && pdfFilesList.length > 0 && !bankPreview && (() => {
-                  const firstUnprocessedPdfIndex = pdfFilesList.findIndex(f => !f.already_processed);
-
+                {/* Statements List */}
+                {folderStatements.length > 0 && !bankPreview && (() => {
+                  const nextToImport = folderStatements.find(s => !s.is_imported && s.status !== 'already_processed');
                   return (
-                  <div className="border border-gray-200 rounded-lg overflow-hidden">
-                    <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex justify-between items-center">
-                      <span className="text-sm font-medium text-gray-700">
-                        Found {pdfFilesList.length} PDF file{pdfFilesList.length !== 1 ? 's' : ''} — import in order
-                      </span>
-                      {pdfFilesList.length > 1 && (
-                        <span className="text-xs text-gray-500">
-                          Statements ordered by date
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 rounded-lg">
+                        <FolderOpen className="h-4 w-4 text-blue-600" />
+                        <span className="text-sm font-medium text-blue-800">
+                          {folderScanMessage || `Found ${folderStatements.length} statement(s) — import in order`}
                         </span>
-                      )}
-                    </div>
-                    <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
-                      {pdfFilesList.map((file, idx) => {
-                        const isNextToImport = idx === firstUnprocessedPdfIndex;
-                        const canImport = isNextToImport || file.already_processed;
-                        const importSequence = idx + 1;
-
+                      </div>
+                      {folderStatements.map((stmt, idx) => {
+                        const isNext = nextToImport === stmt;
+                        const isProcessed = stmt.is_imported || stmt.status === 'already_processed';
                         return (
                           <div
-                            key={file.filename}
-                            className={`p-3 transition-all ${
-                              file.already_processed
-                                ? 'bg-green-50 opacity-75'
-                                : isNextToImport
-                                  ? 'bg-blue-50 border-l-4 border-l-blue-500'
-                                  : 'bg-gray-50 opacity-60'
+                            key={stmt.filename}
+                            className={`flex items-center gap-3 p-3 rounded-lg border ${
+                              isProcessed
+                                ? 'bg-gray-50 border-gray-200 opacity-60'
+                                : isNext
+                                  ? 'bg-white border-blue-300 shadow-sm'
+                                  : 'bg-white border-gray-200'
                             }`}
                           >
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-3 flex-1 min-w-0">
-                                {/* Sequence number badge */}
-                                <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
-                                  file.already_processed
-                                    ? 'bg-green-500 text-white'
-                                    : isNextToImport
-                                      ? 'bg-blue-600 text-white'
-                                      : 'bg-gray-300 text-gray-600'
-                                }`}>
-                                  {file.already_processed ? '✓' : importSequence}
-                                </div>
+                            {/* Sequence badge */}
+                            <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${
+                              isProcessed ? 'bg-green-100 text-green-700' : isNext ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-500'
+                            }`}>
+                              {isProcessed ? <CheckCircle className="w-4 h-4" /> : stmt.import_sequence || (idx + 1)}
+                            </div>
 
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <FileText className={`h-4 w-4 flex-shrink-0 ${file.already_processed ? 'text-green-600' : isNextToImport ? 'text-blue-600' : 'text-gray-400'}`} />
-                                    <span className={`font-medium truncate ${file.already_processed ? 'text-green-700' : isNextToImport ? 'text-gray-900' : 'text-gray-500'}`}>
-                                      {file.filename}
-                                    </span>
-                                    {file.already_processed && (
-                                      <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
-                                        Imported
-                                      </span>
-                                    )}
-                                    {!file.already_processed && (file as any).has_draft && (
-                                      <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
-                                        In Progress
-                                      </span>
-                                    )}
-                                    {isNextToImport && !(file as any).has_draft && (
-                                      <span className="text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full">
-                                        Next to import
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="text-xs text-gray-500 mt-0.5 ml-6">
-                                    {file.modified} • {file.size_display}
-                                    {file.statement_date && ` • Statement: ${new Date(file.statement_date).toLocaleDateString('en-GB')}`}
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2 ml-4">
-                                <button
-                                  onClick={() => handlePdfFileView(file.filename)}
-                                  className="px-2 py-1 text-gray-600 text-xs rounded bg-gray-100 hover:bg-gray-200 border border-gray-300"
-                                  title="View PDF file"
-                                >
-                                  View
-                                </button>
-                                {file.already_processed ? (
-                                  <span className="text-xs text-green-600 flex items-center gap-1">
-                                    <CheckCircle className="h-3 w-3" />
-                                    Processed
-                                  </span>
-                                ) : (
-                                  <button
-                                    onClick={() => handlePdfPreview(file.filename)}
-                                    disabled={isPreviewing || !canImport || !!bankPreview}
-                                    className={`px-3 py-1 text-white text-xs rounded ${
-                                      isNextToImport && !bankPreview
-                                        ? 'bg-blue-600 hover:bg-blue-700'
-                                        : 'bg-gray-400 cursor-not-allowed'
-                                    } disabled:bg-gray-400`}
-                                    title={bankPreview ? 'Clear current statement first' : (!canImport ? 'Import previous statements first' : '')}
-                                  >
-                                    {isPreviewing && selectedPdfFile?.filename === file.filename ? (
-                                      <Loader2 className="h-3 w-3 animate-spin" />
-                                    ) : (
-                                      'Analyse'
-                                    )}
-                                  </button>
+                            {/* Statement info */}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">{stmt.filename}</p>
+                              <div className="flex items-center gap-3 text-xs text-gray-500">
+                                {stmt.bank_name && <span>{stmt.bank_name}</span>}
+                                {stmt.period_start && stmt.period_end && (
+                                  <span>{stmt.period_start} — {stmt.period_end}</span>
+                                )}
+                                {stmt.file_modified && (
+                                  <span>Modified: {new Date(stmt.file_modified).toLocaleDateString('en-GB')}</span>
                                 )}
                               </div>
+                            </div>
+
+                            {/* Balances */}
+                            {stmt.opening_balance !== undefined && (
+                              <div className="text-right text-xs">
+                                <div className="text-gray-500">Open: <span className="font-medium text-gray-700">
+                                  {stmt.opening_balance?.toLocaleString('en-GB', { style: 'currency', currency: 'GBP' })}
+                                </span></div>
+                                <div className="text-gray-500">Close: <span className="font-medium text-gray-700">
+                                  {stmt.closing_balance?.toLocaleString('en-GB', { style: 'currency', currency: 'GBP' })}
+                                </span></div>
+                              </div>
+                            )}
+
+                            {/* Action */}
+                            <div className="flex-shrink-0">
+                              {isProcessed ? (
+                                <span className="text-xs text-green-600 font-medium">Imported</span>
+                              ) : isNext ? (
+                                <button
+                                  onClick={() => handleFolderPreview(stmt.full_path, stmt.filename)}
+                                  disabled={analysing}
+                                  className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:bg-gray-400 flex items-center gap-1"
+                                >
+                                  {analysing ? <Loader2 className="h-3 w-3 animate-spin" /> : <ArrowRight className="h-3 w-3" />}
+                                  Analyse
+                                </button>
+                              ) : (
+                                <span className="text-xs text-gray-400">Queued</span>
+                              )}
                             </div>
                           </div>
                         );
                       })}
                     </div>
-                  </div>
                   );
                 })()}
 
-                {pdfFilesList && pdfFilesList.length === 0 && (
-                  <div className="text-center py-8 text-gray-500 border border-gray-200 rounded-lg">
-                    <FileText className="h-12 w-12 mx-auto text-gray-300 mb-3" />
-                    <p>No PDF files found in the specified folder</p>
-                  </div>
-                )}
-
-                {!pdfFilesList && !pdfFilesLoading && (
-                  <div className="text-center py-8 text-gray-500">
-                    <FileText className="h-12 w-12 mx-auto text-gray-300 mb-3" />
-                    <p>Enter a folder path and click "Scan for PDFs" to find bank statement PDFs</p>
+                {/* Empty state */}
+                {folderStatements.length === 0 && !bankPreview && (
+                  <div className="text-center py-8 text-gray-500 text-sm">
+                    {folderScanHasRun ? (
+                      <>
+                        <FolderOpen className="h-12 w-12 mx-auto text-gray-300 mb-3" />
+                        <p>{folderScanMessage || 'No statements found in folder'}</p>
+                        <p className="text-xs text-gray-400 mt-1">Try "Check Email" to download new statements from your inbox</p>
+                      </>
+                    ) : (
+                      <>
+                        <FolderOpen className="h-12 w-12 mx-auto text-gray-300 mb-3" />
+                        <p>Select a bank account and click "Scan Folder" to find statements</p>
+                        <p className="text-xs text-gray-400 mt-1">Use "Check Email" to download new statements from your inbox into the folder</p>
+                      </>
+                    )}
                   </div>
                 )}
                 </div>
@@ -5951,37 +5827,36 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
             {/* Preview / Import Buttons */}
             {(() => {
-              // For email/pdf source, use different handlers
+              // For email/pdf/folder source, use different handlers
               const handlePreviewClick = isEmailSource && selectedEmailStatement
                 ? () => handleEmailPreview(selectedEmailStatement.emailId, selectedEmailStatement.attachmentId, selectedEmailStatement.filename)
-                : isPdfSource && selectedPdfFile
+                : selectedPdfFile
                   ? () => handlePdfPreview(selectedPdfFile.filename)
                   : handleBankPreview;
 
               // Preview button disabled state - only disable while actively previewing or when prerequisites missing
               const previewDisabled = showRecurringModal || (isEmailSource
                 ? (isPreviewing || noBankSelected || !selectedEmailStatement)
-                : isPdfSource
-                  ? (isPreviewing || noBankSelected || !selectedPdfFile)
+                : selectedPdfFile
+                  ? (isPreviewing || noBankSelected)
                   : (isPreviewing || noBankSelected || !csvFilePath));
 
               return (
                 <div className="space-y-3">
                   {/* Show source info when preview is loaded */}
-                  {bankPreview && isEmailSource && selectedEmailStatement && (
+                  {bankPreview && selectedPdfFile && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-md text-sm">
+                      <FileText className="h-4 w-4 text-blue-600" />
+                      <span className="text-blue-700">
+                        Previewing: <strong>{selectedPdfFile.filename}</strong>
+                      </span>
+                    </div>
+                  )}
+                  {bankPreview && isEmailSource && selectedEmailStatement && !selectedPdfFile && (
                     <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-md text-sm">
                       <FileText className="h-4 w-4 text-blue-600" />
                       <span className="text-blue-700">
                         Previewing: <strong>{selectedEmailStatement.filename}</strong> from email
-                      </span>
-                    </div>
-                  )}
-
-                  {bankPreview && isPdfSource && selectedPdfFile && (
-                    <div className="flex items-center gap-2 px-3 py-2 bg-purple-50 border border-purple-200 rounded-md text-sm">
-                      <FileText className="h-4 w-4 text-purple-600" />
-                      <span className="text-purple-700">
-                        Previewing: <strong>{selectedPdfFile.filename}</strong> from PDF upload
                       </span>
                     </div>
                   )}
@@ -6058,7 +5933,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
                   <div className="flex gap-4">
                     {/* View File button for CSV source only (before analysis) */}
-                    {!isEmailSource && !isPdfSource && (
+                    {!selectedPdfFile && !isEmailSource && csvFilePath && (
                       <button
                         onClick={handleRawFilePreview}
                         disabled={!csvFilePath}
@@ -6069,22 +5944,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                         View File
                       </button>
                     )}
-                    {/* View Statement button for PDF/Email source (after selecting a file) */}
-                    {(isPdfSource && selectedPdfFile) && (
+                    {/* View Statement button for PDF/folder/email source */}
+                    {(selectedPdfFile || (isEmailSource && selectedEmailStatement)) && (
                       <button
                         onClick={handleRawFilePreview}
                         className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 flex items-center gap-2 border border-gray-300"
-                        title="View the PDF statement"
-                      >
-                        <FileText className="h-4 w-4" />
-                        View Statement
-                      </button>
-                    )}
-                    {(isEmailSource && selectedEmailStatement) && (
-                      <button
-                        onClick={handleRawFilePreview}
-                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 flex items-center gap-2 border border-gray-300"
-                        title="View the email attachment"
+                        title="View the statement"
                       >
                         <FileText className="h-4 w-4" />
                         View Statement
@@ -6889,8 +6754,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         data-account-input={`receipts-${txn.row}`}
                                         className={`w-full text-sm px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
                                           editedTxn?.isEdited ? 'border-green-400 bg-green-50' : displayAccount ? 'border-gray-300' : 'border-gray-300'
-                                        }`}
+                                        } ${editedTxn?.manual_account ? 'pr-7' : ''}`}
                                       />
+                                      {editedTxn?.manual_account && !(inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'receipts') && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setEditedTransactions(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                            setSelectedForImport(prev => { const u = new Set(prev); u.delete(txn.row); return u; });
+                                          }}
+                                          className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-red-500 rounded-full hover:bg-red-50"
+                                          title="Clear account assignment"
+                                        >
+                                          <X className="h-3.5 w-3.5" />
+                                        </button>
+                                      )}
                                       {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'receipts' && (
                                         <>
                                           <div
@@ -7388,8 +7266,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         data-account-input={`payments-${txn.row}`}
                                         className={`w-full text-sm px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
                                           editedTxn?.isEdited ? 'border-green-400 bg-green-50' : displayAccount ? 'border-gray-300' : 'border-gray-300'
-                                        }`}
+                                        } ${editedTxn?.manual_account ? 'pr-7' : ''}`}
                                       />
+                                      {editedTxn?.manual_account && !(inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'payments') && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setEditedTransactions(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                            setSelectedForImport(prev => { const u = new Set(prev); u.delete(txn.row); return u; });
+                                          }}
+                                          className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-red-500 rounded-full hover:bg-red-50"
+                                          title="Clear account assignment"
+                                        >
+                                          <X className="h-3.5 w-3.5" />
+                                        </button>
+                                      )}
                                       {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'payments' && (
                                         <>
                                           <div
@@ -7893,8 +7784,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                           data-account-input={`refund-${txn.row}`}
                                           className={`w-full text-xs px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
                                             override?.account ? 'border-yellow-400 bg-yellow-50' : 'border-gray-300'
-                                          }`}
+                                          } ${override?.account ? 'pr-7' : ''}`}
                                         />
+                                        {override?.account && !(inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'refund') && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setRefundOverrides(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                              setSelectedForImport(prev => { const u = new Set(prev); u.delete(txn.row); return u; });
+                                            }}
+                                            className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-red-500 rounded-full hover:bg-red-50"
+                                            title="Clear account assignment"
+                                          >
+                                            <X className="h-3.5 w-3.5" />
+                                          </button>
+                                        )}
                                         {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'refund' && (
                                           <>
                                             {/* Click-outside overlay - rendered first so dropdown is on top */}
@@ -8275,6 +8179,33 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           </div>
                         );
                       })()}
+                      {/* Apply to all similar banner */}
+                      {applyAllSimilar?.show && (
+                        <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="text-blue-600 text-lg">&#10697;</span>
+                            <p className="text-sm text-blue-800">
+                              <strong>{applyAllSimilar.count}</strong> similar transaction{applyAllSimilar.count !== 1 ? 's' : ''} found
+                              {applyAllSimilar.similarityKey ? ` matching "${applyAllSimilar.similarityKey}"` : ''}.
+                              Apply <strong>{applyAllSimilar.accountName}</strong> to all?
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={handleApplyToAllSimilar}
+                              className="btn btn-primary text-xs px-3 py-1.5"
+                            >
+                              Apply to {applyAllSimilar.count}
+                            </button>
+                            <button
+                              onClick={() => setApplyAllSimilar(null)}
+                              className="text-blue-400 hover:text-blue-600 text-lg leading-none"
+                            >
+                              &times;
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
                         <table className="w-full text-sm">
                           <thead className="sticky top-0 bg-amber-100 z-10">
@@ -8454,7 +8385,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     )}
                                   </td>
                                   <td className="p-2">
-                                    <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
+                                    <div className="flex items-center gap-1.5">
+                                      <div className="max-w-xs truncate" title={txn.name}>{txn.name}</div>
+                                      {(txn.similar_count || 0) > 1 && !editedTransactions.has(txn.row) && (
+                                        <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-full" title={`${txn.similar_count} similar transactions (${txn.similarity_key})`}>
+                                          {txn.similar_count} similar
+                                        </span>
+                                      )}
+                                    </div>
                                     {txn.reference && (
                                       <div className="text-xs text-gray-500 truncate" title={txn.reference}>Ref: {txn.reference}</div>
                                     )}
@@ -8746,8 +8684,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                           data-account-input={`unmatched-${txn.row}`}
                                           className={`w-full text-sm px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
                                             editedTxn?.isEdited ? 'border-green-400 bg-green-50' : 'border-gray-300'
-                                          }`}
+                                          } ${editedTxn?.manual_account ? 'pr-7' : ''}`}
                                         />
+                                        {editedTxn?.manual_account && !(inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'unmatched') && (
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setEditedTransactions(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                              setSelectedForImport(prev => { const u = new Set(prev); u.delete(txn.row); return u; });
+                                            }}
+                                            className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-red-500 rounded-full hover:bg-red-50"
+                                            title="Clear account assignment"
+                                          >
+                                            <X className="h-3.5 w-3.5" />
+                                          </button>
+                                        )}
                                         {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'unmatched' && (
                                           <>
                                             {/* Click-outside overlay - rendered first so dropdown is on top */}
@@ -9281,8 +9232,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                             data-account-input={`skipped-${txn.row}`}
                                             className={`w-full text-sm px-2 py-1 border-2 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:outline-none ${
                                               inclusion?.account ? 'border-green-400 bg-green-50' : 'border-gray-300'
-                                            }`}
+                                            } ${inclusion?.account ? 'pr-7' : ''}`}
                                           />
+                                          {inclusion?.account && !(inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'skipped') && (
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setIncludedSkipped(prev => { const u = new Map(prev); u.delete(txn.row); return u; });
+                                                setSelectedForImport(prev => { const u = new Set(prev); u.delete(txn.row); return u; });
+                                              }}
+                                              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-gray-400 hover:text-red-500 rounded-full hover:bg-red-50"
+                                              title="Clear account assignment"
+                                            >
+                                              <X className="h-3.5 w-3.5" />
+                                            </button>
+                                          )}
                                           {inlineAccountSearch?.row === txn.row && inlineAccountSearch?.section === 'skipped' && (
                                             <>
                                               {/* Click-outside overlay - rendered first so dropdown is on top */}
@@ -9496,7 +9460,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   <div className="flex items-center gap-4 flex-wrap">
                     {/* Import Button */}
                     <button
-                      onClick={isEmailSource ? handleEmailImport : isPdfSource ? handlePdfImport : handleBankImport}
+                      onClick={isEmailSource ? handleEmailImport : selectedPdfFile ? handlePdfImport : handleBankImport}
                       disabled={importDisabled || isImporting || allTransactionsImported || allAlreadyInOpera}
                       className={`px-6 py-3 rounded-lg flex items-center gap-2 font-medium text-lg ${
                         importDisabled || isImporting || allTransactionsImported || allAlreadyInOpera
