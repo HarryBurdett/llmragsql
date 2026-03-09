@@ -806,8 +806,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     enabled: dataSource !== 'opera3' || !!opera3DataPath,
   });
   const advNomConfig = advancedNominalData?.success
-    ? { project_enabled: advancedNominalData.project_enabled, department_enabled: advancedNominalData.department_enabled }
-    : { project_enabled: false, department_enabled: false };
+    ? {
+        project_enabled: advancedNominalData.project_enabled,
+        department_enabled: advancedNominalData.department_enabled,
+        project_label: advancedNominalData.project_label || 'Project',
+        department_label: advancedNominalData.department_label || 'Department',
+      }
+    : { project_enabled: false, department_enabled: false, project_label: 'Project', department_label: 'Department' };
 
   const { data: projectCodesData } = useQuery({
     queryKey: ['nominal-projects', dataSource, opera3DataPath],
@@ -4821,10 +4826,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const nominalDesc = nominalAccounts.find(n => n.code === modalNominalCode)?.description || '';
 
     const selectedNominalForModal = nominalAccounts.find(n => n.code === modalNominalCode);
-    const showModalProject = advNomConfig.project_enabled && selectedNominalForModal && (selectedNominalForModal.allow_project || 0) > 0;
-    const showModalDept = advNomConfig.department_enabled && selectedNominalForModal && (selectedNominalForModal.allow_department || 0) > 0;
-    const modalProjectRequired = (selectedNominalForModal?.allow_project || 0) === 2;
-    const modalDeptRequired = (selectedNominalForModal?.allow_department || 0) === 2;
+    // Opera values: 1=Do Not Use, 2=Optional, 3=Mandatory
+    const showModalProject = advNomConfig.project_enabled && selectedNominalForModal && (selectedNominalForModal.allow_project || 0) > 1;
+    const showModalDept = advNomConfig.department_enabled && selectedNominalForModal && (selectedNominalForModal.allow_department || 0) > 1;
+    const modalProjectRequired = (selectedNominalForModal?.allow_project || 0) === 3;
+    const modalDeptRequired = (selectedNominalForModal?.allow_department || 0) === 3;
     const canSave = modalNominalCode && modalVatCode && parseFloat(modalNetAmount) > 0
       && !(advNomConfig.project_enabled && modalProjectRequired && !modalProjectCode)
       && !(advNomConfig.department_enabled && modalDeptRequired && !modalDepartmentCode);
@@ -5161,14 +5167,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                 {showModalProject && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Project{modalProjectRequired && <span className="text-red-500 ml-1">*</span>}
+                      {advNomConfig.project_label}{modalProjectRequired && <span className="text-red-500 ml-1">*</span>}
                     </label>
                     <select
                       value={modalProjectCode}
                       onChange={e => setModalProjectCode(e.target.value)}
                       className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
                     >
-                      <option value="">{modalProjectRequired ? 'Select project (required)...' : 'No project'}</option>
+                      <option value="">{modalProjectRequired ? `Select ${advNomConfig.project_label.toLowerCase()} (required)...` : `No ${advNomConfig.project_label.toLowerCase()}`}</option>
                       {projectCodes.map(p => (
                         <option key={p.code} value={p.code}>{p.code} - {p.description}</option>
                       ))}
@@ -5178,14 +5184,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                 {showModalDept && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Department{modalDeptRequired && <span className="text-red-500 ml-1">*</span>}
+                      {advNomConfig.department_label}{modalDeptRequired && <span className="text-red-500 ml-1">*</span>}
                     </label>
                     <select
                       value={modalDepartmentCode}
                       onChange={e => setModalDepartmentCode(e.target.value)}
                       className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
                     >
-                      <option value="">{modalDeptRequired ? 'Select department (required)...' : 'No department'}</option>
+                      <option value="">{modalDeptRequired ? `Select ${advNomConfig.department_label.toLowerCase()} (required)...` : `No ${advNomConfig.department_label.toLowerCase()}`}</option>
                       {departmentCodes.map(d => (
                         <option key={d.code} value={d.code}>{d.code} - {d.description}</option>
                       ))}

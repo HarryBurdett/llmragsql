@@ -459,7 +459,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   interface NominalAccount {
     code: string;
     description: string;
-    allow_project?: number;  // 0=Do Not Use, 1=Optional, 2=Mandatory
+    allow_project?: number;  // 1=Do Not Use, 2=Optional, 3=Mandatory
     allow_department?: number;
     default_project?: string;
     default_department?: string;
@@ -467,7 +467,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [nominalAccounts, setNominalAccounts] = useState<NominalAccount[]>([]);
 
   // Advanced nominal analysis (project/department)
-  const [advancedNominalConfig, setAdvancedNominalConfig] = useState<{ project_enabled: boolean; department_enabled: boolean }>({ project_enabled: false, department_enabled: false });
+  const [advancedNominalConfig, setAdvancedNominalConfig] = useState<{ project_enabled: boolean; department_enabled: boolean; project_label: string; department_label: string }>({ project_enabled: false, department_enabled: false, project_label: 'Project', department_label: 'Department' });
   const [projectCodes, setProjectCodes] = useState<{ code: string; description: string }[]>([]);
   const [departmentCodes, setDepartmentCodes] = useState<{ code: string; description: string }[]>([]);
 
@@ -500,7 +500,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       .then(res => res.json())
       .then(data => {
         if (data.success) {
-          setAdvancedNominalConfig({ project_enabled: data.project_enabled, department_enabled: data.department_enabled });
+          setAdvancedNominalConfig({ project_enabled: data.project_enabled, department_enabled: data.department_enabled, project_label: data.project_label || 'Project', department_label: data.department_label || 'Department' });
           // Fetch project/department code lists if enabled
           if (data.project_enabled) {
             authFetch('/api/nominal/projects')
@@ -4482,23 +4482,24 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   {/* Project/Department dropdowns (conditional on company config + nominal account settings) */}
                   {(() => {
                     const selectedNominal = nominalAccounts.find(n => n.code === newEntryForm.nominalCode);
-                    const showProject = advancedNominalConfig.project_enabled && selectedNominal && (selectedNominal.allow_project || 0) > 0;
-                    const showDept = advancedNominalConfig.department_enabled && selectedNominal && (selectedNominal.allow_department || 0) > 0;
-                    const projectRequired = (selectedNominal?.allow_project || 0) === 2;
-                    const deptRequired = (selectedNominal?.allow_department || 0) === 2;
+                    // Opera values: 1=Do Not Use, 2=Optional, 3=Mandatory
+                    const showProject = advancedNominalConfig.project_enabled && selectedNominal && (selectedNominal.allow_project || 0) > 1;
+                    const showDept = advancedNominalConfig.department_enabled && selectedNominal && (selectedNominal.allow_department || 0) > 1;
+                    const projectRequired = (selectedNominal?.allow_project || 0) === 3;
+                    const deptRequired = (selectedNominal?.allow_department || 0) === 3;
                     return (
                       <>
                         {showProject && (
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">
-                              Project{projectRequired && <span className="text-red-500 ml-1">*</span>}
+                              {advancedNominalConfig.project_label}{projectRequired && <span className="text-red-500 ml-1">*</span>}
                             </label>
                             <select
                               value={newEntryForm.projectCode}
                               onChange={e => setNewEntryForm({ ...newEntryForm, projectCode: e.target.value })}
                               className="w-full border border-gray-300 rounded px-3 py-2"
                             >
-                              <option value="">{projectRequired ? 'Select project (required)...' : 'No project'}</option>
+                              <option value="">{projectRequired ? `Select ${advancedNominalConfig.project_label.toLowerCase()} (required)...` : `No ${advancedNominalConfig.project_label.toLowerCase()}`}</option>
                               {projectCodes.map(p => (
                                 <option key={p.code} value={p.code}>{p.code} - {p.description}</option>
                               ))}
@@ -4508,14 +4509,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         {showDept && (
                           <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">
-                              Department{deptRequired && <span className="text-red-500 ml-1">*</span>}
+                              {advancedNominalConfig.department_label}{deptRequired && <span className="text-red-500 ml-1">*</span>}
                             </label>
                             <select
                               value={newEntryForm.departmentCode}
                               onChange={e => setNewEntryForm({ ...newEntryForm, departmentCode: e.target.value })}
                               className="w-full border border-gray-300 rounded px-3 py-2"
                             >
-                              <option value="">{deptRequired ? 'Select department (required)...' : 'No department'}</option>
+                              <option value="">{deptRequired ? `Select ${advancedNominalConfig.department_label.toLowerCase()} (required)...` : `No ${advancedNominalConfig.department_label.toLowerCase()}`}</option>
                               {departmentCodes.map(d => (
                                 <option key={d.code} value={d.code}>{d.code} - {d.description}</option>
                               ))}
@@ -4568,8 +4569,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   (newEntryForm.accountType === 'bank_transfer' && !newEntryForm.destBank) ||
                   (newEntryForm.accountType === 'nominal' && (() => {
                     const acc = nominalAccounts.find(n => n.code === newEntryForm.nominalCode);
-                    if (advancedNominalConfig.project_enabled && (acc?.allow_project || 0) === 2 && !newEntryForm.projectCode) return true;
-                    if (advancedNominalConfig.department_enabled && (acc?.allow_department || 0) === 2 && !newEntryForm.departmentCode) return true;
+                    if (advancedNominalConfig.project_enabled && (acc?.allow_project || 0) === 3 && !newEntryForm.projectCode) return true;
+                    if (advancedNominalConfig.department_enabled && (acc?.allow_department || 0) === 3 && !newEntryForm.departmentCode) return true;
                     return false;
                   })())
                 }

@@ -242,14 +242,22 @@ class Opera3Config:
 
     def get_advanced_nominal_config(self) -> Dict[str, Any]:
         """
-        Check if Advanced Nominal analysis levels (Project/Department) are enabled.
+        Check if Advanced Nominal analysis levels (Project/Department) are enabled,
+        and read the custom field labels from seqsys.
 
-        Reads CO_ADVPROJ and CO_ADVJOB from seqco company profile.
+        Reads CO_ADVPROJ and CO_ADVJOB from seqco company profile (per-company).
+        Reads SY_NLPROJ and SY_NLJOB from seqsys for custom field names.
 
         Returns:
-            Dictionary with project_enabled (bool) and department_enabled (bool)
+            Dictionary with project_enabled (bool), department_enabled (bool),
+            project_label (str), department_label (str)
         """
-        result = {"project_enabled": False, "department_enabled": False}
+        result = {
+            "project_enabled": False,
+            "department_enabled": False,
+            "project_label": "Project",
+            "department_label": "Department",
+        }
 
         try:
             seqco = self._read_table_safe('seqco')
@@ -267,6 +275,21 @@ class Opera3Config:
                 logger.debug(f"Advanced Nominal config: project={result['project_enabled']}, department={result['department_enabled']}")
         except Exception as e:
             logger.debug(f"Could not read advanced nominal config from seqco: {e}")
+
+        # Read custom field labels from seqsys (System Preferences)
+        try:
+            seqsys = self._read_table_safe('seqsys')
+            if seqsys and len(seqsys) > 0:
+                row = seqsys[0]
+                for field_name, key in [('SY_NLPROJ', 'project_label'), ('SY_NLJOB', 'department_label')]:
+                    value = row.get(field_name, row.get(field_name.lower(), ''))
+                    if isinstance(value, str):
+                        value = value.strip()
+                        if value:
+                            result[key] = value
+                logger.debug(f"Custom field labels: project='{result['project_label']}', department='{result['department_label']}'")
+        except Exception as e:
+            logger.debug(f"Could not read custom field labels from seqsys: {e}")
 
         return result
 

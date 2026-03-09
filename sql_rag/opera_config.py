@@ -448,14 +448,22 @@ def is_real_time_update_enabled(sql_connector) -> bool:
 
 def get_advanced_nominal_config(sql_connector) -> Dict[str, Any]:
     """
-    Check if Advanced Nominal analysis levels (Project/Department) are enabled.
+    Check if Advanced Nominal analysis levels (Project/Department) are enabled,
+    and read the custom field labels from seqsys.
 
-    Reads CO_ADVPROJ and CO_ADVJOB from seqco company profile.
+    Reads CO_ADVPROJ and CO_ADVJOB from seqco company profile (per-company).
+    Reads SY_NLPROJ and SY_NLJOB from seqsys for custom field names.
 
     Returns:
-        Dictionary with project_enabled (bool) and department_enabled (bool)
+        Dictionary with project_enabled (bool), department_enabled (bool),
+        project_label (str), department_label (str)
     """
-    result = {"project_enabled": False, "department_enabled": False}
+    result = {
+        "project_enabled": False,
+        "department_enabled": False,
+        "project_label": "Project",
+        "department_label": "Department",
+    }
 
     try:
         query = """
@@ -468,23 +476,37 @@ def get_advanced_nominal_config(sql_connector) -> Dict[str, Any]:
             result["project_enabled"] = bool(df.iloc[0].get('co_advproj', False))
             result["department_enabled"] = bool(df.iloc[0].get('co_advjob', False))
             logger.debug(f"Advanced Nominal config: project={result['project_enabled']}, department={result['department_enabled']}")
-            return result
     except Exception as e:
         logger.debug(f"Could not read advanced nominal config from Opera3SESystem.dbo.seqco: {e}")
+        # Fallback: try local seqco
+        try:
+            query = "SELECT TOP 1 co_advproj, co_advjob FROM seqco WITH (NOLOCK)"
+            df = sql_connector.execute_query(query)
+            if not df.empty:
+                result["project_enabled"] = bool(df.iloc[0].get('co_advproj', False))
+                result["department_enabled"] = bool(df.iloc[0].get('co_advjob', False))
+                logger.debug(f"Advanced Nominal config (fallback): project={result['project_enabled']}, department={result['department_enabled']}")
+        except Exception as e2:
+            logger.debug(f"Could not read advanced nominal config from seqco: {e2}")
 
-    # Fallback: try local seqco
+    # Read custom field labels from seqsys (System Preferences)
     try:
-        query = "SELECT TOP 1 co_advproj, co_advjob FROM seqco WITH (NOLOCK)"
-        df = sql_connector.execute_query(query)
-        if not df.empty:
-            result["project_enabled"] = bool(df.iloc[0].get('co_advproj', False))
-            result["department_enabled"] = bool(df.iloc[0].get('co_advjob', False))
-            logger.debug(f"Advanced Nominal config (fallback): project={result['project_enabled']}, department={result['department_enabled']}")
-            return result
+        df_sys = sql_connector.execute_query("""
+            SELECT RTRIM(ISNULL(sy_nlproj, '')) as sy_nlproj,
+                   RTRIM(ISNULL(sy_nljob, '')) as sy_nljob
+            FROM Opera3SESystem.dbo.seqsys WITH (NOLOCK)
+        """)
+        if not df_sys.empty:
+            prj_label = (df_sys.iloc[0].get('sy_nlproj', '') or '').strip()
+            dept_label = (df_sys.iloc[0].get('sy_nljob', '') or '').strip()
+            if prj_label:
+                result["project_label"] = prj_label
+            if dept_label:
+                result["department_label"] = dept_label
+            logger.debug(f"Custom field labels: project='{result['project_label']}', department='{result['department_label']}'")
     except Exception as e:
-        logger.debug(f"Could not read advanced nominal config from seqco: {e}")
+        logger.debug(f"Could not read custom field labels from seqsys: {e}")
 
-    logger.debug("Advanced Nominal config not found, defaulting to disabled")
     return result
 
 
