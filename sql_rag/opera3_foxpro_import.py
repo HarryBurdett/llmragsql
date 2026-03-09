@@ -4211,19 +4211,20 @@ class Opera3FoxProImport:
                     na_allwjob = int(nominal_row.get('NA_ALLWJOB', nominal_row.get('na_allwjob', 0)) or 0)
 
                     # Apply defaults if no code provided
-                    if not project_code and na_allwprj > 0:
+                    # Opera values: 1=Do Not Use, 2=Optional, 3=Mandatory
+                    if not project_code and na_allwprj > 1:
                         default_proj = (nominal_row.get('NA_PROJECT', nominal_row.get('na_project', '')) or '').strip()
                         if default_proj:
                             project_code = default_proj
-                    if not department_code and na_allwjob > 0:
+                    if not department_code and na_allwjob > 1:
                         default_job = (nominal_row.get('NA_JOB', nominal_row.get('na_job', '')) or '').strip()
                         if default_job:
                             department_code = default_job
 
-                    # Mandatory checks
-                    if na_allwprj == 2 and not project_code:
+                    # Mandatory checks — Opera values: 1=Do Not Use, 2=Optional, 3=Mandatory
+                    if na_allwprj == 3 and not project_code:
                         errors.append(f"Project code is mandatory for nominal account '{nominal_account}'")
-                    if na_allwjob == 2 and not department_code:
+                    if na_allwjob == 3 and not department_code:
                         errors.append(f"Department code is mandatory for nominal account '{nominal_account}'")
 
                     # Validate codes exist in master tables

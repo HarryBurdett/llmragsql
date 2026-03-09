@@ -2539,6 +2539,18 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Note: handleRowSelect and handleBulkAssign removed - will be re-added when bulk operations feature is implemented
 
+  // Check if a nominal posting is complete (code + mandatory project/department filled)
+  const isNominalPostingComplete = useCallback((row: number): boolean => {
+    const nomDetail = nominalPostingDetails.get(row);
+    if (!nomDetail?.nominalCode) return false;
+    const nom = nominalAccounts.find(n => n.code === nomDetail.nominalCode);
+    if (!nom) return true; // Can't validate without account info
+    // Opera values: 1=Do Not Use, 2=Optional, 3=Mandatory
+    if (advNomConfig.project_enabled && (nom.allow_project || 0) === 3 && !nomDetail.projectCode) return false;
+    if (advNomConfig.department_enabled && (nom.allow_department || 0) === 3 && !nomDetail.departmentCode) return false;
+    return true;
+  }, [nominalPostingDetails, nominalAccounts, advNomConfig]);
+
   // Calculate import readiness - which transactions are selected AND have all mandatory data
   const importReadiness = (() => {
     if (!bankPreview) return null;
@@ -2550,7 +2562,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       const txnType = transactionTypeOverrides.get(t.row);
       const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
       if (isNlOrTransfer) {
-        if (txnType === 'nominal_receipt' || txnType === 'nominal_payment') return !!nominalPostingDetails.get(t.row)?.nominalCode;
+        if (txnType === 'nominal_receipt' || txnType === 'nominal_payment') return isNominalPostingComplete(t.row);
         if (txnType === 'bank_transfer') return !!bankTransferDetails.get(t.row)?.destBankCode;
       }
       const currentAccount = editedTxn ? editedTxn.manual_account : t.account;
@@ -2565,7 +2577,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       const txnType = transactionTypeOverrides.get(t.row);
       const isNlOrTransfer = txnType === 'bank_transfer' || txnType === 'nominal_receipt' || txnType === 'nominal_payment';
       if (isNlOrTransfer) {
-        if (txnType === 'nominal_receipt' || txnType === 'nominal_payment') return !!nominalPostingDetails.get(t.row)?.nominalCode;
+        if (txnType === 'nominal_receipt' || txnType === 'nominal_payment') return isNominalPostingComplete(t.row);
         if (txnType === 'bank_transfer') return !!bankTransferDetails.get(t.row)?.destBankCode;
       }
       const currentAccount = editedTxn ? editedTxn.manual_account : t.account;
@@ -2594,10 +2606,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       const currentTxnType = transactionTypeOverrides.get(t.row) || getSmartDefaultTransactionType(t);
       const isNominal = currentTxnType === 'nominal_receipt' || currentTxnType === 'nominal_payment';
       const isBankTransfer = currentTxnType === 'bank_transfer';
-      // Nominal requires a nominal code in nominalPostingDetails
+      // Nominal requires a nominal code + mandatory project/department in nominalPostingDetails
       if (isNominal) {
-        const nomDetail = nominalPostingDetails.get(t.row);
-        return !!nomDetail?.nominalCode;
+        return isNominalPostingComplete(t.row);
       }
       // Bank transfer requires a destination bank in bankTransferDetails
       if (isBankTransfer) {
@@ -5228,7 +5239,8 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             </button>
             <button
               ref={modalSaveButtonRef}
-              onClick={() => handleSaveNominalDetail({
+              disabled={!canSave}
+              onClick={() => canSave && handleSaveNominalDetail({
                 nominalCode: modalNominalCode,
                 nominalDescription: nominalDesc,
                 vatCode: modalVatCode,
