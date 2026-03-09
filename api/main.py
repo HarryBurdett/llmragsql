@@ -200,29 +200,6 @@ def friendly_db_error(error: Exception) -> str:
     return 'An unexpected database error occurred. Please try again or contact support.'
 
 
-def switch_database(database_name: str) -> bool:
-    """Switch the SQL connector to a different database."""
-    global config, sql_connector
-
-    if not config:
-        config = load_config()
-
-    # Update the database name in config
-    config["database"]["database"] = database_name
-
-    # Reinitialize SQL connector with new database
-    try:
-        sql_connector = SQLConnector(CONFIG_PATH)
-        # Temporarily override the database
-        sql_connector.database = database_name
-        # Reconnect with new database
-        sql_connector._init_connection_string()
-        sql_connector._connect()
-        return True
-    except Exception as e:
-        logger.error(f"Failed to switch database: {e}")
-        return False
-
 
 def save_config(cfg: configparser.ConfigParser, config_path: str = None):
     """Save configuration to file."""
@@ -277,11 +254,22 @@ def _system_from_current_config(system_id: str, name: str, is_default: bool) -> 
 
 
 def apply_system_to_config(system: Dict[str, Any]):
-    """Write a system profile's database/opera settings into config.ini and reload."""
+    """Write a system profile's database/opera settings into config.ini and reload.
+
+    CRITICAL: This function guarantees that active_system_id, config.ini, and
+    sql_connector always stay in sync. On connection failure, all three are
+    rolled back to their previous state.
+    """
     global config, sql_connector, active_system_id
 
     if not config:
         config = load_config()
+
+    # Snapshot previous state for rollback
+    prev_system_id = active_system_id
+    prev_db_settings = dict(config.items("database")) if config.has_section("database") else {}
+    prev_opera_settings = dict(config.items("opera")) if config.has_section("opera") else {}
+    prev_connector = sql_connector
 
     # Apply database settings
     if "database" in system:
@@ -305,12 +293,22 @@ def apply_system_to_config(system: Dict[str, Any]):
     if not system.get("database") or not system.get("opera"):
         _sync_active_system_config()
 
-    # Reinitialize SQL connector — propagate errors so callers can report them
+    # Reinitialize SQL connector — rollback everything on failure
     try:
         sql_connector = SQLConnector(CONFIG_PATH)
         logger.info(f"Switched to system: {system['name']} (id={system['id']})")
     except Exception as e:
-        logger.warning(f"SQL connector reinit failed after system switch: {e}")
+        logger.warning(f"SQL connector reinit failed after system switch: {e} — rolling back")
+        # Rollback: restore config.ini, active_system_id, and sql_connector
+        active_system_id = prev_system_id
+        if prev_db_settings:
+            for key, value in prev_db_settings.items():
+                config["database"][key] = value
+        if prev_opera_settings:
+            for key, value in prev_opera_settings.items():
+                config["opera"][key] = value
+        save_config(config)
+        sql_connector = prev_connector
         raise ConnectionError(f"Database connection failed: {e}") from e
 
 
@@ -359,13 +357,34 @@ async def lifespan(app: FastAPI):
     logger.info("Starting SQL RAG API...")
     config = load_config()
 
-    # Initialise active system from systems.json (creates default if missing)
+    # Initialise active system from systems.json — match against config.ini server/database
     try:
         systems = load_systems()
-        default_sys = next((s for s in systems if s.get("is_default")), systems[0] if systems else None)
-        if default_sys:
-            active_system_id = default_sys["id"]
-            logger.info(f"Active system: {default_sys['name']} (id={default_sys['id']})")
+        matched_sys = None
+        if config and config.has_section("database"):
+            cfg_server = config.get("database", "server", fallback="").strip().lower()
+            cfg_db = config.get("database", "database", fallback="").strip().lower()
+            if cfg_server and cfg_db:
+                matched_sys = next(
+                    (s for s in systems
+                     if s.get("database", {}).get("server", "").strip().lower() == cfg_server
+                     and s.get("database", {}).get("database", "").strip().lower() == cfg_db),
+                    None
+                )
+        if matched_sys:
+            active_system_id = matched_sys["id"]
+            logger.info(f"Active system (matched from config.ini): {matched_sys['name']} (id={matched_sys['id']})")
+        else:
+            # CRITICAL: config.ini doesn't match any system — apply the default
+            # system's settings to config.ini to guarantee sync
+            default_sys = next((s for s in systems if s.get("is_default")), systems[0] if systems else None)
+            if default_sys:
+                logger.warning(
+                    f"config.ini (server={config.get('database', 'server', fallback='?')}, "
+                    f"db={config.get('database', 'database', fallback='?')}) does not match any "
+                    f"system in systems.json — applying default system: {default_sys['name']}"
+                )
+                apply_system_to_config(default_sys)
     except Exception as e:
         logger.warning(f"Could not initialise systems: {e}")
 
@@ -529,9 +548,13 @@ async def auth_middleware(request: Request, call_next):
     if not path.startswith('/api/'):
         return await call_next(request)
 
-    # Get token from Authorization header
+    # Get token from Authorization header or query parameter (for iframe/direct browser views)
     auth_header = request.headers.get('Authorization', '')
     token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+
+    # Fallback: accept token as query parameter (needed for iframe src, PDF viewer, etc.)
+    if not token:
+        token = request.query_params.get('token', '')
 
     if not token:
         from fastapi.responses import JSONResponse
@@ -1747,9 +1770,9 @@ async def update_database_config(db_config: DatabaseConfig):
     # Sync the active system profile with the updated config
     _sync_active_system_config()
 
-    # Reinitialize SQL connector
+    # Reinitialize SQL connector (must pass file path, not ConfigParser object)
     try:
-        sql_connector = SQLConnector(config)
+        sql_connector = SQLConnector(CONFIG_PATH)
         return {"success": True, "message": "Database configuration updated"}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1902,11 +1925,48 @@ async def get_systems():
 
 @app.get("/api/systems/active")
 async def get_active_system_endpoint():
-    """Get the currently active system profile."""
+    """Get the currently active system profile, verified against the live database connection.
+
+    CRITICAL: This endpoint confirms that what the UI displays matches what
+    the backend is actually connected to. If there is any mismatch, it is
+    reported so the user is never misled about which database they are working in.
+    """
     system = get_active_system()
-    if not system:
-        return {"system": None}
-    return {"system": system}
+
+    # Verify the live connection matches what the system profile claims
+    verified = False
+    actual_server = None
+    actual_db = None
+    mismatch_warning = None
+
+    if sql_connector:
+        try:
+            df = sql_connector.execute_query("SELECT @@SERVERNAME as sname, DB_NAME() as dbname")
+            if df is not None and len(df) > 0:
+                actual_server = str(df.iloc[0]["sname"]).strip()
+                actual_db = str(df.iloc[0]["dbname"]).strip()
+
+                expected_db = system.get("database", {}).get("database", "").strip() if system else ""
+
+                if actual_db.lower() == expected_db.lower():
+                    verified = True
+                else:
+                    mismatch_warning = (
+                        f"MISMATCH: System '{system.get('name', '?')}' expects database "
+                        f"'{expected_db}' but connected to '{actual_db}' on server '{actual_server}'"
+                    )
+                    logger.error(f"Connection verification FAILED: {mismatch_warning}")
+        except Exception as e:
+            logger.warning(f"Could not verify database connection: {e}")
+
+    response = {"system": system, "verified": verified}
+    if actual_server:
+        response["actual_server"] = actual_server
+    if actual_db:
+        response["actual_database"] = actual_db
+    if mismatch_warning:
+        response["mismatch_warning"] = mismatch_warning
+    return response
 
 
 class SystemCreate(BaseModel):
@@ -2361,6 +2421,9 @@ async def switch_company(request: Request, company_id: str):
             logger.info(f"VectorDB reinitialized for company {company_id}")
         except Exception as e:
             logger.warning(f"Could not reinitialize VectorDB on company switch: {e}")
+
+        # Sync systems.json so active system profile reflects the new database
+        _sync_active_system_config()
 
         logger.info(f"Switched from {old_database} to {database_name} ({company['name']})")
         return {
@@ -17556,7 +17619,10 @@ async def preview_bank_import_from_pdf(
         # Now match transactions using BankStatementImport
         importer = BankStatementImport(bank_code=bank_code)
 
-        # Get period info
+        # Process transactions (matching, duplicate detection) — same as OFX/CSV flow
+        importer.process_transactions(transactions)
+
+        # Get period info for validation
         period_info = None
         try:
             period_result = get_current_period_info(sql_connector)
@@ -17569,7 +17635,7 @@ async def preview_bank_import_from_pdf(
         except Exception as e:
             logger.warning(f"Could not get period info: {e}")
 
-        # Load pattern learner for suggestions
+        # Load pattern learner for suggestions on unmatched items
         try:
             from sql_rag.bank_patterns import BankPatternLearner
             pattern_learner = BankPatternLearner(company_code=sql_connector.company_code if hasattr(sql_connector, 'company_code') else 'default')
@@ -17577,16 +17643,7 @@ async def preview_bank_import_from_pdf(
             logger.warning(f"Could not initialize pattern learner: {e}")
             pattern_learner = None
 
-        # Match transactions
-        matched_receipts = []
-        matched_payments = []
-        matched_refunds = []
-        repeat_entries = []
-        unmatched = []
-        already_posted = []
-        skipped = []
-
-        # Load GoCardless FX imports to auto-detect FX transactions in bank statement
+        # Load GoCardless FX imports for auto-detection
         gc_fx_refs = {}
         if email_storage:
             try:
@@ -17596,98 +17653,83 @@ async def preview_bank_import_from_pdf(
             except Exception as e:
                 logger.warning(f"Failed to load GoCardless FX imports: {e}")
 
+        # Build result lists from importer.result (same structure as OFX/CSV preview)
+        matched_receipts = []
+        matched_payments = []
+        matched_refunds = []
+        repeat_entries = []
+        unmatched = []
+        already_posted = []
+        skipped = []
+
         for txn in transactions:
-            # Check if already posted
-            is_posted, _ = importer.check_if_already_posted(txn)
-            if is_posted:
-                already_posted.append({
-                    'row': txn.row_number,
-                    'date': txn.date,
-                    'amount': txn.amount,
-                    'name': txn.name,
-                    'reference': txn.reference,
-                    'memo': txn.memo,
-                    'action': 'skip',
-                    'reason': 'Already posted'
-                })
-                continue
+            txn_dict = {
+                'row': txn.row_number,
+                'date': txn.date,
+                'amount': txn.amount,
+                'name': txn.name,
+                'reference': txn.reference,
+                'memo': txn.memo,
+            }
 
-            # Try to match
-            match_result = importer.match_transaction(txn)
+            if txn.is_duplicate:
+                txn_dict['action'] = 'skip'
+                txn_dict['reason'] = txn.skip_reason or 'Already posted'
+                already_posted.append(txn_dict)
+            elif txn.action == 'skip' and not txn.matched_account:
+                # No match found — treat as unmatched for manual assignment
+                # (includes "No supplier/customer match", ambiguous matches, etc.)
+                sim_key = _compute_similarity_key(txn.name, txn.memo or "")
+                txn_dict['action'] = 'manual'
+                txn_dict['reason'] = txn.skip_reason or 'No match found'
+                txn_dict['similarity_key'] = sim_key
+                unmatched.append(txn_dict)
+            elif txn.action in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund',
+                                'nominal_payment', 'nominal_receipt', 'bank_transfer', 'repeat_entry'):
+                txn_dict['account'] = txn.matched_account or ''
+                txn_dict['account_name'] = txn.matched_name or ''
+                txn_dict['match_score'] = txn.match_score or 0
+                txn_dict['match_source'] = txn.match_source or ''
+                txn_dict['action'] = txn.action
+                txn_dict['transaction_type'] = txn.action
+                if hasattr(txn, 'bank_transfer_details'):
+                    txn_dict['bank_transfer_details'] = txn.bank_transfer_details
 
-            if match_result.get('action') == 'skip':
-                skipped.append({
-                    'row': txn.row_number,
-                    'date': txn.date,
-                    'amount': txn.amount,
-                    'name': txn.name,
-                    'reference': txn.reference,
-                    'memo': txn.memo,
-                    'action': 'skip',
-                    'reason': match_result.get('reason', 'Skipped')
-                })
-            elif match_result.get('account'):
-                txn_dict = {
-                    'row': txn.row_number,
-                    'date': txn.date,
-                    'amount': txn.amount,
-                    'name': txn.name,
-                    'reference': txn.reference,
-                    'memo': txn.memo,
-                    'account': match_result.get('account'),
-                    'account_name': match_result.get('account_name', ''),
-                    'match_score': match_result.get('score', 0),
-                    'match_source': match_result.get('source', ''),
-                    'action': match_result.get('action', 'post'),
-                    'transaction_type': match_result.get('transaction_type'),
-                    'bank_transfer_details': match_result.get('bank_transfer_details'),
-                }
-
-                # Check for refund
-                if match_result.get('is_refund'):
+                if txn.action in ('sales_refund', 'purchase_refund'):
                     matched_refunds.append(txn_dict)
-                elif match_result.get('repeat_entry'):
-                    txn_dict['repeat_entry_ref'] = match_result.get('repeat_entry_ref')
-                    txn_dict['repeat_entry_desc'] = match_result.get('repeat_entry_desc')
+                elif txn.action == 'repeat_entry':
+                    txn_dict['repeat_entry_ref'] = getattr(txn, 'repeat_entry_ref', '')
+                    txn_dict['repeat_entry_desc'] = getattr(txn, 'repeat_entry_desc', '')
                     repeat_entries.append(txn_dict)
-                elif match_result.get('action') == 'bank_transfer':
-                    matched_receipts.append(txn_dict) if txn.amount > 0 else matched_payments.append(txn_dict)
                 elif txn.amount > 0:
                     matched_receipts.append(txn_dict)
                 else:
                     matched_payments.append(txn_dict)
             else:
-                # Try to find a learned pattern suggestion
+                # Unmatched — try pattern suggestion
                 suggestion = None
                 if pattern_learner:
                     try:
                         suggestion = pattern_learner.find_pattern(txn.memo or txn.name)
-                    except Exception as e:
-                        logger.warning(f"Pattern lookup failed: {e}")
+                    except Exception:
+                        pass
 
-                unmatched_item = {
-                    'row': txn.row_number,
-                    'date': txn.date,
-                    'amount': txn.amount,
-                    'name': txn.name,
-                    'reference': txn.reference,
-                    'memo': txn.memo,
-                    'action': 'manual',
-                    'reason': 'No match found'
-                }
+                sim_key = _compute_similarity_key(txn.name, txn.memo or "")
+                txn_dict['action'] = 'manual'
+                txn_dict['reason'] = 'No match found'
+                txn_dict['similarity_key'] = sim_key
 
-                # Add suggestion fields if pattern found
                 if suggestion:
-                    unmatched_item['suggested_type'] = suggestion.transaction_type
-                    unmatched_item['suggested_account'] = suggestion.account_code
-                    unmatched_item['suggested_account_name'] = suggestion.account_name
-                    unmatched_item['suggested_ledger_type'] = suggestion.ledger_type
-                    unmatched_item['suggested_vat_code'] = suggestion.vat_code
-                    unmatched_item['suggested_nominal_code'] = suggestion.nominal_code
-                    unmatched_item['suggestion_confidence'] = suggestion.confidence
-                    unmatched_item['suggestion_source'] = suggestion.match_type
+                    txn_dict['suggested_type'] = suggestion.transaction_type
+                    txn_dict['suggested_account'] = suggestion.account_code
+                    txn_dict['suggested_account_name'] = suggestion.account_name
+                    txn_dict['suggested_ledger_type'] = suggestion.ledger_type
+                    txn_dict['suggested_vat_code'] = suggestion.vat_code
+                    txn_dict['suggested_nominal_code'] = suggestion.nominal_code
+                    txn_dict['suggestion_confidence'] = suggestion.confidence
+                    txn_dict['suggestion_source'] = suggestion.match_type
 
-                # Check if this is a GoCardless FX transaction
+                # Check GoCardless FX
                 gc_fx_match = None
                 if gc_fx_refs:
                     txn_text = f"{txn.name or ''} {txn.memo or ''}".upper()
@@ -17697,16 +17739,22 @@ async def preview_bank_import_from_pdf(
                             break
                 if gc_fx_match:
                     ref_key, ref_data = gc_fx_match
-                    unmatched_item['action'] = 'gc_fx_ignore'
-                    unmatched_item['reason'] = f"GoCardless FX payout ({ref_data['currency']})"
-                    unmatched_item['gc_fx_currency'] = ref_data['currency']
-                    unmatched_item['gc_fx_original_amount'] = ref_data['gross_amount']
-                    unmatched_item['gc_fx_gbp_amount'] = ref_data['fx_amount']
-                    unmatched_item['gc_fx_reference'] = ref_key
-                    skipped.append(unmatched_item)
-                    logger.info(f"Auto-detected GoCardless FX transaction (PDF): {ref_key} ({ref_data['currency']} {ref_data['gross_amount']} -> GBP {ref_data['fx_amount']})")
+                    txn_dict['action'] = 'gc_fx_ignore'
+                    txn_dict['reason'] = f"GoCardless FX payout ({ref_data['currency']})"
+                    txn_dict['gc_fx_currency'] = ref_data['currency']
+                    txn_dict['gc_fx_original_amount'] = ref_data['gross_amount']
+                    txn_dict['gc_fx_gbp_amount'] = ref_data['fx_amount']
+                    txn_dict['gc_fx_reference'] = ref_key
+                    skipped.append(txn_dict)
                 else:
-                    unmatched.append(unmatched_item)
+                    unmatched.append(txn_dict)
+
+        # Compute similarity counts for unmatched items
+        from collections import Counter
+        sim_key_counts = Counter(item.get('similarity_key', '') for item in unmatched)
+        for item in unmatched:
+            key = item.get('similarity_key', '')
+            item['similar_count'] = sim_key_counts.get(key, 1)
 
         # Build response
         logger.info(f"preview-from-pdf: Returning response - total={len(transactions)}, receipts={len(matched_receipts)}, payments={len(matched_payments)}, unmatched={len(unmatched)}, skipped={len(skipped)}")
@@ -19133,11 +19181,512 @@ FREQ_DESCRIPTIONS = {
 }
 
 
+# ============ Bank Import Folder Settings ============
+
+@app.get("/api/bank-import/folder-settings")
+async def get_bank_import_folder_settings():
+    """Get bank statement folder settings (per-company). Used by both email and folder import."""
+    try:
+        settings = _load_company_settings()
+        base = settings.get("bank_statements_base_folder", "")
+        archive = settings.get("bank_statements_archive_folder", "")
+        return {
+            "success": True,
+            "base_folder": base,
+            "archive_folder": archive,
+            "folder_enabled": bool(base),  # Enabled when base folder is configured
+        }
+    except Exception as e:
+        logger.error(f"Error reading bank import folder settings: {e}")
+        return {"success": True, "base_folder": "", "archive_folder": "", "folder_enabled": False}
+
+
+@app.post("/api/bank-import/folder-settings")
+async def save_bank_import_folder_settings(request: Request):
+    """Save bank statement folder settings (per-company). Used by both email and folder import."""
+    try:
+        body = await request.json()
+        settings = _load_company_settings()
+        settings["bank_statements_base_folder"] = body.get("base_folder", "")
+        settings["bank_statements_archive_folder"] = body.get("archive_folder", "")
+        if _save_company_settings(settings):
+            return {"success": True, "message": "Folder settings saved"}
+        return {"success": False, "error": "Failed to save settings"}
+    except Exception as e:
+        logger.error(f"Error saving bank import folder settings: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/bank-import/scan-folder")
+async def scan_folder_for_bank_statements(
+    bank_code: str = Query(..., description="Opera bank account code"),
+    validate_balances: bool = Query(True, description="Validate statement balances against Opera"),
+):
+    """
+    Scan the configured input folder for bank statement PDFs.
+
+    Returns statements in sequential import order, same format as scan-emails.
+    PDFs are validated against Opera's reconciled balance using the extraction cache.
+    """
+    try:
+        from datetime import datetime
+        from pathlib import Path
+
+        # Check folder is configured (per-company settings)
+        settings = _load_company_settings()
+        base_folder = settings.get("bank_statements_base_folder", "")
+
+        if not base_folder:
+            return {"success": False, "error": "Statement folders not configured. Set the base folder in Bank Rec Settings."}
+
+        base_path = Path(base_folder)
+        if not base_path.exists():
+            return {"success": False, "error": f"Base folder does not exist: {base_folder}"}
+
+        # Get bank details from Opera (need description for subfolder name)
+        reconciled_balance = None
+        opera_sort_code = None
+        opera_account_number = None
+        bank_description = ""
+
+        if sql_connector:
+            from sqlalchemy import text
+            with sql_connector.engine.connect() as conn:
+                result = conn.execute(text("""
+                    SELECT RTRIM(nk_sort) as sort_code, RTRIM(nk_number) as account_number,
+                           nk_recbal, RTRIM(nk_desc) as bank_desc
+                    FROM nbank WHERE RTRIM(nk_code) = :bank_code
+                """), {"bank_code": bank_code.strip()})
+                row = result.fetchone()
+                if row:
+                    opera_sort_code = (row[0] or '').replace('-', '').replace(' ', '').strip()
+                    opera_account_number = (row[1] or '').replace('-', '').replace(' ', '').strip()
+                    reconciled_balance = row[2] / 100.0 if row[2] is not None else None
+                    bank_description = row[3] if len(row) > 3 else ""
+
+        # Resolve bank-specific subfolder
+        archive_folder = settings.get("bank_statements_archive_folder", "")
+        subfolder_name = _get_bank_subfolder_name(bank_code, bank_description)
+        folder_path = base_path / subfolder_name
+        folder_path.mkdir(parents=True, exist_ok=True)
+
+        # Also check highest reconciled closing balance (effective reconciled balance)
+        effective_rec_balance = reconciled_balance
+        if email_storage and reconciled_balance is not None:
+            try:
+                highest_closing = email_storage.get_highest_reconciled_closing_balance(bank_code)
+                if highest_closing is not None and highest_closing > reconciled_balance:
+                    effective_rec_balance = highest_closing
+            except Exception:
+                pass
+
+        # Get already-processed filenames
+        reconciled_filenames = set()
+        imported_filenames = set()
+        if email_storage:
+            try:
+                reconciled_keys = email_storage.get_reconciled_statement_keys(bank_code)
+                reconciled_filenames = {k[0] for k in reconciled_keys}
+            except Exception:
+                pass
+            try:
+                imported = email_storage.list_bank_imports(bank_code=bank_code, limit=500)
+                imported_filenames = {imp.get('filename', '') for imp in imported if imp.get('filename')}
+            except Exception:
+                pass
+
+        # Scan folder for PDFs
+        from sql_rag.statement_reconcile import PDFExtractionCache
+        scan_cache = PDFExtractionCache()
+
+        statements = []
+        total_pdfs = 0
+
+        for file_path in sorted(folder_path.iterdir()):
+            if not file_path.is_file() or file_path.suffix.lower() != '.pdf':
+                continue
+
+            total_pdfs += 1
+            filename = file_path.name
+
+            # Skip already reconciled
+            if filename in reconciled_filenames:
+                continue
+
+            is_imported = filename in imported_filenames
+            stmt_entry = {
+                'filename': filename,
+                'full_path': str(file_path),
+                'source': 'folder',
+                'already_processed': False,
+                'is_imported': is_imported,
+                'status': 'imported' if is_imported else 'pending',
+                'file_size': file_path.stat().st_size,
+                'file_modified': datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
+            }
+
+            # Try cache lookup for balance validation and bank matching
+            if validate_balances:
+                try:
+                    with open(str(file_path), 'rb') as f:
+                        content_bytes = f.read()
+                    pdf_hash = scan_cache.hash_pdf(content_bytes)
+                    cached = scan_cache.get(pdf_hash)
+
+                    if cached:
+                        info_data, _ = cached
+                        stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
+                        stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
+                        stmt_entry['period_start'] = info_data.get('period_start')
+                        stmt_entry['period_end'] = info_data.get('period_end')
+                        stmt_entry['bank_name'] = info_data.get('bank_name')
+                        stmt_entry['account_number'] = info_data.get('account_number')
+                        stmt_entry['sort_code'] = info_data.get('sort_code')
+
+                        # Verify this PDF matches the selected bank
+                        stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                        stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+
+                        if opera_sort_code and opera_account_number:
+                            if stmt_sort and stmt_acct:
+                                if stmt_sort != opera_sort_code or stmt_acct != opera_account_number:
+                                    continue  # Skip — different bank
+
+                        # Check if already past reconciled balance
+                        if effective_rec_balance is not None and stmt_entry.get('closing_balance') is not None:
+                            if stmt_entry['closing_balance'] <= effective_rec_balance and stmt_entry.get('opening_balance') is not None:
+                                # Check if this statement's closing matches a known reconciled closing
+                                if filename in reconciled_filenames:
+                                    continue
+
+                        stmt_entry['status'] = 'ready' if not is_imported else 'imported'
+                except Exception as e:
+                    logger.warning(f"Could not validate PDF {filename}: {e}")
+
+            statements.append(stmt_entry)
+
+        # Sort by opening balance chain (same as scan-emails)
+        statements_with_balance = [s for s in statements if s.get('opening_balance') is not None]
+        statements_without_balance = [s for s in statements if s.get('opening_balance') is None]
+
+        if statements_with_balance and effective_rec_balance is not None:
+            # Build chain: find statement whose opening balance matches reconciled balance
+            ordered = []
+            remaining = list(statements_with_balance)
+            current_balance = effective_rec_balance
+
+            for _ in range(len(remaining)):
+                found = False
+                for i, stmt in enumerate(remaining):
+                    ob = stmt.get('opening_balance')
+                    if ob is not None and abs(ob - current_balance) < 0.02:
+                        stmt['import_sequence'] = len(ordered) + 1
+                        ordered.append(stmt)
+                        current_balance = stmt.get('closing_balance', current_balance)
+                        remaining.pop(i)
+                        found = True
+                        break
+                if not found:
+                    break
+
+            # Append any unchained statements at the end
+            for stmt in remaining:
+                stmt['import_sequence'] = len(ordered) + 1
+                ordered.append(stmt)
+
+            statements = ordered + statements_without_balance
+        else:
+            # Sort by filename as fallback
+            statements.sort(key=lambda s: s['filename'])
+
+        # Number all statements
+        for i, stmt in enumerate(statements):
+            if 'import_sequence' not in stmt:
+                stmt['import_sequence'] = i + 1
+
+        return {
+            "success": True,
+            "statements_found": statements,
+            "total_found": len(statements),
+            "total_pdfs_scanned": total_pdfs,
+            "input_folder": str(folder_path),
+            "bank_code": bank_code,
+            "reconciled_balance": reconciled_balance,
+            "message": f"Found {len(statements)} statement(s) in {folder_path}" if statements else f"No unprocessed statements found in {folder_path}",
+        }
+
+    except Exception as e:
+        logger.error(f"Error scanning folder for bank statements: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/fetch-emails-to-folder")
+async def fetch_email_statements_to_folder(
+    bank_code: str = Query(..., description="Opera bank account code"),
+    days_back: int = Query(30, description="Number of days to search back"),
+):
+    """
+    Download bank statement PDF attachments from email inbox into the bank's
+    statement subfolder.  Returns the number of new files saved so the frontend
+    can refresh the folder scan list.
+
+    Flow:
+    1. Scan inbox for emails with PDF attachments (same logic as scan-emails)
+    2. For each PDF that is NOT already on disk in the bank subfolder, download
+       and save it.
+    3. Return count of newly saved files.
+    """
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+
+    try:
+        from datetime import datetime, timedelta
+        from pathlib import Path
+
+        # Load company settings for base folder
+        settings = _load_company_settings()
+        base_folder = settings.get("bank_statements_base_folder", "")
+        if not base_folder:
+            return {"success": False, "error": "Statement folders not configured. Set the base folder in Bank Rec Settings."}
+
+        base_path = Path(base_folder)
+        if not base_path.exists():
+            return {"success": False, "error": f"Base folder does not exist: {base_folder}"}
+
+        # Get bank description from Opera for subfolder name
+        bank_description = ""
+        if sql_connector:
+            try:
+                from sqlalchemy import text as sa_text
+                with sql_connector.engine.connect() as conn:
+                    result = conn.execute(sa_text("""
+                        SELECT RTRIM(nk_desc) as bank_desc
+                        FROM nbank WHERE RTRIM(nk_code) = :bank_code
+                    """), {"bank_code": bank_code.strip()})
+                    row = result.fetchone()
+                    if row:
+                        bank_description = row[0] or ""
+            except Exception:
+                pass
+
+        # Ensure bank subfolder exists
+        subfolder_name = _get_bank_subfolder_name(bank_code, bank_description)
+        folder_path = base_path / subfolder_name
+        folder_path.mkdir(parents=True, exist_ok=True)
+
+        # Get existing filenames in the folder (to avoid re-downloading)
+        existing_files = {f.name.lower() for f in folder_path.iterdir() if f.is_file()}
+
+        # Scan emails
+        from_date = datetime.utcnow() - timedelta(days=days_back)
+        result = email_storage.get_emails(from_date=from_date, page=1, page_size=500)
+
+        saved_count = 0
+        skipped_count = 0
+        saved_files = []
+
+        for email in result.get('emails', []):
+            email_id = email.get('id')
+            if not email.get('has_attachments'):
+                continue
+
+            email_detail = email_storage.get_email_by_id(email_id)
+            if not email_detail:
+                continue
+
+            attachments = email_detail.get('attachments', [])
+            email_from = email.get('from_address', '')
+            email_subject = email.get('subject', '')
+
+            for att in attachments:
+                filename = att.get('filename', '')
+                content_type = att.get('content_type', '')
+                attachment_id = att.get('attachment_id', '')
+
+                if not is_bank_statement_attachment(filename, content_type, email_from, email_subject):
+                    continue
+
+                # Skip if file already exists in folder
+                if filename.lower() in existing_files:
+                    skipped_count += 1
+                    continue
+
+                # Download the attachment
+                try:
+                    provider_id = email_detail.get('provider_id')
+                    message_id = email_detail.get('message_id')
+                    folder_id = email_detail.get('folder_id', 'INBOX')
+
+                    if not (provider_id and message_id and email_sync_manager and provider_id in email_sync_manager.providers):
+                        continue
+
+                    provider = email_sync_manager.providers[provider_id]
+
+                    # Resolve folder_id if it's numeric
+                    if isinstance(folder_id, int):
+                        with email_storage._get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                            row = cursor.fetchone()
+                            if row:
+                                folder_id = row['folder_id']
+
+                    dl_result = await provider.download_attachment(message_id, attachment_id, folder_id)
+
+                    # Try archive folder if not found in original folder
+                    if not dl_result and folder_id not in ('Archive/Bank Statements', 'Archive/BankStatements'):
+                        for archive_folder_name in ['Archive/Bank Statements', 'Archive/BankStatements']:
+                            dl_result = await provider.download_attachment(message_id, attachment_id, archive_folder_name)
+                            if dl_result:
+                                break
+
+                    if dl_result:
+                        content_bytes, _, _ = dl_result
+                        dest_path = folder_path / filename
+
+                        # Handle duplicate filename
+                        if dest_path.exists():
+                            stem = Path(filename).stem
+                            suffix = Path(filename).suffix
+                            counter = 1
+                            while dest_path.exists():
+                                dest_path = folder_path / f"{stem}_{counter}{suffix}"
+                                counter += 1
+
+                        with open(dest_path, 'wb') as f:
+                            f.write(content_bytes)
+
+                        saved_count += 1
+                        saved_files.append(dest_path.name)
+                        existing_files.add(dest_path.name.lower())
+                        logger.info(f"Saved email attachment to folder: {dest_path}")
+
+                except Exception as dl_err:
+                    logger.warning(f"Failed to download attachment {filename}: {dl_err}")
+                    continue
+
+        return {
+            "success": True,
+            "saved_count": saved_count,
+            "skipped_count": skipped_count,
+            "saved_files": saved_files,
+            "folder": str(folder_path),
+            "message": f"Downloaded {saved_count} new statement(s) from email" if saved_count > 0 else "No new statements found in email",
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching email statements to folder: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bank-import/archive-statement")
+async def archive_folder_statement(request: Request):
+    """
+    Move a successfully imported statement PDF from input folder to archive folder.
+    Called after successful import+reconciliation.
+    """
+    try:
+        import shutil
+        from pathlib import Path
+
+        body = await request.json()
+        file_path = body.get("file_path", "")
+        if not file_path:
+            return {"success": False, "error": "file_path is required"}
+
+        source_path = Path(file_path)
+        if not source_path.exists():
+            return {"success": False, "error": f"File not found: {file_path}"}
+
+        # Get archive folder from per-company settings
+        settings = _load_company_settings()
+        archive_folder = settings.get("bank_statements_archive_folder", "")
+        bank_code = body.get("bank_code", "")
+        bank_description = body.get("bank_description", "")
+
+        if not archive_folder:
+            # Default: create 'archive' subfolder in base folder
+            archive_dir = source_path.parent.parent / 'archive'
+        else:
+            archive_dir = Path(archive_folder)
+
+        # Use bank-specific subfolder if bank info provided
+        if bank_code:
+            subfolder = _get_bank_subfolder_name(bank_code, bank_description)
+            archive_dir = archive_dir / subfolder
+
+        # Create year-month subfolder
+        now = datetime.now()
+        archive_dir = archive_dir / now.strftime('%Y-%m')
+        archive_dir.mkdir(parents=True, exist_ok=True)
+
+        dest = archive_dir / source_path.name
+        # Handle duplicate filenames
+        if dest.exists():
+            stem = dest.stem
+            suffix = dest.suffix
+            counter = 1
+            while dest.exists():
+                dest = archive_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        shutil.move(str(source_path), str(dest))
+        logger.info(f"Archived statement {source_path.name} to {dest}")
+
+        return {
+            "success": True,
+            "message": f"Statement archived to {dest}",
+            "archive_path": str(dest),
+        }
+
+    except Exception as e:
+        logger.error(f"Error archiving statement: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# Opera 3 equivalents — same logic, shared settings
+@app.get("/api/opera3/bank-import/folder-settings")
+async def opera3_get_bank_import_folder_settings():
+    """Get bank statement folder import settings (Opera 3)."""
+    return await get_bank_import_folder_settings()
+
+
+@app.post("/api/opera3/bank-import/folder-settings")
+async def opera3_save_bank_import_folder_settings(request: Request):
+    """Save bank statement folder import settings (Opera 3)."""
+    return await save_bank_import_folder_settings(request)
+
+
+@app.get("/api/opera3/bank-import/scan-folder")
+async def opera3_scan_folder_for_bank_statements(
+    bank_code: str = Query(..., description="Opera bank account code"),
+    validate_balances: bool = Query(True),
+):
+    """Scan folder for bank statement PDFs (Opera 3)."""
+    return await scan_folder_for_bank_statements(bank_code=bank_code, validate_balances=validate_balances)
+
+
+@app.post("/api/opera3/bank-import/archive-statement")
+async def opera3_archive_folder_statement(request: Request):
+    """Archive a statement PDF after import (Opera 3)."""
+    return await archive_folder_statement(request)
+
+
+@app.post("/api/opera3/bank-import/fetch-emails-to-folder")
+async def opera3_fetch_email_statements_to_folder(
+    bank_code: str = Query(..., description="Opera bank account code"),
+    days_back: int = Query(30, description="Number of days to search back"),
+):
+    """Fetch email attachments to folder (Opera 3) — delegates to shared implementation."""
+    return await fetch_email_statements_to_folder(bank_code=bank_code, days_back=days_back)
+
+
 @app.get("/api/recurring-entries/config")
 async def get_recurring_entries_config():
-    """Get recurring entries processing mode setting."""
+    """Get recurring entries processing mode setting (per-company)."""
     try:
-        mode = config.get("recurring_entries", "mode", fallback="process")
+        settings = _load_company_settings()
+        mode = settings.get("recurring_entries_mode", "process")
         if mode not in ("process", "warn"):
             mode = "process"
         return {"success": True, "mode": mode}
@@ -19150,15 +19699,15 @@ async def get_recurring_entries_config():
 async def update_recurring_entries_config(
     mode: str = Query(..., description="Mode: 'process' or 'warn'")
 ):
-    """Update recurring entries processing mode setting."""
+    """Update recurring entries processing mode setting (per-company)."""
     if mode not in ("process", "warn"):
         return {"success": False, "error": "Mode must be 'process' or 'warn'"}
     try:
-        if not config.has_section("recurring_entries"):
-            config.add_section("recurring_entries")
-        config.set("recurring_entries", "mode", mode)
-        save_config(config)
-        return {"success": True, "mode": mode}
+        settings = _load_company_settings()
+        settings["recurring_entries_mode"] = mode
+        if _save_company_settings(settings):
+            return {"success": True, "mode": mode}
+        return {"success": False, "error": "Failed to save settings"}
     except Exception as e:
         logger.error(f"Error saving recurring entries config: {e}")
         return {"success": False, "error": str(e)}
@@ -19178,7 +19727,7 @@ async def check_recurring_entries(bank_code: str):
         from sql_rag.opera_config import get_period_posting_decision
         from datetime import date as date_type
 
-        mode = config.get("recurring_entries", "mode", fallback="process")
+        mode = _load_company_settings().get("recurring_entries_mode", "process")
 
         query = f"""
             SELECT
@@ -20473,9 +21022,24 @@ async def scan_all_banks_for_statements(
             return None, None
 
         _timings['load_banks_and_lookups'] = round(_time.time() - _t1, 1)
+
+        # --- Step 2b: Resolve base folder and ensure bank subfolders exist ---
+        settings = _load_company_settings()
+        base_path = Path(settings.get("bank_statements_base_folder", ""))
+        emails_saved_to_folders = 0
+
+        if base_path and base_path.exists():
+            for bank_code_iter, bank_info in all_banks.items():
+                try:
+                    subfolder = _get_bank_subfolder_name(bank_code_iter, bank_info.get('description', ''))
+                    bank_folder_path = base_path / subfolder
+                    bank_folder_path.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+
         _t2 = _time.time()
 
-        # --- Step 3: Scan emails (batch fetch — single query for all emails+attachments) ---
+        # --- Step 3: Scan emails — save PDFs to bank subfolders (or build email entries if no folder configured) ---
         for email in emails_with_atts:
             email_id = email.get('id')
             if not email.get('has_attachments'):
@@ -20493,6 +21057,7 @@ async def scan_all_banks_for_statements(
                 filename = att.get('filename', '')
                 content_type = att.get('content_type', '')
                 attachment_id = att.get('attachment_id', '')
+                content_bytes = None  # Track downloaded bytes for save-to-folder
 
                 if not is_bank_statement_attachment(filename, content_type, email_from, email_subject):
                     continue
@@ -20685,7 +21250,85 @@ async def scan_all_banks_for_statements(
 
                     logger.info(f"Scan-all: {filename} bank={matched_bank_code or 'unknown'}, extracted={pdf_extracted}")
 
-                # Assign to matched bank, non-current category, or not_classified
+                # --- Save email PDF to bank subfolder (unified flow) ---
+                # If folders are configured, save the PDF to the matched bank's subfolder
+                # so the folder scan (Step 4) handles everything through one code path.
+                if matched_bank_code and base_path and base_path.exists():
+                    bank_info_ref = all_banks[matched_bank_code]
+                    subfolder = _get_bank_subfolder_name(matched_bank_code, bank_info_ref.get('description', ''))
+                    bank_folder = base_path / subfolder
+                    bank_folder.mkdir(parents=True, exist_ok=True)
+
+                    dest_file = bank_folder / filename
+                    saved_or_exists = False
+
+                    if dest_file.exists():
+                        # Same name on disk — check content hash if we have bytes
+                        if content_bytes is not None:
+                            import hashlib as _hl
+                            new_hash = _hl.sha256(content_bytes).hexdigest()
+                            existing_hash = _hl.sha256(dest_file.read_bytes()).hexdigest()
+                            if new_hash == existing_hash:
+                                saved_or_exists = True  # Identical content, already on disk
+                            else:
+                                # Different content, same name (e.g. Tide "attachment.pdf") — rename
+                                stem = Path(filename).stem
+                                suffix = Path(filename).suffix
+                                counter = 1
+                                while (bank_folder / f"{stem}_{counter}{suffix}").exists():
+                                    counter += 1
+                                renamed = f"{stem}_{counter}{suffix}"
+                                with open(bank_folder / renamed, 'wb') as f:
+                                    f.write(content_bytes)
+                                emails_saved_to_folders += 1
+                                saved_or_exists = True
+                                logger.info(f"Saved email PDF as renamed '{renamed}' to {bank_folder} (original '{filename}' had different content)")
+                        else:
+                            saved_or_exists = True  # No bytes to compare, assume already saved
+                    else:
+                        # File not on disk yet — download if we don't have bytes
+                        if content_bytes is None:
+                            try:
+                                email_detail_dl = email_storage.get_email_by_id(email_id)
+                                if email_detail_dl and email_sync_manager:
+                                    provider_id_dl = email_detail_dl.get('provider_id')
+                                    message_id_dl = email_detail_dl.get('message_id')
+                                    folder_id_dl = email_detail_dl.get('folder_id', 'INBOX')
+
+                                    if provider_id_dl and message_id_dl and provider_id_dl in email_sync_manager.providers:
+                                        provider_dl = email_sync_manager.providers[provider_id_dl]
+
+                                        if isinstance(folder_id_dl, int):
+                                            with email_storage._get_connection() as conn:
+                                                cursor = conn.cursor()
+                                                cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_dl,))
+                                                row = cursor.fetchone()
+                                                if row:
+                                                    folder_id_dl = row['folder_id']
+
+                                        dl_result = await provider_dl.download_attachment(message_id_dl, attachment_id, folder_id_dl)
+                                        if not dl_result and folder_id_dl not in ('Archive/Bank Statements', 'Archive/BankStatements'):
+                                            for af in ['Archive/Bank Statements', 'Archive/BankStatements']:
+                                                dl_result = await provider_dl.download_attachment(message_id_dl, attachment_id, af)
+                                                if dl_result:
+                                                    break
+                                        if dl_result:
+                                            content_bytes = dl_result[0]
+                            except Exception as dl_err:
+                                logger.warning(f"Could not download email PDF '{filename}' for folder save: {dl_err}")
+
+                        if content_bytes is not None:
+                            with open(dest_file, 'wb') as f:
+                                f.write(content_bytes)
+                            emails_saved_to_folders += 1
+                            saved_or_exists = True
+                            logger.info(f"Saved email PDF '{filename}' to {bank_folder}")
+
+                    if saved_or_exists:
+                        continue  # Folder scan (Step 4) will pick this up
+                    # else: download failed — fall through to legacy email flow below
+
+                # --- Legacy fallback: build email stmt_entry when no folder configured or download failed ---
                 cat = stmt_entry.get('category')
                 if matched_bank_code and cat in ('already_processed', 'old_statement'):
                     stmt_entry['matched_bank_code'] = matched_bank_code
@@ -20695,10 +21338,6 @@ async def scan_all_banks_for_statements(
                     nc_key = 'old_statements' if cat == 'old_statement' else 'already_processed'
                     non_current[nc_key].append(stmt_entry)
 
-                    # Auto-mark as reconciled in our tracking DB if Opera has
-                    # moved past this statement (closing <= reconciled).
-                    # This prevents the statement from appearing as "Awaiting
-                    # Reconcile" in the in-progress list after Opera reconciliation.
                     if email_storage and filename:
                         try:
                             email_storage.mark_statement_reconciled(
@@ -20706,110 +21345,42 @@ async def scan_all_banks_for_statements(
                                 bank_code=matched_bank_code,
                                 reconciled_count=0
                             )
-                            logger.info(f"Auto-marked '{filename}' as reconciled (Opera reconciled past it)")
-                        except Exception as mark_err:
-                            logger.warning(f"Could not auto-mark '{filename}' as reconciled: {mark_err}")
+                        except Exception:
+                            pass
                 elif matched_bank_code and cat == 'advanced':
-                    # Advanced — missing intermediate statement, not actionable now
                     stmt_entry['matched_bank_code'] = matched_bank_code
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
                     stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
-                    # Populate matched bank details on the statement entry
                     stmt_entry['matched_bank_code'] = matched_bank_code
                     stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
                     stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
 
-                    # Only add to bank's pending list if status is ready or imported
                     if stmt_entry.get('status') in ('ready', 'imported'):
-                        # --- Dedup check: skip if same filename or same period already seen for this bank ---
-                        received_at = stmt_entry.get('received_at', '')
-                        fn_key = (matched_bank_code, filename.lower().strip())
-                        is_dup = False
-
-                        # Check 1: Same filename for same bank (e.g. Tide "attachment.pdf" sent multiple times)
-                        if fn_key in seen_bank_filenames:
-                            prev_date, prev_entry = seen_bank_filenames[fn_key]
-                            if received_at > prev_date:
-                                # Current is newer — replace previous
-                                try:
-                                    all_banks[matched_bank_code]['statements'].remove(prev_entry)
-                                except ValueError:
-                                    pass
-                                seen_bank_filenames[fn_key] = (received_at, stmt_entry)
-                                logger.info(f"Dedup: replaced older '{filename}' for {matched_bank_code} (keeping email_id={email_id})")
-                            else:
-                                is_dup = True
-                                logger.info(f"Dedup: skipping older '{filename}' for {matched_bank_code} (email_id={email_id})")
-
-                        # Check 2: Same statement period for same bank (e.g. Monzo downloads with different random suffixes)
-                        if not is_dup:
-                            period_key = _extract_statement_period(filename)
-                            if period_key:
-                                bp_key = (matched_bank_code, period_key)
-                                if bp_key in seen_bank_periods:
-                                    prev_date, prev_entry = seen_bank_periods[bp_key]
-                                    if received_at > prev_date:
-                                        try:
-                                            all_banks[matched_bank_code]['statements'].remove(prev_entry)
-                                        except ValueError:
-                                            pass
-                                        seen_bank_periods[bp_key] = (received_at, stmt_entry)
-                                        logger.info(f"Dedup: replaced older period '{period_key}' for {matched_bank_code} (keeping {filename})")
-                                    else:
-                                        is_dup = True
-                                        logger.info(f"Dedup: skipping duplicate period '{period_key}' for {matched_bank_code} ({filename})")
-
-                        # Check 3: Overlapping periods — full month supersedes partial month
-                        # e.g. Feb 01-28 supersedes Feb 01-19 (same start, longer coverage)
-                        if not is_dup:
-                            start_date, end_date = _extract_period_dates(filename)
-                            if start_date and end_date:
-                                bs_key = (matched_bank_code, start_date)
-                                if bs_key in seen_bank_starts:
-                                    prev_end, prev_entry = seen_bank_starts[bs_key]
-                                    if end_date > prev_end:
-                                        # Current covers more days — replace previous (partial)
-                                        try:
-                                            all_banks[matched_bank_code]['statements'].remove(prev_entry)
-                                        except ValueError:
-                                            pass
-                                        seen_bank_starts[bs_key] = (end_date, stmt_entry)
-                                        logger.info(f"Dedup: full period {start_date}-{end_date} supersedes partial -{prev_end} for {matched_bank_code}")
-                                    elif end_date < prev_end:
-                                        # Current is partial, existing is fuller — skip current
-                                        is_dup = True
-                                        logger.info(f"Dedup: skipping partial {start_date}-{end_date}, full -{prev_end} already seen for {matched_bank_code}")
-
-                        if not is_dup:
-                            all_banks[matched_bank_code]['statements'].append(stmt_entry)
-                            seen_bank_filenames[fn_key] = (received_at, stmt_entry)
-                            period_key = _extract_statement_period(filename)
-                            if period_key:
-                                seen_bank_periods[(matched_bank_code, period_key)] = (received_at, stmt_entry)
-                            start_date, end_date = _extract_period_dates(filename)
-                            if start_date and end_date:
-                                seen_bank_starts[(matched_bank_code, start_date)] = (end_date, stmt_entry)
+                        all_banks[matched_bank_code]['statements'].append(stmt_entry)
                     else:
-                        # Uncached or other non-ready status — skip from pending
                         logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
                 else:
-                    # No matched bank — statement belongs to a different company or unknown bank
-                    # Skip silently; it will appear when logged into the correct company
                     logger.info(f"Skipping {filename}: no matching Opera bank in current company")
 
         _timings['scan_emails'] = round(_time.time() - _t2, 1)
         _t3 = _time.time()
 
-        # --- Step 4: Scan local PDF folders ---
-        base_path = Path("/Users/maccb/Downloads/bank-statements")
-        bank_folders = ["barclays", "hsbc", "lloyds", "natwest"]
+        # --- Step 4: Scan local PDF folders (includes email PDFs saved in Step 3) ---
+        # base_path and subfolders were set up in Step 2b
 
-        for folder_name in bank_folders:
-            folder = base_path / folder_name
+        # Scan all subdirectories under the base folder
+        scan_folders = []
+        if base_path and base_path.exists():
+            for child in sorted(base_path.iterdir()):
+                if child.is_dir() and child.name != 'archive':
+                    scan_folders.append(child)
+
+        for folder in scan_folders:
+            folder_name = folder.name
             if not folder.exists():
                 continue
 
@@ -20867,10 +21438,34 @@ async def scan_all_banks_for_statements(
                             matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
 
                             if matched_bank_code:
-                                # Don't pre-filter by balance — let the chain sort handle ordering
-                                stmt_entry['status'] = 'ready'
+                                # Check if already processed (chain complete)
+                                closing = stmt_entry.get('closing_balance')
+                                bank_rec_opens = reconciled_opening_balances.get(matched_bank_code, set())
+                                chain_complete = closing is not None and round(closing, 2) in bank_rec_opens
+                                if chain_complete:
+                                    stmt_entry['category'] = 'already_processed'
+                                    stmt_entry['status'] = 'already_processed'
+                                    logger.info(f"Folder scan: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
+                                else:
+                                    stmt_entry['status'] = 'ready'
                     except Exception as e:
                         logger.warning(f"Could not read/validate PDF file {filename}: {e}")
+
+                # Fallback: match by folder name if cache didn't match
+                # Folder names follow the pattern BC060-natwest-bank-... where BC060 is the bank code
+                if not matched_bank_code:
+                    folder_prefix = folder_name.split('-')[0].upper() if '-' in folder_name else folder_name.upper()
+                    if folder_prefix in all_banks:
+                        matched_bank_code = folder_prefix
+                        bank_info_ref = all_banks[matched_bank_code]
+                        stmt_entry['status'] = 'ready'
+                        stmt_entry['matched_bank_code'] = matched_bank_code
+                        stmt_entry['matched_bank_description'] = bank_info_ref['description']
+                        stmt_entry['matched_sort_code'] = bank_info_ref['sort_code']
+                        stmt_entry['matched_account_number'] = bank_info_ref['account_number']
+                        stmt_entry['sort_code'] = bank_info_ref['sort_code']
+                        stmt_entry['account_number'] = bank_info_ref['account_number']
+                        logger.info(f"Matched {filename} to {matched_bank_code} via folder name '{folder_name}'")
 
                 # Assign to matched bank, non-current, or not_classified
                 cat = stmt_entry.get('category')
@@ -20900,8 +21495,70 @@ async def scan_all_banks_for_statements(
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
                     non_current['advanced'].append(stmt_entry)
                 elif matched_bank_code:
+                    # Ensure matched bank details are populated
+                    if 'matched_bank_code' not in stmt_entry:
+                        stmt_entry['matched_bank_code'] = matched_bank_code
+                        stmt_entry['matched_bank_description'] = all_banks[matched_bank_code]['description']
+                        stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
+                        stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
+
                     if stmt_entry.get('status') in ('ready', 'imported'):
-                        all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                        # --- Dedup: skip if same filename or period already seen for this bank ---
+                        fn_lower = filename.lower().strip()
+                        fn_key = (matched_bank_code, fn_lower)
+                        file_mtime = str(file_path.stat().st_mtime) if file_path.exists() else ''
+                        is_dup = False
+
+                        if fn_key in seen_bank_filenames:
+                            prev_date, prev_entry = seen_bank_filenames[fn_key]
+                            if file_mtime > prev_date:
+                                try:
+                                    all_banks[matched_bank_code]['statements'].remove(prev_entry)
+                                except ValueError:
+                                    pass
+                                seen_bank_filenames[fn_key] = (file_mtime, stmt_entry)
+                            else:
+                                is_dup = True
+
+                        if not is_dup:
+                            period_key = _extract_statement_period(filename)
+                            if period_key:
+                                bp_key = (matched_bank_code, period_key)
+                                if bp_key in seen_bank_periods:
+                                    prev_date, prev_entry = seen_bank_periods[bp_key]
+                                    if file_mtime > prev_date:
+                                        try:
+                                            all_banks[matched_bank_code]['statements'].remove(prev_entry)
+                                        except ValueError:
+                                            pass
+                                        seen_bank_periods[bp_key] = (file_mtime, stmt_entry)
+                                    else:
+                                        is_dup = True
+
+                        if not is_dup:
+                            start_date, end_date = _extract_period_dates(filename)
+                            if start_date and end_date:
+                                bs_key = (matched_bank_code, start_date)
+                                if bs_key in seen_bank_starts:
+                                    prev_end, prev_entry = seen_bank_starts[bs_key]
+                                    if end_date > prev_end:
+                                        try:
+                                            all_banks[matched_bank_code]['statements'].remove(prev_entry)
+                                        except ValueError:
+                                            pass
+                                        seen_bank_starts[bs_key] = (end_date, stmt_entry)
+                                    elif end_date < prev_end:
+                                        is_dup = True
+
+                        if not is_dup:
+                            all_banks[matched_bank_code]['statements'].append(stmt_entry)
+                            seen_bank_filenames[fn_key] = (file_mtime, stmt_entry)
+                            period_key = _extract_statement_period(filename)
+                            if period_key:
+                                seen_bank_periods[(matched_bank_code, period_key)] = (file_mtime, stmt_entry)
+                            start_date, end_date = _extract_period_dates(filename)
+                            if start_date and end_date:
+                                seen_bank_starts[(matched_bank_code, start_date)] = (end_date, stmt_entry)
                     else:
                         logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
                 else:
@@ -20978,25 +21635,36 @@ async def scan_all_banks_for_statements(
                     draft_keys = email_storage.get_draft_statement_keys(code)
                     if not draft_keys:
                         continue
-                    # Build lookup by (source, email_id, attachment_id, filename)
-                    draft_lookup = {}
+                    # Build lookup by filename (unified) and legacy (source, email_id, attachment_id)
+                    draft_by_filename = {}
+                    draft_by_key = {}
                     for dk in draft_keys:
+                        fn = dk.get('filename', '')
+                        if fn:
+                            draft_by_filename[fn] = dk['updated_at']
                         if dk.get('source') == 'email':
                             key = ('email', str(dk.get('email_id') or ''), str(dk.get('attachment_id') or ''))
                         else:
-                            key = ('pdf', dk.get('filename', ''), '')
-                        draft_lookup[key] = dk['updated_at']
+                            key = ('pdf', fn, '')
+                        draft_by_key[key] = dk['updated_at']
                     for stmt in bank.get('statements', []):
-                        src = stmt.get('source', 'email')
-                        if src == 'email':
-                            key = ('email', str(stmt.get('email_id', '')), str(stmt.get('attachment_id', '')))
-                        else:
-                            key = ('pdf', stmt.get('filename', ''), '')
-                        if key in draft_lookup:
+                        fn = stmt.get('filename', '')
+                        src = stmt.get('source', 'pdf')
+                        # Try filename match first (works for both old email and new pdf sources)
+                        if fn and fn in draft_by_filename:
                             stmt['has_draft'] = True
-                            stmt['draft_updated_at'] = draft_lookup[key]
+                            stmt['draft_updated_at'] = draft_by_filename[fn]
                         else:
-                            stmt['has_draft'] = False
+                            # Fallback: exact key match
+                            if src == 'email':
+                                key = ('email', str(stmt.get('email_id', '')), str(stmt.get('attachment_id', '')))
+                            else:
+                                key = ('pdf', fn, '')
+                            if key in draft_by_key:
+                                stmt['has_draft'] = True
+                                stmt['draft_updated_at'] = draft_by_key[key]
+                            else:
+                                stmt['has_draft'] = False
             except Exception as e:
                 logger.debug(f"Could not annotate drafts for scan-all-banks: {e}")
 
@@ -21043,7 +21711,8 @@ async def scan_all_banks_for_statements(
         if total_statements == 0:
             message = f"No new statements found across {len(all_banks)} bank accounts ({total_emails_scanned} emails scanned, {total_pdfs_found} PDFs checked)"
         else:
-            message = f"Found {total_statements} statement(s) across {bank_count} bank(s)"
+            saved_msg = f", {emails_saved_to_folders} saved from email" if emails_saved_to_folders > 0 else ""
+            message = f"Found {total_statements} statement(s) across {bank_count} bank(s){saved_msg}"
 
         return {
             "success": True,
@@ -21056,6 +21725,7 @@ async def scan_all_banks_for_statements(
             "total_banks_loaded": len(all_banks),
             "total_emails_scanned": total_emails_scanned,
             "total_pdfs_found": total_pdfs_found,
+            "emails_saved_to_folders": emails_saved_to_folders,
             "duplicates_archived": duplicates_archived,
             "days_searched": days_back,
             "mailbox_synced": sync_result is not None and not (isinstance(sync_result, dict) and sync_result.get('skipped')),
@@ -24896,6 +25566,97 @@ async def get_gocardless_batch_types():
         return {"success": False, "error": str(e)}
 
 
+# ============ Per-Company Settings Storage ============
+# Stores company-specific preferences (bank import folders, recurring entries mode, etc.)
+# Each company gets its own company_settings.json in data/{company_id}/
+
+_COMPANY_SETTINGS_FILENAME = "company_settings.json"
+
+
+def _compute_similarity_key(name: str, memo: str = "") -> str:
+    """Extract a pattern key from transaction name for grouping similar unmatched items.
+    Strips variable parts (reference numbers, dates) to find the common pattern."""
+    import re as _re
+    text = (name or "").strip()
+    if not text:
+        return ""
+    # Normalise PPY references: "PPY041063/1571" → "PPY/1571"
+    ppy_match = _re.match(r'PPY\d+(/\d+)', text)
+    if ppy_match:
+        return f"PPY{ppy_match.group(1)}"
+    # Strip trailing 4+ digit reference numbers: "30JAN A/C 5456" → "30JAN A/C"
+    text = _re.sub(r'\s+\d{4,}\s*$', '', text)
+    # Strip FP date references: "FP 27/02/26 0259" → ""
+    text = _re.sub(r'\bFP\s+\d{2}/\d{2}/\d{2,4}\s*\d*\b', '', text)
+    # Strip long numeric/alphanumeric references (18+ chars)
+    text = _re.sub(r'\b[A-Z0-9]{18,}\b', '', text)
+    # Clean up whitespace
+    text = _re.sub(r'\s+', ' ', text).strip()
+    return text if text else (name or "").strip()
+
+def _get_bank_subfolder_name(bank_code: str, bank_description: str = "") -> str:
+    """Derive a bank subfolder name from Opera bank code and description.
+    Returns e.g. 'BB010-barclays-current' from code='BB010', desc='Barclays Current'."""
+    import re as _re
+    code = (bank_code or "").strip()
+    desc = (bank_description or "").strip()
+    if desc:
+        # Sanitise description for folder name: lowercase, replace non-alphanum with hyphen
+        safe_desc = _re.sub(r'[^a-z0-9]+', '-', desc.lower()).strip('-')
+        return f"{code}-{safe_desc}"
+    return code
+
+
+def _ensure_bank_statement_folders(base_folder: str, archive_folder: str, bank_code: str, bank_description: str = "") -> tuple:
+    """Ensure bank-specific subfolders exist under base and archive. Returns (input_path, archive_path)."""
+    subfolder = _get_bank_subfolder_name(bank_code, bank_description)
+    input_path = Path(base_folder) / subfolder
+    archive_path = Path(archive_folder) / subfolder
+    input_path.mkdir(parents=True, exist_ok=True)
+    archive_path.mkdir(parents=True, exist_ok=True)
+    return input_path, archive_path
+
+
+def _load_company_settings() -> dict:
+    """Load per-company settings from data/{company_id}/company_settings.json."""
+    defaults = {
+        "bank_statements_base_folder": "",
+        "bank_statements_archive_folder": "",
+        "recurring_entries_mode": "process",
+    }
+
+    company_path = get_current_db_path(_COMPANY_SETTINGS_FILENAME)
+    if company_path and company_path.exists():
+        try:
+            with open(company_path) as f:
+                saved = json.load(f)
+                # Merge with defaults so new keys are always present
+                merged = dict(defaults)
+                merged.update(saved)
+                return merged
+        except Exception:
+            pass
+
+    return defaults
+
+
+def _save_company_settings(settings: dict) -> bool:
+    """Save per-company settings."""
+    company_path = get_current_db_path(_COMPANY_SETTINGS_FILENAME)
+    if not company_path:
+        # Fallback: save to project root (shouldn't normally happen)
+        company_path = Path(__file__).parent.parent / _COMPANY_SETTINGS_FILENAME
+
+    try:
+        company_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(company_path, 'w') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save company settings: {e}")
+        return False
+
+
 # GoCardless Settings Storage (per-company, with root fallback)
 _GOCARDLESS_SETTINGS_FILENAME = "gocardless_settings.json"
 _GOCARDLESS_ROOT_FALLBACK = Path(__file__).parent.parent / _GOCARDLESS_SETTINGS_FILENAME
@@ -27491,7 +28252,7 @@ async def opera3_check_recurring_entries(
         from sql_rag.opera3_config import get_opera3_config, get_period_posting_decision as o3_get_period_posting_decision
         from datetime import date as date_type
 
-        mode = config.get("recurring_entries", "mode", fallback="process")
+        mode = _load_company_settings().get("recurring_entries_mode", "process")
         reader = Opera3Reader(data_path)
         o3_config = get_opera3_config(data_path)
 
@@ -28668,7 +29429,9 @@ async def opera3_preview_bank_import_from_pdf(
             elif txn.skip_reason and 'Already' in txn.skip_reason:
                 already_posted.append(txn_data)
             elif not txn.matched_account:
-                # Unmatched - try to get suggestions from pattern learner
+                # Unmatched - add similarity key for "apply to all similar"
+                txn_data['similarity_key'] = _compute_similarity_key(txn.name, txn.memo or "")
+                # Try to get suggestions from pattern learner
                 if pattern_learner:
                     try:
                         suggestion = pattern_learner.find_pattern(txn.memo or txn.name)
@@ -28686,6 +29449,13 @@ async def opera3_preview_bank_import_from_pdf(
                 unmatched.append(txn_data)
             else:
                 skipped.append(txn_data)
+
+        # Compute similarity counts for unmatched items
+        from collections import Counter
+        sim_key_counts = Counter(item.get('similarity_key', '') for item in unmatched)
+        for item in unmatched:
+            key = item.get('similarity_key', '')
+            item['similar_count'] = sim_key_counts.get(key, 1)
 
         return {
             "success": True,
@@ -33136,6 +33906,678 @@ async def unlink_gocardless_mandate(mandate_id: str):
     except Exception as e:
         logger.error(f"Error unlinking mandate: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ============ Mandate Setup (Create Mandate) ============
+
+@app.post("/api/gocardless/mandates/setup")
+async def create_mandate_setup(request: Request):
+    """
+    Initiate a new mandate setup for an Opera customer.
+
+    Creates a GoCardless billing request, generates an authorisation URL,
+    and sends an email to the customer with a link to set up their Direct Debit.
+
+    Request body:
+        opera_account: str - Opera customer account code
+        opera_name: str - Customer name
+        customer_email: str - Email to send authorisation link to
+        email_subject: str (optional) - Custom email subject
+        email_body: str (optional) - Custom email body HTML (must contain {authorisation_url} placeholder)
+    """
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    try:
+        body = await request.json()
+        opera_account = body.get("opera_account", "").strip()
+        opera_name = body.get("opera_name", "").strip()
+        customer_email = body.get("customer_email", "").strip()
+
+        if not opera_account:
+            return {"success": False, "error": "Opera customer account is required"}
+        if not customer_email:
+            return {"success": False, "error": "Customer email address is required"}
+
+        # Validate email format
+        if '@' not in customer_email or '.' not in customer_email.split('@')[-1]:
+            return {"success": False, "error": "Invalid email address format"}
+
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API access token not configured. Go to GoCardless Settings to add your API credentials."}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        # Step 1: Create billing request
+        metadata = {"opera_account": opera_account}
+        if opera_name:
+            metadata["opera_name"] = opera_name[:50]  # GC metadata value limit
+
+        billing_request = client.create_billing_request(
+            customer_email=customer_email,
+            customer_name=opera_name or None,
+            metadata=metadata
+        )
+        brq_id = billing_request.get("id")
+        if not brq_id:
+            return {"success": False, "error": "Failed to create billing request in GoCardless"}
+
+        # Step 2: Create billing request flow to get authorisation URL
+        flow = client.create_billing_request_flow(billing_request_id=brq_id)
+        auth_url = flow.get("authorisation_url", "")
+        flow_id = flow.get("id", "")
+
+        if not auth_url:
+            return {"success": False, "error": "Failed to generate authorisation URL from GoCardless"}
+
+        # Step 3: Save to local tracking database
+        payments_db = get_payments_db()
+        setup_record = payments_db.create_mandate_setup(
+            opera_account=opera_account,
+            opera_name=opera_name,
+            customer_email=customer_email,
+            billing_request_id=brq_id,
+            billing_request_flow_id=flow_id,
+            authorisation_url=auth_url,
+        )
+
+        # Step 4: Send email to customer
+        company_name = settings.get("company_reference", "").replace("LTDLTD", " LTD").replace("LTD", " Ltd").strip()
+        if not company_name:
+            company_name = "Our Company"
+
+        email_subject = body.get("email_subject") or f"Set Up Your Direct Debit — {company_name}"
+        default_body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #333;">Direct Debit Setup</h2>
+            <p>Dear {opera_name or 'Customer'},</p>
+            <p>We would like to invite you to set up a Direct Debit with us for convenient automated payment processing.</p>
+            <p>Please click the button below to securely set up your Direct Debit mandate through GoCardless:</p>
+            <p style="text-align: center; margin: 30px 0;">
+                <a href="{auth_url}"
+                   style="display: inline-block; padding: 14px 28px; background-color: #1a73e8; color: white;
+                          text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 16px;">
+                    Set Up Direct Debit
+                </a>
+            </p>
+            <p>This process is quick, secure, and protected by the <a href="https://www.directdebit.co.uk/direct-debit-guarantee/">Direct Debit Guarantee</a>.</p>
+            <p>If you have any questions, please don't hesitate to contact us.</p>
+            <p>Kind regards,<br>{company_name}</p>
+            <hr style="border: none; border-top: 1px solid #eee; margin-top: 30px;">
+            <p style="font-size: 11px; color: #999;">
+                If the button above doesn't work, copy and paste this link into your browser:<br>
+                <a href="{auth_url}" style="color: #999;">{auth_url}</a>
+            </p>
+        </body>
+        </html>
+        """
+        email_body = body.get("email_body")
+        if email_body and "{authorisation_url}" in email_body:
+            email_body = email_body.replace("{authorisation_url}", auth_url)
+        else:
+            email_body = default_body
+
+        # Send via configured email provider
+        email_sent = False
+        email_error = None
+        try:
+            if not email_storage:
+                email_error = "Email storage not initialized"
+            else:
+                providers = email_storage.get_all_providers()
+                enabled_provider = next((p for p in providers if p.get('enabled')), None)
+
+                if not enabled_provider:
+                    email_error = "No enabled email provider configured"
+                else:
+                    provider_type = enabled_provider.get('provider_type')
+                    config_json = enabled_provider.get('config_json', '{}')
+                    provider_config = json.loads(config_json) if config_json else {}
+
+                    if provider_type == 'imap':
+                        smtp_server = provider_config.get('server', '')
+                        smtp_port = int(provider_config.get('smtp_port', 587))
+                        username = provider_config.get('username', '')
+                        password = provider_config.get('password', '')
+                    elif provider_type == 'gmail':
+                        smtp_server = 'smtp.gmail.com'
+                        smtp_port = 587
+                        username = provider_config.get('email', '')
+                        password = provider_config.get('app_password', '') or provider_config.get('password', '')
+                    elif provider_type == 'microsoft':
+                        smtp_server = 'smtp.office365.com'
+                        smtp_port = 587
+                        username = provider_config.get('email', '')
+                        password = provider_config.get('password', '')
+                    else:
+                        email_error = f"Unsupported provider type: {provider_type}"
+                        smtp_server = None
+
+                    if smtp_server and not email_error:
+                        from_email = body.get("from_email") or provider_config.get('from_email') or provider_config.get('email') or username
+
+                        msg = MIMEMultipart('alternative')
+                        msg['Subject'] = email_subject
+                        msg['From'] = from_email
+                        msg['To'] = customer_email
+                        msg.attach(MIMEText(email_body, 'html'))
+
+                        with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+                            server.ehlo()
+                            if smtp_port == 587:
+                                server.starttls()
+                                server.ehlo()
+                            server.login(username, password)
+                            server.send_message(msg)
+
+                        email_sent = True
+                        logger.info(f"Mandate setup email sent to {customer_email} for {opera_account}")
+        except Exception as e:
+            email_error = str(e)
+            logger.error(f"Failed to send mandate setup email to {customer_email}: {e}")
+
+        # Update setup record with email status
+        if email_sent:
+            payments_db.update_mandate_setup(
+                setup_record['id'],
+                status='email_sent',
+                email_sent_at=datetime.utcnow().isoformat()
+            )
+        else:
+            payments_db.update_mandate_setup(
+                setup_record['id'],
+                status='pending',
+                status_detail=f"Email not sent: {email_error}"
+            )
+
+        setup_record = payments_db.get_mandate_setup(setup_record['id'])
+
+        return {
+            "success": True,
+            "message": f"Mandate setup initiated for {opera_name or opera_account}",
+            "setup": setup_record,
+            "email_sent": email_sent,
+            "email_error": email_error,
+            "authorisation_url": auth_url,
+        }
+
+    except Exception as e:
+        logger.error(f"Error creating mandate setup: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/mandates/pending-setups")
+async def list_pending_mandate_setups():
+    """List all pending mandate setup requests with current status."""
+    try:
+        payments_db = get_payments_db()
+        setups = payments_db.list_mandate_setups()
+        return {
+            "success": True,
+            "setups": setups,
+            "pending_count": sum(1 for s in setups if s['status'] not in ('completed', 'failed', 'cancelled')),
+        }
+    except Exception as e:
+        logger.error(f"Error listing mandate setups: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/mandates/check-setups")
+async def check_mandate_setups():
+    """
+    Poll GoCardless to check status of pending mandate setup requests.
+
+    For each pending request:
+    - Fetches billing request status from GoCardless
+    - If mandate created: updates local record with mandate ID
+    - If mandate active: links to Opera customer, sets sn_analsys='GC'
+    """
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API access token not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        payments_db = get_payments_db()
+        pending = payments_db.get_pending_mandate_setups()
+
+        if not pending:
+            return {"success": True, "message": "No pending setups to check", "updates": []}
+
+        updates = []
+        for setup in pending:
+            brq_id = setup.get('billing_request_id')
+            if not brq_id:
+                continue
+
+            try:
+                brq = client.get_billing_request(brq_id)
+                brq_status = brq.get("status", "")
+                brq_links = brq.get("links", {})
+                mandate_id = brq_links.get("mandate_request_mandate") or brq_links.get("mandate")
+                gc_customer_id = brq_links.get("customer")
+
+                update_fields = {}
+
+                if gc_customer_id and gc_customer_id != setup.get('gocardless_customer_id'):
+                    update_fields['gocardless_customer_id'] = gc_customer_id
+
+                if mandate_id and mandate_id != setup.get('mandate_id'):
+                    update_fields['mandate_id'] = mandate_id
+
+                # Map billing request status to our status
+                if brq_status == 'fulfilled' and mandate_id:
+                    # Mandate has been created — check its actual status
+                    try:
+                        mandate_detail = client.get_mandate(mandate_id)
+                        mandate_status = mandate_detail.get("status", "")
+
+                        if mandate_status == 'active':
+                            update_fields['status'] = 'completed'
+                            update_fields['mandate_active_at'] = datetime.utcnow().isoformat()
+                            update_fields['status_detail'] = f'Mandate {mandate_id} is active'
+                        elif mandate_status in ('pending_customer_approval', 'pending_submission', 'submitted'):
+                            update_fields['status'] = 'mandate_created'
+                            update_fields['status_detail'] = f'Mandate {mandate_id} status: {mandate_status}'
+                        elif mandate_status in ('cancelled', 'expired', 'failed'):
+                            update_fields['status'] = 'failed'
+                            update_fields['status_detail'] = f'Mandate {mandate_id} {mandate_status}'
+                        else:
+                            update_fields['status'] = 'mandate_created'
+                            update_fields['status_detail'] = f'Mandate {mandate_id} status: {mandate_status}'
+                    except Exception as me:
+                        logger.warning(f"Could not check mandate {mandate_id}: {me}")
+                        update_fields['status'] = 'mandate_created'
+                        update_fields['status_detail'] = f'Mandate {mandate_id} created (status check failed)'
+
+                elif brq_status in ('pending', 'action_required'):
+                    if setup.get('status') == 'email_sent':
+                        update_fields['status'] = 'authorisation_pending'
+                        update_fields['status_detail'] = 'Awaiting customer to complete authorisation'
+
+                elif brq_status == 'cancelled':
+                    update_fields['status'] = 'cancelled'
+                    update_fields['status_detail'] = 'Billing request was cancelled'
+
+                if update_fields:
+                    payments_db.update_mandate_setup(setup['id'], **update_fields)
+
+                    # If completed (mandate active), link to Opera
+                    if update_fields.get('status') == 'completed' and mandate_id:
+                        _complete_mandate_setup(
+                            payments_db, client, setup, mandate_id, gc_customer_id
+                        )
+
+                    updated_setup = payments_db.get_mandate_setup(setup['id'])
+                    updates.append({
+                        'setup_id': setup['id'],
+                        'opera_account': setup['opera_account'],
+                        'opera_name': setup['opera_name'],
+                        'old_status': setup['status'],
+                        'new_status': updated_setup['status'],
+                        'mandate_id': mandate_id,
+                    })
+
+            except Exception as e:
+                logger.warning(f"Error checking setup {setup['id']} (BRQ {brq_id}): {e}")
+                updates.append({
+                    'setup_id': setup['id'],
+                    'opera_account': setup['opera_account'],
+                    'error': str(e),
+                })
+
+        return {
+            "success": True,
+            "message": f"Checked {len(pending)} pending setups, {len(updates)} updated",
+            "updates": updates,
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking mandate setups: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def _complete_mandate_setup(payments_db, client, setup, mandate_id, gc_customer_id):
+    """
+    When a mandate setup completes (mandate becomes active):
+    1. Link mandate to Opera customer in local DB
+    2. Set sn_analsys='GC' on the Opera customer
+    """
+    opera_account = setup['opera_account']
+    opera_name = setup.get('opera_name', '')
+    email = setup.get('customer_email', '')
+
+    try:
+        # Get customer details from GoCardless
+        gc_name = None
+        if gc_customer_id:
+            try:
+                gc_customer = client.get_customer(gc_customer_id)
+                gc_name = gc_customer.get("company_name") or gc_customer.get("given_name", "")
+                if not email:
+                    email = gc_customer.get("email", "")
+            except Exception:
+                pass
+
+        # Get mandate details
+        mandate_status = "active"
+        scheme = "bacs"
+        try:
+            mandate_detail = client.get_mandate(mandate_id)
+            mandate_status = mandate_detail.get("status", "active")
+            scheme = mandate_detail.get("scheme", "bacs")
+        except Exception:
+            pass
+
+        # Link mandate in local DB
+        payments_db.link_mandate(
+            opera_account=opera_account,
+            mandate_id=mandate_id,
+            opera_name=opera_name,
+            gocardless_name=gc_name,
+            gocardless_customer_id=gc_customer_id,
+            mandate_status=mandate_status,
+            scheme=scheme,
+            email=email
+        )
+        logger.info(f"Mandate {mandate_id} linked to {opera_account} via setup flow")
+
+        # Set sn_analsys='GC' in Opera
+        if sql_connector:
+            try:
+                from sqlalchemy import text
+                with sql_connector.engine.connect() as conn:
+                    conn.execute(text("""
+                        UPDATE sname WITH (ROWLOCK)
+                        SET sn_analsys = 'GC'
+                        WHERE LTRIM(RTRIM(sn_account)) = :account
+                        AND (sn_analsys IS NULL OR LTRIM(RTRIM(sn_analsys)) = ''
+                             OR LTRIM(RTRIM(UPPER(sn_analsys))) != 'GC')
+                    """), {"account": opera_account.strip()})
+                    conn.commit()
+                    logger.info(f"Set sn_analsys='GC' for customer {opera_account}")
+            except Exception as e:
+                logger.warning(f"Could not update sn_analsys for {opera_account}: {e}")
+
+    except Exception as e:
+        logger.error(f"Error completing mandate setup for {opera_account}: {e}")
+
+
+@app.get("/api/gocardless/customer-email/{account}")
+async def get_customer_email_for_mandate(account: str):
+    """Get customer email from Opera for pre-filling the mandate setup form."""
+    try:
+        if not sql_connector:
+            return {"success": True, "email": "", "name": ""}
+
+        from sqlalchemy import text
+        with sql_connector.engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT RTRIM(sn_name) as name, RTRIM(sn_email) as email,
+                       RTRIM(sn_contact) as contact
+                FROM sname
+                WHERE LTRIM(RTRIM(sn_account)) = :account
+            """), {"account": account.strip()})
+            row = result.fetchone()
+
+        if not row:
+            return {"success": True, "email": "", "name": ""}
+
+        return {
+            "success": True,
+            "email": (row[1] or "").strip(),
+            "name": (row[0] or "").strip(),
+            "contact": (row[2] or "").strip(),
+        }
+    except Exception as e:
+        logger.error(f"Error getting customer email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/mandates/cancel-setup/{setup_id}")
+async def cancel_mandate_setup(setup_id: int):
+    """Cancel a pending mandate setup request."""
+    try:
+        payments_db = get_payments_db()
+        setup = payments_db.get_mandate_setup(setup_id)
+        if not setup:
+            return {"success": False, "error": "Setup request not found"}
+
+        if setup['status'] in ('completed', 'failed', 'cancelled'):
+            return {"success": False, "error": f"Cannot cancel — setup is already {setup['status']}"}
+
+        payments_db.update_mandate_setup(
+            setup_id,
+            status='cancelled',
+            status_detail='Cancelled by user'
+        )
+
+        return {
+            "success": True,
+            "message": f"Mandate setup for {setup['opera_name'] or setup['opera_account']} cancelled"
+        }
+    except Exception as e:
+        logger.error(f"Error cancelling mandate setup: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# ============ Opera 3 Mandate Setup Equivalents ============
+
+@app.post("/api/opera3/gocardless/mandates/setup")
+async def opera3_create_mandate_setup(request: Request):
+    """
+    Initiate a new mandate setup for an Opera 3 customer.
+    Same logic as SQL SE but reads customer email from FoxPro.
+    """
+    # Reuse the same logic — the GoCardless API calls are identical
+    return await create_mandate_setup(request)
+
+
+@app.get("/api/opera3/gocardless/mandates/pending-setups")
+async def opera3_list_pending_mandate_setups():
+    """List all pending mandate setup requests (Opera 3)."""
+    return await list_pending_mandate_setups()
+
+
+@app.post("/api/opera3/gocardless/mandates/check-setups")
+async def opera3_check_mandate_setups():
+    """
+    Poll GoCardless to check status of pending mandate setup requests (Opera 3).
+    Same GoCardless API calls, but sets sn_analsys='GC' in FoxPro instead of SQL Server.
+    """
+    try:
+        settings = _load_gocardless_settings()
+        access_token = settings.get("api_access_token")
+        if not access_token:
+            return {"success": False, "error": "GoCardless API access token not configured"}
+
+        from sql_rag.gocardless_api import GoCardlessClient
+        sandbox = settings.get("api_sandbox", False)
+        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+        payments_db = get_payments_db()
+        pending = payments_db.get_pending_mandate_setups()
+
+        if not pending:
+            return {"success": True, "message": "No pending setups to check", "updates": []}
+
+        updates = []
+        for setup in pending:
+            brq_id = setup.get('billing_request_id')
+            if not brq_id:
+                continue
+
+            try:
+                brq = client.get_billing_request(brq_id)
+                brq_status = brq.get("status", "")
+                brq_links = brq.get("links", {})
+                mandate_id = brq_links.get("mandate_request_mandate") or brq_links.get("mandate")
+                gc_customer_id = brq_links.get("customer")
+
+                update_fields = {}
+
+                if gc_customer_id and gc_customer_id != setup.get('gocardless_customer_id'):
+                    update_fields['gocardless_customer_id'] = gc_customer_id
+
+                if mandate_id and mandate_id != setup.get('mandate_id'):
+                    update_fields['mandate_id'] = mandate_id
+
+                if brq_status == 'fulfilled' and mandate_id:
+                    try:
+                        mandate_detail = client.get_mandate(mandate_id)
+                        mandate_status = mandate_detail.get("status", "")
+
+                        if mandate_status == 'active':
+                            update_fields['status'] = 'completed'
+                            update_fields['mandate_active_at'] = datetime.utcnow().isoformat()
+                            update_fields['status_detail'] = f'Mandate {mandate_id} is active'
+                        elif mandate_status in ('pending_customer_approval', 'pending_submission', 'submitted'):
+                            update_fields['status'] = 'mandate_created'
+                            update_fields['status_detail'] = f'Mandate {mandate_id} status: {mandate_status}'
+                        elif mandate_status in ('cancelled', 'expired', 'failed'):
+                            update_fields['status'] = 'failed'
+                            update_fields['status_detail'] = f'Mandate {mandate_id} {mandate_status}'
+                        else:
+                            update_fields['status'] = 'mandate_created'
+                    except Exception:
+                        update_fields['status'] = 'mandate_created'
+
+                elif brq_status in ('pending', 'action_required'):
+                    if setup.get('status') == 'email_sent':
+                        update_fields['status'] = 'authorisation_pending'
+                        update_fields['status_detail'] = 'Awaiting customer to complete authorisation'
+
+                elif brq_status == 'cancelled':
+                    update_fields['status'] = 'cancelled'
+                    update_fields['status_detail'] = 'Billing request was cancelled'
+
+                if update_fields:
+                    payments_db.update_mandate_setup(setup['id'], **update_fields)
+
+                    if update_fields.get('status') == 'completed' and mandate_id:
+                        _complete_mandate_setup_opera3(
+                            payments_db, client, setup, mandate_id, gc_customer_id
+                        )
+
+                    updated_setup = payments_db.get_mandate_setup(setup['id'])
+                    updates.append({
+                        'setup_id': setup['id'],
+                        'opera_account': setup['opera_account'],
+                        'opera_name': setup['opera_name'],
+                        'old_status': setup['status'],
+                        'new_status': updated_setup['status'],
+                        'mandate_id': mandate_id,
+                    })
+
+            except Exception as e:
+                logger.warning(f"Error checking setup {setup['id']} (BRQ {brq_id}): {e}")
+                updates.append({
+                    'setup_id': setup['id'],
+                    'opera_account': setup['opera_account'],
+                    'error': str(e),
+                })
+
+        return {
+            "success": True,
+            "message": f"Checked {len(pending)} pending setups, {len(updates)} updated",
+            "updates": updates,
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking mandate setups: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def _complete_mandate_setup_opera3(payments_db, client, setup, mandate_id, gc_customer_id):
+    """
+    When a mandate setup completes for Opera 3:
+    1. Link mandate to Opera customer in local DB
+    2. Set sn_analsys='GC' in FoxPro
+    """
+    opera_account = setup['opera_account']
+    opera_name = setup.get('opera_name', '')
+    email = setup.get('customer_email', '')
+
+    try:
+        gc_name = None
+        if gc_customer_id:
+            try:
+                gc_customer = client.get_customer(gc_customer_id)
+                gc_name = gc_customer.get("company_name") or gc_customer.get("given_name", "")
+            except Exception:
+                pass
+
+        mandate_status = "active"
+        scheme = "bacs"
+        try:
+            mandate_detail = client.get_mandate(mandate_id)
+            mandate_status = mandate_detail.get("status", "active")
+            scheme = mandate_detail.get("scheme", "bacs")
+        except Exception:
+            pass
+
+        payments_db.link_mandate(
+            opera_account=opera_account,
+            mandate_id=mandate_id,
+            opera_name=opera_name,
+            gocardless_name=gc_name,
+            gocardless_customer_id=gc_customer_id,
+            mandate_status=mandate_status,
+            scheme=scheme,
+            email=email
+        )
+        logger.info(f"Mandate {mandate_id} linked to {opera_account} via setup flow (Opera 3)")
+
+        # Set sn_analsys='GC' in FoxPro
+        try:
+            from sql_rag.opera3_foxpro import Opera3FoxPro
+            foxpro = Opera3FoxPro()
+            foxpro.update_field('sname', 'sn_account', opera_account.strip(), 'sn_analsys', 'GC')
+            logger.info(f"Set sn_analsys='GC' in FoxPro for customer {opera_account}")
+        except Exception as e:
+            logger.warning(f"Could not update sn_analsys in FoxPro for {opera_account}: {e}")
+
+    except Exception as e:
+        logger.error(f"Error completing mandate setup for {opera_account} (Opera 3): {e}")
+
+
+@app.get("/api/opera3/gocardless/customer-email/{account}")
+async def opera3_get_customer_email_for_mandate(account: str):
+    """Get customer email from Opera 3 FoxPro for pre-filling the mandate setup form."""
+    try:
+        from sql_rag.opera3_foxpro import Opera3FoxPro
+        foxpro = Opera3FoxPro()
+        results = foxpro.query_table('sname', f"RTRIM(sn_account) = '{account.strip()}'",
+                                     fields=['sn_name', 'sn_email', 'sn_contact'])
+        if not results:
+            return {"success": True, "email": "", "name": ""}
+
+        row = results[0]
+        return {
+            "success": True,
+            "email": (row.get('sn_email', '') or '').strip(),
+            "name": (row.get('sn_name', '') or '').strip(),
+            "contact": (row.get('sn_contact', '') or '').strip(),
+        }
+    except Exception as e:
+        logger.error(f"Error getting Opera 3 customer email: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/gocardless/mandates/cancel-setup/{setup_id}")
+async def opera3_cancel_mandate_setup(setup_id: int):
+    """Cancel a pending mandate setup request (Opera 3)."""
+    return await cancel_mandate_setup(setup_id)
 
 
 @app.get("/api/gocardless/eligible-customers")
