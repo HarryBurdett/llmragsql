@@ -8175,6 +8175,24 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               }
                             </h4>
                             <div className="flex items-center gap-2">
+                              {!isImported && filtered.some(t => editedTransactions.has(t.row) || transactionTypeOverrides.has(t.row) || nominalPostingDetails.has(t.row) || bankTransferDetails.has(t.row)) && (
+                                <button
+                                  onClick={() => {
+                                    const rows = filtered.map(t => t.row);
+                                    setEditedTransactions(prev => { const u = new Map(prev); rows.forEach(r => u.delete(r)); return u; });
+                                    setTransactionTypeOverrides(prev => { const u = new Map(prev); rows.forEach(r => u.delete(r)); return u; });
+                                    setNominalPostingDetails(prev => { const u = new Map(prev); rows.forEach(r => u.delete(r)); return u; });
+                                    setBankTransferDetails(prev => { const u = new Map(prev); rows.forEach(r => u.delete(r)); return u; });
+                                    setCbtypeOverrides(prev => { const u = new Map(prev); rows.forEach(r => u.delete(r)); return u; });
+                                    setSelectedForImport(prev => { const u = new Set(prev); rows.forEach(r => u.delete(r)); return u; });
+                                  }}
+                                  className="text-xs px-2.5 py-1 border border-amber-400 text-amber-700 rounded hover:bg-amber-100 flex items-center gap-1"
+                                  title="Clear all account assignments and type overrides for unmatched items"
+                                >
+                                  <RotateCcw className="h-3 w-3" />
+                                  Reset All
+                                </button>
+                              )}
                             </div>
                           </div>
                         );
