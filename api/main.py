@@ -13905,11 +13905,15 @@ async def view_file(path: str):
         if content_type is None:
             content_type = "application/octet-stream"
 
-        return FileResponse(
-            path=str(file_path),
+        from fastapi.responses import Response
+        content_bytes = file_path.read_bytes()
+        return Response(
+            content=content_bytes,
             media_type=content_type,
-            filename=file_path.name,
-            content_disposition_type="inline"
+            headers={
+                "Content-Disposition": f"inline",
+                "X-Frame-Options": "SAMEORIGIN",
+            }
         )
 
     except HTTPException:
@@ -21038,6 +21042,8 @@ async def scan_all_banks_for_statements(
                 except Exception:
                     pass
 
+        _folder_hashes = {}  # folder_path -> set of SHA256 hashes (for content dedup across filenames)
+
         _t2 = _time.time()
 
         # --- Step 3: Scan emails — save PDFs to bank subfolders (or build email entries if no folder configured) ---
@@ -21263,29 +21269,42 @@ async def scan_all_banks_for_statements(
                     dest_file = bank_folder / filename
                     saved_or_exists = False
 
-                    if dest_file.exists():
-                        # Same name on disk — check content hash if we have bytes
-                        if content_bytes is not None:
-                            import hashlib as _hl
-                            new_hash = _hl.sha256(content_bytes).hexdigest()
-                            existing_hash = _hl.sha256(dest_file.read_bytes()).hexdigest()
-                            if new_hash == existing_hash:
-                                saved_or_exists = True  # Identical content, already on disk
-                            else:
-                                # Different content, same name (e.g. Tide "attachment.pdf") — rename
-                                stem = Path(filename).stem
-                                suffix = Path(filename).suffix
-                                counter = 1
-                                while (bank_folder / f"{stem}_{counter}{suffix}").exists():
-                                    counter += 1
-                                renamed = f"{stem}_{counter}{suffix}"
-                                with open(bank_folder / renamed, 'wb') as f:
-                                    f.write(content_bytes)
-                                emails_saved_to_folders += 1
-                                saved_or_exists = True
-                                logger.info(f"Saved email PDF as renamed '{renamed}' to {bank_folder} (original '{filename}' had different content)")
-                        else:
-                            saved_or_exists = True  # No bytes to compare, assume already saved
+                    # Build hash index of ALL existing PDFs in this bank folder (for content dedup)
+                    # Cached per-folder so we only scan once per bank per scan cycle
+                    folder_key = str(bank_folder)
+                    if folder_key not in _folder_hashes:
+                        import hashlib as _hl
+                        _folder_hashes[folder_key] = set()
+                        for existing_file in bank_folder.iterdir():
+                            if existing_file.is_file() and existing_file.suffix.lower() == '.pdf':
+                                try:
+                                    _folder_hashes[folder_key].add(_hl.sha256(existing_file.read_bytes()).hexdigest())
+                                except Exception:
+                                    pass
+
+                    if content_bytes is not None:
+                        import hashlib as _hl
+                        new_hash = _hl.sha256(content_bytes).hexdigest()
+                        if new_hash in _folder_hashes.get(folder_key, set()):
+                            # Content already exists in this folder (possibly under a different name)
+                            saved_or_exists = True
+                        elif dest_file.exists():
+                            # Same filename but different content — rename with counter
+                            stem = Path(filename).stem
+                            suffix = Path(filename).suffix
+                            counter = 1
+                            while (bank_folder / f"{stem}_{counter}{suffix}").exists():
+                                counter += 1
+                            renamed = f"{stem}_{counter}{suffix}"
+                            with open(bank_folder / renamed, 'wb') as f:
+                                f.write(content_bytes)
+                            _folder_hashes[folder_key].add(new_hash)
+                            emails_saved_to_folders += 1
+                            saved_or_exists = True
+                            logger.info(f"Saved email PDF as renamed '{renamed}' to {bank_folder} (original '{filename}' had different content)")
+                        # else: file doesn't exist yet — will be saved below
+                    elif dest_file.exists():
+                        saved_or_exists = True  # No bytes to compare, file with same name exists
                     else:
                         # File not on disk yet — download if we don't have bytes
                         if content_bytes is None:
@@ -21319,11 +21338,26 @@ async def scan_all_banks_for_statements(
                                 logger.warning(f"Could not download email PDF '{filename}' for folder save: {dl_err}")
 
                         if content_bytes is not None:
-                            with open(dest_file, 'wb') as f:
-                                f.write(content_bytes)
-                            emails_saved_to_folders += 1
-                            saved_or_exists = True
-                            logger.info(f"Saved email PDF '{filename}' to {bank_folder}")
+                            import hashlib as _hl
+                            new_hash = _hl.sha256(content_bytes).hexdigest()
+                            if new_hash in _folder_hashes.get(folder_key, set()):
+                                saved_or_exists = True  # Already in folder under different name
+                            else:
+                                # Check if dest_file appeared (race) or needs rename
+                                save_path = dest_file
+                                if save_path.exists():
+                                    stem = Path(filename).stem
+                                    suffix = Path(filename).suffix
+                                    counter = 1
+                                    while (bank_folder / f"{stem}_{counter}{suffix}").exists():
+                                        counter += 1
+                                    save_path = bank_folder / f"{stem}_{counter}{suffix}"
+                                with open(save_path, 'wb') as f:
+                                    f.write(content_bytes)
+                                _folder_hashes.setdefault(folder_key, set()).add(new_hash)
+                                emails_saved_to_folders += 1
+                                saved_or_exists = True
+                                logger.info(f"Saved email PDF '{save_path.name}' to {bank_folder}")
 
                     if saved_or_exists:
                         continue  # Folder scan (Step 4) will pick this up
