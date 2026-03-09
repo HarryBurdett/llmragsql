@@ -253,11 +253,12 @@ export function BankStatementHub() {
   }, [scanResult, handleScan]);
 
   const handleViewStatement = useCallback((stmt: StatementEntry) => {
+    const token = localStorage.getItem('auth_token') || '';
     let url: string;
     if (stmt.source === 'email' && stmt.email_id && stmt.attachment_id) {
-      url = `http://localhost:8000/api/email/messages/${stmt.email_id}/attachments/${encodeURIComponent(stmt.attachment_id)}/view`;
+      url = `/api/email/messages/${stmt.email_id}/attachments/${encodeURIComponent(stmt.attachment_id)}/view?token=${encodeURIComponent(token)}`;
     } else if (stmt.full_path) {
-      url = `http://localhost:8000/api/file/view?path=${encodeURIComponent(stmt.full_path)}`;
+      url = `/api/file/view?path=${encodeURIComponent(stmt.full_path)}&token=${encodeURIComponent(token)}`;
     } else {
       return;
     }

@@ -3030,7 +3030,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               <button
                 onClick={() => {
                   if (statementPath.trim()) {
-                    window.open(`http://localhost:8000/api/file/view?path=${encodeURIComponent(statementPath)}`, '_blank');
+                    const _token = localStorage.getItem('auth_token') || '';
+                    window.open(`/api/file/view?path=${encodeURIComponent(statementPath)}&token=${encodeURIComponent(_token)}`, '_blank');
                   }
                 }}
                 disabled={!statementPath.trim()}
