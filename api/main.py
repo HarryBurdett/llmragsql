@@ -13908,7 +13908,8 @@ async def view_file(path: str):
         return FileResponse(
             path=str(file_path),
             media_type=content_type,
-            filename=file_path.name
+            filename=file_path.name,
+            content_disposition_type="inline"
         )
 
     except HTTPException:
