@@ -891,6 +891,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         setActiveImportId(importId);
         setSelectedBank(stmt.bank_code);
 
+        // Set statement path for Preview button — prefer full_path from API, fallback to filename
+        if (data.statement_info?.full_path) {
+          setStatementPath(data.statement_info.full_path);
+        } else if (stmt.filename) {
+          setStatementPath(stmt.filename); // Filename fallback; Preview button will try to resolve
+        }
+
         // Set balances from statement info
         if (data.statement_info?.opening_balance != null) {
           setOpeningBalance(Number(data.statement_info.opening_balance).toFixed(2));
@@ -3029,9 +3036,26 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               {/* Preview PDF Button */}
               <button
                 onClick={() => {
-                  if (statementPath.trim()) {
-                    const _token = localStorage.getItem('auth_token') || '';
-                    window.open(`/api/file/view?path=${encodeURIComponent(statementPath)}&token=${encodeURIComponent(_token)}`, '_blank');
+                  const _token = localStorage.getItem('auth_token') || '';
+                  // Resolve full path: use statementPath if it looks like a full path,
+                  // otherwise look up from statement files list by filename
+                  let viewPath = statementPath.trim();
+                  if (viewPath && !viewPath.includes('/')) {
+                    // Just a filename — try to find full path from statement files
+                    const matched = statementFilesQuery.data?.files?.find(
+                      f => f.filename === viewPath || f.path?.endsWith(viewPath)
+                    );
+                    if (matched?.path) viewPath = matched.path;
+                    // Also try importedStatementData filename
+                    if (!matched && importedStatementData?.filename) {
+                      const matchByImport = statementFilesQuery.data?.files?.find(
+                        f => f.filename === importedStatementData.filename
+                      );
+                      if (matchByImport?.path) viewPath = matchByImport.path;
+                    }
+                  }
+                  if (viewPath) {
+                    window.open(`/api/file/view?path=${encodeURIComponent(viewPath)}&token=${encodeURIComponent(_token)}`, '_blank');
                   }
                 }}
                 disabled={!statementPath.trim()}

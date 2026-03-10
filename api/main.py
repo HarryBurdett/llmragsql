@@ -13894,8 +13894,29 @@ async def view_file(path: str):
     try:
         file_path = Path(path)
 
+        # If path is just a filename (no directory), search bank statement folders
+        if not file_path.exists() and not file_path.is_absolute() and '/' not in path and '\\' not in path:
+            try:
+                settings = _load_company_settings()
+                base_folder = settings.get("bank_statements_base_folder", "")
+                if base_folder:
+                    base = Path(base_folder)
+                    # Search all bank subfolders and archive subfolders
+                    for search_root in [base, base / 'archive']:
+                        if search_root.exists():
+                            for subfolder in search_root.iterdir():
+                                if subfolder.is_dir():
+                                    candidate = subfolder / path
+                                    if candidate.exists():
+                                        file_path = candidate
+                                        break
+                        if file_path.exists():
+                            break
+            except Exception:
+                pass
+
         if not file_path.exists():
-            raise HTTPException(status_code=404, detail="File not found")
+            raise HTTPException(status_code=404, detail=f"PDF file not found: {path}")
 
         if not file_path.is_file():
             raise HTTPException(status_code=400, detail="Path is not a file")
@@ -17469,10 +17490,31 @@ async def get_pdf_content(
     import base64
 
     try:
-        if not os.path.exists(filename):
+        resolved = filename
+        # If just a filename (no path separator), search bank statement folders
+        if not os.path.exists(resolved) and '/' not in filename and '\\' not in filename:
+            try:
+                settings = _load_company_settings()
+                base_folder = settings.get("bank_statements_base_folder", "")
+                if base_folder:
+                    base = Path(base_folder)
+                    for search_root in [base, base / 'archive']:
+                        if search_root.exists():
+                            for subfolder in search_root.iterdir():
+                                if subfolder.is_dir():
+                                    candidate = subfolder / filename
+                                    if candidate.exists():
+                                        resolved = str(candidate)
+                                        break
+                        if os.path.exists(resolved):
+                            break
+            except Exception:
+                pass
+
+        if not os.path.exists(resolved):
             return {"success": False, "error": f"PDF file not found: {filename}"}
 
-        with open(filename, 'rb') as f:
+        with open(resolved, 'rb') as f:
             pdf_bytes = f.read()
 
         pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
@@ -17480,7 +17522,7 @@ async def get_pdf_content(
         return {
             "success": True,
             "pdf_data": pdf_base64,
-            "filename": os.path.basename(filename)
+            "filename": os.path.basename(resolved)
         }
     except Exception as e:
         logger.error(f"Error reading PDF file: {e}")
@@ -24115,6 +24157,36 @@ async def get_statement_transactions(import_id: int):
         if not import_record:
             return {"success": False, "error": f"Import record {import_id} not found"}
 
+        # Resolve full path for the statement PDF file
+        full_path = None
+        filename = import_record.get('filename', '')
+        bank_code = import_record.get('bank_code', '')
+        if filename and bank_code:
+            try:
+                settings = _load_company_settings()
+                base_path = settings.get("bank_statements_base_folder", "")
+                if base_path:
+                    base = Path(base_path)
+                    # Search bank subfolders for the file
+                    for subfolder in base.iterdir():
+                        if subfolder.is_dir() and subfolder.name.startswith(bank_code):
+                            candidate = subfolder / filename
+                            if candidate.exists():
+                                full_path = str(candidate)
+                                break
+                    # Also check archive folders
+                    if not full_path:
+                        archive_base = base / 'archive'
+                        if archive_base.exists():
+                            for subfolder in archive_base.iterdir():
+                                if subfolder.is_dir() and subfolder.name.startswith(bank_code):
+                                    candidate = subfolder / filename
+                                    if candidate.exists():
+                                        full_path = str(candidate)
+                                        break
+            except Exception as e:
+                logger.debug(f"Could not resolve full path for {filename}: {e}")
+
         return {
             "success": True,
             "import_id": import_id,
@@ -24127,6 +24199,7 @@ async def get_statement_transactions(import_id: int):
                 "statement_date": import_record.get('statement_date'),
                 "account_number": import_record.get('account_number'),
                 "sort_code": import_record.get('sort_code'),
+                "full_path": full_path,
             }
         }
 
