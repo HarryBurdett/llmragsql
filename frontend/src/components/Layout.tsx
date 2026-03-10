@@ -9,6 +9,7 @@ import {
   Cog, Activity, Boxes, LogOut, KeyRound, Send, RotateCcw, Monitor, CalendarDays
 } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
+import { Opera3AgentStatus } from './Opera3AgentStatus';
 import { useAuth } from '../context/AuthContext';
 import { useUnsavedChanges } from '../context/UnsavedChangesContext';
 import apiClient from '../api/client';
@@ -103,6 +104,7 @@ const utilitiesSubmenu: (NavItem | NavItemWithSubmenu)[] = [
 const getAdministrationSubmenu = (isAdmin: boolean): (NavItem | NavItemWithSubmenu)[] => {
   const menu: (NavItem | NavItemWithSubmenu)[] = [
     { path: '/admin/company', label: 'Date & Company', icon: CalendarDays },
+    { path: '/admin/system-dashboard', label: 'System Dashboard', icon: Activity },
     { label: 'Utilities', icon: Wrench, submenu: utilitiesSubmenu },
     { path: '/admin/projects', label: 'Projects', icon: FolderKanban },
     { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock },
@@ -114,9 +116,6 @@ const getAdministrationSubmenu = (isAdmin: boolean): (NavItem | NavItemWithSubme
     menu.push({ path: '/admin/users', label: 'Users', icon: Users });
     menu.push({ path: '/admin/licenses', label: 'Licenses', icon: KeyRound });
   }
-
-  // Switch User is handled as a special action item — see SWITCH_USER_PATH
-  menu.push({ path: '/action/switch-user', label: 'Switch User', icon: RotateCcw });
 
   return menu;
 };
@@ -447,13 +446,25 @@ export function Layout({ children }: LayoutProps) {
           <div className="flex justify-between items-center h-14">
             {/* Logo & Brand */}
             <div className="flex items-center gap-4">
-              <Link to="/" className="flex items-center gap-2.5 hover:opacity-80 transition-opacity">
-                <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg flex items-center justify-center">
-                  <Database className="h-4.5 w-4.5 text-white" />
+              <Link to="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center font-extrabold text-sm text-white shadow-sm"
+                  style={{ background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)' }}
+                >
+                  C
                 </div>
-                <span className="text-lg font-bold text-gray-900 tracking-tight">SQL RAG</span>
+                <span className="text-lg font-bold text-gray-800">Crakd<span className="text-blue-500">.ai</span></span>
               </Link>
               <OperaVersionBadge />
+              <Opera3AgentStatus />
+              {/* Sign In — return to login to switch user/company */}
+              <button
+                onClick={() => setShowLogonConfirm(true)}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Sign In</span>
+              </button>
             </div>
 
             {/* Navigation */}

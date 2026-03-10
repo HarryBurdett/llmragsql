@@ -19691,6 +19691,62 @@ async def archive_folder_statement(request: Request):
         return {"success": False, "error": str(e)}
 
 
+# ============================================================
+# Opera 3 Write Agent Status
+# ============================================================
+
+@app.get("/api/opera3/agent/status")
+async def opera3_agent_status():
+    """
+    Check the Opera 3 Write Agent service status.
+    Returns whether the agent is available and its health info.
+    The frontend uses this to show a status indicator and block writes if unavailable.
+    """
+    try:
+        from sql_rag.opera3_agent_client import Opera3AgentClient, Opera3AgentUnavailable
+
+        # Get agent URL from company settings or environment
+        import os
+        agent_url = os.environ.get("OPERA3_AGENT_URL", "")
+        agent_key = os.environ.get("OPERA3_AGENT_KEY", "")
+
+        # Also check company-level config
+        if not agent_url and current_company:
+            agent_url = current_company.get("opera3_agent_url", "")
+            agent_key = agent_key or current_company.get("opera3_agent_key", "")
+
+        if not agent_url:
+            return {
+                "available": False,
+                "configured": False,
+                "message": "Opera 3 Write Agent not configured. Set OPERA3_AGENT_URL or configure in company settings.",
+            }
+
+        client = Opera3AgentClient(
+            base_url=agent_url,
+            agent_key=agent_key,
+            health_check_interval=0,  # One-shot check, no background thread
+        )
+        available = client.is_available()
+        info = client.get_health_info()
+
+        return {
+            "available": available,
+            "configured": True,
+            "url": agent_url,
+            "info": info.get("info", {}),
+            "message": "Opera 3 Write Agent is online" if available else "Opera 3 Write Agent is not responding",
+        }
+
+    except Exception as e:
+        logger.error(f"Error checking Opera 3 agent status: {e}")
+        return {
+            "available": False,
+            "configured": False,
+            "error": str(e),
+        }
+
+
 # Opera 3 equivalents — same logic, shared settings
 @app.get("/api/opera3/bank-import/folder-settings")
 async def opera3_get_bank_import_folder_settings():
