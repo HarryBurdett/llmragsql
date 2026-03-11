@@ -772,14 +772,17 @@ class Opera3FoxProImport:
 
     def _get_supplier_control_account(self, supplier_account: str) -> str:
         """Get creditors control account for a supplier"""
-        # Get company default from Opera config (nparm) instead of hardcoding
+        # Get company default from Opera config (nparm) — NEVER hardcode account codes
         try:
             from sql_rag.opera3_config import Opera3Config
             config = Opera3Config(self.data_path)
             defaults = config.get_control_accounts()
             default_control = defaults.creditors_control
-        except Exception:
-            default_control = 'CA030'
+        except Exception as e:
+            raise ValueError(
+                f"Cannot determine creditors control account: Opera3Config failed ({e}). "
+                "Control accounts vary by company — they must be read from Opera configuration."
+            )
 
         try:
             # Get supplier's profile code
@@ -813,14 +816,17 @@ class Opera3FoxProImport:
 
     def _get_customer_control_account(self, customer_account: str) -> str:
         """Get debtors control account for a customer"""
-        # Get company default from Opera config (nparm) instead of hardcoding
+        # Get company default from Opera config (nparm) — NEVER hardcode account codes
         try:
             from sql_rag.opera3_config import Opera3Config
             config = Opera3Config(self.data_path)
             defaults = config.get_control_accounts()
             default_control = defaults.debtors_control
-        except Exception:
-            default_control = 'BB020'
+        except Exception as e:
+            raise ValueError(
+                f"Cannot determine debtors control account: Opera3Config failed ({e}). "
+                "Control accounts vary by company — they must be read from Opera configuration."
+            )
 
         try:
             # Get customer's profile code

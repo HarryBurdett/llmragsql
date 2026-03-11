@@ -153,13 +153,19 @@ class Opera3Config:
                         if source == 'default':
                             source = 'nparm'
 
-        # Use defaults if still not found
+        # Raise error if not found — control accounts vary by company, never hardcode
         if not debtors_control:
-            debtors_control = 'BB020'
-            logger.warning(f"Using default debtors control account: {debtors_control}")
+            raise ValueError(
+                "Debtors control account not found in Opera 3 configuration "
+                "(checked sprfls.sc_dbtctrl and nparm.np_dca). "
+                "Verify the Opera 3 data is accessible and control accounts are configured."
+            )
         if not creditors_control:
-            creditors_control = 'CA030'
-            logger.warning(f"Using default creditors control account: {creditors_control}")
+            raise ValueError(
+                "Creditors control account not found in Opera 3 configuration "
+                "(checked pprfls.pc_crdctrl and nparm.np_cca). "
+                "Verify the Opera 3 data is accessible and control accounts are configured."
+            )
 
         result = Opera3ControlAccounts(
             debtors_control=debtors_control,

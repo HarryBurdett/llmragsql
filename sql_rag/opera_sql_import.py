@@ -389,19 +389,8 @@ class OperaSQLImport:
             OperaControlAccounts with debtors and creditors control codes
         """
         if self._control_accounts is None:
-            try:
-                from sql_rag.opera_config import get_control_accounts
-                self._control_accounts = get_control_accounts(self.sql)
-            except Exception as e:
-                logger.warning(f"Could not load control accounts from config: {e}")
-                # Use defaults
-                from dataclasses import dataclass
-                @dataclass
-                class DefaultControlAccounts:
-                    debtors_control: str = "BB020"
-                    creditors_control: str = "CA030"
-                    source: str = "default"
-                self._control_accounts = DefaultControlAccounts()
+            from sql_rag.opera_config import get_control_accounts
+            self._control_accounts = get_control_accounts(self.sql)
 
         return self._control_accounts
 

@@ -107,13 +107,19 @@ def get_control_accounts(sql_connector, use_cache: bool = True) -> OperaControlA
         except Exception as e:
             logger.warning(f"Could not read nparm table: {e}")
 
-    # Use defaults if still not found
+    # Raise error if not found — control accounts vary by company, never hardcode
     if not debtors_control:
-        debtors_control = 'BB020'  # Common default
-        logger.warning(f"Using default debtors control account: {debtors_control}")
+        raise ValueError(
+            "Debtors control account not found in Opera configuration "
+            "(checked sprfls.sc_dbtctrl and nparm.np_dca). "
+            "Verify the database connection and that control accounts are configured in Opera."
+        )
     if not creditors_control:
-        creditors_control = 'CA030'  # Common default
-        logger.warning(f"Using default creditors control account: {creditors_control}")
+        raise ValueError(
+            "Creditors control account not found in Opera configuration "
+            "(checked pprfls.pc_crdctrl and nparm.np_cca). "
+            "Verify the database connection and that control accounts are configured in Opera."
+        )
 
     result = OperaControlAccounts(
         debtors_control=debtors_control,

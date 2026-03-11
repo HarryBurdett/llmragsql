@@ -32,6 +32,7 @@
 param(
     [string]$DataPath = "",
     [int]$Port = 9000,
+    [string]$ServiceName = "",
     [switch]$SkipHarbour
 )
 
@@ -49,7 +50,8 @@ $INSTALLER_DIR = Join-Path $AGENT_DIR "installer"
 $LOGS_DIR = Join-Path $AGENT_DIR "logs"
 $TOOLS_DIR = Join-Path $AGENT_DIR "tools"
 
-$SERVICE_NAME = "OperaWriteAgent"
+# Service name is derived from data path to support multiple instances on same server.
+# Override with -ServiceName parameter if needed.
 $HARBOUR_RELEASE_API = "https://api.github.com/repos/vszakats/hb/releases/latest"
 $NSSM_URL = "https://nssm.cc/release/nssm-2.24.zip"
 
@@ -142,8 +144,21 @@ if (-not $hasDBF) {
     if ($continue -ne "Y") { exit 1 }
 }
 
-Write-Host "Data path: $DataPath"
-Write-Host "Port: $Port"
+# Derive service name from data path if not explicitly provided
+if (-not $ServiceName) {
+    # Create a short, unique suffix from the data path
+    $pathHash = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes($DataPath.ToLower().TrimEnd('\'))
+        )
+    ).Replace("-", "").Substring(0, 6)
+    $ServiceName = "Opera3Agent_$pathHash"
+}
+$SERVICE_NAME = $ServiceName
+
+Write-Host "Data path:     $DataPath"
+Write-Host "Port:          $Port"
+Write-Host "Service name:  $SERVICE_NAME"
 Write-Host ""
 
 # Create directories
