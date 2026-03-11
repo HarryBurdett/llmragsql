@@ -28648,7 +28648,7 @@ async def opera3_post_recurring_entries(request: Request):
     }
     """
     try:
-        from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
         from datetime import date as date_type
 
         body = await request.json()
@@ -28663,7 +28663,10 @@ async def opera3_post_recurring_entries(request: Request):
         if not entries:
             return {"success": False, "error": "No entries to post"}
 
-        importer = Opera3FoxProImport(data_path)
+        try:
+            importer = get_opera3_writer(data_path)
+        except Opera3AgentRequired as e:
+            return {"success": False, "error": str(e)}
         results = []
         posted_count = 0
         failed_count = 0
@@ -29855,7 +29858,7 @@ async def opera3_import_bank_statement_from_pdf(
         reconciliation_result = None
         if auto_reconcile and len(imported) > 0 and len(errors) == 0:
             try:
-                from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+                from sql_rag.opera3_write_provider import get_opera3_writer
 
                 # Collect entries with valid entry_numbers
                 entries_to_reconcile = []
@@ -29884,8 +29887,8 @@ async def opera3_import_bank_statement_from_pdf(
 
                     statement_number = int(latest_date.strftime('%y%m%d'))
 
-                    # Use Opera 3 FoxPro import for reconciliation
-                    foxpro_import = Opera3FoxProImport(data_path)
+                    # Use Opera 3 writer (agent or direct)
+                    foxpro_import = get_opera3_writer(data_path)
                     recon_result = foxpro_import.mark_entries_reconciled(
                         bank_account=bank_code,
                         entries=entries_to_reconcile,
@@ -30894,7 +30897,7 @@ async def opera3_import_gocardless_batch(
     - Multiple stran records
     """
     try:
-        from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
         from datetime import datetime
         import json
 
@@ -30968,7 +30971,10 @@ async def opera3_import_gocardless_batch(
                 }
 
         # Import the batch
-        importer = Opera3FoxProImport(data_path)
+        try:
+            importer = get_opera3_writer(data_path)
+        except Opera3AgentRequired as e:
+            return {"success": False, "error": str(e)}
         result = importer.import_gocardless_batch(
             bank_account=posting_bank,
             payments=validated_payments,
@@ -33063,7 +33069,7 @@ async def opera3_import_gocardless_from_email(
 ):
     """Import GoCardless batch from email into Opera 3."""
     try:
-        from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
         from datetime import datetime
 
         try:
@@ -33152,7 +33158,11 @@ async def opera3_import_gocardless_from_email(
             return {"success": False, "error": f"Bank account {posting_bank} is currently being imported by another user."}
 
         try:
-            importer = Opera3FoxProImport(data_path)
+            try:
+                importer = get_opera3_writer(data_path)
+            except Opera3AgentRequired as e:
+                release_import_lock(lock_key)
+                return {"success": False, "error": str(e)}
             result = importer.import_gocardless_batch(
                 bank_account=posting_bank,
                 payments=validated_payments,
@@ -33575,10 +33585,13 @@ async def opera3_create_cashbook_entry(request: Request):
         if amount <= 0:
             return {"success": False, "error": "Amount must be positive"}
 
-        from sql_rag.opera3_foxpro_import import Opera3FoxProImport
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
         from datetime import date
 
-        foxpro_import = Opera3FoxProImport(data_path)
+        try:
+            foxpro_import = get_opera3_writer(data_path)
+        except Opera3AgentRequired as e:
+            return {"success": False, "error": str(e)}
 
         # Parse date
         if isinstance(transaction_date, str):

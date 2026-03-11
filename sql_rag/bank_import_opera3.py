@@ -56,6 +56,15 @@ except ImportError:
     Opera3ImportResult = None
     FileLockTimeout = None
 
+# Import write provider for automatic agent routing
+try:
+    from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
+    WRITE_PROVIDER_AVAILABLE = True
+except ImportError:
+    WRITE_PROVIDER_AVAILABLE = False
+    get_opera3_writer = None
+    Opera3AgentRequired = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -1441,14 +1450,17 @@ class BankStatementMatcherOpera3:
             ImportError: If dbf package not available
             FileLockTimeout: If files are locked by another process
         """
-        if not FOXPRO_IMPORT_AVAILABLE:
+        if not FOXPRO_IMPORT_AVAILABLE and not WRITE_PROVIDER_AVAILABLE:
             raise ImportError(
-                "Opera 3 import requires the 'dbf' package. "
+                "Opera 3 import requires either the Write Agent service or the 'dbf' package. "
                 "Install with: pip install dbf"
             )
 
-        # Initialize importer
-        importer = Opera3FoxProImport(str(self.data_path))
+        # Initialize importer — automatically uses Write Agent if available
+        if WRITE_PROVIDER_AVAILABLE:
+            importer = get_opera3_writer(str(self.data_path))
+        else:
+            importer = Opera3FoxProImport(str(self.data_path))
 
         imported_count = 0
         failed_count = 0
