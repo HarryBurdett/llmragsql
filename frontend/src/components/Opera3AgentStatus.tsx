@@ -14,6 +14,7 @@ interface AgentStatus {
     harbour_available?: boolean;
     platform?: string;
     hostname?: string;
+    status?: string;
   };
 }
 
@@ -54,6 +55,19 @@ export function Opera3AgentStatus() {
       >
         <span className="w-2 h-2 rounded-full bg-gray-400" />
         <span>Write Agent</span>
+      </div>
+    );
+  }
+
+  // Online but writes blocked (data integrity issue)
+  if (status.available && status.info?.status === 'blocked') {
+    return (
+      <div
+        className="flex items-center gap-1.5 px-2 py-1 rounded text-xs bg-amber-50 text-amber-700 border border-amber-200 animate-pulse"
+        title="Write Agent online but writes BLOCKED due to a data integrity issue. Manual intervention required."
+      >
+        <span className="w-2 h-2 rounded-full bg-amber-500" />
+        <span>Writes Blocked</span>
       </div>
     );
   }

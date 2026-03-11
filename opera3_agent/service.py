@@ -34,6 +34,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
+from opera3_agent.write_ahead_log import WriteAheadLog, OperationStatus
+from opera3_agent.transaction_safety import TransactionSafety
+
 logger = logging.getLogger(__name__)
 
 # ============================================================
@@ -42,8 +45,18 @@ logger = logging.getLogger(__name__)
 
 OPERA3_DATA_PATH = os.environ.get("OPERA3_DATA_PATH", "")
 OPERA3_AGENT_KEY = os.environ.get("OPERA3_AGENT_KEY", "")
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 START_TIME = time.time()
+
+# WAL database lives alongside the agent (NOT in Opera data)
+WAL_DB_PATH = os.environ.get(
+    "OPERA3_WAL_PATH",
+    os.path.join(os.path.dirname(__file__), "opera3_wal.db"),
+)
+
+# Safety layer instances (initialised at startup)
+wal: Optional[WriteAheadLog] = None
+safety: Optional[TransactionSafety] = None
 
 
 # ============================================================
@@ -280,6 +293,17 @@ def get_importer():
             detail=f"Opera 3 data path does not exist: {OPERA3_DATA_PATH}"
         )
 
+    # Check if writes are blocked due to failed compensation
+    if safety and safety.writes_blocked:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Writes are BLOCKED due to a data integrity issue: "
+                f"{safety.block_reason}. "
+                f"Manual intervention required before writes can resume."
+            ),
+        )
+
     # Import here to avoid circular imports and allow the service to start
     # even without the full sql_rag package during development
     try:
@@ -295,6 +319,111 @@ def get_importer():
                 status_code=503,
                 detail="Opera3FoxProImport module not available. Check installation."
             )
+
+
+def safe_import(operation_type: str, params: dict, import_fn) -> dict:
+    """Execute an import operation wrapped with WAL + verification + compensation.
+
+    This is the core safety wrapper. Every import endpoint calls this instead
+    of directly invoking the importer.
+
+    Flow:
+    1. WAL: Record operation intent (PENDING)
+    2. WAL: Mark IN_PROGRESS
+    3. Execute the actual import
+    4. If import reports failure → mark FAILED, return error
+    5. WAL: Mark VERIFYING, run post-write verification
+    6. If verification passes → mark COMPLETED, return success
+    7. If verification fails → COMPENSATE, return error with details
+
+    Args:
+        operation_type: e.g. "purchase_payment"
+        params: request parameters (for WAL and compensation)
+        import_fn: callable that executes the actual import, returns result
+
+    Returns:
+        dict suitable for JSON response
+    """
+    # If WAL or safety not initialised, fall back to unprotected import
+    if wal is None:
+        logger.warning("WAL not initialised — executing unprotected import")
+        result = import_fn()
+        return result_to_dict(result)
+
+    op_id = wal.begin_operation(operation_type, params)
+
+    try:
+        wal.mark_in_progress(op_id)
+
+        # Execute the actual write operation
+        result = import_fn()
+        result_dict = result_to_dict(result)
+
+        # If the import itself reported failure, no verification needed
+        if not result_dict.get("success", False):
+            wal.mark_failed(op_id, "; ".join(result_dict.get("errors", ["Unknown error"])))
+            return result_dict
+
+        # Post-write verification
+        if safety is not None:
+            wal.mark_verifying(op_id, result_dict)
+            verification = safety.verify(operation_type, result_dict)
+            wal.set_verification_details(op_id, verification.details)
+
+            if verification.passed:
+                wal.mark_completed(op_id, result_dict)
+                return result_dict
+            else:
+                # VERIFICATION FAILED — this is serious
+                logger.critical(
+                    f"POST-WRITE VERIFICATION FAILED for {operation_type} "
+                    f"[{op_id[:8]}]: {verification.details}"
+                )
+                wal.mark_failed(
+                    op_id,
+                    f"Verification failed: {verification.details}",
+                )
+
+                # Attempt compensation
+                try:
+                    wal.mark_compensating(op_id)
+                    compensation = safety.compensate(
+                        operation_type, params, result_dict
+                    )
+                    if compensation.success:
+                        wal.mark_compensated(op_id, compensation.steps_completed)
+                    else:
+                        wal.mark_compensation_failed(
+                            op_id, "; ".join(compensation.errors)
+                        )
+                except Exception as comp_err:
+                    wal.mark_compensation_failed(op_id, str(comp_err))
+
+                return {
+                    "success": False,
+                    "errors": [
+                        f"Write verification failed: {verification.details}. "
+                        "Changes have been rolled back where possible. "
+                        "Check the agent WAL log for details."
+                    ],
+                    "wal_operation_id": op_id,
+                }
+        else:
+            # No safety layer — mark as completed without verification
+            wal.mark_completed(op_id, result_dict)
+            return result_dict
+
+    except HTTPException:
+        # Let HTTP exceptions propagate (e.g. from get_importer)
+        wal.mark_failed(op_id, "HTTP exception during import")
+        raise
+    except Exception as e:
+        logger.error(
+            f"Import {operation_type} [{op_id[:8]}] failed with exception: {e}",
+            exc_info=True,
+        )
+        wal.mark_failed(op_id, str(e))
+        return {"success": False, "errors": [str(e)], "wal_operation_id": op_id}
 
 
 # ============================================================
@@ -313,12 +442,84 @@ async def verify_agent_key(x_agent_key: Optional[str] = Header(None)):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown events."""
+    """Startup and shutdown events with WAL initialisation and crash recovery."""
+    global wal, safety
+
     logger.info(f"Opera 3 Write Agent v{AGENT_VERSION} starting")
     logger.info(f"Data path: {OPERA3_DATA_PATH}")
+    logger.info(f"WAL path: {WAL_DB_PATH}")
     logger.info(f"Platform: {platform.system()} {platform.machine()}")
+
+    # Initialise Write-Ahead Log
+    wal = WriteAheadLog(WAL_DB_PATH)
+    logger.info("WAL initialised")
+
+    # Initialise safety layer
+    if OPERA3_DATA_PATH and os.path.isdir(OPERA3_DATA_PATH):
+        safety = TransactionSafety(OPERA3_DATA_PATH)
+        logger.info("Transaction safety layer initialised")
+
+        # Crash recovery — check for incomplete operations
+        _run_crash_recovery(wal, safety)
+    else:
+        logger.warning(
+            "Data path not configured or missing — "
+            "safety layer disabled until path is set"
+        )
+
+    # Periodic WAL cleanup (remove old completed entries)
+    wal.cleanup_old(days=90)
+
     yield
+
     logger.info("Opera 3 Write Agent shutting down")
+
+
+def _run_crash_recovery(wal: WriteAheadLog, safety: TransactionSafety):
+    """Check WAL for incomplete operations and handle them."""
+    incomplete = wal.get_incomplete_operations()
+    if not incomplete:
+        logger.info("Crash recovery: no incomplete operations found")
+        return
+
+    logger.warning(
+        f"Crash recovery: found {len(incomplete)} incomplete operation(s)"
+    )
+
+    for op in incomplete:
+        logger.warning(
+            f"  Recovering [{op.id[:8]}] {op.operation_type} "
+            f"(status={op.status.value})"
+        )
+        try:
+            recovery = safety.recover_operation(op)
+            action = recovery.get("action", "unknown")
+
+            if action == "marked_failed":
+                wal.mark_failed(op.id, recovery.get("reason", "Crash recovery"))
+            elif action == "marked_completed":
+                wal.mark_completed(op.id, op.result)
+            elif action == "compensated":
+                wal.mark_compensated(
+                    op.id,
+                    recovery.get("compensation_steps", []),
+                )
+            elif action == "compensation_failed":
+                wal.mark_compensation_failed(
+                    op.id,
+                    "; ".join(recovery.get("compensation_errors", ["Unknown"])),
+                )
+            else:
+                wal.mark_failed(op.id, f"Recovery action: {action}")
+
+            logger.warning(
+                f"  [{op.id[:8]}] → {action}: {recovery.get('reason', '')}"
+            )
+        except Exception as e:
+            logger.critical(
+                f"  [{op.id[:8]}] Recovery failed: {e}", exc_info=True
+            )
+            wal.mark_compensation_failed(op.id, f"Recovery exception: {e}")
 
 
 app = FastAPI(
@@ -350,8 +551,13 @@ async def health_check():
     except (ImportError, Exception):
         pass
 
+    # Include write-block status
+    status = "ok"
+    if safety and safety.writes_blocked:
+        status = "blocked"
+
     return HealthResponse(
-        status="ok",
+        status=status,
         version=AGENT_VERSION,
         uptime=round(time.time() - START_TIME, 1),
         data_path=OPERA3_DATA_PATH,
@@ -394,129 +600,132 @@ async def detailed_status():
 async def import_purchase_payment(req: PurchasePaymentRequest):
     """Import a purchase payment (money out to supplier)."""
     importer = get_importer()
-    try:
-        result = importer.import_purchase_payment(
+    post_date = parse_date(req.post_date)
+    return safe_import(
+        "purchase_payment",
+        req.model_dump(),
+        lambda: importer.import_purchase_payment(
             bank_account=req.bank_account,
             supplier_account=req.supplier_account,
             amount_pounds=req.amount_pounds,
             reference=req.reference,
-            post_date=parse_date(req.post_date),
+            post_date=post_date,
             input_by=req.input_by,
             creditors_control=req.creditors_control,
             payment_type=req.payment_type,
             cbtype=req.cbtype,
             validate_only=req.validate_only,
-        )
-        return result_to_dict(result)
-    except Exception as e:
-        logger.error(f"import_purchase_payment failed: {e}", exc_info=True)
-        return {"success": False, "errors": [str(e)]}
+        ),
+    )
 
 
 @app.post("/import/sales-receipt", dependencies=[Depends(verify_agent_key)])
 async def import_sales_receipt(req: SalesReceiptRequest):
     """Import a sales receipt (money in from customer)."""
     importer = get_importer()
-    try:
-        result = importer.import_sales_receipt(
+    post_date = parse_date(req.post_date)
+    return safe_import(
+        "sales_receipt",
+        req.model_dump(),
+        lambda: importer.import_sales_receipt(
             bank_account=req.bank_account,
             customer_account=req.customer_account,
             amount_pounds=req.amount_pounds,
             reference=req.reference,
-            post_date=parse_date(req.post_date),
+            post_date=post_date,
             input_by=req.input_by,
             debtors_control=req.debtors_control,
             receipt_type=req.receipt_type,
             cbtype=req.cbtype,
             validate_only=req.validate_only,
-        )
-        return result_to_dict(result)
-    except Exception as e:
-        logger.error(f"import_sales_receipt failed: {e}", exc_info=True)
-        return {"success": False, "errors": [str(e)]}
+        ),
+    )
 
 
 @app.post("/import/sales-refund", dependencies=[Depends(verify_agent_key)])
 async def import_sales_refund(req: SalesRefundRequest):
     """Import a sales refund (money out to customer)."""
     importer = get_importer()
-    try:
-        result = importer.import_sales_refund(
+    post_date = parse_date(req.post_date)
+    return safe_import(
+        "sales_refund",
+        req.model_dump(),
+        lambda: importer.import_sales_refund(
             bank_account=req.bank_account,
             customer_account=req.customer_account,
             amount_pounds=req.amount_pounds,
             reference=req.reference,
-            post_date=parse_date(req.post_date),
+            post_date=post_date,
             input_by=req.input_by,
             debtors_control=req.debtors_control,
             payment_method=req.payment_method,
             cbtype=req.cbtype,
             validate_only=req.validate_only,
             comment=req.comment,
-        )
-        return result_to_dict(result)
-    except Exception as e:
-        logger.error(f"import_sales_refund failed: {e}", exc_info=True)
-        return {"success": False, "errors": [str(e)]}
+        ),
+    )
 
 
 @app.post("/import/purchase-refund", dependencies=[Depends(verify_agent_key)])
 async def import_purchase_refund(req: PurchaseRefundRequest):
     """Import a purchase refund (money in from supplier)."""
     importer = get_importer()
-    try:
-        result = importer.import_purchase_refund(
+    post_date = parse_date(req.post_date)
+    return safe_import(
+        "purchase_refund",
+        req.model_dump(),
+        lambda: importer.import_purchase_refund(
             bank_account=req.bank_account,
             supplier_account=req.supplier_account,
             amount_pounds=req.amount_pounds,
             reference=req.reference,
-            post_date=parse_date(req.post_date),
+            post_date=post_date,
             input_by=req.input_by,
             creditors_control=req.creditors_control,
             payment_type=req.payment_type,
             cbtype=req.cbtype,
             validate_only=req.validate_only,
             comment=req.comment,
-        )
-        return result_to_dict(result)
-    except Exception as e:
-        logger.error(f"import_purchase_refund failed: {e}", exc_info=True)
-        return {"success": False, "errors": [str(e)]}
+        ),
+    )
 
 
 @app.post("/import/bank-transfer", dependencies=[Depends(verify_agent_key)])
 async def import_bank_transfer(req: BankTransferRequest):
     """Import a bank transfer between two bank accounts."""
     importer = get_importer()
-    try:
-        result = importer.import_bank_transfer(
+    post_date = parse_date(req.post_date)
+    return safe_import(
+        "bank_transfer",
+        req.model_dump(),
+        lambda: importer.import_bank_transfer(
             source_bank=req.source_bank,
             dest_bank=req.dest_bank,
             amount_pounds=req.amount_pounds,
             reference=req.reference,
-            post_date=parse_date(req.post_date),
+            post_date=post_date,
             comment=req.comment,
             input_by=req.input_by,
             post_to_nominal=req.post_to_nominal,
             cbtype=req.cbtype,
-        )
-        return result_to_dict(result)
-    except Exception as e:
-        logger.error(f"import_bank_transfer failed: {e}", exc_info=True)
-        return {"success": False, "errors": [str(e)]}
+        ),
+    )
 
 
 @app.post("/import/nominal-entry", dependencies=[Depends(verify_agent_key)])
 async def import_nominal_entry(req: NominalEntryRequest):
     """Import a nominal entry (direct to nominal account)."""
     importer = get_importer()
-    try:
-        result = importer.import_nominal_entry(
+    post_date = parse_date(req.post_date)
+    return safe_import(
+        "nominal_entry",
+        req.model_dump(),
+        lambda: importer.import_nominal_entry(
             bank_account=req.bank_account,
             nominal_account=req.nominal_account,
             amount_pounds=req.amount_pounds,
             reference=req.reference,
-            post_date=parse_date(req.post_date),
+            post_date=post_date,
             description=req.description,
             input_by=req.input_by,
             is_receipt=req.is_receipt,
@@ -525,19 +734,19 @@ async def import_nominal_entry(req: NominalEntryRequest):
             project_code=req.project_code,
             department_code=req.department_code,
             vat_code=req.vat_code,
-        )
-        return result_to_dict(result)
-    except Exception as e:
-        logger.error(f"import_nominal_entry failed: {e}", exc_info=True)
-        return {"success": False, "errors": [str(e)]}
+        ),
+    )
 
 
 @app.post("/import/gocardless-batch", dependencies=[Depends(verify_agent_key)])
 async def import_gocardless_batch(req: GoCardlessBatchRequest):
     """Import a GoCardless batch of customer payments."""
     importer = get_importer()
-    try:
-        result = importer.import_gocardless_batch(
+    post_date = parse_date(req.post_date)
+    return safe_import(
+        "gocardless_batch",
+        req.model_dump(),
+        lambda: importer.import_gocardless_batch(
             bank_account=req.bank_account,
             payments=req.payments,
             post_date=parse_date(req.post_date),
@@ -555,28 +764,24 @@ async def import_gocardless_batch(req: GoCardlessBatchRequest):
             currency=req.currency,
             destination_bank=req.destination_bank,
             transfer_cbtype=req.transfer_cbtype,
-        )
-        return result_to_dict(result)
-    except Exception as e:
-        logger.error(f"import_gocardless_batch failed: {e}", exc_info=True)
-        return {"success": False, "errors": [str(e)]}
+        ),
+    )
 
 
 @app.post("/import/recurring-entry", dependencies=[Depends(verify_agent_key)])
 async def post_recurring_entry(req: RecurringEntryRequest):
     """Post a recurring entry from arhead/arline."""
     importer = get_importer()
-    try:
-        result = importer.post_recurring_entry(
+    return safe_import(
+        "recurring_entry",
+        req.model_dump(),
+        lambda: importer.post_recurring_entry(
             bank_account=req.bank_account,
             entry_ref=req.entry_ref,
             override_date=parse_date(req.override_date),
             input_by=req.input_by,
-        )
-        return result_to_dict(result)
-    except Exception as e:
-        logger.error(f"post_recurring_entry failed: {e}", exc_info=True)
-        return {"success": False, "errors": [str(e)]}
+        ),
+    )
 
 
 # ============================================================
@@ -665,6 +870,86 @@ async def check_duplicate_before_posting(req: DuplicateCheckRequest):
     except Exception as e:
         logger.error(f"check_duplicate failed: {e}", exc_info=True)
         return {"success": False, "errors": [str(e)]}
+
+
+# ============================================================
+# WAL Monitoring & Audit Endpoints
+# ============================================================
+
+@app.get("/wal/stats", dependencies=[Depends(verify_agent_key)])
+async def wal_stats():
+    """Get WAL statistics for monitoring."""
+    if wal is None:
+        return {"error": "WAL not initialised"}
+    stats = wal.get_stats()
+    stats["writes_blocked"] = safety.writes_blocked if safety else False
+    stats["block_reason"] = safety.block_reason if safety else ""
+    return stats
+
+
+@app.get("/wal/recent", dependencies=[Depends(verify_agent_key)])
+async def wal_recent(limit: int = 20):
+    """Get recent WAL operations for audit."""
+    if wal is None:
+        return {"error": "WAL not initialised", "operations": []}
+    ops = wal.get_recent_operations(limit=limit)
+    return {
+        "operations": [
+            {
+                "id": op.id,
+                "type": op.operation_type,
+                "status": op.status.value,
+                "started_at": op.started_at,
+                "completed_at": op.completed_at,
+                "error": op.error_message,
+                "verification": op.verification_details,
+                "has_result": op.result is not None,
+                "has_compensation": op.compensation_log is not None,
+            }
+            for op in ops
+        ]
+    }
+
+
+@app.get("/wal/operation/{op_id}", dependencies=[Depends(verify_agent_key)])
+async def wal_operation_detail(op_id: str):
+    """Get full details of a specific WAL operation."""
+    if wal is None:
+        raise HTTPException(status_code=503, detail="WAL not initialised")
+    op = wal.get_operation(op_id)
+    if not op:
+        raise HTTPException(status_code=404, detail="Operation not found")
+    return {
+        "id": op.id,
+        "type": op.operation_type,
+        "status": op.status.value,
+        "params": op.params,
+        "result": op.result,
+        "snapshot": op.snapshot,
+        "compensation_log": op.compensation_log,
+        "verification": op.verification_details,
+        "error": op.error_message,
+        "started_at": op.started_at,
+        "completed_at": op.completed_at,
+    }
+
+
+@app.post("/wal/unblock", dependencies=[Depends(verify_agent_key)])
+async def wal_unblock():
+    """Manually unblock writes after resolving a compensation failure.
+
+    This should only be called after the data integrity issue has been
+    manually resolved (e.g. using Opera Data Repair).
+    """
+    if safety is None:
+        return {"success": False, "error": "Safety layer not initialised"}
+    if not safety.writes_blocked:
+        return {"success": True, "message": "Writes were not blocked"}
+    reason = safety.block_reason
+    safety.writes_blocked = False
+    safety.block_reason = ""
+    logger.warning(f"Writes UNBLOCKED manually (was: {reason})")
+    return {"success": True, "message": f"Writes unblocked (was: {reason})"}
 
 
 # ============================================================

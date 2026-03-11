@@ -1,29 +1,28 @@
 """
-Opera 3 Write Provider — Automatic routing for Opera 3 write operations.
+Opera 3 Write Provider — Safe routing for Opera 3 write operations.
 
-Returns either an Opera3AgentClient (remote write agent with CDX index
-maintenance) or a direct Opera3FoxProImport instance, depending on
-configuration and agent availability.
+When the Write Agent is configured, ALL writes go through the agent service
+which maintains CDX indexes and uses VFP-compatible locking. Direct FoxPro
+writes (via the dbf package) bypass CDX index maintenance and are only
+available as a development/testing fallback when OPERA3_AGENT_REQUIRED=0.
+
+PRODUCTION RULE: The Write Agent MUST be running. Writes are blocked if
+the agent is configured but offline. This prevents CDX index corruption
+and ensures VFP-compatible locking for concurrent Opera users.
 
 Usage:
     from sql_rag.opera3_write_provider import get_opera3_writer, is_agent_available
 
-    # Get a writer — automatically selects agent or direct
     writer = get_opera3_writer(data_path)
     result = writer.import_sales_receipt(...)
 
-    # Check agent status (for UI indicators)
     available, info = is_agent_available()
 
-Both Opera3AgentClient and Opera3FoxProImport share the same method signatures,
-so callers don't need to know which implementation is active.
-
 Configuration:
-    Set these environment variables (or pass via company settings):
     - OPERA3_AGENT_URL:  Agent service URL (e.g., http://opera3-server:9000)
     - OPERA3_AGENT_KEY:  Shared secret for agent authentication
-    - OPERA3_AGENT_REQUIRED: Set to "1" to BLOCK writes when agent is offline
-                             (recommended for production)
+    - OPERA3_AGENT_REQUIRED: Defaults to "1" when agent URL is set.
+                             Set to "0" ONLY for development/testing.
 """
 
 from __future__ import annotations
@@ -87,10 +86,22 @@ def _get_agent_key() -> str:
 
 
 def _is_agent_required() -> bool:
-    """Check if the agent is required (block writes when offline)."""
+    """Check if the agent is required (block writes when offline).
+
+    Defaults to True when the agent URL is configured — production systems
+    must always use the agent. Set OPERA3_AGENT_REQUIRED=0 explicitly to
+    allow direct fallback (development/testing only).
+    """
     config_val = _agent_config.get("required", "")
     env_val = os.environ.get("OPERA3_AGENT_REQUIRED", "")
-    return config_val == "1" or env_val == "1"
+    # Explicitly disabled → allow fallback
+    if config_val == "0" or env_val == "0":
+        return False
+    # Explicitly enabled → required
+    if config_val == "1" or env_val == "1":
+        return True
+    # Default: required when agent URL is configured
+    return bool(_get_agent_url())
 
 
 def _get_or_create_client():
@@ -158,10 +169,11 @@ def is_agent_available() -> Tuple[bool, Dict[str, Any]]:
 def get_opera3_writer(data_path: str = ""):
     """Get an Opera 3 writer instance.
 
-    Automatically selects the best available method:
-    1. If agent is configured and available → Opera3AgentClient (safe, CDX-maintained)
-    2. If agent is configured but offline AND required → raises error
-    3. If agent is not configured or offline (not required) → direct Opera3FoxProImport
+    Selection logic:
+    1. Agent configured and available → Opera3AgentClient (safe, CDX-maintained)
+    2. Agent configured but offline → raises Opera3AgentRequired (default)
+    3. Agent not configured → direct Opera3FoxProImport (dev/testing only)
+    4. Agent offline + OPERA3_AGENT_REQUIRED=0 → direct fallback (unsafe, dev only)
 
     Args:
         data_path: Path to Opera 3 data files (used for direct fallback)
@@ -170,7 +182,7 @@ def get_opera3_writer(data_path: str = ""):
         An object with the same interface as Opera3FoxProImport
 
     Raises:
-        Opera3AgentRequired: If agent is required but offline
+        Opera3AgentRequired: If agent is configured but offline (production default)
     """
     client = _get_or_create_client()
 
@@ -183,15 +195,17 @@ def get_opera3_writer(data_path: str = ""):
             if _is_agent_required():
                 raise Opera3AgentRequired(
                     "Opera 3 Write Agent is required but not available. "
-                    "Ensure the service is running on the Opera 3 server. "
-                    "Imports are blocked until the agent is online."
+                    "Ensure the agent service is running on the Opera 3 server. "
+                    "All writes are blocked until the agent is online. "
+                    "This protects Opera 3 data integrity (CDX indexes, VFP locking)."
                 )
             logger.warning(
-                "Opera 3 Write Agent is configured but offline. "
-                "Falling back to direct writes (CDX indexes will NOT be maintained)."
+                "Opera 3 Write Agent is offline — falling back to direct writes. "
+                "WARNING: CDX indexes will NOT be maintained. "
+                "This mode is for DEVELOPMENT/TESTING ONLY."
             )
 
-    # Fallback to direct writes
+    # Fallback to direct writes (only when agent not configured or not required)
     if not data_path:
         raise ValueError("data_path is required when agent is not available")
 
