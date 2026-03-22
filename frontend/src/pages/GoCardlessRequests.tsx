@@ -959,7 +959,7 @@ function GoCardlessRequestsInner() {
 
     const newSet = new Set(selectedInvoices);
     const customerKeys = customer.invoices
-      .filter(i => !i.is_subscription && !i.payment_requested)
+      .filter(i => !i.payment_requested)
       .map(i => `${i.opera_account}:${i.invoice_ref}`);
     const allSelected = customerKeys.every(k => newSet.has(k));
 
@@ -975,7 +975,7 @@ function GoCardlessRequestsInner() {
 
   const selectAllWithMandate = () => {
     const keys = (dueInvoicesData?.invoices || [])
-      .filter(i => i.has_mandate && !i.is_subscription && !i.payment_requested)
+      .filter(i => i.has_mandate && !i.payment_requested)
       .map(i => `${i.opera_account}:${i.invoice_ref}`);
     setSelectedInvoices(new Set(keys));
   };
@@ -1400,14 +1400,14 @@ function GoCardlessRequestsInner() {
                                 return (
                                   <tr
                                     key={key}
-                                    className={`${isSelected ? 'bg-green-50' : ''} ${!customer.has_mandate || isSub || invoice.payment_requested ? 'opacity-60' : ''}`}
+                                    className={`${isSelected ? 'bg-green-50' : ''} ${!customer.has_mandate || invoice.payment_requested ? 'opacity-60' : ''}`}
                                   >
                                     <td className="px-3 py-2">
                                       <input
                                         type="checkbox"
                                         checked={isSelected}
                                         onChange={() => toggleInvoice(key)}
-                                        disabled={!customer.has_mandate || isSub || invoice.payment_requested}
+                                        disabled={!customer.has_mandate || invoice.payment_requested}
                                         className="rounded border-gray-300 text-green-600 focus:ring-green-500 disabled:opacity-50"
                                       />
                                     </td>
