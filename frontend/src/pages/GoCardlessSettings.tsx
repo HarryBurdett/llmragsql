@@ -162,6 +162,7 @@ export function GoCardlessSettings() {
   const [feesVatCode, setFeesVatCode] = useState('');
   const [feesPaymentType, setFeesPaymentType] = useState('');
   const [companyReference, setCompanyReference] = useState('');
+  const [requestStatementReference, setRequestStatementReference] = useState('');
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -258,6 +259,7 @@ export function GoCardlessSettings() {
           if (data.settings.fees_vat_code) setFeesVatCode(data.settings.fees_vat_code);
           if (data.settings.fees_payment_type) setFeesPaymentType(data.settings.fees_payment_type);
           if (data.settings.company_reference) setCompanyReference(data.settings.company_reference);
+          if (data.settings.request_statement_reference !== undefined) setRequestStatementReference(data.settings.request_statement_reference || '');
           if (data.settings.archive_folder) setArchiveFolder(data.settings.archive_folder);
           if (data.settings.gocardless_bank_code) setGcBankCode(data.settings.gocardless_bank_code);
           if (data.settings.gocardless_transfer_cbtype) setTransferCbtype(data.settings.gocardless_transfer_cbtype);
@@ -320,6 +322,7 @@ export function GoCardlessSettings() {
           fees_vat_code: feesVatCode,
           fees_payment_type: feesPaymentType,
           company_reference: companyReference,
+          request_statement_reference: requestStatementReference,
           archive_folder: archiveFolder,
           gocardless_bank_code: gcBankCode,
           gocardless_transfer_cbtype: transferCbtype,
@@ -544,6 +547,26 @@ export function GoCardlessSettings() {
               The control bank should net to zero after each batch.
             </div>
           )}
+
+          {/* Payment Request Settings */}
+          <div className="space-y-4">
+            <h3 className="font-medium text-gray-900 border-b pb-2">Payment Requests</h3>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Statement Reference</label>
+              <input
+                type="text"
+                value={requestStatementReference}
+                onChange={(e) => setRequestStatementReference(e.target.value.slice(0, 10))}
+                placeholder="e.g. Intsys"
+                maxLength={10}
+                className="w-48 p-2 border border-gray-300 rounded text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Prefix added to the payment description sent to GoCardless (max 10 chars).
+                This appears on the customer's bank statement before the invoice number, e.g. "{requestStatementReference || 'Intsys'} INV12345".
+              </p>
+            </div>
+          </div>
 
           {/* Fees Settings */}
           <div className="space-y-4">

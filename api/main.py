@@ -26757,7 +26757,7 @@ async def save_gocardless_settings(request: Request):
                  "exclude_description_patterns", "gocardless_bank_code",
                  "gocardless_transfer_cbtype", "subscription_tag",
                  "subscription_frequencies", "partner_client_id",
-                 "partner_redirect_uri"]:
+                 "partner_redirect_uri", "request_statement_reference"]:
         if key in body and body[key] is not None:
             settings[key] = body[key]
 
@@ -33240,6 +33240,58 @@ async def opera3_get_due_invoices(
             if s['source_doc'] and s['status'] != 'cancelled':
                 sub_account_docs[s['opera_account']] = s['source_doc']
 
+        # Build lookup of invoices with active payment requests
+        active_statuses = ('pending', 'pending_submission', 'submitted', 'confirmed')
+        pending_invoice_requests: Dict[str, Dict] = {}
+        try:
+            all_requests = payments_db.list_payment_requests()
+            for req in all_requests:
+                if req.get('status') not in active_statuses:
+                    continue
+                refs = req.get('invoice_refs')
+                if isinstance(refs, str):
+                    try:
+                        refs = json.loads(refs)
+                    except Exception:
+                        refs = []
+                if refs:
+                    for ref in refs:
+                        pending_invoice_requests[ref.strip()] = {
+                            'request_id': req.get('id'),
+                            'status': req.get('status'),
+                            'charge_date': req.get('charge_date'),
+                            'amount_pence': req.get('amount_pence'),
+                        }
+        except Exception as e:
+            logger.warning(f"Could not load pending payment requests: {e}")
+
+        # Also check GoCardless API for active payments
+        try:
+            import re as _inv_re
+            from sql_rag.gocardless_api import create_client_from_settings
+            gc_client = create_client_from_settings(gc_settings)
+            if gc_client:
+                for gc_status in ('pending_submission', 'submitted', 'confirmed'):
+                    gc_payments, _ = gc_client.list_payments(status=gc_status, limit=500)
+                    for gcp in gc_payments:
+                        desc = gcp.get('description', '') or ''
+                        charge_date = gcp.get('charge_date', '')
+                        amount_pence = gcp.get('amount', 0)
+                        gc_status_val = gcp.get('status', gc_status)
+                        found_refs = _inv_re.findall(r'INV\d+', desc, _inv_re.IGNORECASE)
+                        for ref in found_refs:
+                            ref_upper = ref.upper()
+                            if ref_upper not in pending_invoice_requests:
+                                pending_invoice_requests[ref_upper] = {
+                                    'request_id': gcp.get('id', ''),
+                                    'status': gc_status_val,
+                                    'charge_date': charge_date,
+                                    'amount_pence': amount_pence,
+                                    'source': 'gocardless_api',
+                                }
+        except Exception as e:
+            logger.warning(f"Could not check GoCardless API for active payments: {e}")
+
         # Check for subscription-tagged invoices via ihead
         sub_invoice_refs = set()
         try:
@@ -33275,6 +33327,7 @@ async def opera3_get_due_invoices(
             cust = customer_info.get(account, {})
             email = cust.get('email')
             customer_name = cust.get('name', '')
+            customer_ref = _o3_get_str(r, 'st_cusref')
             is_subscription = invoice_ref in sub_invoice_refs
             source_doc = sub_account_docs.get(account) if is_subscription else None
 
@@ -33316,6 +33369,9 @@ async def opera3_get_due_invoices(
                 'mandate_id': mandate['mandate_id'] if mandate else None,
                 'trans_type': 'Invoice',
                 'trans_type_code': 'I',
+                'customer_ref': customer_ref,
+                'payment_requested': invoice_ref in pending_invoice_requests,
+                'payment_request_info': pending_invoice_requests.get(invoice_ref),
                 'is_subscription': is_subscription,
                 'source_doc': source_doc,
             }
@@ -33406,10 +33462,19 @@ async def opera3_request_gocardless_payment(
         if amount <= 0:
             return {"success": False, "error": "Amount must be greater than zero"}
 
-        if not description:
-            description = f"Payment for invoice {invoices[0]}" if len(invoices) == 1 else f"Payment for {len(invoices)} invoices"
-
         settings = _load_gocardless_settings()
+
+        # Build description — prepend statement reference if configured
+        stmt_ref = (settings.get("request_statement_reference") or "").strip()[:10]
+        if not description:
+            inv_list = ",".join(invoices)
+            if stmt_ref:
+                description = f"{stmt_ref} {inv_list}"
+            else:
+                description = inv_list
+        elif stmt_ref and not description.startswith(stmt_ref):
+            description = f"{stmt_ref} {description}"
+
         access_token = settings.get("api_access_token")
         if not access_token:
             return {"success": False, "error": "GoCardless API not configured"}
@@ -36159,6 +36224,63 @@ async def get_gocardless_due_invoices(
         mandates = payments_db.list_mandates(status='active')
         mandate_lookup = {m['opera_account'].strip(): m for m in mandates if m.get('opera_account')}
 
+        # Build lookup of invoices that already have active payment requests
+        # (pending, pending_submission, submitted, confirmed — i.e. not yet paid/failed/cancelled)
+        active_statuses = ('pending', 'pending_submission', 'submitted', 'confirmed')
+        pending_invoice_requests: Dict[str, Dict] = {}  # invoice_ref -> request info
+        try:
+            all_requests = payments_db.list_payment_requests()
+            for req in all_requests:
+                if req.get('status') not in active_statuses:
+                    continue
+                refs = req.get('invoice_refs')
+                if isinstance(refs, str):
+                    try:
+                        refs = json.loads(refs)
+                    except Exception:
+                        refs = []
+                if refs:
+                    for ref in refs:
+                        pending_invoice_requests[ref.strip()] = {
+                            'request_id': req.get('id'),
+                            'status': req.get('status'),
+                            'charge_date': req.get('charge_date'),
+                            'amount_pence': req.get('amount_pence'),
+                        }
+        except Exception as e:
+            logger.warning(f"Could not load pending payment requests: {e}")
+
+        # Also check GoCardless API for active payments (catches requests made
+        # outside this app, e.g. via GoCardless dashboard)
+        try:
+            import re as _inv_re
+            from sql_rag.gocardless_api import create_client_from_settings
+            gc_client = create_client_from_settings(gc_settings)
+            if gc_client:
+                # Fetch payments that are not yet settled or failed
+                for gc_status in ('pending_submission', 'submitted', 'confirmed'):
+                    gc_payments, _ = gc_client.list_payments(status=gc_status, limit=500)
+                    for gcp in gc_payments:
+                        desc = gcp.get('description', '') or ''
+                        charge_date = gcp.get('charge_date', '')
+                        amount_pence = gcp.get('amount', 0)
+                        gc_status_val = gcp.get('status', gc_status)
+                        # Extract invoice refs from description (e.g. "INV12345" or "INV12345,INV12346")
+                        found_refs = _inv_re.findall(r'INV\d+', desc, _inv_re.IGNORECASE)
+                        for ref in found_refs:
+                            ref_upper = ref.upper()
+                            if ref_upper not in pending_invoice_requests:
+                                pending_invoice_requests[ref_upper] = {
+                                    'request_id': gcp.get('id', ''),
+                                    'status': gc_status_val,
+                                    'charge_date': charge_date,
+                                    'amount_pence': amount_pence,
+                                    'source': 'gocardless_api',
+                                }
+                logger.info(f"GoCardless API: found {len(pending_invoice_requests)} invoices with active payments")
+        except Exception as e:
+            logger.warning(f"Could not check GoCardless API for active payments: {e}")
+
         # Only query invoices for customers who have an active mandate
         mandated_accounts = [a for a in mandate_lookup.keys() if a != '__UNLINKED__']
 
@@ -36199,6 +36321,7 @@ async def get_gocardless_due_invoices(
                 st_trtype,
                 st_trbal,
                 st_trvalue,
+                st_custref,
                 CASE WHEN EXISTS (
                     SELECT 1 FROM ihead WHERE ih_invoice = st_trref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = :sub_tag
                 ) THEN 1 ELSE 0 END AS is_sub
@@ -36244,6 +36367,7 @@ async def get_gocardless_due_invoices(
             amount = float(row['st_trbal']) if row['st_trbal'] else 0
             original_amount = float(row['st_trvalue']) if row['st_trvalue'] else amount
             email = row['sn_email'].strip() if row.get('sn_email') else None
+            customer_ref = row['st_custref'].strip() if row.get('st_custref') else ''
             is_subscription = bool(row.get('is_sub', 0))
             source_doc = sub_account_docs.get(account) if is_subscription else None
 
@@ -36296,6 +36420,9 @@ async def get_gocardless_due_invoices(
                 'mandate_id': mandate['mandate_id'] if mandate else None,
                 'trans_type': 'Invoice' if trans_type == 1 else 'Credit Note',
                 'trans_type_code': trans_type,
+                'customer_ref': customer_ref,
+                'payment_requested': invoice_ref in pending_invoice_requests,
+                'payment_request_info': pending_invoice_requests.get(invoice_ref),
                 'is_subscription': is_subscription,
                 'source_doc': source_doc,
             }
@@ -36434,15 +36561,19 @@ async def request_gocardless_payment(
         if amount <= 0:
             return {"success": False, "error": "Amount must be greater than zero"}
 
-        # Build description
-        if not description:
-            if len(invoices) == 1:
-                description = f"Payment for invoice {invoices[0]}"
-            else:
-                description = f"Payment for {len(invoices)} invoices"
-
         # Get API settings
         settings = _load_gocardless_settings()
+
+        # Build description — prepend statement reference if configured
+        stmt_ref = (settings.get("request_statement_reference") or "").strip()[:10]
+        if not description:
+            inv_list = ",".join(invoices)
+            if stmt_ref:
+                description = f"{stmt_ref} {inv_list}"
+            else:
+                description = inv_list
+        elif stmt_ref and not description.startswith(stmt_ref):
+            description = f"{stmt_ref} {description}"
         access_token = settings.get("api_access_token")
 
         if not access_token:

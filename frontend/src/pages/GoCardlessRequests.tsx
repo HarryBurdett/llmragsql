@@ -1373,11 +1373,20 @@ function GoCardlessRequestsInner() {
 
                         {/* Invoices Table */}
                         <div className="border-t border-gray-200">
-                          <table className="min-w-full divide-y divide-gray-200">
+                          <table className="min-w-full divide-y divide-gray-200 table-fixed">
+                            <colgroup>
+                              <col className="w-10" />
+                              <col style={{ width: '18%' }} />
+                              <col style={{ width: '22%' }} />
+                              <col style={{ width: '15%' }} />
+                              <col style={{ width: '25%' }} />
+                              <col style={{ width: '15%' }} />
+                            </colgroup>
                             <thead className="bg-gray-50">
                               <tr>
-                                <th className="w-10 px-3 py-2"></th>
+                                <th className="px-3 py-2"></th>
                                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Invoice</th>
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Customer Ref</th>
                                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Date</th>
                                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Due Date</th>
                                 <th className="px-3 py-2 text-right text-xs font-medium text-gray-500">Amount</th>
@@ -1404,6 +1413,15 @@ function GoCardlessRequestsInner() {
                                     </td>
                                     <td className="px-3 py-2 text-sm text-gray-900">
                                       {invoice.invoice_ref}
+                                      {invoice.payment_requested && (
+                                        <span
+                                          className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700"
+                                          title={`Payment already requested${invoice.payment_request_info?.charge_date ? ` — charge date: ${invoice.payment_request_info.charge_date}` : ''}${invoice.payment_request_info?.status ? ` (${invoice.payment_request_info.status})` : ''}`}
+                                        >
+                                          <AlertCircle className="w-3 h-3 mr-0.5" />
+                                          Requested
+                                        </span>
+                                      )}
                                       {isSub && (
                                         <span
                                           className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700"
@@ -1413,6 +1431,7 @@ function GoCardlessRequestsInner() {
                                         </span>
                                       )}
                                     </td>
+                                    <td className="px-3 py-2 text-sm text-gray-500">{invoice.customer_ref || ''}</td>
                                     <td className="px-3 py-2 text-sm text-gray-500">{invoice.invoice_date}</td>
                                     <td className="px-3 py-2">
                                       {invoice.is_overdue ? (
