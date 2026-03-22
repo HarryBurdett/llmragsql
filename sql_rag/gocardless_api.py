@@ -828,7 +828,15 @@ def create_client_from_settings(settings: Dict) -> Optional[GoCardlessClient]:
     if not access_token:
         return None
 
-    sandbox = settings.get("api_sandbox", False)
+    # Auto-detect sandbox/live from token prefix — overrides the setting
+    # to prevent mismatch (sandbox token against live API or vice versa)
+    if access_token.startswith("sandbox_"):
+        sandbox = True
+    elif access_token.startswith("live_"):
+        sandbox = False
+    else:
+        sandbox = settings.get("api_sandbox", False)
+
     return GoCardlessClient(access_token=access_token, sandbox=sandbox)
 
 

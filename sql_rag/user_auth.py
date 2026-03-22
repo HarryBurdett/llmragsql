@@ -148,6 +148,10 @@ class UserAuth:
             if 'license_id' not in session_columns:
                 cursor.execute('ALTER TABLE sessions ADD COLUMN license_id INTEGER')
 
+            # Add company_id to sessions — tracks which company the session is using
+            if 'company_id' not in session_columns:
+                cursor.execute('ALTER TABLE sessions ADD COLUMN company_id TEXT')
+
             # User companies table - which companies each user can access
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_companies (
@@ -500,7 +504,9 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT s.user_id, s.expires_at, u.username, u.display_name, u.email, u.is_admin, u.is_active, u.default_company, u.default_system, u.ui_mode, u.voice_enabled
+                SELECT s.user_id, s.expires_at, s.company_id,
+                       u.username, u.display_name, u.email, u.is_admin, u.is_active,
+                       u.default_company, u.default_system, u.ui_mode, u.voice_enabled
                 FROM sessions s
                 JOIN users u ON s.user_id = u.id
                 WHERE s.token = ?
@@ -510,7 +516,7 @@ class UserAuth:
             if row is None:
                 return None
 
-            user_id, expires_at, username, display_name, email, is_admin, is_active, default_company, default_system, ui_mode, voice_enabled = row
+            user_id, expires_at, session_company_id, username, display_name, email, is_admin, is_active, default_company, default_system, ui_mode, voice_enabled = row
 
             # Check expiry
             if datetime.fromisoformat(expires_at) < datetime.utcnow():
@@ -532,8 +538,23 @@ class UserAuth:
                 'default_company': default_company,
                 'default_system': default_system,
                 'ui_mode': ui_mode or 'classic',
-                'voice_enabled': bool(voice_enabled)
+                'voice_enabled': bool(voice_enabled),
+                'session_company_id': session_company_id
             }
+        finally:
+            conn.close()
+
+    def set_session_company(self, token: str, company_id: str) -> bool:
+        """Set the active company for a session."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE sessions SET company_id = ? WHERE token = ?',
+                (company_id, token)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
 

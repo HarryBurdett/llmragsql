@@ -75,15 +75,85 @@ logger.addHandler(_file_handler)
 # Also add to the opera_sql_import logger
 logging.getLogger('sql_rag.opera_sql_import').addHandler(_file_handler)
 
-# Global instances
+# --- Per-request company resolution ---
+# Multiple users may be logged into different companies simultaneously.
+# A contextvars token is set per-request by AuthMiddleware so that each
+# async request sees the correct company_id from its session.
+import contextvars
+_request_company_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('_request_company_id', default=None)
+
+# Registry of per-company resources (sql_connector, email_storage, etc.)
+# Keyed by company_id, lazily populated on first company switch or startup.
+_company_sql_connectors: Dict[str, SQLConnector] = {}
+_company_email_storages: Dict[str, 'EmailStorage'] = {}
+_company_email_sync_managers: Dict[str, 'EmailSyncManager'] = {}
+_company_data: Dict[str, Dict[str, Any]] = {}  # company_id -> company dict
+_default_company_id: Optional[str] = None  # set on startup, used as fallback
+
+
+def _get_active_company_id() -> Optional[str]:
+    """Return the company_id for the current request (session-aware)."""
+    req_co = _request_company_id.get(None)
+    if req_co:
+        return req_co
+    return _default_company_id
+
+
+class _CompanyProxy:
+    """Proxy that delegates attribute access to the per-company instance.
+
+    Allows existing code like ``sql_connector.execute_query(...)`` to work
+    unchanged — the proxy transparently routes to the right company's
+    real connector based on the active request context.
+    """
+
+    def __init__(self, registry: dict, label: str):
+        object.__setattr__(self, '_registry', registry)
+        object.__setattr__(self, '_label', label)
+
+    def _resolve(self):
+        company_id = _get_active_company_id()
+        reg = object.__getattribute__(self, '_registry')
+        if company_id and company_id in reg:
+            return reg[company_id]
+        # Fallback: return any registered instance (single-company case)
+        if reg:
+            return next(iter(reg.values()))
+        return None
+
+    def __getattr__(self, name):
+        real = self._resolve()
+        if real is None:
+            raise AttributeError(f"No {object.__getattribute__(self, '_label')} available (no company context)")
+        return getattr(real, name)
+
+    def __setattr__(self, name, value):
+        real = self._resolve()
+        if real is None:
+            raise AttributeError(f"No {object.__getattribute__(self, '_label')} available")
+        setattr(real, name, value)
+
+    def __bool__(self):
+        return self._resolve() is not None
+
+    def __eq__(self, other):
+        if other is None:
+            return self._resolve() is None
+        return self._resolve() == other
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+
+# Global instances — these are now proxies that delegate to per-company instances
 config: Optional[configparser.ConfigParser] = None
-sql_connector: Optional[SQLConnector] = None
+sql_connector = _CompanyProxy(_company_sql_connectors, 'sql_connector')
 vector_db: Optional[VectorDB] = None
 llm = None
 current_company: Optional[Dict[str, Any]] = None
 
 # Email module global instances
-email_storage: Optional[EmailStorage] = None
+email_storage = _CompanyProxy(_company_email_storages, 'email_storage')
 email_sync_manager: Optional[EmailSyncManager] = None
 email_categorizer: Optional[EmailCategorizer] = None
 customer_linker: Optional[CustomerLinker] = None
@@ -261,7 +331,7 @@ def apply_system_to_config(system: Dict[str, Any]):
     sql_connector always stay in sync. On connection failure, all three are
     rolled back to their previous state.
     """
-    global config, sql_connector, active_system_id
+    global config, active_system_id
 
     if not config:
         config = load_config()
@@ -270,7 +340,8 @@ def apply_system_to_config(system: Dict[str, Any]):
     prev_system_id = active_system_id
     prev_db_settings = dict(config.items("database")) if config.has_section("database") else {}
     prev_opera_settings = dict(config.items("opera")) if config.has_section("opera") else {}
-    prev_connector = sql_connector
+    co_id = _get_active_company_id() or _default_company_id
+    prev_connector = _company_sql_connectors.get(co_id) if co_id else None
 
     # Apply database settings
     if "database" in system:
@@ -294,13 +365,15 @@ def apply_system_to_config(system: Dict[str, Any]):
     if not system.get("database") or not system.get("opera"):
         _sync_active_system_config()
 
-    # Reinitialize SQL connector — rollback everything on failure
+    # Reinitialize SQL connector for the active company
     try:
-        sql_connector = SQLConnector(CONFIG_PATH)
+        new_connector = SQLConnector(CONFIG_PATH)
+        co_id = _get_active_company_id() or _default_company_id
+        if co_id:
+            _company_sql_connectors[co_id] = new_connector
         logger.info(f"Switched to system: {system['name']} (id={system['id']})")
     except Exception as e:
         logger.warning(f"SQL connector reinit failed after system switch: {e} — rolling back")
-        # Rollback: restore config.ini, active_system_id, and sql_connector
         active_system_id = prev_system_id
         if prev_db_settings:
             for key, value in prev_db_settings.items():
@@ -309,7 +382,9 @@ def apply_system_to_config(system: Dict[str, Any]):
             for key, value in prev_opera_settings.items():
                 config["opera"][key] = value
         save_config(config)
-        sql_connector = prev_connector
+        # Restore previous connector
+        if co_id and prev_connector:
+            _company_sql_connectors[co_id] = prev_connector
         raise ConnectionError(f"Database connection failed: {e}") from e
 
 
@@ -350,9 +425,9 @@ def get_active_system() -> Optional[Dict[str, Any]]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global config, sql_connector, vector_db, llm, user_auth, current_company
-    global email_storage, email_sync_manager, email_categorizer, customer_linker
-    global active_system_id
+    global config, vector_db, llm, user_auth, current_company
+    global email_sync_manager, email_categorizer, customer_linker
+    global active_system_id, _default_company_id
 
     # Startup
     logger.info("Starting SQL RAG API...")
@@ -398,10 +473,12 @@ async def lifespan(app: FastAPI):
         logger.info(f"Per-company data directory: {data_dir}")
 
         # Set current_company global from detected company
-        company_data = load_company(company_id)
-        if company_data:
-            current_company = company_data
-            logger.info(f"Current company set to: {company_data.get('name', company_id)}")
+        _default_company_id = company_id
+        company_data_obj = load_company(company_id)
+        if company_data_obj:
+            current_company = company_data_obj
+            _company_data[company_id] = company_data_obj
+            logger.info(f"Current company set to: {company_data_obj.get('name', company_id)}")
     except Exception as e:
         logger.warning(f"Could not initialize per-company data: {e}")
 
@@ -413,7 +490,9 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Could not initialize user authentication: {e}")
 
     try:
-        sql_connector = SQLConnector(CONFIG_PATH)
+        real_connector = SQLConnector(CONFIG_PATH)
+        if _default_company_id:
+            _company_sql_connectors[_default_company_id] = real_connector
         logger.info("SQL connector initialized")
     except Exception as e:
         logger.warning(f"Could not initialize SQL connector: {e}")
@@ -454,7 +533,9 @@ async def lifespan(app: FastAPI):
         email_db = get_current_db_path("email_data.db")
         if email_db is None:
             email_db = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "email_data.db")
-        email_storage = EmailStorage(str(email_db))
+        real_email_storage = EmailStorage(str(email_db))
+        if _default_company_id:
+            _company_email_storages[_default_company_id] = real_email_storage
         logger.info("Email storage initialized")
 
         # Initialize categorizer with LLM
@@ -467,7 +548,7 @@ async def lifespan(app: FastAPI):
 
         # Initialize sync manager
         email_sync_manager = EmailSyncManager(
-            storage=email_storage,
+            storage=real_email_storage,
             categorizer=email_categorizer,
             linker=customer_linker
         )
@@ -1812,7 +1893,7 @@ async def update_llm_config(provider_config: ProviderConfig):
 @app.post("/api/config/database")
 async def update_database_config(db_config: DatabaseConfig):
     """Update database configuration."""
-    global config, sql_connector
+    global config
 
     if not config:
         config = load_config()
@@ -1852,9 +1933,12 @@ async def update_database_config(db_config: DatabaseConfig):
     # Sync the active system profile with the updated config
     _sync_active_system_config()
 
-    # Reinitialize SQL connector (must pass file path, not ConfigParser object)
+    # Reinitialize SQL connector for the active company
     try:
-        sql_connector = SQLConnector(CONFIG_PATH)
+        new_conn = SQLConnector(CONFIG_PATH)
+        co = _get_active_company_id() or _default_company_id
+        if co:
+            _company_sql_connectors[co] = new_conn
         return {"success": True, "message": "Database configuration updated"}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -2428,9 +2512,14 @@ async def get_current_company():
 
 @app.post("/api/companies/switch/{company_id}")
 async def switch_company(request: Request, company_id: str):
-    """Switch to a different company/database."""
-    global current_company, sql_connector, config
-    global email_storage, email_sync_manager, vector_db
+    """Switch the current user's session to a different company/database.
+
+    Creates per-company SQL connector and email storage if they don't
+    already exist, and records the company_id on the user's session so
+    subsequent requests automatically use the correct resources.
+    """
+    global current_company, config, vector_db, _default_company_id
+    global email_sync_manager
 
     # Load the company configuration
     company = load_company(company_id)
@@ -2448,34 +2537,53 @@ async def switch_company(request: Request, company_id: str):
     if not database_name:
         raise HTTPException(status_code=400, detail="Company has no database configured")
 
-    # Update config with new database
+    # Update config with new database (needed for SQLConnector init)
     if not config:
         config = load_config()
 
     old_database = config.get("database", "database", fallback="")
     config["database"]["database"] = database_name
-
-    # Save the config
     save_config(config)
 
-    # Reinitialize SQL connector with new database
     try:
-        sql_connector = SQLConnector(CONFIG_PATH)
-        current_company = company
+        # --- Create / reuse per-company SQL connector ---
+        if company_id not in _company_sql_connectors:
+            _company_sql_connectors[company_id] = SQLConnector(CONFIG_PATH)
+            logger.info(f"Created SQL connector for company {company_id}")
+        else:
+            # Connector exists — verify it's still alive, recreate if not
+            try:
+                _company_sql_connectors[company_id].execute_query("SELECT 1")
+            except Exception:
+                _company_sql_connectors[company_id] = SQLConnector(CONFIG_PATH)
+                logger.info(f"Recreated SQL connector for company {company_id}")
 
-        # Switch per-company data directory
+        # Update process-level defaults (used by unauthenticated endpoints)
+        current_company = company
+        _default_company_id = company_id
+        _company_data[company_id] = company
+
+        # Save company to user's session so per-request lookups work
+        auth_header = request.headers.get('Authorization', '')
+        session_token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+        if session_token and user_auth:
+            user_auth.set_session_company(session_token, company_id)
+
+        # Switch per-company data directory (for legacy code paths)
         set_current_company_id(company_id)
         data_dir = get_company_data_dir(company_id)
         migrate_root_databases(company_id)
         logger.info(f"Per-company data directory: {data_dir}")
 
-        # Reinitialize email storage with new company path
-        email_db = get_company_db_path(company_id, "email_data.db")
-        email_storage = EmailStorage(str(email_db))
+        # --- Create / reuse per-company email storage ---
+        if company_id not in _company_email_storages:
+            email_db = get_company_db_path(company_id, "email_data.db")
+            _company_email_storages[company_id] = EmailStorage(str(email_db))
+            logger.info(f"Created email storage for company {company_id}")
 
-        # Update email_sync_manager to use new company's storage and re-register providers
+        # Update email_sync_manager to use this company's storage
         if email_sync_manager:
-            email_sync_manager.storage = email_storage
+            email_sync_manager.storage = _company_email_storages[company_id]
             email_sync_manager.providers.clear()
             try:
                 await _initialize_email_providers()
@@ -2491,11 +2599,9 @@ async def switch_company(request: Request, company_id: str):
         reset_payments_db()
         from sql_rag.opera_config import clear_control_accounts_cache
         clear_control_accounts_cache()
-        # Clear customer linker cache and update its connector — it holds
-        # company-specific email→account mappings and a reference to the old connector
         if customer_linker:
             customer_linker.clear_cache()
-            customer_linker.set_sql_connector(sql_connector)
+            customer_linker.set_sql_connector(_company_sql_connectors[company_id])
         from sql_rag.import_lock import set_db_path as set_import_lock_path
         import_lock_path = get_company_db_path(company_id, "import_locks.db")
         if import_lock_path:
@@ -2509,10 +2615,9 @@ async def switch_company(request: Request, company_id: str):
         except Exception as e:
             logger.warning(f"Could not reinitialize VectorDB on company switch: {e}")
 
-        # Sync systems.json so active system profile reflects the new database
         _sync_active_system_config()
 
-        logger.info(f"Switched from {old_database} to {database_name} ({company['name']})")
+        logger.info(f"Switched to {database_name} ({company['name']})")
         return {
             "success": True,
             "message": f"Switched to {company['name']}",
@@ -21660,7 +21765,8 @@ async def scan_all_banks_for_statements(
                             matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct))
 
                             if matched_bank_code:
-                                # Check if already processed (chain complete)
+                                # Chain check: if closing balance matches a reconciled opening,
+                                # this statement has already been processed
                                 closing = stmt_entry.get('closing_balance')
                                 bank_rec_opens = reconciled_opening_balances.get(matched_bank_code, set())
                                 chain_complete = closing is not None and round(closing, 2) in bank_rec_opens
@@ -21825,19 +21931,45 @@ async def scan_all_banks_for_statements(
             else:
                 stmts.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
 
-            # Filter out already-reconciled statements: closing == reconciled
-            # but opening != reconciled (i.e. it ended at the reconciled point,
-            # meaning Opera has already processed it).
-            if rec_bal is not None:
-                stmts = [
-                    s for s in stmts
-                    if not (
-                        s.get('closing_balance') is not None
-                        and abs(s['closing_balance'] - rec_bal) <= 0.01
-                        and s.get('opening_balance') is not None
-                        and abs(s['opening_balance'] - rec_bal) > 0.01
-                    )
-                ]
+            # Filter out statements that Opera has already reconciled past.
+            # Daisy-chain from rec_bal: the next statement's opening must match
+            # rec_bal. Any statement that comes before it in the chain is done.
+            # We chain forward from rec_bal, collecting only reachable statements.
+            if rec_bal is not None and len(stmts) > 0:
+                # Build lookup: opening_balance -> list of statements
+                by_opening: dict[float, list] = {}
+                no_balance = []
+                for s in stmts:
+                    ob = s.get('opening_balance')
+                    if ob is not None:
+                        key = round(ob, 2)
+                        by_opening.setdefault(key, []).append(s)
+                    else:
+                        no_balance.append(s)
+
+                # Walk the chain from rec_bal forward
+                chained = []
+                current_bal = round(rec_bal, 2)
+                visited = set()
+                while True:
+                    candidates = by_opening.get(current_bal, [])
+                    picked = None
+                    for c in candidates:
+                        cid = id(c)
+                        if cid not in visited:
+                            picked = c
+                            visited.add(cid)
+                            break
+                    if picked is None:
+                        break
+                    chained.append(picked)
+                    cb = picked.get('closing_balance')
+                    if cb is None:
+                        break
+                    current_bal = round(cb, 2)
+
+                # Keep only chained statements + any without balance info
+                stmts = chained + no_balance
 
             bank['statements'] = stmts
 
@@ -21897,10 +22029,8 @@ async def scan_all_banks_for_statements(
         except Exception:
             final_rec_filenames = reconciled_filenames
 
-        # Auto-promote imported-not-reconciled statements where Opera's reconciled
-        # balance has reached or passed the statement's closing balance.
-        # This catches statements completed via partial reconciliation that weren't
-        # promoted to is_reconciled=1 (e.g. from before the auto-promotion logic).
+        # Auto-promote imported statements where Opera's reconciled balance
+        # exactly matches the statement's closing balance.
         try:
             for code, bank in all_banks.items():
                 rec_bal = bank.get('reconciled_balance')
@@ -21911,8 +22041,6 @@ async def scan_all_banks_for_statements(
                     if (closing is not None
                             and stmt.get('is_imported')
                             and abs(rec_bal - closing) < 0.01):
-                        # Opera reconciled balance matches this statement's closing —
-                        # the statement is complete. Auto-mark and remove from scan.
                         fn = stmt.get('filename', '')
                         logger.info(f"Scan cleanup: auto-marking '{fn}' as reconciled "
                                     f"(Opera reconciled £{rec_bal:.2f} matches closing £{closing:.2f})")
@@ -25999,7 +26127,11 @@ def _load_company_settings() -> dict:
         "recurring_entries_mode": "process",
     }
 
-    company_path = get_current_db_path(_COMPANY_SETTINGS_FILENAME)
+    company_id = _get_active_company_id()
+    if company_id:
+        company_path = get_company_db_path(company_id, _COMPANY_SETTINGS_FILENAME)
+    else:
+        company_path = get_current_db_path(_COMPANY_SETTINGS_FILENAME)
     if company_path and company_path.exists():
         try:
             with open(company_path) as f:
@@ -26016,7 +26148,11 @@ def _load_company_settings() -> dict:
 
 def _save_company_settings(settings: dict) -> bool:
     """Save per-company settings."""
-    company_path = get_current_db_path(_COMPANY_SETTINGS_FILENAME)
+    company_id = _get_active_company_id()
+    if company_id:
+        company_path = get_company_db_path(company_id, _COMPANY_SETTINGS_FILENAME)
+    else:
+        company_path = get_current_db_path(_COMPANY_SETTINGS_FILENAME)
     if not company_path:
         # Fallback: save to project root (shouldn't normally happen)
         company_path = Path(__file__).parent.parent / _COMPANY_SETTINGS_FILENAME
@@ -26031,12 +26167,20 @@ def _save_company_settings(settings: dict) -> bool:
         return False
 
 
+    # (Per-request company resolution is defined near top of file)
+
+
 # GoCardless Settings Storage (per-company, with root fallback)
 _GOCARDLESS_SETTINGS_FILENAME = "gocardless_settings.json"
 _GOCARDLESS_ROOT_FALLBACK = Path(__file__).parent.parent / _GOCARDLESS_SETTINGS_FILENAME
 
 def _load_gocardless_settings() -> dict:
-    """Load GoCardless settings from per-company file, falling back to root."""
+    """Load GoCardless settings from per-company file, falling back to root.
+
+    Uses the current_company global (set alongside sql_connector on company switch)
+    rather than company_data._current_company_id to ensure settings always match
+    the active database connection even when multiple tabs switch companies.
+    """
     defaults = {
         "default_batch_type": "",
         "default_bank_code": "",
@@ -26052,14 +26196,16 @@ def _load_gocardless_settings() -> dict:
         "subscription_frequencies": ["W", "M", "A"]  # Frequency codes to include (W=Weekly, M=Monthly, Q=Quarterly, A=Annual)
     }
 
-    # Try per-company path first
-    company_path = get_current_db_path(_GOCARDLESS_SETTINGS_FILENAME)
-    if company_path and company_path.exists():
-        try:
-            with open(company_path) as f:
-                return json.load(f)
-        except Exception:
-            pass
+    # Use per-request company (from session) with fallback to process global
+    company_id = _get_active_company_id()
+    if company_id:
+        company_path = get_company_db_path(company_id, _GOCARDLESS_SETTINGS_FILENAME)
+        if company_path and company_path.exists():
+            try:
+                with open(company_path) as f:
+                    return json.load(f)
+            except Exception:
+                pass
 
     # Fall back to root-level file (pre-migration or no company set)
     if _GOCARDLESS_ROOT_FALLBACK.exists():
@@ -26144,8 +26290,11 @@ def _save_gocardless_partner_settings(settings: dict) -> bool:
 
 def _save_gocardless_settings(settings: dict) -> bool:
     """Save GoCardless settings to per-company file."""
-    # Determine save path: per-company if available, else root
-    company_path = get_current_db_path(_GOCARDLESS_SETTINGS_FILENAME)
+    company_id = _get_active_company_id()
+    if company_id:
+        company_path = get_company_db_path(company_id, _GOCARDLESS_SETTINGS_FILENAME)
+    else:
+        company_path = None
     save_path = company_path if company_path else _GOCARDLESS_ROOT_FALLBACK
 
     try:
@@ -27038,9 +27187,10 @@ async def test_gocardless_api():
         return {"success": False, "error": "No API access token configured"}
 
     try:
-        from sql_rag.gocardless_api import GoCardlessClient
-        sandbox = settings.get("api_sandbox", False)
-        client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
+        from sql_rag.gocardless_api import create_client_from_settings
+        client = create_client_from_settings(settings)
+        if not client:
+            return {"success": False, "error": "Could not create GoCardless client"}
         result = client.test_connection()
         return result
     except Exception as e:

@@ -97,6 +97,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Attach user to request state
         request.state.user = user
         request.state.user_permissions = self.user_auth.get_user_permissions(user['id'])
+        # Attach session company for per-request company resolution
+        session_company_id = user.get('session_company_id')
+        request.state.session_company_id = session_company_id
+
+        # Set contextvars token so _get_active_company_id() works in any
+        # function called during this request (no need to pass request around)
+        if session_company_id:
+            from api.main import _request_company_id
+            _request_company_id.set(session_company_id)
 
         return await call_next(request)
 
