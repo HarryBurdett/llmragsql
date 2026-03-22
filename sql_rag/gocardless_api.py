@@ -577,16 +577,17 @@ class GoCardlessClient:
         Create a billing request for setting up a new mandate.
 
         This is used when a customer doesn't have a mandate yet.
-        Returns a billing request that can be used to generate a checkout URL.
+        The billing request includes customer details so GoCardless can
+        pre-fill the authorisation form.
 
         Args:
             customer_email: Customer's email address
             customer_name: Customer's name (optional)
             description: Description for the mandate
-            metadata: Optional metadata
+            metadata: Optional metadata (e.g. opera_account)
 
         Returns:
-            Billing request dict with authorisation_url
+            Billing request dict with id, status, links etc.
         """
         request_data = {
             "billing_requests": {
@@ -600,6 +601,48 @@ class GoCardlessClient:
             request_data["billing_requests"]["metadata"] = metadata
 
         result = self._request("POST", "/billing_requests", data=request_data)
+        return result.get("billing_requests", {})
+
+    def create_billing_request_flow(
+        self,
+        billing_request_id: str,
+        redirect_url: Optional[str] = None,
+        exit_url: Optional[str] = None,
+    ) -> Dict:
+        """
+        Create a billing request flow — generates an authorisation URL
+        that the customer visits to set up their Direct Debit mandate.
+
+        Args:
+            billing_request_id: The billing request ID (BRQ...)
+            redirect_url: URL to redirect after completion (optional)
+            exit_url: URL to redirect if customer exits (optional)
+
+        Returns:
+            Billing request flow dict with authorisation_url
+        """
+        flow_data: Dict[str, Any] = {
+            "billing_request_flows": {
+                "redirect_uri": redirect_url or "https://example.com/mandate-complete",
+                "exit_uri": exit_url or "https://example.com/mandate-exit",
+                "links": {
+                    "billing_request": billing_request_id
+                }
+            }
+        }
+
+        result = self._request("POST", "/billing_request_flows", data=flow_data)
+        return result.get("billing_request_flows", {})
+
+    def get_billing_request(self, billing_request_id: str) -> Dict:
+        """
+        Get details of a billing request, including its current status
+        and linked mandate/customer IDs once the customer has completed it.
+
+        Returns:
+            Billing request dict with status, links (mandate, customer) etc.
+        """
+        result = self._request("GET", f"/billing_requests/{billing_request_id}")
         return result.get("billing_requests", {})
 
     def get_payout_with_payments(self, payout_id: str) -> GoCardlessPayout:
@@ -787,3 +830,168 @@ def create_client_from_settings(settings: Dict) -> Optional[GoCardlessClient]:
 
     sandbox = settings.get("api_sandbox", False)
     return GoCardlessClient(access_token=access_token, sandbox=sandbox)
+
+
+class GoCardlessPartnerClient:
+    """
+    GoCardless Partner/Connect OAuth flow for onboarding new merchants.
+
+    Uses GoCardless OAuth Connect to:
+    1. Generate an authorisation URL for a new merchant to sign up
+    2. Exchange the authorisation code for an access token
+    3. Track the merchant's setup progress
+
+    Requires Partner credentials (client_id, client_secret) from GoCardless.
+    See: https://developer.gocardless.com/getting-started/partners/
+    """
+
+    SANDBOX_CONNECT_URL = "https://connect-sandbox.gocardless.com"
+    LIVE_CONNECT_URL = "https://connect.gocardless.com"
+    SANDBOX_API_URL = "https://api-sandbox.gocardless.com"
+    LIVE_API_URL = "https://api.gocardless.com"
+
+    def __init__(self, client_id: str, client_secret: str, sandbox: bool = False):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.sandbox = sandbox
+        self.connect_url = self.SANDBOX_CONNECT_URL if sandbox else self.LIVE_CONNECT_URL
+        self.api_url = self.SANDBOX_API_URL if sandbox else self.LIVE_API_URL
+
+    def get_authorisation_url(
+        self,
+        redirect_uri: str,
+        scope: str = "read_write",
+        prefill_email: Optional[str] = None,
+        prefill_company_name: Optional[str] = None,
+        state: Optional[str] = None,
+    ) -> str:
+        """
+        Generate the OAuth authorisation URL for a new merchant to sign up.
+
+        The merchant visits this URL, creates their GoCardless account (or logs in),
+        and authorises our app. GoCardless then redirects back to redirect_uri
+        with an authorisation code.
+
+        Args:
+            redirect_uri: URL GoCardless redirects to after authorisation
+            scope: OAuth scope (default: read_write)
+            prefill_email: Pre-fill the merchant's email on signup form
+            prefill_company_name: Pre-fill the merchant's company name
+            state: Opaque state parameter returned in callback (for CSRF protection)
+
+        Returns:
+            Full authorisation URL string
+        """
+        import urllib.parse
+
+        params = {
+            "response_type": "code",
+            "client_id": self.client_id,
+            "scope": scope,
+            "redirect_uri": redirect_uri,
+            "access_type": "offline",  # Get refresh token
+        }
+        if prefill_email:
+            params["prefill[email]"] = prefill_email
+        if prefill_company_name:
+            params["prefill[company_name]"] = prefill_company_name
+        if state:
+            params["state"] = state
+
+        return f"{self.connect_url}/oauth/authorize?{urllib.parse.urlencode(params)}"
+
+    def exchange_authorisation_code(
+        self,
+        code: str,
+        redirect_uri: str,
+    ) -> Dict[str, Any]:
+        """
+        Exchange an authorisation code for an access token.
+
+        Called after the merchant completes signup and GoCardless redirects
+        back to our redirect_uri with ?code=XXX.
+
+        Args:
+            code: The authorisation code from the callback
+            redirect_uri: Must match the redirect_uri used in the authorisation URL
+
+        Returns:
+            Dict with access_token, token_type, scope, organisation_id
+        """
+        url = f"{self.connect_url}/oauth/access_token"
+        data = {
+            "grant_type": "authorization_code",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "code": code,
+            "redirect_uri": redirect_uri,
+        }
+
+        try:
+            response = requests.post(url, json=data, timeout=30)
+            if response.status_code != 200:
+                error_msg = response.text
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("error_description", error_data.get("error", error_msg))
+                except Exception:
+                    pass
+                raise GoCardlessAPIError(
+                    f"Token exchange failed: {error_msg}",
+                    response.status_code,
+                    "oauth_error"
+                )
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            raise GoCardlessAPIError(f"Token exchange request failed: {e}", error_type="connection_error")
+
+    def get_organisation_info(self, access_token: str) -> Dict[str, Any]:
+        """
+        Get the merchant's organisation info using their access token.
+        Verifies the token works and retrieves merchant details.
+
+        Args:
+            access_token: The merchant's access token from token exchange
+
+        Returns:
+            Dict with creditor details (name, id, etc.)
+        """
+        url = f"{self.api_url}/creditors"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "GoCardless-Version": "2015-07-06",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+            if response.status_code != 200:
+                raise GoCardlessAPIError(
+                    f"Failed to get organisation info: {response.status_code}",
+                    response.status_code,
+                )
+            data = response.json()
+            creditors = data.get("creditors", [])
+            if creditors:
+                return creditors[0]
+            return {}
+        except requests.exceptions.RequestException as e:
+            raise GoCardlessAPIError(f"Organisation info request failed: {e}", error_type="connection_error")
+
+
+def create_partner_client_from_settings(settings: Dict) -> Optional[GoCardlessPartnerClient]:
+    """
+    Create a GoCardless Partner client from settings dictionary.
+
+    Args:
+        settings: Dict containing 'partner_client_id' and 'partner_client_secret'
+
+    Returns:
+        GoCardlessPartnerClient or None if partner credentials not configured
+    """
+    client_id = settings.get("partner_client_id")
+    client_secret = settings.get("partner_client_secret")
+    if not client_id or not client_secret:
+        return None
+
+    sandbox = settings.get("api_sandbox", False)
+    return GoCardlessPartnerClient(client_id=client_id, client_secret=client_secret, sandbox=sandbox)

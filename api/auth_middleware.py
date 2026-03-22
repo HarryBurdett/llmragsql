@@ -28,6 +28,7 @@ PUBLIC_PATHS: Set[str] = {
     '/docs',
     '/openapi.json',
     '/redoc',
+    '/signup',  # Crakd.ai GoCardless signup page (public)
 }
 
 # Path prefixes that don't require authentication
@@ -37,6 +38,16 @@ PUBLIC_PREFIXES: tuple = (
     '/redoc',
     '/api/email/',  # Allow email operations without auth
     '/api/systems/',  # Allow system switching from login page (pre-auth)
+    '/api/gocardless/partner/initiate-signup',  # Crakd.ai signup app (external merchants)
+    '/api/gocardless/partner/callback',  # GoCardless OAuth redirect
+    '/api/gocardless/partner/signup-status',  # Polling from signup app
+    '/api/gocardless/partner/config',  # Check if partner credentials configured
+    '/api/gocardless/partner/admin-auth',  # Password check for Crakd.ai admin panel
+    '/api/gocardless/partner/admin-password',  # Password change for Crakd.ai admin panel
+    '/api/gocardless/partner/activate-merchant',  # Deploy merchant token from Crakd.ai admin
+    '/api/gocardless/partner/merchant-app-url',  # Save merchant app URL from Crakd.ai admin
+    '/api/gocardless/partner/merchants',  # List onboarded merchants for Crakd.ai admin
+    '/api/gocardless/deploy-token',  # Receive token push from Crakd.ai partner portal
 )
 
 

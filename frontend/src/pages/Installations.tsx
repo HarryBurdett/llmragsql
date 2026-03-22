@@ -225,9 +225,12 @@ export function Installations() {
         queryClient.invalidateQueries({ queryKey: ['config'] });
         queryClient.invalidateQueries({ queryKey: ['operaConfig'] });
         queryClient.invalidateQueries({ queryKey: ['companies'] });
+      } else {
+        setMessage({ type: 'error', text: response.data.error || response.data.detail || 'Failed to switch installation' });
       }
-    } catch {
-      setMessage({ type: 'error', text: 'Failed to switch installation' });
+    } catch (err: any) {
+      const detail = err?.response?.data?.error || err?.response?.data?.detail || 'Failed to switch installation';
+      setMessage({ type: 'error', text: detail });
     }
   };
 

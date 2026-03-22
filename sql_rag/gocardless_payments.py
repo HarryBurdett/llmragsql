@@ -224,8 +224,189 @@ class GoCardlessPaymentsDB:
                 WHERE source_doc IS NOT NULL AND source_doc != ''
             ''')
 
+            # Mandate setup requests — tracks billing requests sent to customers
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS mandate_setup_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    opera_account TEXT NOT NULL,
+                    opera_name TEXT,
+                    customer_email TEXT NOT NULL,
+                    billing_request_id TEXT,
+                    billing_request_flow_id TEXT,
+                    authorisation_url TEXT,
+                    mandate_id TEXT,
+                    gocardless_customer_id TEXT,
+                    status TEXT DEFAULT 'pending',
+                    status_detail TEXT,
+                    email_sent_at TEXT,
+                    mandate_active_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT
+                )
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_setup_requests_opera
+                ON mandate_setup_requests(opera_account)
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_setup_requests_status
+                ON mandate_setup_requests(status)
+            ''')
+
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_setup_requests_billing_req
+                ON mandate_setup_requests(billing_request_id)
+            ''')
+
+            # Partner signups — tracks GoCardless partner referral signups
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS gocardless_partner_signups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_name TEXT,
+                    company_email TEXT,
+                    billing_request_id TEXT,
+                    billing_request_flow_id TEXT,
+                    authorisation_url TEXT,
+                    status TEXT DEFAULT 'pending',
+                    status_detail TEXT,
+                    access_token_obtained INTEGER DEFAULT 0,
+                    merchant_access_token TEXT,
+                    merchant_organisation_id TEXT,
+                    merchant_creditor_name TEXT,
+                    merchant_app_url TEXT,
+                    partner_referral_id TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT,
+                    updated_at TEXT
+                )
+            ''')
+
+            # Migrate: add merchant token columns if missing
+            cursor.execute("PRAGMA table_info(gocardless_partner_signups)")
+            existing_cols = {row[1] for row in cursor.fetchall()}
+            for col in ['merchant_access_token', 'merchant_organisation_id', 'merchant_creditor_name', 'merchant_app_url']:
+                if col not in existing_cols:
+                    cursor.execute(f'ALTER TABLE gocardless_partner_signups ADD COLUMN {col} TEXT')
+
             conn.commit()
             logger.info(f"GoCardless payments database initialized at {self.db_path}")
+        finally:
+            conn.close()
+
+    # ============ Partner Signup Management ============
+
+    def create_partner_signup(self, company_name: str, company_email: str,
+                              billing_request_id: str = None, billing_request_flow_id: str = None,
+                              authorisation_url: str = None) -> dict:
+        """Create a new partner signup record."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO gocardless_partner_signups
+                (company_name, company_email, billing_request_id, billing_request_flow_id, authorisation_url, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (company_name, company_email, billing_request_id, billing_request_flow_id,
+                  authorisation_url, datetime.now().isoformat()))
+            conn.commit()
+            return {'id': cursor.lastrowid, 'status': 'pending'}
+        finally:
+            conn.close()
+
+    def _signup_row_to_dict(self, row) -> dict:
+        """Convert a partner signup row to a dictionary."""
+        return {
+            'id': row[0], 'company_name': row[1], 'company_email': row[2],
+            'billing_request_id': row[3], 'billing_request_flow_id': row[4],
+            'authorisation_url': row[5], 'status': row[6], 'status_detail': row[7],
+            'access_token_obtained': bool(row[8]),
+            'merchant_access_token': row[9], 'merchant_organisation_id': row[10],
+            'merchant_creditor_name': row[11], 'merchant_app_url': row[12],
+            'partner_referral_id': row[13],
+            'created_at': row[14], 'completed_at': row[15], 'updated_at': row[16]
+        }
+
+    _SIGNUP_COLUMNS = '''id, company_name, company_email, billing_request_id, billing_request_flow_id,
+                       authorisation_url, status, status_detail, access_token_obtained,
+                       merchant_access_token, merchant_organisation_id, merchant_creditor_name,
+                       merchant_app_url, partner_referral_id, created_at, completed_at, updated_at'''
+
+    def get_latest_partner_signup(self) -> dict:
+        """Get the most recent partner signup record."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                SELECT {self._SIGNUP_COLUMNS}
+                FROM gocardless_partner_signups
+                ORDER BY id DESC LIMIT 1
+            ''')
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._signup_row_to_dict(row)
+        finally:
+            conn.close()
+
+    def get_all_merchant_signups(self, status: str = None) -> list:
+        """Get all partner signup records, optionally filtered by status."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute(f'''
+                    SELECT {self._SIGNUP_COLUMNS}
+                    FROM gocardless_partner_signups
+                    WHERE status = ?
+                    ORDER BY id DESC
+                ''', (status,))
+            else:
+                cursor.execute(f'''
+                    SELECT {self._SIGNUP_COLUMNS}
+                    FROM gocardless_partner_signups
+                    ORDER BY id DESC
+                ''')
+            return [self._signup_row_to_dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_merchant_signup(self, signup_id: int) -> dict:
+        """Get a specific partner signup by ID."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                SELECT {self._SIGNUP_COLUMNS}
+                FROM gocardless_partner_signups
+                WHERE id = ?
+            ''', (signup_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._signup_row_to_dict(row)
+        finally:
+            conn.close()
+
+    def update_partner_signup(self, signup_id: int, **kwargs) -> bool:
+        """Update a partner signup record."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            updates = []
+            params = []
+            for key, value in kwargs.items():
+                updates.append(f'{key} = ?')
+                params.append(value)
+            updates.append('updated_at = ?')
+            params.append(datetime.now().isoformat())
+            params.append(signup_id)
+            cursor.execute(f'''
+                UPDATE gocardless_partner_signups SET {', '.join(updates)} WHERE id = ?
+            ''', params)
+            conn.commit()
+            return cursor.rowcount > 0
         finally:
             conn.close()
 
@@ -1033,6 +1214,204 @@ class GoCardlessPaymentsDB:
             'created_at': row[15],
             'updated_at': row[16],
             'synced_at': row[17]
+        }
+
+    # ============ Mandate Setup Requests ============
+
+    def create_mandate_setup(
+        self,
+        opera_account: str,
+        customer_email: str,
+        opera_name: Optional[str] = None,
+        billing_request_id: Optional[str] = None,
+        billing_request_flow_id: Optional[str] = None,
+        authorisation_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a mandate setup request record."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO mandate_setup_requests
+                (opera_account, opera_name, customer_email, billing_request_id,
+                 billing_request_flow_id, authorisation_url, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending')
+            ''', (opera_account, opera_name, customer_email, billing_request_id,
+                  billing_request_flow_id, authorisation_url))
+            request_id = cursor.lastrowid
+            conn.commit()
+            return self.get_mandate_setup(request_id)
+        finally:
+            conn.close()
+
+    def update_mandate_setup(
+        self,
+        setup_id: int,
+        billing_request_id: Optional[str] = None,
+        billing_request_flow_id: Optional[str] = None,
+        authorisation_url: Optional[str] = None,
+        mandate_id: Optional[str] = None,
+        gocardless_customer_id: Optional[str] = None,
+        status: Optional[str] = None,
+        status_detail: Optional[str] = None,
+        email_sent_at: Optional[str] = None,
+        mandate_active_at: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Update a mandate setup request."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            updates = []
+            params = []
+
+            for field, value in [
+                ('billing_request_id', billing_request_id),
+                ('billing_request_flow_id', billing_request_flow_id),
+                ('authorisation_url', authorisation_url),
+                ('mandate_id', mandate_id),
+                ('gocardless_customer_id', gocardless_customer_id),
+                ('status', status),
+                ('status_detail', status_detail),
+                ('email_sent_at', email_sent_at),
+                ('mandate_active_at', mandate_active_at),
+            ]:
+                if value is not None:
+                    updates.append(f'{field} = ?')
+                    params.append(value)
+
+            if not updates:
+                return self.get_mandate_setup(setup_id)
+
+            updates.append('updated_at = ?')
+            params.append(datetime.utcnow().isoformat())
+            params.append(setup_id)
+
+            cursor.execute(f'''
+                UPDATE mandate_setup_requests
+                SET {', '.join(updates)}
+                WHERE id = ?
+            ''', params)
+            conn.commit()
+            return self.get_mandate_setup(setup_id)
+        finally:
+            conn.close()
+
+    def get_mandate_setup(self, setup_id: int) -> Optional[Dict[str, Any]]:
+        """Get a mandate setup request by ID."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, opera_account, opera_name, customer_email, billing_request_id,
+                       billing_request_flow_id, authorisation_url, mandate_id,
+                       gocardless_customer_id, status, status_detail,
+                       email_sent_at, mandate_active_at, created_at, updated_at
+                FROM mandate_setup_requests WHERE id = ?
+            ''', (setup_id,))
+            row = cursor.fetchone()
+            return self._row_to_mandate_setup(row) if row else None
+        finally:
+            conn.close()
+
+    def get_mandate_setup_by_billing_request(self, billing_request_id: str) -> Optional[Dict[str, Any]]:
+        """Get a mandate setup request by GoCardless billing request ID."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, opera_account, opera_name, customer_email, billing_request_id,
+                       billing_request_flow_id, authorisation_url, mandate_id,
+                       gocardless_customer_id, status, status_detail,
+                       email_sent_at, mandate_active_at, created_at, updated_at
+                FROM mandate_setup_requests WHERE billing_request_id = ?
+            ''', (billing_request_id,))
+            row = cursor.fetchone()
+            return self._row_to_mandate_setup(row) if row else None
+        finally:
+            conn.close()
+
+    def list_mandate_setups(
+        self,
+        status: Optional[str] = None,
+        opera_account: Optional[str] = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """List mandate setup requests, optionally filtered."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            query = '''
+                SELECT id, opera_account, opera_name, customer_email, billing_request_id,
+                       billing_request_flow_id, authorisation_url, mandate_id,
+                       gocardless_customer_id, status, status_detail,
+                       email_sent_at, mandate_active_at, created_at, updated_at
+                FROM mandate_setup_requests WHERE 1=1
+            '''
+            params = []
+
+            if status:
+                query += ' AND status = ?'
+                params.append(status)
+            if opera_account:
+                query += ' AND opera_account = ?'
+                params.append(opera_account)
+
+            query += ' ORDER BY created_at DESC LIMIT ?'
+            params.append(limit)
+
+            cursor.execute(query, params)
+            return [self._row_to_mandate_setup(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def get_pending_mandate_setups(self) -> List[Dict[str, Any]]:
+        """Get all mandate setup requests that aren't completed or failed."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, opera_account, opera_name, customer_email, billing_request_id,
+                       billing_request_flow_id, authorisation_url, mandate_id,
+                       gocardless_customer_id, status, status_detail,
+                       email_sent_at, mandate_active_at, created_at, updated_at
+                FROM mandate_setup_requests
+                WHERE status NOT IN ('completed', 'failed', 'cancelled')
+                ORDER BY created_at DESC
+            ''')
+            return [self._row_to_mandate_setup(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def _row_to_mandate_setup(self, row) -> Dict[str, Any]:
+        """Convert database row to mandate setup dict."""
+        status = row[9] or 'pending'
+        status_labels = {
+            'pending': 'Awaiting Email',
+            'email_sent': 'Email Sent',
+            'authorisation_pending': 'Awaiting Customer',
+            'mandate_created': 'Mandate Created',
+            'mandate_active': 'Mandate Active',
+            'completed': 'Completed',
+            'failed': 'Failed',
+            'cancelled': 'Cancelled',
+        }
+        return {
+            'id': row[0],
+            'opera_account': row[1],
+            'opera_name': row[2],
+            'customer_email': row[3],
+            'billing_request_id': row[4],
+            'billing_request_flow_id': row[5],
+            'authorisation_url': row[6],
+            'mandate_id': row[7],
+            'gocardless_customer_id': row[8],
+            'status': status,
+            'status_label': status_labels.get(status, status.replace('_', ' ').title()),
+            'status_detail': row[10],
+            'email_sent_at': row[11],
+            'mandate_active_at': row[12],
+            'created_at': row[13],
+            'updated_at': row[14],
         }
 
     # ============ Statistics ============

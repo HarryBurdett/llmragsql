@@ -401,3 +401,94 @@ def get_bank_statement_folder(bank_id: str) -> Optional[Path]:
     if bank_id in BANK_PATTERNS:
         return BANK_PATTERNS[bank_id]["folder"]
     return None
+
+
+def get_configurable_base_folder() -> Optional[Path]:
+    """Get the user-configured base folder for bank statements (per-company).
+    Falls back to the hardcoded default if not configured."""
+    try:
+        from sql_rag.company_data import get_current_db_path
+        import json
+        settings_path = get_current_db_path("company_settings.json")
+        if settings_path and settings_path.exists():
+            with open(settings_path) as f:
+                settings = json.load(f)
+                base = settings.get("bank_statements_base_folder", "")
+                if base:
+                    return Path(base)
+    except Exception:
+        pass
+    # Default fallback
+    return DOWNLOADS_BASE / "bank-statements"
+
+
+def get_configurable_archive_folder() -> Optional[Path]:
+    """Get the user-configured archive folder for bank statements (per-company).
+    Falls back to the hardcoded default if not configured."""
+    try:
+        from sql_rag.company_data import get_current_db_path
+        import json
+        settings_path = get_current_db_path("company_settings.json")
+        if settings_path and settings_path.exists():
+            with open(settings_path) as f:
+                settings = json.load(f)
+                archive = settings.get("bank_statements_archive_folder", "")
+                if archive:
+                    return Path(archive)
+    except Exception:
+        pass
+    # Default fallback
+    return DOWNLOADS_BASE / "bank-statements" / "archive"
+
+
+def save_email_attachment_to_bank_folder(
+    attachment_data: bytes,
+    filename: str,
+    bank_code: str,
+    bank_description: str = "",
+) -> Dict[str, Any]:
+    """Save an email attachment to the bank-specific subfolder under the configured base folder.
+    Subfolder is created as {bank_code}-{sanitized_description}."""
+    import re as _re
+
+    base = get_configurable_base_folder()
+    if not base:
+        return {"success": False, "error": "No base folder configured"}
+
+    # Build subfolder name: e.g. "BB010-barclays-current"
+    code = (bank_code or "").strip()
+    desc = (bank_description or "").strip()
+    if desc:
+        safe_desc = _re.sub(r'[^a-z0-9]+', '-', desc.lower()).strip('-')
+        subfolder = f"{code}-{safe_desc}"
+    else:
+        subfolder = code
+
+    dest_folder = base / subfolder
+    dest_folder.mkdir(parents=True, exist_ok=True)
+
+    dest_path = dest_folder / filename
+    # Handle duplicate filenames
+    if dest_path.exists():
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        counter = 1
+        while dest_path.exists():
+            dest_path = dest_folder / f"{stem}_{counter}{suffix}"
+            counter += 1
+
+    try:
+        with open(dest_path, 'wb') as f:
+            f.write(attachment_data)
+
+        logger.info(f"Saved email attachment to {dest_path} (bank: {code})")
+        return {
+            "success": True,
+            "path": str(dest_path),
+            "bank_code": code,
+            "folder": str(dest_folder),
+            "filename": dest_path.name,
+        }
+    except Exception as e:
+        logger.error(f"Failed to save attachment: {e}")
+        return {"success": False, "error": str(e)}

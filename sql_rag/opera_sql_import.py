@@ -6585,12 +6585,14 @@ class OperaSQLImport:
                         receipt_amount=amount,
                         allocation_date=post_date,
                         bank_account=bank_account,
-                        description=description
+                        description=description,
+                        gc_payment_id=payment.get('gc_payment_id')
                     )
 
                     if alloc_result['success']:
+                        method_note = f" ({alloc_result.get('allocation_method', '')})" if alloc_result.get('allocation_method') == 'payment_request' else ''
                         allocation_results.append(
-                            f"Auto-allocated {customer_account}: £{alloc_result['allocated_amount']:.2f} to {len(alloc_result['allocations'])} invoice(s)"
+                            f"Auto-allocated {customer_account}: £{alloc_result['allocated_amount']:.2f} to {len(alloc_result['allocations'])} invoice(s){method_note}"
                         )
                     else:
                         allocation_results.append(
@@ -6678,20 +6680,23 @@ class OperaSQLImport:
         receipt_amount: float,
         allocation_date: date,
         bank_account: str = "",
-        description: str = None
+        description: str = None,
+        gc_payment_id: str = None
     ) -> Dict[str, Any]:
         """
         Automatically allocate a receipt to matching outstanding invoices.
 
-        Allocation rules (in order):
+        Allocation rules (in priority order):
+        0. If gc_payment_id provided, look up the original payment request for stored
+           invoice_refs. Check each invoice's current state — allocate to those still
+           outstanding, skip any already paid manually in Opera, leave remainder on account.
         1. If invoice reference(s) found in description (e.g., "INV26241") AND their
            total matches the receipt exactly -> allocate to those specific invoices
         2. If receipt amount equals TOTAL outstanding balance on account AND there are
-           2+ invoices -> allocate to ALL invoices (clears whole account, no ambiguity)
+           1+ invoices -> allocate to ALL invoices (clears whole account, no ambiguity)
 
         Does NOT allocate:
         - Based on amount matching to individual invoices alone (may have duplicates)
-        - Single invoice with no reference (GoCardless should include INV ref for single invoice)
 
         Args:
             customer_account: Customer code (e.g., 'K009')
@@ -6700,6 +6705,9 @@ class OperaSQLImport:
             allocation_date: Date to use for allocation
             bank_account: Bank account code for salloc record
             description: Description to search for invoice references (optional)
+            gc_payment_id: GoCardless payment ID (e.g., 'PM000XXX') for payment request
+                          invoice lookup. When provided, uses stored invoice_refs from
+                          the original collection request for precise allocation.
 
         Returns:
             Dict with allocation results:
@@ -6766,6 +6774,76 @@ class OperaSQLImport:
             # Calculate total outstanding on account
             total_outstanding = round(sum(float(inv['st_trbal']) for _, inv in invoices_df.iterrows()), 2)
             receipt_rounded = round(receipt_amount, 2)
+
+            # RULE 0: Payment request invoice lookup (GoCardless collections)
+            # If we raised a payment request against specific invoices, use those
+            # invoice refs for precise allocation. Check each invoice's current
+            # state first — skip any already paid manually in Opera.
+            if gc_payment_id and not allocation_method:
+                try:
+                    from sql_rag.gocardless_payments import get_payments_db
+                    payments_db = get_payments_db()
+                    payment_request = payments_db.get_payment_request_by_payment_id(gc_payment_id)
+
+                    if payment_request and payment_request.get('invoice_refs'):
+                        pr_invoice_refs = payment_request['invoice_refs']
+                        logger.info(f"Auto-allocate: payment request {gc_payment_id} has invoice_refs: {pr_invoice_refs}")
+
+                        # Check each invoice's current state in stran
+                        pr_invoices_to_allocate = []
+                        skipped_invoices = []
+                        for inv_ref in pr_invoice_refs:
+                            # Find this invoice in outstanding invoices
+                            found = False
+                            for _, inv in invoices_df.iterrows():
+                                if inv['st_trref'].strip().upper() == inv_ref.strip().upper():
+                                    inv_balance = float(inv['st_trbal'])
+                                    if inv_balance > 0.005:
+                                        pr_invoices_to_allocate.append({
+                                            'ref': inv['st_trref'].strip(),
+                                            'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
+                                            'amount': inv_balance,
+                                            'full_allocation': True,
+                                            'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                                        })
+                                    else:
+                                        skipped_invoices.append(f"{inv_ref} (already paid)")
+                                    found = True
+                                    break
+                            if not found:
+                                skipped_invoices.append(f"{inv_ref} (not found/outstanding)")
+
+                        if pr_invoices_to_allocate:
+                            # Calculate total of invoices still outstanding
+                            total_pr_invoice_balance = round(sum(a['amount'] for a in pr_invoices_to_allocate), 2)
+
+                            if receipt_rounded >= total_pr_invoice_balance:
+                                # Receipt covers all outstanding invoices from the request
+                                # Allocate to those invoices; any excess stays on account
+                                invoices_to_allocate = pr_invoices_to_allocate
+                                allocation_method = "payment_request"
+                                if skipped_invoices:
+                                    logger.info(f"Auto-allocate: skipped invoices (already paid in Opera): {skipped_invoices}")
+                            elif receipt_rounded < total_pr_invoice_balance:
+                                # Receipt is less than outstanding invoices — allocate oldest first
+                                # up to the receipt amount (partial allocation scenario)
+                                remaining = receipt_rounded
+                                for inv_alloc in pr_invoices_to_allocate:
+                                    if remaining <= 0.005:
+                                        break
+                                    alloc_amt = min(inv_alloc['amount'], remaining)
+                                    inv_alloc['amount'] = alloc_amt
+                                    inv_alloc['full_allocation'] = abs(alloc_amt - float(inv_alloc['amount'])) < 0.01
+                                    remaining -= alloc_amt
+                                invoices_to_allocate = [a for a in pr_invoices_to_allocate if a['amount'] > 0.005]
+                                allocation_method = "payment_request"
+                        elif skipped_invoices:
+                            # All invoices from the request are already paid — leave on account
+                            logger.info(f"Auto-allocate: all payment request invoices already paid: {skipped_invoices}")
+                            # Fall through to Rule 1/2 as fallback
+                except Exception as e:
+                    logger.warning(f"Auto-allocate: payment request lookup failed for {gc_payment_id}: {e}")
+                    # Fall through to existing rules
 
             # RULE 1: Try to match by invoice reference in description
             inv_matches = []
@@ -6837,8 +6915,15 @@ class OperaSQLImport:
                     return result
 
             # Amounts verified - proceed with allocation
-            total_to_allocate = receipt_amount
-            receipt_fully_allocated = True
+            # For payment_request method, the receipt may exceed the outstanding invoices
+            # (e.g., some invoices were already paid manually). Only allocate what's outstanding.
+            total_invoice_amount = round(sum(a['amount'] for a in invoices_to_allocate), 2)
+            if allocation_method == "payment_request" and receipt_rounded > total_invoice_amount:
+                total_to_allocate = total_invoice_amount
+                receipt_fully_allocated = False  # Remainder stays on account
+            else:
+                total_to_allocate = receipt_amount
+                receipt_fully_allocated = True
 
             # Format date
             if isinstance(allocation_date, str):
@@ -6884,7 +6969,12 @@ class OperaSQLImport:
                 # Insert salloc record for receipt (if fully allocated)
                 # al_ref2 indicates allocation method for audit trail
                 if receipt_fully_allocated:
-                    alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
+                    if allocation_method == "payment_request":
+                        alloc_ref2 = "AUTO:GC_REQ"
+                    elif allocation_method == "invoice_reference":
+                        alloc_ref2 = "AUTO:INV_REF"
+                    else:
+                        alloc_ref2 = "AUTO:CLR_ACCT"
                     salloc_id = self._get_next_id(conn, 'salloc')
                     conn.execute(text(f"""
                         INSERT INTO salloc (
@@ -6965,9 +7055,11 @@ class OperaSQLImport:
             result["receipt_fully_allocated"] = receipt_fully_allocated
             result["allocation_method"] = allocation_method
 
-            if allocation_method == "invoice_reference":
+            if allocation_method == "payment_request":
+                result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s) from payment request"
+            elif allocation_method == "invoice_reference":
                 result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s) by reference"
-            else:  # clears_account
+            else:  # clears_account / single_invoice_match
                 result["message"] = f"Allocated £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoice(s) - clears account"
 
             logger.info(f"Auto-allocated receipt {receipt_ref} for {customer_account}: £{total_to_allocate:.2f} to {len(invoices_to_allocate)} invoices ({allocation_method})")

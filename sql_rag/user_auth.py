@@ -91,6 +91,18 @@ class UserAuth:
             if 'password_encrypted' not in columns:
                 cursor.execute('ALTER TABLE users ADD COLUMN password_encrypted TEXT')
 
+            # Add default_system column - user's preferred system on login
+            if 'default_system' not in columns:
+                cursor.execute('ALTER TABLE users ADD COLUMN default_system TEXT')
+
+            # Add ui_mode column - 'classic' or 'launcher' interface
+            if 'ui_mode' not in columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN ui_mode TEXT DEFAULT 'classic'")
+
+            # Add voice_enabled column - voice control preference
+            if 'voice_enabled' not in columns:
+                cursor.execute('ALTER TABLE users ADD COLUMN voice_enabled INTEGER DEFAULT 0')
+
             # Module permissions table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_permissions (
@@ -406,7 +418,7 @@ class UserAuth:
 
             # Case-insensitive username lookup
             cursor.execute('''
-                SELECT id, username, password_hash, display_name, email, is_admin, is_active, default_company
+                SELECT id, username, password_hash, display_name, email, is_admin, is_active, default_company, default_system, ui_mode, voice_enabled
                 FROM users WHERE LOWER(username) = LOWER(?)
             ''', (username,))
 
@@ -415,7 +427,7 @@ class UserAuth:
                 logger.warning(f"Authentication failed: user '{username}' not found")
                 return None
 
-            user_id, username, password_hash, display_name, email, is_admin, is_active, default_company = row
+            user_id, username, password_hash, display_name, email, is_admin, is_active, default_company, default_system, ui_mode, voice_enabled = row
 
             if not is_active:
                 logger.warning(f"Authentication failed: user '{username}' is inactive")
@@ -439,7 +451,10 @@ class UserAuth:
                 'display_name': display_name or username,
                 'email': email,
                 'is_admin': bool(is_admin),
-                'default_company': default_company
+                'default_company': default_company,
+                'default_system': default_system,
+                'ui_mode': ui_mode or 'classic',
+                'voice_enabled': bool(voice_enabled)
             }
         finally:
             conn.close()
@@ -485,7 +500,7 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT s.user_id, s.expires_at, u.username, u.display_name, u.email, u.is_admin, u.is_active, u.default_company
+                SELECT s.user_id, s.expires_at, u.username, u.display_name, u.email, u.is_admin, u.is_active, u.default_company, u.default_system, u.ui_mode, u.voice_enabled
                 FROM sessions s
                 JOIN users u ON s.user_id = u.id
                 WHERE s.token = ?
@@ -495,7 +510,7 @@ class UserAuth:
             if row is None:
                 return None
 
-            user_id, expires_at, username, display_name, email, is_admin, is_active, default_company = row
+            user_id, expires_at, username, display_name, email, is_admin, is_active, default_company, default_system, ui_mode, voice_enabled = row
 
             # Check expiry
             if datetime.fromisoformat(expires_at) < datetime.utcnow():
@@ -514,7 +529,10 @@ class UserAuth:
                 'display_name': display_name or username,
                 'email': email,
                 'is_admin': bool(is_admin),
-                'default_company': default_company
+                'default_company': default_company,
+                'default_system': default_system,
+                'ui_mode': ui_mode or 'classic',
+                'voice_enabled': bool(voice_enabled)
             }
         finally:
             conn.close()
@@ -583,7 +601,10 @@ class UserAuth:
         is_admin: bool = False,
         permissions: Optional[Dict[str, bool]] = None,
         created_by: Optional[str] = None,
-        default_company: Optional[str] = None
+        default_company: Optional[str] = None,
+        default_system: Optional[str] = None,
+        ui_mode: Optional[str] = None,
+        voice_enabled: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
         Create a new user.
@@ -606,9 +627,9 @@ class UserAuth:
 
             # Insert user
             cursor.execute('''
-                INSERT INTO users (username, password_hash, password_encrypted, display_name, email, is_admin, is_active, created_by, default_company)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-            ''', (username, password_hash, password_encrypted, display_name, email, 1 if is_admin else 0, created_by, default_company))
+                INSERT INTO users (username, password_hash, password_encrypted, display_name, email, is_admin, is_active, created_by, default_company, default_system, ui_mode, voice_enabled)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+            ''', (username, password_hash, password_encrypted, display_name, email, 1 if is_admin else 0, created_by, default_company, default_system, ui_mode or 'classic', 1 if voice_enabled else 0))
 
             user_id = cursor.lastrowid
 
@@ -638,7 +659,10 @@ class UserAuth:
                 'email': email,
                 'is_admin': is_admin,
                 'is_active': True,
-                'default_company': default_company
+                'default_company': default_company,
+                'default_system': default_system,
+                'ui_mode': ui_mode or 'classic',
+                'voice_enabled': bool(voice_enabled)
             }
         finally:
             conn.close()
@@ -653,7 +677,10 @@ class UserAuth:
         is_admin: Optional[bool] = None,
         is_active: Optional[bool] = None,
         permissions: Optional[Dict[str, bool]] = None,
-        default_company: Optional[str] = None
+        default_company: Optional[str] = None,
+        default_system: Optional[str] = None,
+        ui_mode: Optional[str] = None,
+        voice_enabled: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
         Update an existing user.
@@ -714,6 +741,21 @@ class UserAuth:
                 updates.append('default_company = ?')
                 params.append(default_company if default_company else None)
 
+            # Handle default_system - update if provided
+            if default_system is not None:
+                updates.append('default_system = ?')
+                params.append(default_system if default_system else None)
+
+            # Handle ui_mode - 'classic' or 'launcher'
+            if ui_mode is not None:
+                updates.append('ui_mode = ?')
+                params.append(ui_mode if ui_mode in ('classic', 'launcher') else 'classic')
+
+            # Handle voice_enabled
+            if voice_enabled is not None:
+                updates.append('voice_enabled = ?')
+                params.append(1 if voice_enabled else 0)
+
             if updates:
                 params.append(user_id)
                 cursor.execute(f'''
@@ -737,7 +779,7 @@ class UserAuth:
 
             # Fetch and return updated user
             cursor.execute('''
-                SELECT id, username, display_name, email, is_admin, is_active, default_company
+                SELECT id, username, display_name, email, is_admin, is_active, default_company, default_system, ui_mode, voice_enabled
                 FROM users WHERE id = ?
             ''', (user_id,))
             row = cursor.fetchone()
@@ -749,7 +791,10 @@ class UserAuth:
                 'email': row[3],
                 'is_admin': bool(row[4]),
                 'is_active': bool(row[5]),
-                'default_company': row[6]
+                'default_company': row[6],
+                'default_system': row[7],
+                'ui_mode': row[8] or 'classic',
+                'voice_enabled': bool(row[9])
             }
         finally:
             conn.close()
@@ -798,7 +843,7 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT id, username, display_name, email, is_admin, is_active, created_at, last_login, created_by, default_company
+                SELECT id, username, display_name, email, is_admin, is_active, created_at, last_login, created_by, default_company, default_system, ui_mode, voice_enabled
                 FROM users
                 ORDER BY username
             ''')
@@ -817,6 +862,9 @@ class UserAuth:
                     'last_login': row[7],
                     'created_by': row[8],
                     'default_company': row[9],
+                    'default_system': row[10],
+                    'ui_mode': row[11] or 'classic',
+                    'voice_enabled': bool(row[12]),
                     'permissions': self.get_user_permissions(user_id),
                     'company_access': self.get_user_companies(user_id)
                 })
@@ -836,7 +884,7 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT id, username, display_name, email, is_admin, is_active, created_at, last_login, created_by, default_company
+                SELECT id, username, display_name, email, is_admin, is_active, created_at, last_login, created_by, default_company, default_system, ui_mode, voice_enabled
                 FROM users WHERE id = ?
             ''', (user_id,))
 
@@ -855,6 +903,9 @@ class UserAuth:
                 'last_login': row[7],
                 'created_by': row[8],
                 'default_company': row[9],
+                'default_system': row[10],
+                'ui_mode': row[11] or 'classic',
+                'voice_enabled': bool(row[12]),
                 'permissions': self.get_user_permissions(row[0])
             }
         finally:

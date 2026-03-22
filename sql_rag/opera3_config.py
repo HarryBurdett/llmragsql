@@ -573,7 +573,8 @@ class Opera3PeriodPostingDecision:
     1. NL blocked/closed for period -> REJECT (NL is master gatekeeper)
     2. Sub-ledger (SL/PL) blocked/closed for period -> REJECT
     3. Both open + period >= current -> Post to NL immediately + transfer file (done='Y')
-    4. Both open + period < current (backdated) -> Transfer file only (done=' ')
+    4. Both open + period < current + SAME financial year -> Post to NL immediately (done='Y')
+    5. Prior financial year -> REJECT (complex year-end rules, user must change date)
 
     Rules (OPA disabled):
     1. Only current period allowed, otherwise REJECT
@@ -604,7 +605,8 @@ def get_period_posting_decision(config: Opera3Config, post_date, ledger_type: st
        - If either is blocked/closed -> REJECT
     3. Period rules (when all required ledgers open):
        - Period >= current: Post to NL immediately + transfer file (done='Y')
-       - Period < current (backdated): Transfer file only (done=' '), manual transfer or period end needed
+       - Period < current but SAME financial year: Post to NL immediately + transfer file (done='Y')
+       - Prior financial year: REJECT — user must change posting date to current year
 
     Args:
         config: Opera3Config instance
@@ -729,12 +731,32 @@ def get_period_posting_decision(config: Opera3Config, post_date, ledger_type: st
             transaction_period=txn_period
         )
 
-    # Period < current (backdated): transfer file only, manual transfer or period end needed
+    # Period < current (backdated) but SAME financial year: post to NL immediately
+    # Earlier open periods in the current year are posted directly (ax_done='Y')
+    if txn_year == current_year:
+        logger.info(f"Backdated to open period {txn_period}/{txn_year} (same year as current {current_period}/{current_year}) — posting to NL immediately")
+        return Opera3PeriodPostingDecision(
+            can_post=True,
+            post_to_nominal=True,
+            post_to_transfer_file=True,
+            transfer_file_done_flag='Y',
+            current_year=current_year,
+            current_period=current_period,
+            transaction_year=txn_year,
+            transaction_period=txn_period
+        )
+
+    # Period < current AND prior financial year: REJECT — complex year-end rules
+    # (balance sheet vs expense items, brought-forward balances, etc.)
+    # User must change the posting date to the current financial year.
+    logger.warning(f"Rejected: transaction date falls in prior year {txn_year} (current year {current_year}) — user must change posting date")
     return Opera3PeriodPostingDecision(
-        can_post=True,
+        can_post=False,
         post_to_nominal=False,
-        post_to_transfer_file=True,
-        transfer_file_done_flag=' ',
+        post_to_transfer_file=False,
+        error_message=f"Cannot post to prior financial year ({txn_year}). "
+                     f"Current financial year is {current_year}. "
+                     f"Please change the posting date to the current year.",
         current_year=current_year,
         current_period=current_period,
         transaction_year=txn_year,

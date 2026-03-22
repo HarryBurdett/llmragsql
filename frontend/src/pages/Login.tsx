@@ -132,11 +132,17 @@ export function Login() {
             setUserDefaultCompany(data.default_company);
             setSelectedCompany(data.default_company);
           }
+          if (data?.default_system && systems.length > 0) {
+            const systemExists = systems.find(s => s.id === data.default_system);
+            if (systemExists) {
+              setSelectedSystem(data.default_system);
+            }
+          }
         })
         .catch(() => {});
     }, 500);
     return () => clearTimeout(timer);
-  }, [username]);
+  }, [username, systems]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();

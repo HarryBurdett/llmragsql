@@ -238,6 +238,10 @@ class EmailStorage:
                 cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN customer_name TEXT")
             except:
                 pass
+            try:
+                cursor.execute("ALTER TABLE gocardless_imports ADD COLUMN post_date TEXT")
+            except:
+                pass
 
             # Bank statement import tracking
             # Tracks bank statement imports from both email attachments and file uploads
@@ -409,6 +413,16 @@ class EmailStorage:
                     cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN period_end TEXT")
             except Exception as e:
                 logger.warning(f"Period columns migration: {e}")
+
+            # Migration: Add file_path column to bank_statement_imports for auto-archive on reconciliation
+            try:
+                cursor.execute("PRAGMA table_info(bank_statement_imports)")
+                imp_columns = {c[1] for c in cursor.fetchall()}
+                if 'file_path' not in imp_columns:
+                    logger.info("Adding file_path column to bank_statement_imports")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN file_path TEXT")
+            except Exception as e:
+                logger.warning(f"file_path column migration: {e}")
 
             # Migration: Update CHECK constraint on target_system to allow 'archived', 'deleted', 'retained'
             # SQLite doesn't support ALTER CONSTRAINT, so we must rebuild the table
@@ -1128,7 +1142,8 @@ class EmailStorage:
         payments_json: Optional[str] = None,
         batch_ref: Optional[str] = None,
         imported_by: Optional[str] = None,
-        fx_amount: Optional[float] = None
+        fx_amount: Optional[float] = None,
+        post_date: Optional[str] = None
     ) -> int:
         """
         Record a successful GoCardless import into Opera.
@@ -1160,12 +1175,12 @@ class EmailStorage:
             cursor.execute("""
                 INSERT INTO gocardless_imports
                 (email_id, payout_id, source, target_system, bank_reference, gross_amount, net_amount,
-                 gocardless_fees, vat_on_fees, payment_count, payments_json, batch_ref, import_date, imported_by, fx_amount)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 gocardless_fees, vat_on_fees, payment_count, payments_json, batch_ref, import_date, imported_by, fx_amount, post_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 email_id, payout_id, source, target_system, bank_reference, gross_amount, net_amount,
                 gocardless_fees, vat_on_fees, payment_count, payments_json, batch_ref,
-                datetime.utcnow().isoformat(), imported_by, fx_amount
+                datetime.utcnow().isoformat(), imported_by, fx_amount, post_date
             ))
             logger.info(f"Recorded GoCardless import: payout_id={payout_id}, ref={bank_reference}, system={target_system}")
             return cursor.lastrowid
@@ -1370,11 +1385,11 @@ class EmailStorage:
                 params.append(target_system)
 
             if from_date:
-                conditions.append("date(gi.import_date) >= date(?)")
+                conditions.append("date(COALESCE(gi.post_date, gi.import_date)) >= date(?)")
                 params.append(from_date)
 
             if to_date:
-                conditions.append("date(gi.import_date) <= date(?)")
+                conditions.append("date(COALESCE(gi.post_date, gi.import_date)) <= date(?)")
                 params.append(to_date)
 
             if conditions:
@@ -1464,7 +1479,8 @@ class EmailStorage:
         sort_code: Optional[str] = None,
         period_start: Optional[str] = None,
         period_end: Optional[str] = None,
-        pdf_hash: Optional[str] = None
+        pdf_hash: Optional[str] = None,
+        file_path: Optional[str] = None
     ) -> int:
         """
         Record a successful bank statement import.
@@ -1493,6 +1509,7 @@ class EmailStorage:
             period_start: Statement period start (YYYY-MM-DD)
             period_end: Statement period end (YYYY-MM-DD)
             pdf_hash: SHA256 hash of the PDF content (for duplicate detection)
+            file_path: Full file path (for file-based imports, used for auto-archive)
 
         Returns:
             ID of the import record
@@ -1504,17 +1521,25 @@ class EmailStorage:
                 (email_id, attachment_id, source, bank_code, filename, total_receipts, total_payments,
                  transactions_imported, target_system, import_date, imported_by,
                  opening_balance, closing_balance, statement_date, account_number, sort_code,
-                 period_start, period_end, pdf_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 period_start, period_end, pdf_hash, file_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 email_id, attachment_id, source, bank_code, filename,
                 total_receipts, total_payments, transactions_imported,
                 target_system, datetime.utcnow().isoformat(), imported_by,
                 opening_balance, closing_balance, statement_date, account_number, sort_code,
-                period_start, period_end, pdf_hash
+                period_start, period_end, pdf_hash, file_path
             ))
             logger.info(f"Recorded bank statement import: source={source}, bank={bank_code}, file={filename}, txns={transactions_imported}")
             return cursor.lastrowid
+
+    def get_bank_statement_import_by_id(self, import_id: int) -> Optional[dict]:
+        """Get a bank statement import record by ID."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM bank_statement_imports WHERE id = ?", (import_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
 
     def is_bank_statement_processed(
         self,

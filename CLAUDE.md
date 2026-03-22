@@ -19,6 +19,9 @@ This is **SQL RAG** - a financial management application that integrates with **
   - Unique ID generation format (`_XXXXXXXXX` base-36)
   - Period posting rules and control accounts
 
+- `docs/manual-gocardless.md` - **User instruction manual** for GoCardless Import routine (settings, workflow, SUB tags, payment requests, allocation, fees)
+- `docs/manual-bank-reconciliation.md` - **User instruction manual** for Bank Statement Reconciliation (5-stage workflow, matching, aliases, patterns, duplicate prevention)
+
 - `docs/opera-modules/` - **Opera Modules Modernization Project** (ongoing)
   - `README.md` - Project overview, phases, and status
   - `integration-map.md` - **CRITICAL**: Cross-module data flows between Stock/SOP/POP/BOM
@@ -150,6 +153,13 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 - Start API: `uvicorn api.main:app --reload --host 0.0.0.0 --port 8000`
 
 ## Development Guidelines
+
+### Keep Instruction Manuals Updated (MANDATORY)
+**CRITICAL**: When making changes to the GoCardless import or Bank Statement Reconciliation routines, you MUST update the corresponding instruction manual in the same commit:
+- `docs/manual-gocardless.md` — GoCardless Import instruction manual
+- `docs/manual-bank-reconciliation.md` — Bank Statement Reconciliation instruction manual
+
+These manuals are user-facing documentation that must accurately reflect current behaviour. Any change to workflow, matching logic, settings, posting rules, allocation behaviour, or error handling must be reflected in the relevant manual. Update the "Last updated" date at the bottom of the file.
 
 ### NEVER Modify Opera Database Structure
 **CRITICAL**: Never create tables, alter tables, or modify the schema of Opera SE or Opera 3 databases. This applies to BOTH:

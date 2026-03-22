@@ -1066,6 +1066,11 @@ export const apiClient = {
   health: () => api.get('/health'),
   status: () => api.get('/status'),
 
+  // User Preferences
+  getUserPreferences: () => api.get<{ success: boolean; ui_mode: string; voice_enabled: boolean }>('/auth/preferences'),
+  updateUserPreferences: (prefs: { ui_mode?: string; voice_enabled?: boolean }) =>
+    api.put<{ success: boolean; ui_mode: string; voice_enabled: boolean }>('/auth/preferences', prefs),
+
   // Configuration
   getConfig: () => api.get('/config'),
   getProviders: () => api.get<{ providers: Provider[] }>('/config/providers'),

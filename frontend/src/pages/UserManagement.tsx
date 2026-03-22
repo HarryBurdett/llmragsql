@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, Plus, Edit, Trash2, Shield, X, Check, Eye, RefreshCw, Download, Building2 } from 'lucide-react';
+import { Users, Plus, Edit, Trash2, Shield, X, Check, Eye, RefreshCw, Download, Building2, Monitor, Mic } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import axios from 'axios';
 import { PageHeader, Card, LoadingState, EmptyState, Alert, StatusBadge } from '../components/ui';
@@ -18,6 +18,9 @@ interface User {
   last_login: string | null;
   created_by: string | null;
   default_company: string | null;
+  default_system: string | null;
+  ui_mode: 'classic' | 'launcher';
+  voice_enabled: boolean;
   company_access: string[];  // List of company IDs user can access (empty = all)
 }
 
@@ -59,6 +62,10 @@ export function UserManagement() {
   const [formIsAdmin, setFormIsAdmin] = useState(false);
   const [formPermissions, setFormPermissions] = useState<Record<string, boolean>>({});
   const [formDefaultCompany, setFormDefaultCompany] = useState('');
+  const [formDefaultSystem, setFormDefaultSystem] = useState('');
+  const [formUiMode, setFormUiMode] = useState<'classic' | 'launcher'>('classic');
+  const [formVoiceEnabled, setFormVoiceEnabled] = useState(false);
+  const [systems, setSystems] = useState<{id: string; name: string}[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -110,9 +117,21 @@ export function UserManagement() {
     }
   };
 
+  // Fetch available system profiles
+  const fetchSystems = async () => {
+    try {
+      const response = await api.get('/systems');
+      const sysList = response.data?.systems || [];
+      setSystems(sysList.map((s: any) => ({ id: s.id, name: s.name || s.id })));
+    } catch {
+      // Systems may not be available - that's OK
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
     fetchCompanies();
+    fetchSystems();
   }, []);
 
   // Sync users from Opera
@@ -160,6 +179,9 @@ export function UserManagement() {
     setFormIsAdmin(false);
     setFormPermissions({});
     setFormDefaultCompany('');
+    setFormDefaultSystem('');
+    setFormUiMode('classic');
+    setFormVoiceEnabled(false);
     setFormError(null);
     setEditingUser(null);
     setShowPassword(false);
@@ -182,6 +204,9 @@ export function UserManagement() {
     setFormIsAdmin(user.is_admin);
     setFormPermissions({ ...user.permissions });
     setFormDefaultCompany(user.default_company || '');
+    setFormDefaultSystem(user.default_system || '');
+    setFormUiMode(user.ui_mode || 'classic');
+    setFormVoiceEnabled(user.voice_enabled || false);
     setFormError(null);
     setIsModalOpen(true);
   };
@@ -263,6 +288,9 @@ export function UserManagement() {
           email: formEmail || null,
           is_admin: formIsAdmin,
           permissions: formPermissions,
+          default_system: formDefaultSystem || null,
+          ui_mode: formUiMode,
+          voice_enabled: formVoiceEnabled,
         };
         if (formPassword) {
           updateData.password = formPassword;
@@ -285,6 +313,9 @@ export function UserManagement() {
           email: formEmail || null,
           is_admin: formIsAdmin,
           permissions: formPermissions,
+          default_system: formDefaultSystem || null,
+          ui_mode: formUiMode,
+          voice_enabled: formVoiceEnabled,
         });
         if (response.data.success) {
           closeModal();
@@ -708,6 +739,28 @@ export function UserManagement() {
                 </p>
               </div>
 
+              {/* Default System on Login */}
+              {systems.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Default System on Login
+                  </label>
+                  <select
+                    value={formDefaultSystem}
+                    onChange={(e) => setFormDefaultSystem(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">No preference (use last active)</option>
+                    {systems.map(s => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Pre-selects this system when the user logs in
+                  </p>
+                </div>
+              )}
+
               {/* Module Permissions */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -736,6 +789,58 @@ export function UserManagement() {
                       </div>
                     </label>
                   ))}
+                </div>
+              </div>
+
+              {/* Interface Preferences */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Interface Preferences
+                </label>
+                <div className="space-y-3 border border-gray-200 rounded-lg p-3 bg-gray-50">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Monitor className="h-4 w-4 text-gray-500" />
+                      <span className="text-sm font-medium text-gray-700">Home Screen</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setFormUiMode('classic')}
+                        className={`flex-1 px-3 py-1.5 rounded-lg border text-sm text-center transition-all ${
+                          formUiMode === 'classic'
+                            ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium'
+                            : 'border-gray-200 hover:border-gray-300 text-gray-600'
+                        }`}
+                      >
+                        Classic
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFormUiMode('launcher')}
+                        className={`flex-1 px-3 py-1.5 rounded-lg border text-sm text-center transition-all ${
+                          formUiMode === 'launcher'
+                            ? 'border-blue-500 bg-blue-50 text-blue-700 font-medium'
+                            : 'border-gray-200 hover:border-gray-300 text-gray-600'
+                        }`}
+                      >
+                        Launcher
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Mic className="h-4 w-4 text-gray-500" />
+                      <span className="text-sm font-medium text-gray-700">Voice Control</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setFormVoiceEnabled(!formVoiceEnabled)}
+                      className={`relative w-11 h-6 rounded-full transition-colors ${formVoiceEnabled ? 'bg-blue-500' : 'bg-gray-300'}`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${formVoiceEnabled ? 'translate-x-5' : ''}`} />
+                    </button>
+                  </div>
                 </div>
               </div>
 

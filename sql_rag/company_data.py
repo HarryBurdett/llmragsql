@@ -54,6 +54,7 @@ PER_COMPANY_DATABASES = [
 # Non-database files that should also be per-company
 PER_COMPANY_FILES = [
     "gocardless_settings.json",
+    "company_settings.json",
 ]
 
 # Databases that stay shared in project root
@@ -156,13 +157,41 @@ def get_current_db_path(db_name: str) -> Optional[Path]:
     return get_company_db_path(_current_company_id, db_name)
 
 
+def _get_root_db_owner() -> Optional[str]:
+    """
+    Determine which company originally owned the root-level databases.
+
+    Checks a marker file (data/.root_owner) first. If not found, looks at which
+    company directory already has migrated data. If none, returns None (first migration).
+    """
+    marker = BASE_DATA_DIR / ".root_owner"
+    if marker.exists():
+        try:
+            return marker.read_text().strip()
+        except Exception:
+            pass
+    return None
+
+
+def _set_root_db_owner(company_id: str):
+    """Record which company the root-level databases were migrated to."""
+    marker = BASE_DATA_DIR / ".root_owner"
+    try:
+        BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        marker.write_text(company_id)
+    except Exception as e:
+        logger.warning(f"Could not write root owner marker: {e}")
+
+
 def migrate_root_databases(company_id: str):
     """
     One-time migration: copy root-level .db files into data/{company_id}/
     if they don't already exist there.
 
-    This preserves existing learned data when first switching to per-company
-    directories. Root-level files are NOT deleted (kept as backups).
+    CRITICAL: Root databases are only copied to the company that originally
+    owned them (the first company to be migrated). Other companies get empty
+    databases (auto-created by their _init_db() methods). This prevents
+    cross-company data contamination.
 
     Args:
         company_id: Company identifier to migrate data for
@@ -170,17 +199,31 @@ def migrate_root_databases(company_id: str):
     data_dir = get_company_data_dir(company_id)
     migrated = []
 
+    # Determine if this company should receive the root data
+    root_owner = _get_root_db_owner()
+    is_root_owner = (root_owner is None) or (root_owner == company_id)
+
+    if root_owner is None:
+        # First migration ever — this company gets the root data
+        _set_root_db_owner(company_id)
+        logger.info(f"Company '{company_id}' designated as root database owner")
+
     for db_name in PER_COMPANY_DATABASES:
         source = PROJECT_ROOT / db_name
         dest = data_dir / db_name
 
         if source.exists() and not dest.exists():
-            try:
-                shutil.copy2(str(source), str(dest))
-                migrated.append(db_name)
-                logger.info(f"Migrated {db_name} to {dest}")
-            except Exception as e:
-                logger.error(f"Failed to migrate {db_name}: {e}")
+            if is_root_owner:
+                # Copy root data to the owning company
+                try:
+                    shutil.copy2(str(source), str(dest))
+                    migrated.append(db_name)
+                    logger.info(f"Migrated {db_name} to {dest}")
+                except Exception as e:
+                    logger.error(f"Failed to migrate {db_name}: {e}")
+            else:
+                # Other companies get empty databases (auto-created by _init_db)
+                logger.info(f"Skipping migration of {db_name} for {company_id} — root data belongs to '{root_owner}'")
 
     # Also migrate per-company non-database files (e.g. gocardless_settings.json)
     for filename in PER_COMPANY_FILES:
@@ -188,24 +231,28 @@ def migrate_root_databases(company_id: str):
         dest = data_dir / filename
 
         if source.exists() and not dest.exists():
-            try:
-                shutil.copy2(str(source), str(dest))
-                migrated.append(filename)
-                logger.info(f"Migrated {filename} to {dest}")
-            except Exception as e:
-                logger.error(f"Failed to migrate {filename}: {e}")
+            if is_root_owner:
+                try:
+                    shutil.copy2(str(source), str(dest))
+                    migrated.append(filename)
+                    logger.info(f"Migrated {filename} to {dest}")
+                except Exception as e:
+                    logger.error(f"Failed to migrate {filename}: {e}")
+            else:
+                logger.info(f"Skipping migration of {filename} for {company_id}")
 
     # Also migrate chroma_db directory if it exists at root
     source_chroma = PROJECT_ROOT / "chroma_db"
     dest_chroma = data_dir / "chroma_db"
 
     if source_chroma.exists() and source_chroma.is_dir() and not dest_chroma.exists():
-        try:
-            shutil.copytree(str(source_chroma), str(dest_chroma))
-            migrated.append("chroma_db/")
-            logger.info(f"Migrated chroma_db/ to {dest_chroma}")
-        except Exception as e:
-            logger.error(f"Failed to migrate chroma_db/: {e}")
+        if is_root_owner:
+            try:
+                shutil.copytree(str(source_chroma), str(dest_chroma))
+                migrated.append("chroma_db/")
+                logger.info(f"Migrated chroma_db/ to {dest_chroma}")
+            except Exception as e:
+                logger.error(f"Failed to migrate chroma_db/: {e}")
 
     if migrated:
         logger.info(f"Migration complete for {company_id}: {', '.join(migrated)}")

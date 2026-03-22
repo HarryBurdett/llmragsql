@@ -11,6 +11,8 @@ export interface User {
   email: string | null;
   is_admin: boolean;
   default_company: string | null;
+  ui_mode: 'classic' | 'launcher';
+  voice_enabled: boolean;
 }
 
 export interface License {
@@ -34,6 +36,7 @@ export interface AuthContextType extends AuthState {
   login: (username: string, password: string, licenseId?: number) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   hasPermission: (module: string) => boolean;
+  updateUser: (updates: Partial<User>) => void;
 }
 
 // Create context
@@ -218,6 +221,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return authState.permissions[module] === true;
   };
 
+  const updateUser = (updates: Partial<User>) => {
+    setAuthState(prev => {
+      if (!prev.user) return prev;
+      const updated = { ...prev.user, ...updates };
+      localStorage.setItem(USER_KEY, JSON.stringify(updated));
+      return { ...prev, user: updated };
+    });
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -225,6 +237,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         hasPermission,
+        updateUser,
       }}
     >
       {children}

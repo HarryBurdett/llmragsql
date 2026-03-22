@@ -1,6 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
+import { useVoice } from '../context/VoiceContext';
+import type { VoiceCommand } from '../context/VoiceContext';
 import {
   CheckCircle,
   RefreshCw,
@@ -328,6 +330,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [closingBalance, setClosingBalance] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Ignore transaction state (declared early — referenced in voice command useEffect)
+  const [ignoreConfirm, setIgnoreConfirm] = useState<{
+    date: string;
+    description: string;
+    amount: number;
+  } | null>(null);
+  const [isIgnoring, setIsIgnoring] = useState(false);
+
   // Custom dialog state (replaces native alert/confirm)
   const [dialogState, setDialogState] = useState<{
     open: boolean;
@@ -470,6 +480,208 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [advancedNominalConfig, setAdvancedNominalConfig] = useState<{ project_enabled: boolean; department_enabled: boolean; project_label: string; department_label: string }>({ project_enabled: false, department_enabled: false, project_label: 'Project', department_label: 'Department' });
   const [projectCodes, setProjectCodes] = useState<{ code: string; description: string }[]>([]);
   const [departmentCodes, setDepartmentCodes] = useState<{ code: string; description: string }[]>([]);
+
+  // Voice control — current line highlight and commands
+  const [voiceLineIndex, setVoiceLineIndex] = useState(-1);
+  const { registerCommands } = useVoice();
+
+  const openAssignForLine = useCallback((idx: number) => {
+    const lines = enrichedUnmatched;
+    if (idx < 0 || idx >= lines.length) return;
+    const line = lines[idx];
+    setNewEntryForm({
+      accountCode: line.matched_account || '',
+      accountType: line.suggested_type || (line.statement_amount > 0 ? 'customer' : 'supplier'),
+      nominalCode: '',
+      reference: line.statement_reference || '',
+      description: line.statement_description || '',
+      destBank: '',
+      projectCode: '',
+      departmentCode: '',
+    });
+    setCreateEntryModal({ open: true, statementLine: line });
+  }, [enrichedUnmatched]);
+
+  // Register voice commands for line entry
+  useEffect(() => {
+    const cmds: VoiceCommand[] = [
+      {
+        id: 'bank-next-line',
+        phrases: ['next', 'next line', 'down', 'forward'],
+        description: 'Next line',
+        action: () => setVoiceLineIndex(prev => {
+          const next = Math.min(prev + 1, enrichedUnmatched.length - 1);
+          // Scroll the row into view
+          const row = document.getElementById(`voice-line-${next}`);
+          row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          return next;
+        }),
+      },
+      {
+        id: 'bank-prev-line',
+        phrases: ['previous', 'previous line', 'up', 'back'],
+        description: 'Previous line',
+        action: () => setVoiceLineIndex(prev => {
+          const next = Math.max(prev - 1, 0);
+          const row = document.getElementById(`voice-line-${next}`);
+          row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          return next;
+        }),
+      },
+      {
+        id: 'bank-first-line',
+        phrases: ['first', 'first line', 'top'],
+        description: 'First line',
+        action: () => {
+          setVoiceLineIndex(0);
+          document.getElementById('voice-line-0')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        },
+      },
+      {
+        id: 'bank-last-line',
+        phrases: ['last', 'last line', 'bottom'],
+        description: 'Last line',
+        action: () => {
+          const last = enrichedUnmatched.length - 1;
+          setVoiceLineIndex(last);
+          document.getElementById(`voice-line-${last}`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        },
+      },
+      {
+        id: 'bank-assign',
+        phrases: ['assign', 'edit', 'open'],
+        description: 'Assign current line',
+        action: () => openAssignForLine(voiceLineIndex >= 0 ? voiceLineIndex : 0),
+      },
+      {
+        id: 'bank-ignore',
+        phrases: ['ignore', 'skip'],
+        description: 'Ignore current line',
+        action: () => {
+          const idx = voiceLineIndex >= 0 ? voiceLineIndex : 0;
+          if (idx < enrichedUnmatched.length) {
+            const line = enrichedUnmatched[idx];
+            setIgnoreConfirm({
+              date: line.statement_date || '',
+              description: line.statement_description,
+              amount: line.statement_amount,
+            });
+          }
+        },
+      },
+      {
+        id: 'bank-select',
+        phrases: ['select', 'tick', 'check'],
+        description: 'Select current line',
+        action: () => {
+          const idx = voiceLineIndex >= 0 ? voiceLineIndex : 0;
+          if (idx < enrichedUnmatched.length) {
+            const lineNum = enrichedUnmatched[idx].statement_line;
+            setSelectedForImport(prev => {
+              const next = new Set(prev);
+              if (next.has(lineNum)) next.delete(lineNum); else next.add(lineNum);
+              return next;
+            });
+          }
+        },
+      },
+      {
+        id: 'bank-select-all',
+        phrases: ['select all', 'tick all', 'check all'],
+        description: 'Select all lines',
+        action: () => {
+          const matched = enrichedUnmatched.filter(l => l.matched_account);
+          setSelectedForImport(new Set(matched.map(l => l.statement_line)));
+        },
+      },
+      {
+        id: 'bank-customer',
+        phrases: ['customer'],
+        description: 'Set type: Customer',
+        action: () => {
+          if (createEntryModal.open) {
+            setNewEntryForm(prev => ({ ...prev, accountType: 'customer' }));
+          } else {
+            const idx = voiceLineIndex >= 0 ? voiceLineIndex : 0;
+            openAssignForLine(idx);
+            setTimeout(() => setNewEntryForm(prev => ({ ...prev, accountType: 'customer' })), 100);
+          }
+        },
+      },
+      {
+        id: 'bank-supplier',
+        phrases: ['supplier'],
+        description: 'Set type: Supplier',
+        action: () => {
+          if (createEntryModal.open) {
+            setNewEntryForm(prev => ({ ...prev, accountType: 'supplier' }));
+          } else {
+            const idx = voiceLineIndex >= 0 ? voiceLineIndex : 0;
+            openAssignForLine(idx);
+            setTimeout(() => setNewEntryForm(prev => ({ ...prev, accountType: 'supplier' })), 100);
+          }
+        },
+      },
+      {
+        id: 'bank-nominal',
+        phrases: ['nominal', 'nominal account'],
+        description: 'Set type: Nominal',
+        action: () => {
+          if (createEntryModal.open) {
+            setNewEntryForm(prev => ({ ...prev, accountType: 'nominal' }));
+          } else {
+            const idx = voiceLineIndex >= 0 ? voiceLineIndex : 0;
+            openAssignForLine(idx);
+            setTimeout(() => setNewEntryForm(prev => ({ ...prev, accountType: 'nominal' })), 100);
+          }
+        },
+      },
+      {
+        id: 'bank-transfer',
+        phrases: ['transfer', 'bank transfer'],
+        description: 'Set type: Bank Transfer',
+        action: () => {
+          if (createEntryModal.open) {
+            setNewEntryForm(prev => ({ ...prev, accountType: 'bank_transfer' }));
+          } else {
+            const idx = voiceLineIndex >= 0 ? voiceLineIndex : 0;
+            openAssignForLine(idx);
+            setTimeout(() => setNewEntryForm(prev => ({ ...prev, accountType: 'bank_transfer' })), 100);
+          }
+        },
+      },
+      {
+        id: 'bank-cancel',
+        phrases: ['cancel', 'close'],
+        description: 'Close modal',
+        action: () => setCreateEntryModal({ open: false, statementLine: null }),
+      },
+      {
+        id: 'bank-yes',
+        phrases: ['yes', 'confirm', 'ok'],
+        description: 'Confirm',
+        action: () => {
+          // If ignore confirm is showing, confirm it
+          if (ignoreConfirm) {
+            handleIgnoreTransaction();
+          }
+        },
+      },
+      {
+        id: 'bank-no',
+        phrases: ['no'],
+        description: 'Cancel',
+        action: () => {
+          if (ignoreConfirm) {
+            setIgnoreConfirm(null);
+          }
+        },
+      },
+    ];
+
+    const cleanup = registerCommands(cmds);
+    return cleanup;
+  }, [enrichedUnmatched, voiceLineIndex, createEntryModal.open, ignoreConfirm, registerCommands, openAssignForLine]);
 
   // Fetch bank accounts and nominal accounts on mount
   useEffect(() => {
@@ -691,13 +903,6 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [useManualPath, setUseManualPath] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string>('');
 
-  // Ignore transaction state
-  const [ignoreConfirm, setIgnoreConfirm] = useState<{
-    date: string;
-    description: string;
-    amount: number;
-  } | null>(null);
-  const [isIgnoring, setIsIgnoring] = useState(false);
 
   // Archive history state
   const [showArchive, setShowArchive] = useState(false);
@@ -1634,31 +1839,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         // Use server-side partial flag (auto-detected when balance doesn't match)
         const isPartial = data.partial || hasUnmatched;
 
-        // Auto-archive the source statement only on FULL reconcile (not partial)
-        if (!isPartial) {
-          try {
-            const stmtData = importedStatementData as any;
-            const stmtSource = stmtData?.source || 'email';
-            const stmtFilename = stmtData?.filename || activeStatementInfo?.filename || selectedFileInfo?.filename;
-            const archiveParams = new URLSearchParams({
-              source: stmtSource,
-              ...(stmtFilename ? { filename: stmtFilename } : {}),
-              ...(selectedBank ? { bank_code: selectedBank } : {}),
-            });
-            // Add source-specific params
-            if (stmtSource === 'email' && stmtData?.email_id) {
-              archiveParams.set('email_id', String(stmtData.email_id));
-            } else if (stmtSource === 'pdf' && (stmtData?.full_path || statementPath)) {
-              archiveParams.set('full_path', stmtData?.full_path || statementPath);
-            }
-            authFetch(`/api/bank-import/archive-statement?${archiveParams}`, { method: 'POST' })
-              .then(r => r.json())
-              .then(r => { if (r.archived) console.log(`Auto-archived: ${stmtFilename}`); })
-              .catch(e => console.warn('Auto-archive failed (non-blocking):', e));
-          } catch (archiveErr) {
-            console.warn('Could not initiate auto-archive:', archiveErr);
-          }
-        }
+        // Auto-archive is now handled server-side in the complete_reconciliation endpoint
 
         // Validate closing balance against Opera's new reconciled balance
         const newRecBal = data.new_reconciled_balance;
@@ -3441,8 +3622,15 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                           <tbody>
                             {lines.map((line) => {
                               const isGcFx = /INTSYSUKLTD-[A-Z0-9]{6}/i.test(line.statement_description || '');
+                              const globalIdx = enrichedUnmatched.indexOf(line);
+                              const isVoiceActive = globalIdx === voiceLineIndex;
                               return (
-                                <tr key={line.statement_line} className={`border-t hover:bg-gray-50 ${isGcFx ? 'bg-purple-50' : ''}`}>
+                                <tr
+                                  key={line.statement_line}
+                                  id={`voice-line-${globalIdx}`}
+                                  onClick={() => setVoiceLineIndex(globalIdx)}
+                                  className={`border-t hover:bg-gray-50 cursor-pointer ${isGcFx ? 'bg-purple-50' : ''} ${isVoiceActive ? 'ring-2 ring-blue-400 bg-blue-50' : ''}`}
+                                >
                                   <td className="px-3 py-2 text-center">
                                     <input
                                       type="checkbox"

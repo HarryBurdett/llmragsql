@@ -4,7 +4,6 @@ import { Save, RefreshCw, CheckCircle, AlertCircle, ExternalLink, Mail, Trash2, 
 import apiClient from '../api/client';
 import type { ProviderConfig, EmailProviderCreate, EmailProvider } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
-
 export function Settings() {
   const queryClient = useQueryClient();
 

@@ -54,7 +54,12 @@ import { SystemReset } from './pages/SystemReset';
 import { Home } from './pages/Home';
 import CashbookOptions from './pages/CashbookOptions';
 import { GoCardlessSettings } from './pages/GoCardlessSettings';
+import { GoCardlessCallback } from './pages/GoCardlessCallback';
 import { Installations } from './pages/Installations';
+import { SystemDashboard } from './pages/SystemDashboard';
+import { Expenses } from './pages/Expenses';
+import { MyPreferences } from './pages/MyPreferences';
+import { VoiceProvider } from './context/VoiceContext';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -122,7 +127,9 @@ function AppRoutes() {
                   <Route path="/" element={<Home />} />
                   <Route path="/archive" element={<Archive />} />
                   <Route path="/settings" element={<Settings />} />
+                  <Route path="/my-preferences" element={<MyPreferences />} />
                   <Route path="/admin/installations" element={<Installations />} />
+                  <Route path="/admin/system-dashboard" element={<SystemDashboard />} />
 
                   {/* Administration routes */}
                   <Route path="/admin/company" element={<Company />} />
@@ -177,6 +184,8 @@ function AppRoutes() {
                   <Route path="/cashbook/gocardless-requests" element={<GoCardlessRequests />} />
                   <Route path="/cashbook/options" element={<CashbookOptions />} />
                   <Route path="/cashbook/gocardless-settings" element={<GoCardlessSettings />} />
+                  <Route path="/cashbook/gocardless-callback" element={<GoCardlessCallback />} />
+                  <Route path="/expenses" element={<Expenses />} />
                   {/* Redirect old bank-rec URL */}
                   <Route path="/bank-rec" element={<Navigate to="/cashbook/bank-hub" replace />} />
 
@@ -252,9 +261,11 @@ function App() {
     <AuthProvider>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <UnsavedChangesProvider>
-            <AppRoutes />
-          </UnsavedChangesProvider>
+          <VoiceProvider>
+            <UnsavedChangesProvider>
+              <AppRoutes />
+            </UnsavedChangesProvider>
+          </VoiceProvider>
         </BrowserRouter>
       </QueryClientProvider>
     </AuthProvider>

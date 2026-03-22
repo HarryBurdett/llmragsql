@@ -327,7 +327,7 @@ export function GoCardlessSettings() {
           api_sandbox: apiSandbox,
           data_source: dataSource,
           subscription_tag: subscriptionTag,
-          subscription_frequencies: subscriptionFrequencies
+          subscription_frequencies: subscriptionFrequencies,
         })
       });
       const data = await response.json();

@@ -64,7 +64,7 @@ export function ReconcileSummary() {
   const summaryQuery = useQuery<ReconcileSummaryResponse>({
     queryKey: ['reconcileSummary'],
     queryFn: async () => {
-      const response = await authFetch('http://localhost:8000/api/reconcile/summary');
+      const response = await authFetch('/api/reconcile/summary');
       return response.json();
     },
     refetchOnWindowFocus: false,

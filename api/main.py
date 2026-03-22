@@ -19,6 +19,7 @@ if env_path.exists():
     load_dotenv(env_path, override=True)
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Body, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -510,6 +511,15 @@ app.add_middleware(
 )
 
 
+# Crakd.ai GoCardless signup page — standalone app served at /signup
+@app.get("/signup", include_in_schema=False)
+async def crakd_signup_page():
+    signup_path = Path(__file__).parent.parent / "crakd-signup" / "index.html"
+    if signup_path.exists():
+        return FileResponse(signup_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="Signup page not found")
+
+
 # Global exception handler — translates raw database errors into friendly messages
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
@@ -709,6 +719,9 @@ class UserCreateRequest(BaseModel):
     is_admin: bool = Field(False, description="Is admin user")
     permissions: Optional[Dict[str, bool]] = Field(None, description="Module permissions")
     default_company: Optional[str] = Field(None, description="Default company ID on login")
+    default_system: Optional[str] = Field(None, description="Default system profile ID on login")
+    ui_mode: Optional[str] = Field(None, description="UI mode: 'classic' or 'launcher'")
+    voice_enabled: Optional[bool] = Field(None, description="Voice control enabled")
 
 
 class UserUpdateRequest(BaseModel):
@@ -721,6 +734,9 @@ class UserUpdateRequest(BaseModel):
     is_active: Optional[bool] = Field(None, description="Is user active")
     permissions: Optional[Dict[str, bool]] = Field(None, description="Module permissions")
     default_company: Optional[str] = Field(None, description="Default company ID on login")
+    default_system: Optional[str] = Field(None, description="Default system profile ID on login")
+    ui_mode: Optional[str] = Field(None, description="UI mode: 'classic' or 'launcher'")
+    voice_enabled: Optional[bool] = Field(None, description="Voice control enabled")
 
 
 class UserResponse(BaseModel):
@@ -925,6 +941,62 @@ async def get_current_user_info(request: Request):
     }
 
 
+@app.get("/api/auth/preferences")
+async def get_user_preferences(request: Request):
+    """Get current user's preferences."""
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    return {
+        "success": True,
+        "ui_mode": user.get('ui_mode', 'classic'),
+        "voice_enabled": user.get('voice_enabled', False),
+        "default_company": user.get('default_company'),
+        "default_system": user.get('default_system'),
+    }
+
+
+@app.put("/api/auth/preferences")
+async def update_user_preferences(request: Request):
+    """Update current user's preferences."""
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+
+    body = await request.json()
+    ui_mode = body.get('ui_mode')
+    voice_enabled = body.get('voice_enabled')
+    default_company = body.get('default_company')
+    default_system = body.get('default_system')
+
+    # Validate ui_mode
+    if ui_mode is not None and ui_mode not in ('classic', 'launcher'):
+        return {"success": False, "error": "ui_mode must be 'classic' or 'launcher'"}
+
+    try:
+        updated = user_auth.update_user(
+            user_id=user['id'],
+            ui_mode=ui_mode,
+            voice_enabled=voice_enabled,
+            default_company=default_company,
+            default_system=default_system
+        )
+        return {
+            "success": True,
+            "ui_mode": updated.get('ui_mode', 'classic'),
+            "voice_enabled": updated.get('voice_enabled', False),
+            "default_company": updated.get('default_company'),
+            "default_system": updated.get('default_system'),
+        }
+    except Exception as e:
+        logger.error(f"Failed to update preferences: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/auth/modules")
 async def get_available_modules():
     """
@@ -949,30 +1021,35 @@ async def get_available_modules():
 @app.get("/api/auth/user-default-company")
 async def get_user_default_company(username: str):
     """
-    Get a user's default company by username.
-    Public endpoint for login page to pre-select company dropdown.
+    Get a user's default company and default system by username.
+    Public endpoint for login page to pre-select company and system dropdowns.
     """
     if not user_auth:
-        return {"default_company": None}
+        return {"default_company": None, "default_system": None}
 
-    # Query the users table for the default_company
+    # Query the users table for the default_company and default_system
     import sqlite3
     try:
         conn = sqlite3.connect(user_auth.DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT default_company FROM users WHERE LOWER(username) = LOWER(?)',
+            'SELECT default_company, default_system FROM users WHERE LOWER(username) = LOWER(?)',
             (username,)
         )
         row = cursor.fetchone()
         conn.close()
 
-        if row and row[0]:
-            return {"default_company": row[0]}
+        result = {"default_company": None, "default_system": None}
+        if row:
+            if row[0]:
+                result["default_company"] = row[0]
+            if row[1]:
+                result["default_system"] = row[1]
+        return result
     except Exception as e:
-        logger.warning(f"Error getting user default company: {e}")
+        logger.warning(f"Error getting user defaults: {e}")
 
-    return {"default_company": None}
+    return {"default_company": None, "default_system": None}
 
 
 @app.get("/api/companies/list")
@@ -1034,7 +1111,9 @@ async def create_user(request: Request, user_data: UserCreateRequest):
             is_admin=user_data.is_admin,
             permissions=user_data.permissions,
             created_by=current_user.get('username'),
-            default_company=user_data.default_company
+            default_company=user_data.default_company,
+            ui_mode=user_data.ui_mode,
+            voice_enabled=user_data.voice_enabled
         )
         return {"success": True, "user": new_user}
     except ValueError as e:
@@ -1082,7 +1161,10 @@ async def update_user(request: Request, user_id: int, user_data: UserUpdateReque
             is_admin=user_data.is_admin,
             is_active=user_data.is_active,
             permissions=user_data.permissions,
-            default_company=user_data.default_company
+            default_company=user_data.default_company,
+            default_system=user_data.default_system,
+            ui_mode=user_data.ui_mode,
+            voice_enabled=user_data.voice_enabled
         )
         return {"success": True, "user": updated_user}
     except ValueError as e:
@@ -2409,6 +2491,11 @@ async def switch_company(request: Request, company_id: str):
         reset_payments_db()
         from sql_rag.opera_config import clear_control_accounts_cache
         clear_control_accounts_cache()
+        # Clear customer linker cache and update its connector — it holds
+        # company-specific email→account mappings and a reference to the old connector
+        if customer_linker:
+            customer_linker.clear_cache()
+            customer_linker.set_sql_connector(sql_connector)
         from sql_rag.import_lock import set_db_path as set_import_lock_path
         import_lock_path = get_company_db_path(company_id, "import_locks.db")
         if import_lock_path:
@@ -18278,7 +18365,8 @@ async def import_bank_statement_from_pdf(
                         account_number=statement_info_dict.get('account_number'),
                         sort_code=statement_info_dict.get('sort_code'),
                         period_start=statement_info_dict.get('period_start'),
-                        period_end=statement_info_dict.get('period_end')
+                        period_end=statement_info_dict.get('period_end'),
+                        file_path=file_path
                     )
                     result['import_id'] = import_record_id
 
@@ -18920,7 +19008,8 @@ async def import_with_manual_overrides(
                     target_system='opera_se',
                     total_receipts=total_receipts,
                     total_payments=total_payments,
-                    imported_by='BANK_IMPORT'
+                    imported_by='BANK_IMPORT',
+                    file_path=filepath
                 )
             except Exception as history_err:
                 logger.warning(f"Failed to record import history: {history_err}")
@@ -21808,6 +21897,37 @@ async def scan_all_banks_for_statements(
         except Exception:
             final_rec_filenames = reconciled_filenames
 
+        # Auto-promote imported-not-reconciled statements where Opera's reconciled
+        # balance has reached or passed the statement's closing balance.
+        # This catches statements completed via partial reconciliation that weren't
+        # promoted to is_reconciled=1 (e.g. from before the auto-promotion logic).
+        try:
+            for code, bank in all_banks.items():
+                rec_bal = bank.get('reconciled_balance')
+                if rec_bal is None:
+                    continue
+                for stmt in list(bank['statements']):
+                    closing = stmt.get('closing_balance')
+                    if (closing is not None
+                            and stmt.get('is_imported')
+                            and abs(rec_bal - closing) < 0.01):
+                        # Opera reconciled balance matches this statement's closing —
+                        # the statement is complete. Auto-mark and remove from scan.
+                        fn = stmt.get('filename', '')
+                        logger.info(f"Scan cleanup: auto-marking '{fn}' as reconciled "
+                                    f"(Opera reconciled £{rec_bal:.2f} matches closing £{closing:.2f})")
+                        final_rec_filenames.add(fn)
+                        try:
+                            email_storage.mark_statement_reconciled(
+                                filename=fn,
+                                reconciled_count=0,
+                                bank_code=code
+                            )
+                        except Exception:
+                            pass
+        except Exception as promo_err:
+            logger.warning(f"Auto-promote scan cleanup failed: {promo_err}")
+
         # Remove reconciled statements from bank lists
         for code, bank in all_banks.items():
             bank['statements'] = [s for s in bank['statements'] if s.get('filename') not in final_rec_filenames]
@@ -24130,9 +24250,17 @@ async def complete_reconciliation(
                 # Mark all transactions as reconciled
                 email_storage.mark_transactions_reconciled(import_id)
 
-                if partial:
-                    # Partial: update reconciled_count but keep is_reconciled=0
-                    # so the statement stays in the in-progress list
+                # Check if reconciliation is actually complete by comparing
+                # Opera's new reconciled balance to the statement closing balance.
+                # This catches partial reconciliations that complete the statement.
+                new_rec_bal = getattr(result, 'new_reconciled_balance', None)
+                statement_actually_complete = (
+                    not partial
+                    or (new_rec_bal is not None and abs(new_rec_bal - closing_balance) < 0.01)
+                )
+
+                if partial and not statement_actually_complete:
+                    # Genuinely partial: update reconciled_count but keep is_reconciled=0
                     with email_storage._get_connection() as conn:
                         cursor = conn.cursor()
                         cursor.execute("""
@@ -24143,7 +24271,10 @@ async def complete_reconciliation(
                         """, (result.records_imported, datetime.now().isoformat(), import_id))
                     logger.info(f"Partial reconciliation: import_id={import_id}, {result.records_imported} entries reconciled (statement stays in-progress)")
                 else:
-                    # Full: mark as fully reconciled
+                    # Statement is complete — either explicit full reconcile or
+                    # partial that brought Opera reconciled balance to statement closing balance
+                    if partial and statement_actually_complete:
+                        logger.info(f"Partial reconciliation promoted to full: Opera reconciled balance £{new_rec_bal:.2f} matches statement closing £{closing_balance:.2f}")
                     email_storage.mark_statement_reconciled(
                         filename='',
                         reconciled_count=result.records_imported,
@@ -24159,15 +24290,91 @@ async def complete_reconciliation(
                             WHERE id = ?
                         """, (datetime.now().isoformat(), result.records_imported, import_id))
                     logger.info(f"Full reconciliation: import_id={import_id}, {result.records_imported} entries reconciled")
+
+                    # Auto-archive the source statement after full reconciliation
+                    try:
+                        import_record = email_storage.get_bank_statement_import_by_id(import_id)
+                        if import_record:
+                            archived = False
+                            archive_detail = None
+                            stmt_source = import_record.get('source', 'email')
+                            stmt_filename = import_record.get('filename', '')
+
+                            if stmt_source == 'email' and import_record.get('email_id'):
+                                email_detail = email_storage.get_email_by_id(import_record['email_id'])
+                                if email_detail:
+                                    provider_id = email_detail.get('provider_id')
+                                    message_id = email_detail.get('message_id')
+                                    folder_id = email_detail.get('folder_id', 'INBOX')
+                                    if isinstance(folder_id, int):
+                                        with email_storage._get_connection() as fconn:
+                                            fcursor = fconn.cursor()
+                                            fcursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id,))
+                                            frow = fcursor.fetchone()
+                                            if frow:
+                                                folder_id = frow['folder_id']
+                                    if provider_id and message_id and email_sync_manager and provider_id in email_sync_manager.providers:
+                                        provider = email_sync_manager.providers[provider_id]
+                                        moved = await provider.move_email(message_id, folder_id, 'Archive/Bank Statements')
+                                        if moved:
+                                            archived = True
+                                            archive_detail = "Email moved to Archive/Bank Statements"
+                                        else:
+                                            archive_detail = "Email move failed — may already be archived"
+                                    else:
+                                        archive_detail = "Email provider not available for archive"
+                                else:
+                                    archive_detail = f"Email {import_record['email_id']} not found"
+
+                            elif stmt_source == 'file' and import_record.get('file_path'):
+                                import shutil
+                                from pathlib import Path
+                                file_path = Path(import_record['file_path'])
+                                if file_path.exists():
+                                    settings = _load_company_settings()
+                                    archive_folder = settings.get("bank_statements_archive_folder", "")
+                                    if archive_folder:
+                                        archive_dir = Path(archive_folder)
+                                    else:
+                                        archive_dir = file_path.parent / 'archive'
+                                    archive_dir = archive_dir / datetime.now().strftime('%Y-%m')
+                                    archive_dir.mkdir(parents=True, exist_ok=True)
+                                    dest = archive_dir / file_path.name
+                                    if dest.exists():
+                                        stem, suffix = dest.stem, dest.suffix
+                                        counter = 1
+                                        while dest.exists():
+                                            dest = archive_dir / f"{stem}_{counter}{suffix}"
+                                            counter += 1
+                                    shutil.move(str(file_path), str(dest))
+                                    archived = True
+                                    archive_detail = f"File moved to {dest}"
+                                else:
+                                    archive_detail = f"File not found: {import_record['file_path']}"
+
+                            if archived:
+                                logger.info(f"Auto-archived reconciled statement: {stmt_filename} ({archive_detail})")
+                            elif archive_detail:
+                                logger.warning(f"Could not auto-archive statement: {stmt_filename} ({archive_detail})")
+                    except Exception as archive_err:
+                        logger.warning(f"Auto-archive after reconciliation failed (non-blocking): {archive_err}")
+
             except Exception as db_err:
                 logger.warning(f"Could not update reconciliation status in DB: {db_err}")
+
+        # If a partial reconciliation was promoted to full, reflect that in the response
+        effective_partial = partial
+        if result.success:
+            new_rec_bal_check = getattr(result, 'new_reconciled_balance', None)
+            if partial and new_rec_bal_check is not None and abs(new_rec_bal_check - closing_balance) < 0.01:
+                effective_partial = False
 
         release_import_lock(_bank_lock_key(bank_code))
         return {
             "success": result.success,
             "entries_reconciled": result.records_imported if result.success else 0,
             "messages": result.warnings if result.success else result.errors,
-            "partial": partial,
+            "partial": effective_partial,
             "statement_number": statement_number,
             "statement_date": statement_date,
             "closing_balance": closing_balance,
@@ -25275,7 +25482,8 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
             "match_method": match_method,
             "match_status": "matched" if best_match else "unmatched",
             "possible_duplicate": False,
-            "duplicate_warning": None
+            "duplicate_warning": None,
+            "gc_payment_id": payment.get('gc_payment_id', '')
         }
         matched_payments.append(matched_payment)
 
@@ -25491,7 +25699,8 @@ async def import_gocardless_batch(
                 "opera_customer_name": p.get('opera_customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
-                "auto_allocate": p.get('auto_allocate', True)
+                "auto_allocate": p.get('auto_allocate', True),
+                "gc_payment_id": p.get('gc_payment_id', '')
             })
 
         # Parse date
@@ -25627,7 +25836,8 @@ async def import_gocardless_batch(
                     payment_count=len(validated_payments),
                     payments_json=payments_json,
                     batch_ref=result.batch_ref if hasattr(result, 'batch_ref') else None,
-                    imported_by="GOCARDLS"
+                    imported_by="GOCARDLS",
+                    post_date=post_date
                 )
                 logger.info(f"Recorded GoCardless import to history: ref={reference}, payout_id={payout_id}")
             except Exception as hist_err:
@@ -25861,6 +26071,77 @@ def _load_gocardless_settings() -> dict:
 
     return defaults
 
+
+def _load_gocardless_partner_settings() -> dict:
+    """
+    Load GoCardless settings with partner credentials.
+
+    Partner portal endpoints have no session context (unauthenticated), so
+    get_current_db_path() returns None and falls back to the root settings
+    file — which may not have partner credentials.
+
+    This function first tries the normal path, then scans all company
+    settings to find one with partner_client_id configured.
+    """
+    # Try normal path first (works when user is logged in)
+    settings = _load_gocardless_settings()
+    if settings.get('partner_client_id'):
+        return settings
+
+    # No partner credentials found — scan all company settings
+    data_dir = Path(__file__).parent.parent / "data"
+    if data_dir.exists():
+        for company_dir in sorted(data_dir.iterdir()):
+            settings_file = company_dir / _GOCARDLESS_SETTINGS_FILENAME
+            if settings_file.exists():
+                try:
+                    with open(settings_file) as f:
+                        company_settings = json.load(f)
+                    if company_settings.get('partner_client_id'):
+                        return company_settings
+                except Exception:
+                    continue
+
+    return settings
+
+
+def _save_gocardless_partner_settings(settings: dict) -> bool:
+    """
+    Save GoCardless partner settings — finds the correct file even without session.
+
+    Scans company settings to find the one that already has partner credentials,
+    or falls back to root settings file.
+    """
+    # If we have a company context, use it
+    company_path = get_current_db_path(_GOCARDLESS_SETTINGS_FILENAME)
+    if company_path and company_path.exists():
+        try:
+            with open(company_path, 'w') as f:
+                json.dump(settings, f, indent=2)
+            return True
+        except Exception:
+            pass
+
+    # No session — find which company file has partner credentials
+    data_dir = Path(__file__).parent.parent / "data"
+    if data_dir.exists():
+        for company_dir in sorted(data_dir.iterdir()):
+            settings_file = company_dir / _GOCARDLESS_SETTINGS_FILENAME
+            if settings_file.exists():
+                try:
+                    with open(settings_file) as f:
+                        existing = json.load(f)
+                    if existing.get('partner_client_id'):
+                        with open(settings_file, 'w') as f:
+                            json.dump(settings, f, indent=2)
+                        return True
+                except Exception:
+                    continue
+
+    # Fall back to root
+    return _save_gocardless_settings(settings)
+
+
 def _save_gocardless_settings(settings: dict) -> bool:
     """Save GoCardless settings to per-company file."""
     # Determine save path: per-company if available, else root
@@ -25875,6 +26156,403 @@ def _save_gocardless_settings(settings: dict) -> bool:
     except Exception as e:
         logger.error(f"Failed to save GoCardless settings: {e}")
         return False
+
+
+@app.get("/api/gocardless/setup-status")
+async def get_gocardless_setup_status():
+    """Check if GoCardless is configured. Used by launcher and GC pages to detect if signup is needed."""
+    settings = _load_gocardless_settings()
+    api_token = settings.get("api_access_token", "")
+    configured = bool(api_token and len(api_token) > 10)
+
+    pending_signup = None
+    if not configured:
+        try:
+            from sql_rag.gocardless_payments import get_payments_db
+            payments_db = get_payments_db()
+            pending_signup = payments_db.get_latest_partner_signup()
+            if pending_signup and pending_signup.get('status') in ('completed', 'failed'):
+                pending_signup = None  # Only show active signups
+        except Exception:
+            pass
+
+    return {
+        "success": True,
+        "configured": configured,
+        "pending_signup": pending_signup
+    }
+
+
+@app.post("/api/gocardless/partner/initiate-signup")
+async def initiate_gocardless_partner_signup(request: Request):
+    """
+    Initiate GoCardless partner signup via OAuth Connect flow.
+    Generates an authorisation URL and stores the signup record.
+    """
+    body = await request.json()
+    company_name = body.get('company_name', '')
+    company_email = body.get('company_email', '')
+
+    if not company_email:
+        return {"success": False, "error": "Company email is required"}
+
+    try:
+        from sql_rag.gocardless_payments import get_payments_db
+        from sql_rag.gocardless_api import create_partner_client_from_settings
+        import secrets
+
+        settings = _load_gocardless_partner_settings()
+        partner_client = create_partner_client_from_settings(settings)
+
+        authorisation_url = None
+        state_token = secrets.token_urlsafe(32)
+
+        if partner_client:
+            # Build the redirect URI — use configured URI, or auto-detect from request
+            redirect_uri = settings.get('partner_redirect_uri', '')
+            if not redirect_uri:
+                # Auto-detect from the incoming request so it works from any network address
+                base = str(request.base_url).rstrip('/')
+                redirect_uri = f"{base}/api/gocardless/partner/callback"
+            authorisation_url = partner_client.get_authorisation_url(
+                redirect_uri=redirect_uri,
+                prefill_email=company_email,
+                prefill_company_name=company_name,
+                state=state_token,
+            )
+
+        payments_db = get_payments_db()
+        signup = payments_db.create_partner_signup(
+            company_name=company_name,
+            company_email=company_email,
+            authorisation_url=authorisation_url
+        )
+
+        # Store the state token for CSRF validation on callback
+        payments_db.update_partner_signup(signup['id'], status_detail=state_token)
+
+        if authorisation_url:
+            return {
+                "success": True,
+                "signup_id": signup['id'],
+                "authorisation_url": authorisation_url,
+                "message": "Redirecting to GoCardless to complete registration.",
+            }
+        else:
+            # Partner credentials not configured — fall back to manual setup
+            return {
+                "success": True,
+                "signup_id": signup['id'],
+                "authorisation_url": None,
+                "message": "Partner credentials not configured. Please register at GoCardless and enter your API key in Settings.",
+                "next_step": "manual",
+            }
+    except Exception as e:
+        logger.error(f"Failed to initiate partner signup: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/partner/callback")
+async def gocardless_partner_callback(request: Request, code: str = None, state: str = None, error: str = None):
+    """
+    OAuth callback from GoCardless after merchant completes signup.
+    Exchanges the authorisation code for an access token and saves it.
+    GoCardless redirects the merchant's browser here, so we return HTML (not JSON).
+    The signup portal polls /signup-status, so it will auto-detect completion.
+    """
+    from fastapi.responses import HTMLResponse, RedirectResponse
+
+    def _callback_html(title: str, message: str, success: bool) -> HTMLResponse:
+        """Return a friendly HTML page instead of raw JSON for the browser redirect."""
+        color = "#10b981" if success else "#ef4444"
+        icon = "&#10003;" if success else "&#10007;"
+        return HTMLResponse(f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>{title}</title>
+<style>body{{font-family:Inter,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f8fafc}}
+.card{{text-align:center;max-width:420px;padding:3rem;background:white;border-radius:1rem;box-shadow:0 4px 24px rgba(0,0,0,0.08)}}
+.icon{{font-size:3rem;color:{color};margin-bottom:1rem}}.title{{font-size:1.25rem;font-weight:700;margin-bottom:0.5rem}}
+.msg{{color:#64748b;font-size:0.95rem;line-height:1.5}}.hint{{margin-top:1.5rem;color:#94a3b8;font-size:0.85rem}}</style></head>
+<body><div class="card"><div class="icon">{icon}</div><div class="title">{title}</div>
+<div class="msg">{message}</div><div class="hint">You can close this tab and return to the signup page.</div></div></body></html>""")
+
+    if error:
+        logger.warning(f"GoCardless partner callback error: {error}")
+        return _callback_html("Signup Error", f"GoCardless returned an error: {error}", False)
+
+    if not code:
+        return _callback_html("Missing Code", "No authorisation code received from GoCardless.", False)
+
+    try:
+        from sql_rag.gocardless_payments import get_payments_db
+        from sql_rag.gocardless_api import create_partner_client_from_settings
+
+        settings = _load_gocardless_partner_settings()
+        partner_client = create_partner_client_from_settings(settings)
+
+        if not partner_client:
+            return _callback_html("Not Configured", "Partner credentials not configured.", False)
+
+        # Validate state token (CSRF protection)
+        payments_db = get_payments_db()
+        signup = payments_db.get_latest_partner_signup()
+        if signup and state and signup.get('status_detail') != state:
+            logger.warning("GoCardless partner callback: state token mismatch")
+            return _callback_html("Invalid Request", "Invalid state token — please try signing up again.", False)
+
+        # Exchange code for access token — redirect_uri MUST match what was sent in initiate-signup
+        redirect_uri = settings.get('partner_redirect_uri', '')
+        if not redirect_uri:
+            base = str(request.base_url).rstrip('/')
+            redirect_uri = f"{base}/api/gocardless/partner/callback"
+        token_response = partner_client.exchange_authorisation_code(
+            code=code,
+            redirect_uri=redirect_uri,
+        )
+
+        access_token = token_response.get('access_token')
+        organisation_id = token_response.get('organisation_id', '')
+
+        if not access_token:
+            return {"success": False, "error": "No access token received from GoCardless"}
+
+        # Verify the token works by fetching creditor info
+        org_info = {}
+        try:
+            org_info = partner_client.get_organisation_info(access_token)
+        except Exception as e:
+            logger.warning(f"Could not fetch org info after token exchange: {e}")
+
+        creditor_name = org_info.get('name', '')
+
+        # Store the merchant's token in their signup record — NOT in our settings.
+        # api_access_token in settings is OUR token for our own DD collection.
+        # Each merchant gets their own token stored against their signup record.
+        if signup:
+            payments_db.update_partner_signup(
+                signup['id'],
+                status='completed',
+                completed_at=datetime.now().isoformat(),
+                access_token_obtained=1,
+                merchant_access_token=access_token,
+                merchant_organisation_id=organisation_id,
+                merchant_creditor_name=creditor_name,
+                partner_referral_id=organisation_id,
+                status_detail='OAuth token obtained successfully',
+            )
+
+        org_display = f" ({creditor_name})" if creditor_name else ""
+        return _callback_html(
+            "Account Connected",
+            f"Your GoCardless account{org_display} has been connected successfully. "
+            "The signup page will update automatically.",
+            True
+        )
+    except Exception as e:
+        logger.error(f"GoCardless partner callback failed: {e}")
+        return _callback_html("Connection Failed", f"Something went wrong: {e}", False)
+
+
+@app.get("/api/gocardless/partner/signup-status")
+async def get_gocardless_partner_signup_status():
+    """Poll the latest partner signup status."""
+    try:
+        from sql_rag.gocardless_payments import get_payments_db
+        payments_db = get_payments_db()
+        signup = payments_db.get_latest_partner_signup()
+
+        if not signup:
+            return {"success": True, "signup": None}
+
+        # Strip merchant_access_token from response — never expose tokens to frontend
+        safe_signup = {k: v for k, v in signup.items() if k != 'merchant_access_token'}
+
+        return {"success": True, "signup": safe_signup}
+    except Exception as e:
+        logger.error(f"Failed to get partner signup status: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/partner/admin-auth")
+async def gocardless_partner_admin_auth(request: Request):
+    """Validate admin password for the Crakd.ai signup app config panel."""
+    body = await request.json()
+    password = body.get('password', '')
+    settings = _load_gocardless_partner_settings()
+    stored_password = settings.get('partner_admin_password', '')
+    if not stored_password:
+        # First time — no password set yet, allow access to set one
+        return {"success": True, "first_time": True}
+    if password == stored_password:
+        return {"success": True}
+    return {"success": False, "error": "Incorrect password"}
+
+
+@app.put("/api/gocardless/partner/admin-password")
+async def update_gocardless_partner_admin_password(request: Request):
+    """Set or change the admin password for the Crakd.ai signup app."""
+    body = await request.json()
+    new_password = body.get('password', '').strip()
+    if not new_password or len(new_password) < 4:
+        return {"success": False, "error": "Password must be at least 4 characters"}
+
+    settings = _load_gocardless_partner_settings()
+    settings['partner_admin_password'] = new_password
+    if _save_gocardless_partner_settings(settings):
+        return {"success": True}
+    return {"success": False, "error": "Failed to save"}
+
+
+@app.put("/api/gocardless/partner/merchant-app-url")
+async def set_merchant_app_url(request: Request):
+    """Save the deployment URL for a merchant."""
+    body = await request.json()
+    signup_id = body.get('signup_id')
+    app_url = body.get('app_url', '').strip().rstrip('/')
+
+    if not signup_id:
+        return {"success": False, "error": "No signup ID provided"}
+
+    try:
+        from sql_rag.gocardless_payments import get_payments_db
+        payments_db = get_payments_db()
+        payments_db.update_partner_signup(signup_id, merchant_app_url=app_url)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/gocardless/partner/activate-merchant")
+async def activate_gocardless_merchant(request: Request):
+    """
+    Activate a merchant — deploy their GoCardless access token to their app.
+    Pushes the token to the merchant's deployment via their app URL,
+    or saves locally if the app URL points to this server.
+    """
+    body = await request.json()
+    signup_id = body.get('signup_id')
+
+    if not signup_id:
+        return {"success": False, "error": "No signup ID provided"}
+
+    try:
+        from sql_rag.gocardless_payments import get_payments_db
+        payments_db = get_payments_db()
+        signup = payments_db.get_merchant_signup(signup_id)
+
+        if not signup:
+            return {"success": False, "error": "Signup record not found"}
+
+        token = signup.get('merchant_access_token')
+        if not token:
+            return {"success": False, "error": "No access token for this merchant — signup may not be complete"}
+
+        app_url = signup.get('merchant_app_url', '').strip().rstrip('/')
+        if not app_url:
+            return {"success": False, "error": "No app URL configured for this merchant"}
+
+        company_name = signup.get('merchant_creditor_name') or signup.get('company_name', '')
+
+        # Check if the app URL is this server (local deployment)
+        import urllib.parse
+        local_hosts = ['localhost', '127.0.0.1', '0.0.0.0']
+        parsed = urllib.parse.urlparse(app_url)
+        is_local = parsed.hostname in local_hosts
+
+        if is_local:
+            # Deploy locally — write directly to settings
+            settings = _load_gocardless_partner_settings()
+            settings['api_access_token'] = token
+            if not _save_gocardless_partner_settings(settings):
+                return {"success": False, "error": "Failed to save local settings"}
+        else:
+            # Deploy remotely — push token to the merchant's app API
+            try:
+                import requests as req
+                resp = req.put(
+                    f"{app_url}/api/gocardless/deploy-token",
+                    json={"access_token": token, "company_name": company_name},
+                    timeout=15,
+                )
+                if resp.status_code != 200:
+                    return {"success": False, "error": f"Remote app returned {resp.status_code}: {resp.text[:200]}"}
+                data = resp.json()
+                if not data.get('success'):
+                    return {"success": False, "error": data.get('error', 'Remote app rejected the token')}
+            except Exception as e:
+                return {"success": False, "error": f"Cannot reach merchant app at {app_url}: {e}"}
+
+        # Mark as activated
+        payments_db.update_partner_signup(signup_id, status='activated')
+        logger.info(f"Activated GoCardless merchant: {company_name} (signup {signup_id}) -> {app_url}")
+
+        return {
+            "success": True,
+            "company_name": company_name,
+            "app_url": app_url,
+            "message": f"Token deployed for {company_name}",
+        }
+    except Exception as e:
+        logger.error(f"Failed to activate merchant: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.put("/api/gocardless/deploy-token")
+async def deploy_gocardless_token(request: Request):
+    """
+    Receive a GoCardless access token from the Crakd.ai partner portal.
+    Called remotely when a merchant is activated.
+    """
+    body = await request.json()
+    token = body.get('access_token', '')
+    company_name = body.get('company_name', '')
+
+    if not token:
+        return {"success": False, "error": "No token provided"}
+
+    settings = _load_gocardless_settings()
+    settings['api_access_token'] = token
+    if _save_gocardless_settings(settings):
+        logger.info(f"GoCardless token deployed remotely for {company_name}")
+        return {"success": True, "message": f"Token deployed for {company_name}"}
+    return {"success": False, "error": "Failed to save settings"}
+
+
+@app.get("/api/gocardless/partner/config")
+async def get_gocardless_partner_config(request: Request):
+    """Check if Partner credentials are configured."""
+    settings = _load_gocardless_partner_settings()
+    has_partner = bool(settings.get('partner_client_id') and settings.get('partner_client_secret'))
+    redirect_uri = settings.get('partner_redirect_uri', '')
+    if not redirect_uri:
+        base = str(request.base_url).rstrip('/')
+        redirect_uri = f"{base}/api/gocardless/partner/callback"
+    return {
+        "success": True,
+        "partner_configured": has_partner,
+        "partner_sandbox": settings.get('api_sandbox', False),
+        "redirect_uri": redirect_uri,
+    }
+
+
+@app.get("/api/gocardless/partner/merchants")
+async def list_gocardless_partner_merchants(status: str = None):
+    """List all merchants onboarded via the Partner signup flow."""
+    try:
+        from sql_rag.gocardless_payments import get_payments_db
+        payments_db = get_payments_db()
+        signups = payments_db.get_all_merchant_signups(status=status)
+
+        # Strip access tokens — never expose to frontend
+        safe_signups = []
+        for s in signups:
+            safe = {k: v for k, v in s.items() if k != 'merchant_access_token'}
+            safe['has_token'] = bool(s.get('merchant_access_token'))
+            safe_signups.append(safe)
+
+        return {"success": True, "merchants": safe_signups}
+    except Exception as e:
+        logger.error(f"Failed to list partner merchants: {e}")
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/gocardless/settings")
@@ -25896,6 +26574,10 @@ async def get_gocardless_settings():
     # Remove the actual token from response
     settings.pop("api_access_token", None)
 
+    # Mask partner client secret
+    if settings.get("partner_client_secret"):
+        settings["partner_client_secret"] = "••••••••"
+
     return {"success": True, "settings": settings}
 
 
@@ -25909,8 +26591,14 @@ async def save_gocardless_settings(request: Request):
     """
     body = await request.json()
 
-    # Load existing settings as base
-    existing_settings = _load_gocardless_settings()
+    # Detect if this is a partner portal request (has partner credentials but no session)
+    is_partner_request = any(k in body for k in ['partner_client_id', 'partner_client_secret', 'partner_redirect_uri'])
+
+    # Load existing settings as base — use partner-aware loader if needed
+    if is_partner_request:
+        existing_settings = _load_gocardless_partner_settings()
+    else:
+        existing_settings = _load_gocardless_settings()
 
     # Merge: only update fields present in the request body
     settings = dict(existing_settings)
@@ -25919,8 +26607,9 @@ async def save_gocardless_settings(request: Request):
                  "archive_folder", "api_sandbox", "data_source",
                  "exclude_description_patterns", "gocardless_bank_code",
                  "gocardless_transfer_cbtype", "subscription_tag",
-                 "subscription_frequencies"]:
-        if key in body:
+                 "subscription_frequencies", "partner_client_id",
+                 "partner_redirect_uri"]:
+        if key in body and body[key] is not None:
             settings[key] = body[key]
 
     # API token: only update if a non-empty value is provided
@@ -25928,7 +26617,17 @@ async def save_gocardless_settings(request: Request):
     if api_access_token and str(api_access_token).strip():
         settings["api_access_token"] = str(api_access_token).strip()
 
-    if _save_gocardless_settings(settings):
+    # Partner client secret: only update if a non-empty, non-masked value is provided
+    partner_secret = body.get("partner_client_secret")
+    if partner_secret and str(partner_secret).strip() and partner_secret != '••••••••':
+        settings["partner_client_secret"] = str(partner_secret).strip()
+
+    if is_partner_request:
+        save_ok = _save_gocardless_partner_settings(settings)
+    else:
+        save_ok = _save_gocardless_settings(settings)
+
+    if save_ok:
         return {"success": True, "message": "Settings saved"}
     return {"success": False, "error": "Failed to save settings"}
 
@@ -26610,7 +27309,8 @@ async def get_gocardless_api_payouts(
                         "amount": p.amount,
                         "invoice_refs": [],
                         "customer_id": p.customer_id or "",
-                        "mandate_id": p.mandate_id or ""
+                        "mandate_id": p.mandate_id or "",
+                        "gc_payment_id": p.id or ""
                     })
 
                 # Use the full customer matching helper for proper name/invoice/amount matching
@@ -26808,6 +27508,113 @@ async def get_gocardless_import_history(
     except Exception as e:
         logger.error(f"Error fetching GoCardless import history: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/gocardless/receipt-search")
+async def search_gocardless_receipts(
+    customer: str = Query(None, description="Customer name or account code to search"),
+    from_date: str = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    to_date: str = Query(None, description="Filter to date (YYYY-MM-DD)"),
+    limit: int = Query(200, description="Maximum results")
+):
+    """
+    Search GoCardless receipts by customer name/account and date range.
+
+    Flattens payments_json from import history into individual receipt rows,
+    each with the parent batch info (payout date, batch ref, bank reference).
+    """
+    try:
+        import json as _json
+
+        # Fetch all history in the date range (generous limit to search within)
+        history = email_storage.get_gocardless_import_history(
+            limit=1000,
+            target_system='opera_se',
+            from_date=from_date,
+            to_date=to_date
+        )
+
+        # Flatten payments_json into individual receipt rows
+        receipts = []
+        search_lower = customer.lower().strip() if customer else None
+
+        # Collect all unique accounts for Opera name lookup
+        all_accounts = set()
+        for record in history:
+            if record.get('payments_json'):
+                try:
+                    payments = _json.loads(record['payments_json'])
+                    for p in payments:
+                        if p.get('customer_account'):
+                            all_accounts.add(p['customer_account'])
+                except Exception:
+                    pass
+
+        # Look up Opera customer names
+        opera_names = {}
+        if all_accounts and sql_connector:
+            try:
+                placeholders = ','.join([f"'{a}'" for a in all_accounts])
+                name_df = sql_connector.execute_query(
+                    f"SELECT sn_account, sn_name FROM sname WITH (NOLOCK) WHERE sn_account IN ({placeholders})"
+                )
+                if name_df is not None and len(name_df) > 0:
+                    for _, row in name_df.iterrows():
+                        opera_names[row['sn_account'].strip()] = row['sn_name'].strip()
+            except Exception as e:
+                logger.debug(f"Failed to look up Opera customer names for receipt search: {e}")
+
+        for record in history:
+            if not record.get('payments_json'):
+                continue
+            try:
+                payments = _json.loads(record['payments_json'])
+            except Exception:
+                continue
+
+            for p in payments:
+                acct = p.get('customer_account', '')
+                gc_name = p.get('gc_customer_name') or p.get('customer_name') or ''
+                opera_name = p.get('opera_customer_name') or opera_names.get(acct, '')
+                amount = p.get('amount', 0)
+
+                # Apply customer search filter
+                if search_lower:
+                    searchable = f"{acct} {gc_name} {opera_name}".lower()
+                    if search_lower not in searchable:
+                        continue
+
+                receipts.append({
+                    'import_id': record.get('id'),
+                    'receipt_date': record.get('post_date') or record.get('import_date'),
+                    'payout_id': record.get('payout_id'),
+                    'bank_reference': record.get('bank_reference'),
+                    'batch_ref': record.get('batch_ref'),
+                    'customer_account': acct,
+                    'customer_name': opera_name or gc_name,
+                    'gc_customer_name': gc_name,
+                    'amount': amount,
+                    'currency': p.get('currency', 'GBP'),
+                    'payment_id': p.get('payment_id', ''),
+                    'invoice_ref': p.get('invoice_ref') or p.get('reference') or '',
+                })
+
+        # Sort by date descending, then customer name
+        receipts.sort(key=lambda r: (r['receipt_date'] or '', r['customer_name']), reverse=True)
+        receipts = receipts[:limit]
+
+        # Summary totals
+        total_amount = sum(r['amount'] for r in receipts)
+
+        return {
+            "success": True,
+            "total": len(receipts),
+            "total_amount": round(total_amount, 2),
+            "receipts": receipts
+        }
+    except Exception as e:
+        logger.error(f"Error searching GoCardless receipts: {e}")
+        return {"success": False, "error": friendly_db_error(str(e))}
 
 
 @app.post("/api/gocardless/revalidate-batches")
@@ -27606,7 +28413,8 @@ async def import_gocardless_from_email(
                 "opera_customer_name": p.get('opera_customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
-                "auto_allocate": p.get('auto_allocate', True)
+                "auto_allocate": p.get('auto_allocate', True),
+                "gc_payment_id": p.get('gc_payment_id', '')
             })
 
         # Validate fees_nominal_account is configured if there are fees
@@ -27717,7 +28525,8 @@ async def import_gocardless_from_email(
                     payment_count=len(payments),
                     payments_json=history_payments,
                     batch_ref=result.batch_number,
-                    imported_by="GOCARDLS"
+                    imported_by="GOCARDLS",
+                    post_date=post_date
                 )
             except Exception as track_err:
                 logger.warning(f"Failed to record GoCardless import tracking: {track_err}")
@@ -29965,7 +30774,8 @@ async def opera3_import_bank_statement_from_pdf(
                     closing_balance=stmt_closing,
                     statement_date=stmt_date_str,
                     account_number=stmt_acct_num,
-                    sort_code=stmt_sort_code
+                    sort_code=stmt_sort_code,
+                    file_path=file_path
                 )
 
                 # Persist statement transactions for reconciliation lifecycle
@@ -31016,7 +31826,8 @@ async def opera3_import_gocardless_batch(
                     payment_count=len(validated_payments),
                     payments_json=payments_json,
                     batch_ref=result.entry_number,
-                    imported_by="GOCARDLS"
+                    imported_by="GOCARDLS",
+                    post_date=post_date
                 )
                 logger.info(f"Recorded Opera 3 GoCardless import to history: ref={reference}")
             except Exception as hist_err:
@@ -31140,6 +31951,110 @@ async def opera3_get_gocardless_import_history(
     except Exception as e:
         logger.error(f"Error fetching Opera 3 GoCardless import history: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/gocardless/receipt-search")
+async def opera3_search_gocardless_receipts(
+    customer: str = Query(None, description="Customer name or account code to search"),
+    from_date: str = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    to_date: str = Query(None, description="Filter to date (YYYY-MM-DD)"),
+    limit: int = Query(200, description="Maximum results")
+):
+    """
+    Search GoCardless receipts by customer name/account and date range (Opera 3).
+
+    Flattens payments_json from import history into individual receipt rows.
+    """
+    try:
+        import json as _json
+
+        history = email_storage.get_gocardless_import_history(
+            limit=1000,
+            target_system='opera3',
+            from_date=from_date,
+            to_date=to_date
+        )
+
+        receipts = []
+        search_lower = customer.lower().strip() if customer else None
+
+        # Collect accounts for Opera 3 name lookup
+        all_accounts = set()
+        for record in history:
+            if record.get('payments_json'):
+                try:
+                    payments = _json.loads(record['payments_json'])
+                    for p in payments:
+                        if p.get('customer_account'):
+                            all_accounts.add(p['customer_account'])
+                except Exception:
+                    pass
+
+        # Look up Opera 3 customer names from FoxPro sname
+        opera_names = {}
+        if all_accounts:
+            try:
+                from sql_rag.opera3_foxpro import Opera3FoxPro
+                data_path = current_company.get('opera3_data_path', '') if current_company else ''
+                if data_path:
+                    o3 = Opera3FoxPro(data_path)
+                    for acct in all_accounts:
+                        try:
+                            records = o3.read_table('sname', f"sn_account = '{acct}'")
+                            if records:
+                                opera_names[acct] = records[0].get('SN_NAME', records[0].get('sn_name', '')).strip()
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"Failed to look up Opera 3 customer names for receipt search: {e}")
+
+        for record in history:
+            if not record.get('payments_json'):
+                continue
+            try:
+                payments = _json.loads(record['payments_json'])
+            except Exception:
+                continue
+
+            for p in payments:
+                acct = p.get('customer_account', '')
+                gc_name = p.get('gc_customer_name') or p.get('customer_name') or ''
+                opera_name = p.get('opera_customer_name') or opera_names.get(acct, '')
+                amount = p.get('amount', 0)
+
+                if search_lower:
+                    searchable = f"{acct} {gc_name} {opera_name}".lower()
+                    if search_lower not in searchable:
+                        continue
+
+                receipts.append({
+                    'import_id': record.get('id'),
+                    'receipt_date': record.get('post_date') or record.get('import_date'),
+                    'payout_id': record.get('payout_id'),
+                    'bank_reference': record.get('bank_reference'),
+                    'batch_ref': record.get('batch_ref'),
+                    'customer_account': acct,
+                    'customer_name': opera_name or gc_name,
+                    'gc_customer_name': gc_name,
+                    'amount': amount,
+                    'currency': p.get('currency', 'GBP'),
+                    'payment_id': p.get('payment_id', ''),
+                    'invoice_ref': p.get('invoice_ref') or p.get('reference') or '',
+                })
+
+        receipts.sort(key=lambda r: (r['receipt_date'] or '', r['customer_name']), reverse=True)
+        receipts = receipts[:limit]
+        total_amount = sum(r['amount'] for r in receipts)
+
+        return {
+            "success": True,
+            "total": len(receipts),
+            "total_amount": round(total_amount, 2),
+            "receipts": receipts
+        }
+    except Exception as e:
+        logger.error(f"Error searching Opera 3 GoCardless receipts: {e}")
+        return {"success": False, "error": friendly_db_error(str(e))}
 
 
 # ============================================================
@@ -33098,7 +34013,8 @@ async def opera3_import_gocardless_from_email(
                 "opera_customer_name": p.get('opera_customer_name', ''),
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
-                "auto_allocate": p.get('auto_allocate', True)
+                "auto_allocate": p.get('auto_allocate', True),
+                "gc_payment_id": p.get('gc_payment_id', '')
             })
 
         if gocardless_fees and gocardless_fees > 0 and not fees_nominal_account:
@@ -33202,7 +34118,8 @@ async def opera3_import_gocardless_from_email(
                         payment_count=len(payments),
                         payments_json=history_payments,
                         batch_ref=result.batch_number,
-                        imported_by="GOCARDLS"
+                        imported_by="GOCARDLS",
+                        post_date=post_date
                     )
                 except Exception as track_err:
                     logger.warning(f"Failed to record import tracking: {track_err}")

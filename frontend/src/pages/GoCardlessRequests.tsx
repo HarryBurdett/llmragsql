@@ -3,10 +3,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CreditCard, CheckCircle, AlertCircle, Clock, RefreshCw, Plus,
   Send, X, Link, FileText, Users, Ban, History, Search,
-  Pause, Play
+  Pause, Play, Mail, ExternalLink
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert } from '../components/ui';
+import { GoCardlessSetupWizard } from '../components/GoCardlessSetupWizard';
 
 // Searchable customer dropdown component — uses React Query (same pattern as SalesOrders)
 async function fetchCustomerSearch(search: string): Promise<Array<{account: string; name: string; postcode?: string}>> {
@@ -328,6 +329,31 @@ interface RepeatDocument {
 }
 
 export default function GoCardlessRequests() {
+  // Check if GoCardless is configured
+  const { data: setupStatus, isLoading: setupLoading } = useQuery({
+    queryKey: ['gcSetupStatus'],
+    queryFn: async () => {
+      const res = await authFetch('/api/gocardless/setup-status');
+      return res.json();
+    },
+    staleTime: 60000,
+  });
+
+  if (setupLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <RefreshCw className="h-6 w-6 animate-spin text-gray-400" />
+      </div>
+    );
+  }
+  if (setupStatus && !setupStatus.configured) {
+    return <GoCardlessSetupWizard />;
+  }
+
+  return <GoCardlessRequestsInner />;
+}
+
+function GoCardlessRequestsInner() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabType>('invoices');
   const [selectedInvoices, setSelectedInvoices] = useState<Set<string>>(new Set());
@@ -371,6 +397,14 @@ export default function GoCardlessRequests() {
   const [linkGcName, setLinkGcName] = useState('');
   const [linkSuggestions, setLinkSuggestions] = useState<Array<{account: string; name: string; score: number; is_gc: boolean}>>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+
+  // Create Mandate modal state
+  const [showCreateMandateModal, setShowCreateMandateModal] = useState(false);
+  const [setupAccount, setSetupAccount] = useState('');
+  const [setupAccountName, setSetupAccountName] = useState('');
+  const [setupEmail, setSetupEmail] = useState('');
+  const [loadingSetupEmail, setLoadingSetupEmail] = useState(false);
+
   // Stats query - cached, only refresh on interval or explicit refetch
   const { data: statsData } = useQuery({
     queryKey: ['gocardless-payment-stats'],
@@ -442,6 +476,93 @@ export default function GoCardlessRequests() {
         setSuccess(data.message || 'Mandates synced successfully');
         refetchMandates();
         refetchEligible();
+      } else {
+        setError(data.error);
+      }
+    }
+  });
+
+  // Pending mandate setups query
+  const { data: pendingSetupsData, refetch: refetchPendingSetups } = useQuery({
+    queryKey: ['gocardless-pending-setups'],
+    queryFn: async () => {
+      const res = await authFetch(gcUrl('/mandates/pending-setups'));
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error);
+      return data as { setups: Array<{
+        id: number; opera_account: string; opera_name: string; customer_email: string;
+        billing_request_id: string; authorisation_url: string; mandate_id: string;
+        status: string; status_label: string; status_detail: string;
+        email_sent_at: string; mandate_active_at: string; created_at: string;
+      }>; pending_count: number };
+    },
+    enabled: activeTab === 'mandates',
+    staleTime: 30 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
+
+  // Create mandate setup mutation
+  const createMandateSetupMutation = useMutation({
+    mutationFn: async (params: { opera_account: string; opera_name: string; customer_email: string }) => {
+      const res = await authFetch(gcUrl('/mandates/setup'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params)
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setShowCreateMandateModal(false);
+        setSetupAccount('');
+        setSetupAccountName('');
+        setSetupEmail('');
+        const emailMsg = data.email_sent
+          ? `Email sent to ${data.setup?.customer_email || 'customer'}`
+          : `Setup created but email not sent: ${data.email_error || 'unknown error'}`;
+        setSuccess(`Mandate setup initiated for ${data.setup?.opera_name || data.setup?.opera_account}. ${emailMsg}`);
+        refetchPendingSetups();
+      } else {
+        setError(data.error);
+      }
+    }
+  });
+
+  // Check mandate setups mutation
+  const checkSetupsMutation = useMutation({
+    mutationFn: async () => {
+      const res = await authFetch(gcUrl('/mandates/check-setups'), { method: 'POST' });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        const completed = data.updates?.filter((u: any) => u.new_status === 'completed').length || 0;
+        if (completed > 0) {
+          setSuccess(`${completed} mandate setup(s) completed and linked to Opera`);
+          refetchMandates();
+          refetchEligible();
+        } else if (data.updates?.length > 0) {
+          setSuccess(`Checked ${data.updates.length} setup(s) — status updated`);
+        } else {
+          setSuccess(data.message || 'No updates');
+        }
+        refetchPendingSetups();
+      } else {
+        setError(data.error);
+      }
+    }
+  });
+
+  // Cancel mandate setup mutation
+  const cancelSetupMutation = useMutation({
+    mutationFn: async (setupId: number) => {
+      const res = await authFetch(gcUrl(`/mandates/cancel-setup/${setupId}`), { method: 'POST' });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      if (data.success) {
+        setSuccess(data.message);
+        refetchPendingSetups();
       } else {
         setError(data.error);
       }
@@ -1461,6 +1582,16 @@ export default function GoCardlessRequests() {
             <div className="space-y-6">
               {/* Action buttons */}
               <div className="flex items-center justify-end gap-2">
+                {(pendingSetupsData?.pending_count ?? 0) > 0 && (
+                  <button
+                    onClick={() => checkSetupsMutation.mutate()}
+                    disabled={checkSetupsMutation.isPending}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-blue-600 hover:text-blue-800 border border-blue-300 rounded-lg hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${checkSetupsMutation.isPending ? 'animate-spin' : ''}`} />
+                    {checkSetupsMutation.isPending ? 'Checking...' : 'Check Pending Setups'}
+                  </button>
+                )}
                 <button
                   onClick={() => syncMandatesMutation.mutate()}
                   disabled={syncMandatesMutation.isPending}
@@ -1469,7 +1600,95 @@ export default function GoCardlessRequests() {
                   <RefreshCw className={`w-4 h-4 ${syncMandatesMutation.isPending ? 'animate-spin' : ''}`} />
                   {syncMandatesMutation.isPending ? 'Syncing...' : 'Sync from GoCardless'}
                 </button>
+                <button
+                  onClick={() => {
+                    setSetupAccount('');
+                    setSetupAccountName('');
+                    setSetupEmail('');
+                    setShowCreateMandateModal(true);
+                  }}
+                  className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700"
+                >
+                  <Plus className="w-4 h-4" />
+                  Create Mandate
+                </button>
               </div>
+
+              {/* Pending Mandate Setups */}
+              {(pendingSetupsData?.setups?.filter(s => !['completed', 'failed', 'cancelled'].includes(s.status)).length ?? 0) > 0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2 mb-3">
+                    <Mail className="w-4 h-4 text-blue-600" />
+                    Pending Mandate Setups
+                  </h3>
+                  <div className="overflow-hidden rounded-lg border border-blue-200">
+                    <table className="min-w-full divide-y divide-blue-200">
+                      <thead className="bg-blue-50">
+                        <tr>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-blue-800 uppercase">Account</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-blue-800 uppercase">Customer</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-blue-800 uppercase">Email</th>
+                          <th className="px-3 py-2 text-center text-xs font-medium text-blue-800 uppercase">Status</th>
+                          <th className="px-3 py-2 text-left text-xs font-medium text-blue-800 uppercase">Sent</th>
+                          <th className="px-3 py-2 text-center text-xs font-medium text-blue-800 uppercase">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-blue-100 bg-white">
+                        {pendingSetupsData?.setups
+                          ?.filter(s => !['completed', 'failed', 'cancelled'].includes(s.status))
+                          .map(setup => (
+                          <tr key={setup.id}>
+                            <td className="px-3 py-2 text-sm font-medium text-gray-900">{setup.opera_account}</td>
+                            <td className="px-3 py-2 text-sm text-gray-700">{setup.opera_name || '-'}</td>
+                            <td className="px-3 py-2 text-sm text-gray-500">{setup.customer_email}</td>
+                            <td className="px-3 py-2 text-center">
+                              <span className={`inline-flex px-2 py-1 text-xs rounded-full ${
+                                setup.status === 'email_sent' ? 'bg-blue-100 text-blue-800' :
+                                setup.status === 'authorisation_pending' ? 'bg-amber-100 text-amber-800' :
+                                setup.status === 'mandate_created' ? 'bg-green-100 text-green-800' :
+                                'bg-gray-100 text-gray-800'
+                              }`}>
+                                {setup.status_label}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-sm text-gray-500">
+                              {setup.email_sent_at ? new Date(setup.email_sent_at).toLocaleDateString('en-GB') : '-'}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <div className="flex items-center justify-center gap-1">
+                                {setup.authorisation_url && (
+                                  <a
+                                    href={setup.authorisation_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-700 bg-blue-100 rounded hover:bg-blue-200"
+                                    title="Open authorisation URL"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                  </a>
+                                )}
+                                <button
+                                  onClick={() => cancelSetupMutation.mutate(setup.id)}
+                                  disabled={cancelSetupMutation.isPending}
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-xs text-red-700 bg-red-100 rounded hover:bg-red-200"
+                                  title="Cancel setup"
+                                >
+                                  <Ban className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {(pendingSetupsData?.setups?.some(s => s.status_detail) ?? false) && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      {pendingSetupsData?.setups?.find(s => s.status_detail)?.status_detail}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Section 1: Customers with Mandates */}
               <div>
@@ -1592,19 +1811,43 @@ export default function GoCardlessRequests() {
                             </td>
                             <td className="px-3 py-2 text-sm text-gray-500">{customer.email || '-'}</td>
                             <td className="px-3 py-2 text-center">
-                              <button
-                                onClick={() => {
-                                  setLinkOperaAccount(customer.account);
-                                  setLinkOperaName(customer.name);
-                                  setLinkMandateId('');
-                                  setLinkGcName('');
-                                  setShowLinkModal(true);
-                                }}
-                                className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-amber-700 bg-amber-100 rounded hover:bg-amber-200"
-                              >
-                                <Plus className="w-3 h-3" />
-                                Add Mandate
-                              </button>
+                              <div className="flex items-center justify-center gap-1">
+                                <button
+                                  onClick={async () => {
+                                    setSetupAccount(customer.account);
+                                    setSetupAccountName(customer.name);
+                                    setSetupEmail(customer.email || '');
+                                    if (!customer.email) {
+                                      setLoadingSetupEmail(true);
+                                      try {
+                                        const res = await authFetch(gcUrl(`/customer-email/${customer.account}`));
+                                        const data = await res.json();
+                                        if (data.success && data.email) setSetupEmail(data.email);
+                                      } catch { /* ignore */ }
+                                      setLoadingSetupEmail(false);
+                                    }
+                                    setShowCreateMandateModal(true);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-white bg-green-600 rounded hover:bg-green-700"
+                                >
+                                  <Mail className="w-3 h-3" />
+                                  Create Mandate
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setLinkOperaAccount(customer.account);
+                                    setLinkOperaName(customer.name);
+                                    setLinkMandateId('');
+                                    setLinkGcName('');
+                                    setShowLinkModal(true);
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-amber-700 bg-amber-100 rounded hover:bg-amber-200"
+                                  title="Link an existing GoCardless mandate"
+                                >
+                                  <Link className="w-3 h-3" />
+                                  Link
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -2061,6 +2304,113 @@ export default function GoCardlessRequests() {
                 className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Mandate Modal */}
+      {showCreateMandateModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Create Mandate</h3>
+              <button onClick={() => setShowCreateMandateModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-sm text-gray-600 mb-4">
+              Search for an Opera customer, then send them an email with a link to set up their Direct Debit mandate through GoCardless.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Opera Customer
+                </label>
+                <CustomerAccountSearch
+                  value={setupAccount}
+                  valueName={setupAccountName}
+                  onChange={async (account, name) => {
+                    setSetupAccount(account);
+                    setSetupAccountName(name);
+                    if (account) {
+                      setLoadingSetupEmail(true);
+                      try {
+                        const res = await authFetch(gcUrl(`/customer-email/${account}`));
+                        const data = await res.json();
+                        if (data.success && data.email) {
+                          setSetupEmail(data.email);
+                        } else {
+                          setSetupEmail('');
+                        }
+                      } catch {
+                        setSetupEmail('');
+                      }
+                      setLoadingSetupEmail(false);
+                    } else {
+                      setSetupEmail('');
+                    }
+                  }}
+                  placeholder="Type to search Opera customers..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Customer Email
+                </label>
+                {loadingSetupEmail ? (
+                  <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
+                    <RefreshCw className="w-4 h-4 text-gray-400 animate-spin" />
+                    <span className="text-sm text-gray-500">Loading email from Opera...</span>
+                  </div>
+                ) : (
+                  <input
+                    type="email"
+                    value={setupEmail}
+                    onChange={e => setSetupEmail(e.target.value)}
+                    placeholder="customer@example.com"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-green-500 focus:border-green-500"
+                  />
+                )}
+                <p className="text-xs text-gray-500 mt-1">
+                  The authorisation link will be sent to this email address. You can override the Opera default if needed.
+                </p>
+              </div>
+
+              {setupAccount && setupEmail && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+                  <p className="font-medium text-blue-900">
+                    An email will be sent to <span className="font-mono">{setupEmail}</span> with a secure link to set up a Direct Debit mandate via GoCardless.
+                  </p>
+                  <p className="text-blue-700 mt-1">
+                    Once the customer completes the authorisation, the mandate will be automatically linked to {setupAccountName || setupAccount} and the account flagged as GC.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                onClick={() => setShowCreateMandateModal(false)}
+                className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => createMandateSetupMutation.mutate({
+                  opera_account: setupAccount,
+                  opera_name: setupAccountName,
+                  customer_email: setupEmail,
+                })}
+                disabled={!setupAccount || !setupEmail || createMandateSetupMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50"
+              >
+                <Send className="w-4 h-4" />
+                {createMandateSetupMutation.isPending ? 'Sending...' : 'Send Authorisation Email'}
               </button>
             </div>
           </div>

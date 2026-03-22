@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { CreditCard, Upload, CheckCircle, AlertCircle, ArrowRight, X, History, Wifi, RefreshCw } from 'lucide-react';
+import { CreditCard, Upload, CheckCircle, AlertCircle, ArrowRight, X, History, Wifi, RefreshCw, Search } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Alert } from '../components/ui';
+import { GoCardlessSetupWizard } from '../components/GoCardlessSetupWizard';
 
 type OperaVersion = 'opera-sql' | 'opera3';
 
@@ -160,6 +161,7 @@ interface Payment {
   match_status?: 'matched' | 'review' | 'unmatched';
   possible_duplicate?: boolean;
   duplicate_warning?: string;
+  gc_payment_id?: string;
 }
 
 interface ParseResult {
@@ -228,6 +230,31 @@ interface EmailBatch {
 }
 
 export function GoCardlessImport() {
+  // Check if GoCardless is configured
+  const { data: setupStatus, isLoading: setupLoading } = useQuery({
+    queryKey: ['gcSetupStatus'],
+    queryFn: async () => {
+      const res = await authFetch('/api/gocardless/setup-status');
+      return res.json();
+    },
+    staleTime: 60000,
+  });
+
+  if (setupLoading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <RefreshCw className="h-6 w-6 animate-spin text-gray-400" />
+      </div>
+    );
+  }
+  if (setupStatus && !setupStatus.configured) {
+    return <GoCardlessSetupWizard />;
+  }
+
+  return <GoCardlessImportInner />;
+}
+
+function GoCardlessImportInner() {
   // Fetch current company for storage key isolation
   const { data: companiesData } = useQuery({
     queryKey: ['companies'],
@@ -283,7 +310,7 @@ export function GoCardlessImport() {
     gocardless_fees: number;
     vat_on_fees: number;
     payment_count: number;
-    import_date: string;
+    receipt_date: string;
     imported_by: string;
     payments_json?: string;
   }>>([]);
@@ -296,6 +323,29 @@ export function GoCardlessImport() {
   const [reImportRecord, setReImportRecord] = useState<{ id: number; reference: string; amount: number } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<number | null>(null);
+
+  // Receipt search state
+  const [showReceiptSearch, setShowReceiptSearch] = useState(false);
+  const [searchCustomer, setSearchCustomer] = useState('');
+  const [searchFromDate, setSearchFromDate] = useState('');
+  const [searchToDate, setSearchToDate] = useState('');
+  const [searchResults, setSearchResults] = useState<Array<{
+    import_id: number;
+    receipt_date: string;
+    payout_id: string;
+    bank_reference: string;
+    batch_ref: string;
+    customer_account: string;
+    customer_name: string;
+    gc_customer_name: string;
+    amount: number;
+    currency: string;
+    payment_id: string;
+    invoice_ref: string;
+  }>>([]);
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [searchTotalAmount, setSearchTotalAmount] = useState(0);
+  const [searchLoading, setSearchLoading] = useState(false);
 
   // Settings state (loaded from saved settings for import defaults)
   const [dataSource, setDataSource] = useState<'email' | 'api' | 'history'>('api');
@@ -470,6 +520,31 @@ export function GoCardlessImport() {
       console.error('Failed to fetch history:', error);
     } finally {
       setHistoryLoading(false);
+    }
+  };
+
+  // Search GoCardless receipts by customer / date
+  const searchReceipts = async () => {
+    setSearchLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (searchCustomer.trim()) params.append('customer', searchCustomer.trim());
+      if (searchFromDate) params.append('from_date', searchFromDate);
+      if (searchToDate) params.append('to_date', searchToDate);
+      const searchUrl = operaVersion === 'opera3'
+        ? `/api/opera3/gocardless/receipt-search?${params}`
+        : `/api/gocardless/receipt-search?${params}`;
+      const response = await authFetch(searchUrl);
+      const data = await response.json();
+      if (data.success) {
+        setSearchResults(data.receipts || []);
+        setSearchTotal(data.total || 0);
+        setSearchTotalAmount(data.total_amount || 0);
+      }
+    } catch (error) {
+      console.error('Failed to search receipts:', error);
+    } finally {
+      setSearchLoading(false);
     }
   };
 
@@ -707,7 +782,8 @@ export function GoCardlessImport() {
         opera_customer_name: p.matched_name || '',
         amount: p.amount,
         description: p.description,
-        auto_allocate: !autoAllocateDisabled.has(idx)
+        auto_allocate: !autoAllocateDisabled.has(idx),
+        gc_payment_id: p.gc_payment_id || ''
       }));
 
       // Use batch-specific posting date, fall back to global postDate
@@ -828,7 +904,9 @@ export function GoCardlessImport() {
       }
 
       const response = await authFetch(`/api/gocardless/skip-payout?${params}`, {
-        method: 'POST'
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(batch.batch.payments || []),
       });
       const data = await response.json();
 
@@ -1032,7 +1110,8 @@ export function GoCardlessImport() {
             customer_account: p.matched_account,
             amount: p.amount,
             description: p.description || p.customer_name,
-            auto_allocate: !autoAllocateDisabled.has(idx)
+            auto_allocate: !autoAllocateDisabled.has(idx),
+            gc_payment_id: p.gc_payment_id || ''
           })))
         }
       );
@@ -1095,6 +1174,13 @@ export function GoCardlessImport() {
           </div>
         )}
         <button
+          onClick={() => { setShowReceiptSearch(true); }}
+          className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+        >
+          <Search className="h-4 w-4" />
+          Receipt Search
+        </button>
+        <button
           onClick={() => { setShowHistory(true); fetchHistory(historyLimit); }}
           className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
         >
@@ -1102,6 +1188,131 @@ export function GoCardlessImport() {
           History
         </button>
       </PageHeader>
+
+      {/* Receipt Search Modal */}
+      {showReceiptSearch && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[85vh] overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Search className="h-5 w-5 text-blue-500" />
+                GoCardless Receipt Search
+              </h2>
+              <button onClick={() => setShowReceiptSearch(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Search Filters */}
+            <div className="p-4 border-b bg-gray-50">
+              <div className="flex flex-wrap items-end gap-4">
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Customer</label>
+                  <input
+                    type="text"
+                    value={searchCustomer}
+                    onChange={(e) => setSearchCustomer(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') searchReceipts(); }}
+                    placeholder="Name or account code..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">From</label>
+                  <input
+                    type="date"
+                    value={searchFromDate}
+                    onChange={(e) => setSearchFromDate(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">To</label>
+                  <input
+                    type="date"
+                    value={searchToDate}
+                    onChange={(e) => setSearchToDate(e.target.value)}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+                <button
+                  onClick={searchReceipts}
+                  disabled={searchLoading}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2"
+                >
+                  {searchLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                  Search
+                </button>
+                {(searchCustomer || searchFromDate || searchToDate) && (
+                  <button
+                    onClick={() => { setSearchCustomer(''); setSearchFromDate(''); setSearchToDate(''); setSearchResults([]); setSearchTotal(0); setSearchTotalAmount(0); }}
+                    className="px-3 py-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Results */}
+            <div className="overflow-auto" style={{ maxHeight: 'calc(85vh - 200px)' }}>
+              {searchResults.length > 0 ? (
+                <>
+                  {/* Summary bar */}
+                  <div className="px-4 py-2 bg-blue-50 border-b text-sm flex items-center justify-between">
+                    <span className="text-blue-700 font-medium">{searchTotal} receipt{searchTotal !== 1 ? 's' : ''} found</span>
+                    <span className="text-blue-600 font-semibold">Total: {getCurrencySymbol()}{searchTotalAmount.toFixed(2)}</span>
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
+                        <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Account</th>
+                        <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Customer</th>
+                        <th className="text-right px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Amount</th>
+                        <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Reference</th>
+                        <th className="text-left px-4 py-2.5 text-xs font-semibold text-gray-500 uppercase tracking-wider">Batch</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {searchResults.map((r, idx) => (
+                        <tr key={`${r.import_id}-${r.payment_id}-${idx}`} className="hover:bg-gray-50">
+                          <td className="px-4 py-2.5 text-gray-600 whitespace-nowrap">
+                            {r.receipt_date ? new Date(r.receipt_date).toLocaleDateString() : '-'}
+                          </td>
+                          <td className="px-4 py-2.5 font-mono text-gray-700">{r.customer_account}</td>
+                          <td className="px-4 py-2.5 text-gray-800">
+                            {r.customer_name}
+                            {r.gc_customer_name && r.gc_customer_name !== r.customer_name && (
+                              <span className="text-gray-400 text-xs ml-1">({r.gc_customer_name})</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-right font-medium text-gray-800">
+                            {getCurrencySymbol(r.currency)}{r.amount?.toFixed(2)}
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-500 text-xs">{r.invoice_ref || r.bank_reference || '-'}</td>
+                          <td className="px-4 py-2.5 text-gray-500 text-xs">{r.batch_ref || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              ) : searchLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <RefreshCw className="h-5 w-5 animate-spin text-blue-500 mr-2" />
+                  <span className="text-gray-500">Searching...</span>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+                  <Search className="h-10 w-10 mb-3 text-gray-300" />
+                  <p className="text-sm">Search by customer name, account code, or date range</p>
+                  <p className="text-xs mt-1">Enter search criteria above and click Search</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* History Modal */}
       {showHistory && (
@@ -1237,7 +1448,7 @@ export function GoCardlessImport() {
                             <td colSpan={9} className="p-0">
                               <div className="bg-blue-50 border-t border-b border-blue-200 px-4 py-3">
                                 {payments.length === 0 ? (
-                                  <p className="text-sm text-gray-500 italic">No payment details available for this batch.</p>
+                                  <p className="text-sm text-gray-500 italic">No payment details recorded for this batch. Re-import to capture details.</p>
                                 ) : (
                                   <table className="w-full text-sm">
                                     <thead>
