@@ -25539,13 +25539,26 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
         description = payment.get('description', '')
         mandate_id = payment.get('mandate_id', '')
         customer_id = payment.get('customer_id', '')
+        metadata = payment.get('metadata', {})
 
         best_match = None
         best_name = None
         match_method = None
+        metadata_invoice_refs = []
+
+        # Priority 0: Metadata from GoCardless (set when payment was created via this app)
+        # Contains opera_account and invoice refs — gives an exact match
+        meta_account = (metadata.get('opera_account') or '').strip()
+        meta_invoices = (metadata.get('invoices') or '').strip()
+        if meta_account and meta_account in customers:
+            best_match = meta_account
+            best_name = customers.get(meta_account, '')
+            match_method = f"metadata:opera_account={meta_account}"
+            if meta_invoices:
+                metadata_invoice_refs = [r.strip() for r in meta_invoices.split(',') if r.strip()]
 
         # Priority 1: Mandate lookup by mandate_id
-        if mandate_id and mandate_id in mandate_by_id:
+        if not best_match and mandate_id and mandate_id in mandate_by_id:
             m = mandate_by_id[mandate_id]
             best_match = m['opera_account']
             best_name = customers.get(best_match, m.get('opera_name', ''))
@@ -25599,11 +25612,16 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
 
         logger.info(f"GC match: '{customer_name}' mandate={mandate_id} -> {best_match} ({best_name}) via {match_method}")
 
+        # Use invoice refs from metadata if available (exact match from payment request)
+        invoice_refs = payment.get('invoice_refs', [])
+        if not invoice_refs and metadata_invoice_refs:
+            invoice_refs = metadata_invoice_refs
+
         matched_payment = {
             "customer_name": customer_name,
             "description": description,
             "amount": amount,
-            "invoice_refs": payment.get('invoice_refs', []),
+            "invoice_refs": invoice_refs,
             "matched_account": best_match,
             "matched_name": best_name,
             "match_score": 1.0 if best_match else 0,
@@ -27460,7 +27478,8 @@ async def get_gocardless_api_payouts(
                         "invoice_refs": [],
                         "customer_id": p.customer_id or "",
                         "mandate_id": p.mandate_id or "",
-                        "gc_payment_id": p.id or ""
+                        "gc_payment_id": p.id or "",
+                        "metadata": p.metadata or {}
                     })
 
                 # Use the full customer matching helper for proper name/invoice/amount matching
@@ -33464,14 +33483,17 @@ async def opera3_request_gocardless_payment(
 
         settings = _load_gocardless_settings()
 
-        # Build description — prepend statement reference if configured
+        # Build description — kept short for bank statement visibility (~18 chars on BACS)
         stmt_ref = (settings.get("request_statement_reference") or "").strip()[:10]
         if not description:
-            inv_list = ",".join(invoices)
-            if stmt_ref:
-                description = f"{stmt_ref} {inv_list}"
+            if len(invoices) == 1:
+                inv_part = invoices[0]
             else:
-                description = inv_list
+                inv_part = f"{invoices[0]} +{len(invoices) - 1}"
+            if stmt_ref:
+                description = f"{stmt_ref} {inv_part}"
+            else:
+                description = inv_part
         elif stmt_ref and not description.startswith(stmt_ref):
             description = f"{stmt_ref} {description}"
 
@@ -36564,14 +36586,18 @@ async def request_gocardless_payment(
         # Get API settings
         settings = _load_gocardless_settings()
 
-        # Build description — prepend statement reference if configured
+        # Build description — kept short for bank statement visibility (~18 chars on BACS).
+        # Full invoice list is always in metadata.invoices regardless.
         stmt_ref = (settings.get("request_statement_reference") or "").strip()[:10]
         if not description:
-            inv_list = ",".join(invoices)
-            if stmt_ref:
-                description = f"{stmt_ref} {inv_list}"
+            if len(invoices) == 1:
+                inv_part = invoices[0]
             else:
-                description = inv_list
+                inv_part = f"{invoices[0]} +{len(invoices) - 1}"
+            if stmt_ref:
+                description = f"{stmt_ref} {inv_part}"
+            else:
+                description = inv_part
         elif stmt_ref and not description.startswith(stmt_ref):
             description = f"{stmt_ref} {description}"
         access_token = settings.get("api_access_token")
