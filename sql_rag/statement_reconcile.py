@@ -663,16 +663,27 @@ IMPORTANT EXTRACTION RULES:
         opening_balance = float(opening_bal_raw) if opening_bal_raw is not None else None
         closing_balance = float(closing_bal_raw) if closing_bal_raw is not None else None
 
-        # If opening balance not extracted, calculate from first transaction
+        # If opening balance not extracted, calculate from the oldest transaction.
+        # Sort by date, take the earliest, then: opening = balance - amount
+        # (reverse the transaction to get the balance before it)
         if opening_balance is None and raw_transactions:
             try:
-                first_txn = raw_transactions[0]
-                first_bal = float(first_txn['balance']) if first_txn.get('balance') is not None else None
-                if first_bal is not None:
-                    money_in = float(first_txn.get('money_in') or 0)
-                    money_out = float(first_txn.get('money_out') or 0)
-                    opening_balance = round(first_bal - money_in + money_out, 2)
-                    logger.info(f"Calculated opening balance from first transaction: £{opening_balance:,.2f}")
+                # Find the oldest transaction by date
+                sorted_txns = sorted(
+                    [t for t in raw_transactions if t.get('date')],
+                    key=lambda t: str(t['date'])
+                )
+                if sorted_txns:
+                    oldest = sorted_txns[0]
+                    oldest_bal = float(oldest['balance']) if oldest.get('balance') is not None else None
+                    if oldest_bal is not None:
+                        # Amount = money_in - money_out (net effect on balance)
+                        money_in = float(oldest.get('money_in') or 0)
+                        money_out = float(oldest.get('money_out') or 0)
+                        txn_amount = money_in - money_out
+                        opening_balance = round(oldest_bal - txn_amount, 2)
+                        logger.info(f"Calculated opening balance from oldest transaction ({oldest.get('date')}): "
+                                    f"bal £{oldest_bal:,.2f} - amount £{txn_amount:,.2f} = £{opening_balance:,.2f}")
             except Exception:
                 pass
 
