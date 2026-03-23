@@ -681,11 +681,15 @@ IMPORTANT EXTRACTION RULES:
                 )
                 if sorted_txns:
                     oldest = sorted_txns[0]
-                    oldest_bal = float(oldest['balance']) if oldest.get('balance') is not None else None
+                    def _safe_float(val):
+                        if val is None: return None
+                        if isinstance(val, (int, float)): return float(val)
+                        s = str(val).replace(',', '').replace('£', '').replace('$', '').strip()
+                        return float(s) if s else None
+                    oldest_bal = _safe_float(oldest.get('balance'))
                     if oldest_bal is not None:
-                        # Amount = money_in - money_out (net effect on balance)
-                        money_in = float(oldest.get('money_in') or 0)
-                        money_out = float(oldest.get('money_out') or 0)
+                        money_in = _safe_float(oldest.get('money_in')) or 0
+                        money_out = _safe_float(oldest.get('money_out')) or 0
                         txn_amount = money_in - money_out
                         opening_balance = round(oldest_bal - txn_amount, 2)
                         logger.info(f"Calculated opening balance from oldest transaction ({oldest.get('date')}): "
@@ -725,11 +729,19 @@ IMPORTANT EXTRACTION RULES:
                 logger.debug(f"Transaction {i} skipped - no valid date: {txn_data.get('date')}")
                 continue
 
-            # Parse money values - Gemini may return them as strings
+            # Parse money values - Gemini may return them as formatted strings with commas
+            def _parse_amount(val):
+                if val is None:
+                    return None
+                if isinstance(val, (int, float)):
+                    return float(val)
+                s = str(val).replace(',', '').replace('£', '').replace('$', '').strip()
+                return float(s) if s else None
+
             money_out_raw = txn_data.get('money_out')
             money_in_raw = txn_data.get('money_in')
-            money_out = float(money_out_raw) if money_out_raw is not None else None
-            money_in = float(money_in_raw) if money_in_raw is not None else None
+            money_out = _parse_amount(money_out_raw)
+            money_in = _parse_amount(money_in_raw)
 
             # Calculate signed amount (positive = in, negative = out)
             if money_out and money_out > 0:
@@ -745,7 +757,7 @@ IMPORTANT EXTRACTION RULES:
                 date=date,
                 description=txn_data.get('description', ''),
                 amount=amount,
-                balance=txn_data.get('balance'),
+                balance=_parse_amount(txn_data.get('balance')),
                 transaction_type=txn_data.get('type'),
                 reference=txn_data.get('reference'),
                 raw_text=json.dumps(txn_data)

@@ -375,11 +375,16 @@ Important:
             if not date:
                 continue
 
-            # Parse money values - Gemini may return them as strings
+            # Parse money values - Gemini may return them as formatted strings with commas
+            def _parse_amount(val):
+                if val is None: return None
+                if isinstance(val, (int, float)): return float(val)
+                s = str(val).replace(',', '').replace('£', '').replace('$', '').strip()
+                return float(s) if s else None
             money_out_raw = txn_data.get('money_out')
             money_in_raw = txn_data.get('money_in')
-            money_out = float(money_out_raw) if money_out_raw is not None else None
-            money_in = float(money_in_raw) if money_in_raw is not None else None
+            money_out = _parse_amount(money_out_raw)
+            money_in = _parse_amount(money_in_raw)
 
             # Calculate signed amount (positive = in, negative = out)
             if money_out and money_out > 0:

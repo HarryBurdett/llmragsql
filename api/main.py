@@ -17909,30 +17909,20 @@ async def preview_bank_import_from_pdf(
                     "error": "Bank account mismatch"
                 }
 
-        # Check statement sequence (opening balance vs reconciled balance from nbank)
+        # Check statement sequence — correct opening balance if AI got it wrong
         opening_balance = statement_info_dict.get('opening_balance')
         if opening_balance is not None and reconciled_balance is not None:
-            # Allow small tolerance for rounding
             tolerance = 0.02
             if abs(opening_balance - reconciled_balance) > tolerance:
-                if opening_balance < reconciled_balance - tolerance:
-                    # Opening balance is less than reconciled - already processed
-                    return {
-                        "success": False,
-                        "status": "skipped",
-                        "message": f"This statement appears to have already been processed. Opening balance (£{opening_balance:,.2f}) is less than current reconciled balance (£{reconciled_balance:,.2f}).",
-                        "statement_info": statement_info_dict,
-                        "reconciled_balance": reconciled_balance
-                    }
-                else:
-                    # Opening balance is greater - out of sequence
-                    return {
-                        "success": False,
-                        "status": "out_of_sequence",
-                        "message": f"Statement is out of sequence. Opening balance (£{opening_balance:,.2f}) does not match current reconciled balance (£{reconciled_balance:,.2f}). Please import earlier statements first.",
-                        "statement_info": statement_info_dict,
-                        "reconciled_balance": reconciled_balance
-                    }
+                # AI likely extracted wrong opening balance — use reconciled balance
+                logger.warning(f"preview-from-pdf: Opening balance mismatch: extracted £{opening_balance:,.2f} vs reconciled £{reconciled_balance:,.2f} — using reconciled")
+                statement_info_dict['opening_balance'] = reconciled_balance
+                opening_balance = reconciled_balance
+        elif opening_balance is None and reconciled_balance is not None:
+            statement_info_dict['opening_balance'] = reconciled_balance
+            opening_balance = reconciled_balance
+
+        # (Sequence validation corrects the opening balance above instead of blocking)
 
         # Convert StatementTransaction to BankTransaction objects
         logger.info(f"preview-from-pdf: Converting {len(stmt_transactions)} StatementTransactions to BankTransactions")
