@@ -9599,6 +9599,43 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       Import not available for Opera 3 (read-only data source)
                     </p>
                   )}
+
+                  {/* Reconcile prompt — shown directly in Import section when all items are in Opera */}
+                  {(allAlreadyInOpera || allItemsHandled) && !bankImportResult && (
+                    <div className="mt-4 p-4 bg-green-100 border-2 border-green-400 rounded-lg">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="font-semibold text-green-800">Ready to Reconcile</h4>
+                          <p className="text-sm text-green-700 mt-1">All matched transactions are already in Opera. Proceed to reconcile the statement.</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const reconcileData = {
+                              bank_code: selectedBankCode,
+                              statement_transactions: bankPreview?.statement_transactions || [],
+                              statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
+                              source: (selectedPdfFile ? 'pdf' : 'email') as string,
+                              imported_at: new Date().toISOString(),
+                              import_id: undefined as number | undefined,
+                              filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,
+                              email_id: selectedEmailStatement?.emailId || undefined,
+                              full_path: selectedPdfFile?.fullPath || undefined,
+                            };
+                            if (onImportComplete) {
+                              onImportComplete(reconcileData);
+                            } else {
+                              sessionStorage.setItem(currentCompanyId ? `reconcile_statement_data_${currentCompanyId}` : 'reconcile_statement_data', JSON.stringify(reconcileData));
+                              window.location.href = '/cashbook/statement-reconcile';
+                            }
+                          }}
+                          className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold flex items-center gap-2 shadow-md"
+                        >
+                          Proceed to Reconcile
+                          <ArrowRight className="h-5 w-5" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Errors */}
