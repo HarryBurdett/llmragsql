@@ -127,8 +127,21 @@ export function useVoiceControl(): UseVoiceControlReturn {
     };
   }, [isSupported]);
 
-  const startListening = useCallback(() => {
+  const startListening = useCallback(async () => {
     if (!recognitionRef.current) return;
+
+    // Explicitly request mic permission first — some browsers won't prompt
+    // via SpeechRecognition.start() alone
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Release the stream immediately — we just needed the permission grant
+      stream.getTracks().forEach(t => t.stop());
+    } catch (err: any) {
+      setError(err.name === 'NotAllowedError'
+        ? 'Microphone access denied — check browser permissions'
+        : `Microphone error: ${err.message}`);
+      return;
+    }
 
     wantListeningRef.current = true;
     setTranscript('');

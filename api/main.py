@@ -33553,15 +33553,18 @@ async def opera3_request_gocardless_payment(
 
 @app.post("/api/opera3/gocardless/payment-requests/bulk")
 async def opera3_request_bulk_payments(
+    request: Request,
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
-    requests: List[Dict[str, Any]] = Body(..., description="List of payment requests")
 ):
     """Request multiple payments at once (Opera 3 data source)."""
+    body = await request.json()
+    payment_requests = body.get("requests", body) if isinstance(body, dict) else body
+
     results = []
     success_count = 0
     fail_count = 0
 
-    for req in requests:
+    for req in payment_requests:
         try:
             result = await opera3_request_gocardless_payment(
                 data_path=data_path,
@@ -33583,7 +33586,7 @@ async def opera3_request_bulk_payments(
     return {
         "success": fail_count == 0,
         "results": results,
-        "summary": {"total": len(requests), "succeeded": success_count, "failed": fail_count}
+        "summary": {"total": len(payment_requests), "succeeded": success_count, "failed": fail_count}
     }
 
 
@@ -36667,18 +36670,20 @@ async def request_gocardless_payment(
 
 
 @app.post("/api/gocardless/payment-requests/bulk")
-async def request_bulk_payments(
-    requests: List[Dict[str, Any]] = Body(..., description="List of payment requests")
-):
+async def request_bulk_payments(request: Request):
     """
     Request multiple payments at once.
     Each request should have: opera_account, invoices, amount (optional)
     """
+    body = await request.json()
+    # Accept both {"requests": [...]} and bare [...]
+    payment_requests = body.get("requests", body) if isinstance(body, dict) else body
+
     results = []
     success_count = 0
     fail_count = 0
 
-    for req in requests:
+    for req in payment_requests:
         try:
             # Call single payment endpoint logic
             result = await request_gocardless_payment(
@@ -36708,7 +36713,7 @@ async def request_bulk_payments(
         "success": fail_count == 0,
         "results": results,
         "summary": {
-            "total": len(requests),
+            "total": len(payment_requests),
             "succeeded": success_count,
             "failed": fail_count
         }
