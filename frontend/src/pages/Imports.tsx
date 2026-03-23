@@ -9601,7 +9601,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   )}
 
                   {/* Reconcile prompt — shown directly in Import section when all items are in Opera */}
-                  {(allAlreadyInOpera || allItemsHandled) && !bankImportResult && (
+                  {(allAlreadyInOpera || allItemsHandled) && (
                     <div className="mt-4 p-4 bg-green-100 border-2 border-green-400 rounded-lg">
                       <div className="flex items-center justify-between">
                         <div>
