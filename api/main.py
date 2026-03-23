@@ -22588,11 +22588,13 @@ async def manage_bank_statements(request: Request):
                     try:
                         # Map action verb to past tense for CHECK constraint
                         target_system_map = {'archive': 'archived', 'delete': 'deleted', 'retain': 'retained'}
+                        # Map source to DB-compatible value ('pdf' -> 'file')
+                        db_source = 'file' if source == 'pdf' else source
                         email_storage.record_bank_statement_import(
                             bank_code=bank_code,
                             filename=filename,
                             transactions_imported=0,
-                            source=source,
+                            source=db_source,
                             target_system=target_system_map[action],
                             email_id=email_id if source == 'email' else None,
                             attachment_id=attachment_id,
