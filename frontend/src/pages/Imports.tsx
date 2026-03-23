@@ -405,7 +405,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [recurringOverrideDates, setRecurringOverrideDates] = useState<Record<string, string>>({});
   const [postingRecurring, setPostingRecurring] = useState(false);
   const [recurringPostResults, setRecurringPostResults] = useState<Array<{entry_ref: string; success: boolean; message?: string; error?: string}>>([]);
-  const [recurringCheckDone, setRecurringCheckDone] = useState(false);
+  // When launched from BankStatementHub with initialStatement, the hub already
+  // checked recurring entries — skip the duplicate check in Imports
+  const [recurringCheckDone, setRecurringCheckDone] = useState(bankRecOnly && !!initialStatement);
   const [recurringCheckBank, setRecurringCheckBank] = useState<string>(''); // tracks which bank was checked
 
   // Ignore transaction confirmation state
@@ -640,8 +642,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setSequenceError(null);
     setTabSearchFilter('');
     // Reset recurring entries check so it re-fires for the new statement
+    // (but skip if bankRecOnly — the hub already checked)
     setRecurringCheckBank('');
-    setRecurringCheckDone(false);
+    if (!bankRecOnly) setRecurringCheckDone(false);
     setShowRecurringWarning(false);
     setRecurringEntries([]);
     setRepeatEntriesProcessed(false);
