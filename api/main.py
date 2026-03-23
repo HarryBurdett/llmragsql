@@ -546,9 +546,10 @@ async def lifespan(app: FastAPI):
         customer_linker = CustomerLinker(sql_connector)
         logger.info("Customer linker initialized")
 
-        # Initialize sync manager
+        # Initialize sync manager — pass the proxy so it always uses
+        # the active company's email storage (not a fixed reference)
         email_sync_manager = EmailSyncManager(
-            storage=real_email_storage,
+            storage=email_storage,
             categorizer=email_categorizer,
             linker=customer_linker
         )
@@ -2583,7 +2584,7 @@ async def switch_company(request: Request, company_id: str):
 
         # Update email_sync_manager to use this company's storage
         if email_sync_manager:
-            email_sync_manager.storage = _company_email_storages[company_id]
+            # Sync manager uses the email_storage proxy which auto-resolves per company
             email_sync_manager.providers.clear()
             try:
                 await _initialize_email_providers()
@@ -5108,7 +5109,21 @@ async def _initialize_email_providers():
     if not email_storage or not email_sync_manager:
         return
 
-    # First, register any existing providers from the database
+    # Load email config from company JSON (authoritative source)
+    # If the company file has email settings, use them to ensure the DB provider
+    # always has the correct config (survives DB resets and password mis-saves)
+    company_email_config = None
+    try:
+        co_id = _get_active_company_id()
+        if co_id:
+            co_data = load_company(co_id)
+            if co_data and co_data.get('email'):
+                company_email_config = co_data['email']
+                logger.info(f"Found email config in company '{co_id}' JSON: server={company_email_config.get('server')}")
+    except Exception:
+        pass
+
+    # Register existing providers from the database
     try:
         existing_providers = email_storage.get_all_providers(enabled_only=True)
         for provider_info in existing_providers:
@@ -5116,7 +5131,15 @@ async def _initialize_email_providers():
             provider_type = provider_info['provider_type']
             provider_config = provider_info.get('config', {})
 
-            if not provider_config:
+            # If company JSON has email config, use it to fill missing/empty DB fields
+            if company_email_config and provider_type == 'imap':
+                for key in ('server', 'port', 'username', 'password', 'use_ssl'):
+                    company_val = company_email_config.get(key)
+                    if company_val and not provider_config.get(key):
+                        provider_config[key] = company_val
+                        logger.info(f"Backfilled email provider {key} from company JSON")
+
+            if not provider_config or not provider_config.get('server'):
                 logger.warning(f"Provider {provider_id} ({provider_info['name']}) has no config, skipping")
                 continue
 
@@ -5534,10 +5557,33 @@ async def get_email_detail(email_id: int):
 
 
 @app.post("/api/email/sync")
-async def trigger_email_sync(provider_id: Optional[int] = None):
+async def trigger_email_sync(request: Request, provider_id: Optional[int] = None):
     """Trigger email sync (all providers or specific one)."""
     if not email_sync_manager:
         raise HTTPException(status_code=503, detail="Email sync manager not initialized")
+
+    # Ensure sync uses the correct company's email storage.
+    # Read company directly from session DB (bypasses any module cache issues)
+    active_co = _get_active_company_id()
+    if not active_co:
+        auth_header = request.headers.get('Authorization', '')
+        token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+        if token and user_auth:
+            import sqlite3 as _sqlite3
+            try:
+                conn = _sqlite3.connect(str(user_auth.DB_PATH))
+                row = conn.execute('SELECT company_id FROM sessions WHERE token = ?', (token,)).fetchone()
+                if row and row[0]:
+                    active_co = row[0]
+                    _request_company_id.set(active_co)
+                conn.close()
+            except Exception:
+                pass
+    if not active_co:
+        active_co = _default_company_id
+    logger.info(f"Email sync: active_company={active_co}")
+    if active_co and active_co in _company_email_storages:
+        email_sync_manager.storage = _company_email_storages[active_co]
 
     try:
         if provider_id:
@@ -13410,9 +13456,14 @@ async def process_bank_statement(
 
         # Pass config to use configured Gemini API key and model
         reconciler = StatementReconciler(sql_connector, config=config)
+        logger.info(f"process-statement-SE: reconciler created for {Path(file_path).name}")
 
         # Check if there's a reconciliation in progress in Opera
-        rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
+        try:
+            rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
+        except Exception as rec_err:
+            logger.error(f"process-statement-SE: check_reconciliation_in_progress failed: {rec_err}")
+            rec_in_progress = {'in_progress': False}
         if rec_in_progress['in_progress']:
             return {
                 "success": False,
@@ -13423,7 +13474,14 @@ async def process_bank_statement(
             }
 
         # Extract transactions from statement
+        logger.info(f"process-statement-SE: BEFORE extraction for {Path(file_path).name}")
+        import sys as _sys
+        _sys.stderr.write(f"EXTRACT: calling extract_transactions_from_pdf for {file_path}\n")
+        _sys.stderr.flush()
         statement_info, transactions = reconciler.extract_transactions_from_pdf(file_path)
+        _sys.stderr.write(f"EXTRACT: got {len(transactions)} transactions, info_open={statement_info.opening_balance}\n")
+        _sys.stderr.flush()
+        logger.info(f"process-statement-SE: AFTER extraction — got {len(transactions)} transactions")
 
         # Validate that statement matches the selected bank account
         bank_validation = reconciler.validate_statement_bank(bank_code, statement_info)
@@ -21482,6 +21540,7 @@ async def scan_all_banks_for_statements(
                         logger.info(f"Scan-all: skipping {filename} — no Opera bank match from metadata")
                     else:
                       try:
+                        logger.info(f"Scan-all: attempting PDF download for {filename} (email_id={email_id}, bank={matched_bank_code})")
                         email_detail = email_storage.get_email_by_id(email_id)
                         if email_detail and email_sync_manager:
                             provider_id = email_detail.get('provider_id')
@@ -21543,7 +21602,43 @@ async def scan_all_banks_for_statements(
 
                                         pdf_extracted = True
                                     else:
-                                        logger.info(f"Scan-all: cache MISS for {filename} — balances will be extracted when selected")
+                                        # Cache miss — lightweight AI extraction for balances only
+                                        logger.info(f"Scan-all: cache MISS for {filename} — extracting statement info")
+                                        try:
+                                            import tempfile
+                                            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                                                tmp.write(content_bytes)
+                                                tmp_path = tmp.name
+                                            try:
+                                                from sql_rag.statement_reconcile import StatementReconciler
+                                                reconciler = StatementReconciler(sql_connector, config=config)
+                                                info_data = reconciler.extract_statement_info_only(tmp_path)
+                                                if info_data:
+                                                    opening = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
+                                                    closing = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
+                                                    stmt_entry['opening_balance'] = opening
+                                                    stmt_entry['closing_balance'] = closing
+                                                    stmt_entry['period_start'] = info_data.get('period_start')
+                                                    stmt_entry['period_end'] = info_data.get('period_end')
+                                                    stmt_entry['bank_name'] = info_data.get('bank_name')
+                                                    stmt_entry['account_number'] = info_data.get('account_number')
+                                                    stmt_entry['sort_code'] = info_data.get('sort_code')
+
+                                                    stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                                                    stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                                                    if stmt_sort and stmt_acct:
+                                                        matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct)) or matched_bank_code
+
+                                                    pdf_extracted = True
+                                                    logger.info(f"Scan-all: extracted {filename} — open={opening} close={closing}")
+                                            finally:
+                                                import os as _os2
+                                                try:
+                                                    _os2.unlink(tmp_path)
+                                                except Exception:
+                                                    pass
+                                        except Exception as ext_err:
+                                            logger.warning(f"Scan-all: extraction failed for {filename}: {ext_err}")
                       except Exception as dl_err:
                         logger.warning(f"Scan-all: could not download {filename}: {dl_err}")
 
@@ -21598,15 +21693,21 @@ async def scan_all_banks_for_statements(
                     elif dest_file.exists():
                         saved_or_exists = True  # No bytes to compare, file with same name exists
                     else:
-                        # File not on disk yet — download if we don't have bytes
+                        # File not on disk yet — download from IMAP and save to folder
+                        logger.info(f"Email PDF '{filename}' not on disk at {dest_file} — downloading from IMAP")
                         if content_bytes is None:
                             try:
                                 email_detail_dl = email_storage.get_email_by_id(email_id)
-                                if email_detail_dl and email_sync_manager:
+                                if not email_detail_dl:
+                                    logger.warning(f"Could not find email {email_id} in storage for PDF download")
+                                elif not email_sync_manager:
+                                    logger.warning(f"No email_sync_manager available for PDF download")
+                                elif email_detail_dl and email_sync_manager:
                                     provider_id_dl = email_detail_dl.get('provider_id')
                                     message_id_dl = email_detail_dl.get('message_id')
                                     folder_id_dl = email_detail_dl.get('folder_id', 'INBOX')
 
+                                    logger.info(f"Download attempt: provider_id={provider_id_dl}, message_id={message_id_dl}, folder={folder_id_dl}, providers={list(email_sync_manager.providers.keys())}")
                                     if provider_id_dl and message_id_dl and provider_id_dl in email_sync_manager.providers:
                                         provider_dl = email_sync_manager.providers[provider_id_dl]
 
@@ -21626,6 +21727,11 @@ async def scan_all_banks_for_statements(
                                                     break
                                         if dl_result:
                                             content_bytes = dl_result[0]
+                                            logger.info(f"Downloaded {filename}: {len(content_bytes)} bytes")
+                                        else:
+                                            logger.warning(f"Download returned None for {filename}")
+                                    else:
+                                        logger.warning(f"Provider {provider_id_dl} not registered — cannot download {filename}")
                             except Exception as dl_err:
                                 logger.warning(f"Could not download email PDF '{filename}' for folder save: {dl_err}")
 

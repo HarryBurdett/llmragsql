@@ -22,9 +22,6 @@ PUBLIC_PATHS: Set[str] = {
     '/api/systems',  # For login page installation selector
     '/api/health',
     '/api/email/send',  # Allow sending emails without auth (for demos, notifications)
-    '/api/email/sync',  # Allow syncing mailbox without auth
-    '/api/email/folders',  # Allow checking folders without auth
-    '/api/email/messages',  # Allow checking messages without auth
     '/docs',
     '/openapi.json',
     '/redoc',
@@ -36,7 +33,6 @@ PUBLIC_PREFIXES: tuple = (
     '/docs',
     '/openapi',
     '/redoc',
-    '/api/email/',  # Allow email operations without auth
     '/api/systems/',  # Allow system switching from login page (pre-auth)
     '/api/gocardless/partner/initiate-signup',  # Crakd.ai signup app (external merchants)
     '/api/gocardless/partner/callback',  # GoCardless OAuth redirect

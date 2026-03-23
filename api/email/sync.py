@@ -175,12 +175,15 @@ class EmailSyncManager:
                         pass
 
                 # Fetch emails
-                logger.info(f"Fetching emails from {folder['folder_name']} (since: {since})")
+                logger.info(f"Fetching emails from {folder['folder_name']} (since: {since}, folder_id={folder['folder_id']})")
                 emails = await provider.fetch_emails(
                     folder['folder_id'],
                     since=since,
                     limit=100
                 )
+                logger.info(f"Fetched {len(emails)} emails from {folder['folder_name']}")
+                for e in emails:
+                    logger.info(f"  -> {e.message_id[:40]}  subj={e.subject}  att={e.has_attachments}")
 
                 for email in emails:
                     # Store email

@@ -21,6 +21,13 @@
     "revenue_categories_field": "sg_group",
     "margin_categories_field": "sg_group"
   },
+  "email": {
+    "server": "10.10.100.12",
+    "port": 993,
+    "username": "intsys@aoc.local",
+    "password": "Possible123!",
+    "use_ssl": true
+  },
   "modules": {
     "debtors_control": true,
     "creditors_control": true,

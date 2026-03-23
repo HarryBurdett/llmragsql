@@ -419,8 +419,7 @@ class StatementReconciler:
                 nk_acnt as bank_code,
                 nk_desc as bank_name,
                 nk_recbal / 100.0 as reconciled_balance,
-                nk_lststno as last_statement_number,
-                nk_lstdate as last_reconciliation_date
+                nk_lststno as last_statement_number
             FROM nbank WITH (NOLOCK)
             WHERE nk_acnt = '{bank_acnt}'
         """
@@ -453,11 +452,63 @@ class StatementReconciler:
             'bank_name': row['bank_name'],
             'reconciled_balance': reconciled_balance,
             'current_balance': current_balance,
-            'last_statement_number': int(row['last_statement_number']) if row['last_statement_number'] else 0,
-            'last_reconciliation_date': row['last_reconciliation_date'].isoformat() if hasattr(row['last_reconciliation_date'], 'isoformat') else str(row['last_reconciliation_date']) if row['last_reconciliation_date'] else None
+            'last_statement_number': int(row['last_statement_number']) if row['last_statement_number'] else 0
         }
         logger.info(f"get_bank_reconciliation_status: Returning status for '{bank_acnt}': stmt#{result['last_statement_number']}, recbal={result['reconciled_balance']}, curbal={result['current_balance']}")
         return result
+
+    def extract_statement_info_only(self, pdf_path: str) -> Optional[Dict]:
+        """
+        Lightweight extraction — gets only statement header info (balances, dates,
+        bank details) without extracting individual transactions. Much faster than
+        full extraction, suitable for scanning.
+
+        Returns dict with opening_balance, closing_balance, period_start, period_end,
+        bank_name, account_number, sort_code — or None on failure.
+        """
+        pdf_bytes = Path(pdf_path).read_bytes()
+
+        # Check cache first
+        from sql_rag.pdf_extraction_cache import get_extraction_cache
+        cache = get_extraction_cache()
+        pdf_hash = cache.hash_pdf(pdf_bytes)
+        cached = cache.get(pdf_hash)
+        if cached:
+            info_data, _ = cached
+            return info_data
+
+        prompt = """Look at ONLY the header/summary area of this bank statement PDF.
+Extract the statement details — do NOT extract individual transactions.
+
+Return ONLY this JSON:
+{
+    "bank_name": "Bank name",
+    "account_number": "Account number",
+    "sort_code": "Sort code (e.g. 12-34-56)",
+    "statement_date": "YYYY-MM-DD",
+    "period_start": "YYYY-MM-DD",
+    "period_end": "YYYY-MM-DD",
+    "opening_balance": 12345.67,
+    "closing_balance": 12345.67
+}
+
+IMPORTANT: Return actual values from this document, not examples. Return ONLY valid JSON."""
+
+        try:
+            file_part = {"mime_type": "application/pdf", "data": pdf_bytes}
+            response = self.model.generate_content([file_part, prompt])
+            json_match = re.search(r'\{[\s\S]*\}', response.text)
+            if not json_match:
+                return None
+            info_data = json.loads(json_match.group())
+            # Mark as info-only so full extraction knows to re-extract
+            info_data['_info_only'] = True
+            cache.put(pdf_hash, info_data, [])
+            logger.info(f"Extracted statement info: open={info_data.get('opening_balance')}, close={info_data.get('closing_balance')}")
+            return info_data
+        except Exception as e:
+            logger.warning(f"Statement info extraction failed: {e}")
+            return None
 
     def extract_transactions_from_pdf(self, pdf_path: str) -> Tuple[StatementInfo, List[StatementTransaction]]:
         """
@@ -478,9 +529,13 @@ class StatementReconciler:
         cache = get_extraction_cache()
         pdf_hash = cache.hash_pdf(pdf_bytes)
         cached = cache.get(pdf_hash)
+        logger.info(f"extract_transactions_from_pdf: hash={pdf_hash[:16]}, cache_path={cache.db_path}, cached={'HIT' if cached else 'MISS'}")
         if cached:
             info_data, raw_transactions = cached
-            return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
+            logger.info(f"extract_transactions_from_pdf: info_only={info_data.get('_info_only', False)}, raw_txns={len(raw_transactions)}")
+            # Skip info-only cache entries (from lightweight scan extraction)
+            if not info_data.get('_info_only'):
+                return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
 
         # Use Gemini to extract transactions
         extraction_prompt = """Analyze this bank statement PDF and extract ALL transactions and statement details.
