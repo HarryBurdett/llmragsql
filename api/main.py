@@ -13655,10 +13655,11 @@ async def process_bank_statement(
 
         # Get unreconciled Opera entries for the date range
         # Use wider date range to catch entries that might have been posted with slightly different dates
-        # Add 7 days buffer on each side to account for date variations during import
+        # Add 14 days buffer on each side to catch entries posted with different dates
+        # (GC payouts, bank transfers can take several days to settle)
         from datetime import timedelta
-        date_from = statement_info.period_start - timedelta(days=7) if statement_info.period_start else None
-        date_to = statement_info.period_end + timedelta(days=7) if statement_info.period_end else None
+        date_from = statement_info.period_start - timedelta(days=14) if statement_info.period_start else None
+        date_to = statement_info.period_end + timedelta(days=14) if statement_info.period_end else None
 
         opera_entries = reconciler.get_unreconciled_entries(
             bank_code,
@@ -38249,8 +38250,8 @@ async def opera3_process_statement(
 
         # Get unreconciled Opera entries for the date range (with 7 day buffer)
         from datetime import timedelta
-        date_from = statement_info.period_start - timedelta(days=7) if statement_info.period_start else None
-        date_to = statement_info.period_end + timedelta(days=7) if statement_info.period_end else None
+        date_from = statement_info.period_start - timedelta(days=14) if statement_info.period_start else None
+        date_to = statement_info.period_end + timedelta(days=14) if statement_info.period_end else None
 
         opera_entries = reconciler.get_unreconciled_entries(
             bank_code,

@@ -899,49 +899,74 @@ IMPORTANT EXTRACTION RULES:
         opera_amount = round(opera_entry['value_pounds'], 2)
 
         if abs(stmt_amount - opera_amount) < 0.01:
-            score += 0.6
+            score += 0.5
             reasons.append(f"Amount matches exactly: {stmt_amount}")
         else:
             # No match if amounts don't match
             return 0.0, []
+
+        # Reference/description similarity — check BEFORE date so that
+        # a strong reference match can compensate for date differences
+        desc_lower = stmt_txn.description.lower()
+        opera_ref = (opera_entry.get('ae_ref') or '').lower().strip()
+        opera_detail = (opera_entry.get('ae_detail') or '').lower().strip()
+
+        ref_matched = False
+        # Check if Opera reference appears in statement description (or vice versa)
+        if opera_ref and len(opera_ref) > 3:
+            if opera_ref in desc_lower or desc_lower[:30] in opera_ref:
+                score += 0.3
+                reasons.append(f"Reference match: '{opera_ref.strip()}'")
+                ref_matched = True
+        # Also check if any significant portion of the Opera reference is in the description
+        if not ref_matched and opera_ref:
+            # Extract alphanumeric reference parts (e.g. "Y6A8JY7MX" from "CLOUDSIS-Y6A8JY7MX")
+            import re as _re
+            ref_parts = [p for p in _re.split(r'[\s\-/]+', opera_ref) if len(p) >= 4]
+            for part in ref_parts:
+                if part in desc_lower:
+                    score += 0.3
+                    reasons.append(f"Reference part '{part}' found in description")
+                    ref_matched = True
+                    break
+        if not ref_matched and opera_detail and len(opera_detail) > 3:
+            opera_words = set(w for w in opera_detail.split() if len(w) > 3)
+            desc_words = set(w for w in desc_lower.split() if len(w) > 3)
+            common_words = opera_words & desc_words
+            if common_words:
+                score += 0.1
+                reasons.append(f"Common words: {', '.join(list(common_words)[:3])}")
 
         # Date match
         stmt_date = stmt_txn.date.date() if isinstance(stmt_txn.date, datetime) else stmt_txn.date
         opera_date = opera_entry['ae_date']
         if isinstance(opera_date, datetime):
             opera_date = opera_date.date()
+        elif hasattr(opera_date, 'date'):
+            opera_date = opera_date.date()
 
         date_diff = abs((stmt_date - opera_date).days)
 
         if date_diff == 0:
-            score += 0.3
+            score += 0.2
             reasons.append("Date matches exactly")
         elif date_diff <= date_tolerance_days:
-            date_score = 0.3 * (1 - date_diff / (date_tolerance_days + 1))
+            date_score = 0.2 * (1 - date_diff / (date_tolerance_days + 1))
             score += date_score
             reasons.append(f"Date within {date_diff} days")
+        elif date_diff <= 14:
+            # Extended tolerance — reduced score but still considered
+            # (bank transfers, GC payouts can take several days)
+            date_score = 0.1 * (1 - (date_diff - date_tolerance_days) / 14)
+            score += max(date_score, 0)
+            reasons.append(f"Date within {date_diff} days (extended tolerance)")
         else:
-            # Date too far off, reduce score significantly
-            score *= 0.5
-            reasons.append(f"Date differs by {date_diff} days")
-
-        # Reference/description similarity bonus
-        desc_lower = stmt_txn.description.lower()
-        opera_ref = (opera_entry.get('ae_ref') or '').lower()
-        opera_detail = (opera_entry.get('ae_detail') or '').lower()
-
-        # Check for common keywords
-        if opera_ref and opera_ref in desc_lower:
-            score += 0.1
-            reasons.append(f"Reference '{opera_ref}' found in description")
-        elif opera_detail:
-            # Check if any significant words match
-            opera_words = set(w for w in opera_detail.split() if len(w) > 3)
-            desc_words = set(w for w in desc_lower.split() if len(w) > 3)
-            common_words = opera_words & desc_words
-            if common_words:
-                score += 0.05
-                reasons.append(f"Common words: {', '.join(list(common_words)[:3])}")
+            # Date very far off — only match if reference is strong
+            if ref_matched:
+                reasons.append(f"Date differs by {date_diff} days (reference match overrides)")
+            else:
+                score *= 0.5
+                reasons.append(f"Date differs by {date_diff} days")
 
         return min(score, 1.0), reasons
 
