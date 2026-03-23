@@ -13618,40 +13618,12 @@ async def process_bank_statement(
         sequence_validation = reconciler.validate_statement_sequence(bank_code, statement_info)
 
         if sequence_validation['status'] == 'skip':
-            # Already processed or earlier statement - silently return skip status
-            return {
-                "success": True,
-                "status": "skipped",
-                "reason": "already_processed",
-                "bank_code": bank_code,
-                "statement_info": {
-                    "bank_name": statement_info.bank_name,
-                    "account_number": statement_info.account_number,
-                    "opening_balance": statement_info.opening_balance,
-                    "closing_balance": statement_info.closing_balance
-                },
-                "reconciled_balance": sequence_validation['reconciled_balance']
-            }
+            # Log but don't block — the extracted opening balance may be wrong
+            logger.warning(f"Sequence validation: skip suggested (opening £{statement_info.opening_balance} vs reconciled £{sequence_validation['reconciled_balance']}) — proceeding anyway")
 
         if sequence_validation['status'] == 'pending':
-            # Future statement - missing one in between
-            return {
-                "success": True,
-                "status": "pending",
-                "reason": "missing_statement",
-                "bank_code": bank_code,
-                "statement_info": {
-                    "bank_name": statement_info.bank_name,
-                    "account_number": statement_info.account_number,
-                    "opening_balance": statement_info.opening_balance,
-                    "closing_balance": statement_info.closing_balance,
-                    "period_start": statement_info.period_start.isoformat() if statement_info.period_start else None,
-                    "period_end": statement_info.period_end.isoformat() if statement_info.period_end else None
-                },
-                "reconciled_balance": sequence_validation['reconciled_balance'],
-                "missing_statement_balance": sequence_validation['missing_statement_balance'],
-                "message": sequence_validation['message']
-            }
+            # Log but don't block — the extracted opening balance may be wrong
+            logger.warning(f"Sequence validation: pending suggested (opening £{statement_info.opening_balance} vs reconciled £{sequence_validation['reconciled_balance']}) — proceeding anyway")
 
         # Get unreconciled Opera entries for the date range
         # Use wider date range to catch entries that might have been posted with slightly different dates
