@@ -74,6 +74,8 @@ _file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelna
 logger.addHandler(_file_handler)
 # Also add to the opera_sql_import logger
 logging.getLogger('sql_rag.opera_sql_import').addHandler(_file_handler)
+logging.getLogger('api.auth_middleware').addHandler(_file_handler)
+logging.getLogger('api.auth_middleware').setLevel(logging.INFO)
 
 # --- Per-request company resolution ---
 # Multiple users may be logged into different companies simultaneously.
@@ -99,61 +101,135 @@ def _get_active_company_id() -> Optional[str]:
     return _default_company_id
 
 
-class _CompanyProxy:
-    """Proxy that delegates attribute access to the per-company instance.
+# Track the last company whose globals we set, so _ensure_company_context
+# can skip resets when called repeatedly with the same company.
+_last_active_company_id: Optional[str] = None
 
-    Allows existing code like ``sql_connector.execute_query(...)`` to work
-    unchanged — the proxy transparently routes to the right company's
-    real connector based on the active request context.
+
+def _ensure_company_context(company_id: str) -> None:
+    """Set module-level globals to point at the given company's resources.
+
+    This is safe because the server is single-threaded async (one uvicorn
+    worker), so only one request is executing at a time.  The function is
+    idempotent — if called with the same company twice in a row it is a
+    no-op (skips singleton resets).
     """
+    global sql_connector, email_storage, current_company, _last_active_company_id
 
-    def __init__(self, registry: dict, label: str):
-        object.__setattr__(self, '_registry', registry)
-        object.__setattr__(self, '_label', label)
+    if not company_id:
+        return
 
-    def _resolve(self):
-        company_id = _get_active_company_id()
-        reg = object.__getattribute__(self, '_registry')
-        if company_id and company_id in reg:
-            return reg[company_id]
-        # Fallback: return any registered instance (single-company case)
-        if reg:
-            return next(iter(reg.values()))
-        return None
+    changed = (company_id != _last_active_company_id)
 
-    def __getattr__(self, name):
-        real = self._resolve()
-        if real is None:
-            raise AttributeError(f"No {object.__getattribute__(self, '_label')} available (no company context)")
-        return getattr(real, name)
+    # 1. Swap sql_connector (create lazily if not yet registered)
+    if company_id not in _company_sql_connectors:
+        try:
+            co_data = _company_data.get(company_id) or load_company(company_id)
+            if co_data and co_data.get('database'):
+                config["database"]["database"] = co_data['database']
+                save_config(config)
+                _company_sql_connectors[company_id] = SQLConnector(CONFIG_PATH)
+                if co_data:
+                    _company_data[company_id] = co_data
+                logger.info(f"Created SQL connector for {company_id}")
+        except Exception as e:
+            logger.warning(f"Could not create SQL connector for {company_id}: {e}")
+    if company_id in _company_sql_connectors:
+        sql_connector = _company_sql_connectors[company_id]
 
-    def __setattr__(self, name, value):
-        real = self._resolve()
-        if real is None:
-            raise AttributeError(f"No {object.__getattribute__(self, '_label')} available")
-        setattr(real, name, value)
+    # 2. Swap email_storage (create lazily if not yet registered)
+    if company_id not in _company_email_storages:
+        try:
+            email_db = get_company_db_path(company_id, "email_data.db")
+            if email_db:
+                _company_email_storages[company_id] = EmailStorage(str(email_db))
+                logger.info(f"Created email storage for {company_id}")
+        except Exception as e:
+            logger.warning(f"Could not create email storage for {company_id}: {e}")
+    if company_id in _company_email_storages:
+        email_storage = _company_email_storages[company_id]
 
-    def __bool__(self):
-        return self._resolve() is not None
+    # 3. Set company_data's _current_company_id (drives get_current_db_path)
+    set_current_company_id(company_id)
 
-    def __eq__(self, other):
-        if other is None:
-            return self._resolve() is None
-        return self._resolve() == other
+    # 4. Set current_company dict
+    if company_id in _company_data:
+        current_company = _company_data[company_id]
 
-    def __ne__(self, other):
-        return not self.__eq__(other)
+    # 5. Update email_sync_manager to use this company's storage and re-register providers
+    if email_sync_manager and company_id in _company_email_storages:
+        email_sync_manager.storage = _company_email_storages[company_id]
+        if changed:
+            # Re-register email providers for the new company
+            email_sync_manager.providers.clear()
+            try:
+                company_storage = _company_email_storages[company_id]
+                existing_providers = company_storage.get_all_providers(enabled_only=True)
+                for provider_info in existing_providers:
+                    pid = provider_info['id']
+                    ptype = provider_info['provider_type']
+                    pconfig = provider_info.get('config', {})
+                    if pconfig and ptype == 'imap':
+                        provider = IMAPProvider(pconfig)
+                        email_sync_manager.register_provider(pid, provider)
+                        logger.info(f"Re-registered IMAP provider {provider_info['name']} for {company_id}")
+            except Exception as e:
+                logger.warning(f"Could not re-register email providers for {company_id}: {e}")
+
+    # 6. Update customer_linker connector
+    if customer_linker and company_id in _company_sql_connectors:
+        customer_linker.set_sql_connector(_company_sql_connectors[company_id])
+
+    # 7. Update import_lock path
+    if changed:
+        try:
+            from sql_rag.import_lock import set_db_path as set_import_lock_path
+            import_lock_path = get_company_db_path(company_id, "import_locks.db")
+            if import_lock_path:
+                set_import_lock_path(import_lock_path)
+        except Exception:
+            pass
+
+    # 8. Reset singletons only when the company actually changed
+    if changed:
+        try:
+            reset_supplier_statement_db()
+        except Exception:
+            pass
+        try:
+            from sql_rag.pdf_extraction_cache import reset_extraction_cache
+            reset_extraction_cache()
+        except Exception:
+            pass
+        try:
+            from sql_rag.gocardless_payments import reset_payments_db
+            reset_payments_db()
+        except Exception:
+            pass
+        try:
+            from sql_rag.opera_config import clear_control_accounts_cache
+            clear_control_accounts_cache()
+        except Exception:
+            pass
+        if customer_linker:
+            try:
+                customer_linker.clear_cache()
+            except Exception:
+                pass
+        logger.info(f"Company context switched to {company_id}")
+
+    _last_active_company_id = company_id
 
 
-# Global instances — these are now proxies that delegate to per-company instances
+# Global instances — plain globals, set per-request by _ensure_company_context
 config: Optional[configparser.ConfigParser] = None
-sql_connector = _CompanyProxy(_company_sql_connectors, 'sql_connector')
+sql_connector: Optional[SQLConnector] = None
 vector_db: Optional[VectorDB] = None
 llm = None
 current_company: Optional[Dict[str, Any]] = None
 
 # Email module global instances
-email_storage = _CompanyProxy(_company_email_storages, 'email_storage')
+email_storage: Optional[EmailStorage] = None
 email_sync_manager: Optional[EmailSyncManager] = None
 email_categorizer: Optional[EmailCategorizer] = None
 customer_linker: Optional[CustomerLinker] = None
@@ -425,8 +501,8 @@ def get_active_system() -> Optional[Dict[str, Any]]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global config, vector_db, llm, user_auth, current_company
-    global email_sync_manager, email_categorizer, customer_linker
+    global config, sql_connector, vector_db, llm, user_auth, current_company
+    global email_storage, email_sync_manager, email_categorizer, customer_linker
     global active_system_id, _default_company_id
 
     # Startup
@@ -542,14 +618,14 @@ async def lifespan(app: FastAPI):
         email_categorizer = EmailCategorizer(llm)
         logger.info("Email categorizer initialized")
 
-        # Initialize customer linker with SQL connector
-        customer_linker = CustomerLinker(sql_connector)
+        # Initialize customer linker with the real SQL connector
+        real_conn = _company_sql_connectors.get(_default_company_id) if _default_company_id else None
+        customer_linker = CustomerLinker(real_conn)
         logger.info("Customer linker initialized")
 
-        # Initialize sync manager — pass the proxy so it always uses
-        # the active company's email storage (not a fixed reference)
+        # Initialize sync manager with the real email storage instance
         email_sync_manager = EmailSyncManager(
-            storage=email_storage,
+            storage=real_email_storage,
             categorizer=email_categorizer,
             linker=customer_linker
         )
@@ -567,6 +643,11 @@ async def lifespan(app: FastAPI):
         logger.info(f"Supplier statement database initialized at {supplier_statement_db.db_path}")
     except Exception as e:
         logger.warning(f"Could not initialize supplier statement database: {e}")
+
+    # Set the module-level globals to the initial company's resources
+    if _default_company_id:
+        _ensure_company_context(_default_company_id)
+        logger.info(f"Initial company context set to {_default_company_id}")
 
     yield
 
@@ -2520,7 +2601,6 @@ async def switch_company(request: Request, company_id: str):
     subsequent requests automatically use the correct resources.
     """
     global current_company, config, vector_db, _default_company_id
-    global email_sync_manager
 
     # Load the company configuration
     company = load_company(company_id)
@@ -2560,7 +2640,6 @@ async def switch_company(request: Request, company_id: str):
                 logger.info(f"Recreated SQL connector for company {company_id}")
 
         # Update process-level defaults (used by unauthenticated endpoints)
-        current_company = company
         _default_company_id = company_id
         _company_data[company_id] = company
 
@@ -2570,8 +2649,7 @@ async def switch_company(request: Request, company_id: str):
         if session_token and user_auth:
             user_auth.set_session_company(session_token, company_id)
 
-        # Switch per-company data directory (for legacy code paths)
-        set_current_company_id(company_id)
+        # Switch per-company data directory
         data_dir = get_company_data_dir(company_id)
         migrate_root_databases(company_id)
         logger.info(f"Per-company data directory: {data_dir}")
@@ -2582,31 +2660,17 @@ async def switch_company(request: Request, company_id: str):
             _company_email_storages[company_id] = EmailStorage(str(email_db))
             logger.info(f"Created email storage for company {company_id}")
 
-        # Update email_sync_manager to use this company's storage
+        # Set module-level globals and reset singletons via the helper
+        _ensure_company_context(company_id)
+
+        # Re-register email providers for the new company
         if email_sync_manager:
-            # Sync manager uses the email_storage proxy which auto-resolves per company
             email_sync_manager.providers.clear()
             try:
                 await _initialize_email_providers()
                 logger.info(f"Email sync manager updated for company {company_id}")
             except Exception as e:
                 logger.warning(f"Could not re-register email providers for {company_id}: {e}")
-
-        # Reset singleton caches so they reinitialize with new company paths
-        reset_supplier_statement_db()
-        from sql_rag.pdf_extraction_cache import reset_extraction_cache
-        reset_extraction_cache()
-        from sql_rag.gocardless_payments import reset_payments_db
-        reset_payments_db()
-        from sql_rag.opera_config import clear_control_accounts_cache
-        clear_control_accounts_cache()
-        if customer_linker:
-            customer_linker.clear_cache()
-            customer_linker.set_sql_connector(_company_sql_connectors[company_id])
-        from sql_rag.import_lock import set_db_path as set_import_lock_path
-        import_lock_path = get_company_db_path(company_id, "import_locks.db")
-        if import_lock_path:
-            set_import_lock_path(import_lock_path)
 
         # Reinitialize VectorDB with new company's ChromaDB directory
         try:
@@ -5562,28 +5626,20 @@ async def trigger_email_sync(request: Request, provider_id: Optional[int] = None
     if not email_sync_manager:
         raise HTTPException(status_code=503, detail="Email sync manager not initialized")
 
-    # Ensure sync uses the correct company's email storage.
-    # Read company directly from session DB (bypasses any module cache issues)
-    active_co = _get_active_company_id()
-    if not active_co:
-        auth_header = request.headers.get('Authorization', '')
-        token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
-        if token and user_auth:
-            import sqlite3 as _sqlite3
-            try:
-                conn = _sqlite3.connect(str(user_auth.DB_PATH))
-                row = conn.execute('SELECT company_id FROM sessions WHERE token = ?', (token,)).fetchone()
-                if row and row[0]:
-                    active_co = row[0]
-                    _request_company_id.set(active_co)
-                conn.close()
-            except Exception:
-                pass
-    if not active_co:
-        active_co = _default_company_id
-    logger.info(f"Email sync: active_company={active_co}")
-    if active_co and active_co in _company_email_storages:
-        email_sync_manager.storage = _company_email_storages[active_co]
+    # Ensure correct company context — read session company from DB
+    # (the middleware may not have set it due to module caching on reload)
+    auth_header = request.headers.get('Authorization', '')
+    token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+    if token and user_auth:
+        try:
+            import sqlite3 as _sq
+            _conn = _sq.connect(str(user_auth.DB_PATH))
+            _row = _conn.execute('SELECT company_id FROM sessions WHERE token = ?', (token,)).fetchone()
+            _conn.close()
+            if _row and _row[0]:
+                _ensure_company_context(_row[0])
+        except Exception:
+            pass
 
     try:
         if provider_id:

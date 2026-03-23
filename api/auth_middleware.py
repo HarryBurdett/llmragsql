@@ -93,15 +93,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Attach user to request state
         request.state.user = user
         request.state.user_permissions = self.user_auth.get_user_permissions(user['id'])
-        # Attach session company for per-request company resolution
-        session_company_id = user.get('session_company_id')
+        # Resolve the session's company — read directly from DB to avoid
+        # relying on the user_auth module (which may be cached with old code)
+        # Resolve session company — always read from DB to be reliable
+        session_company_id = None
+        try:
+            import sqlite3 as _sqlite3
+            _conn = _sqlite3.connect(str(self.user_auth.DB_PATH))
+            _row = _conn.execute(
+                'SELECT company_id FROM sessions WHERE token = ?', (token,)
+            ).fetchone()
+            if _row and _row[0]:
+                session_company_id = _row[0]
+            _conn.close()
+        except Exception:
+            session_company_id = user.get('session_company_id')
         request.state.session_company_id = session_company_id
 
-        # Set contextvars token so _get_active_company_id() works in any
-        # function called during this request (no need to pass request around)
+        # Set the module-level globals to point at this session's company
         if session_company_id:
-            from api.main import _request_company_id
+            from api.main import _request_company_id, _ensure_company_context
             _request_company_id.set(session_company_id)
+            _ensure_company_context(session_company_id)
 
         return await call_next(request)
 
