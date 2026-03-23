@@ -1747,24 +1747,23 @@ class BankStatementImport:
             check_posted: Whether to check if already posted
         """
         for txn in transactions:
-            # Check if should skip
+            # Check if should skip (name pattern match)
             skip_reason = self._should_skip(txn.name, txn.subcategory)
-            if skip_reason:
+
+            if not skip_reason:
+                # Match to customer/supplier
+                self._match_transaction(txn)
+            else:
                 txn.action = 'skip'
                 txn.skip_reason = skip_reason
                 logger.debug(f"MATCH_DEBUG: SKIPPED '{txn.name}' subcat='{txn.subcategory}' reason='{skip_reason}'")
-                continue
 
-            # Match to customer/supplier
-            self._match_transaction(txn)
-
-            # Check if already posted - check ALL transactions including unmatched
-            # This catches transactions that are in Opera but don't match any customer/supplier
+            # Check if already posted — run for ALL transactions including skipped ones.
+            # A GC payout or other "skipped" transaction may already be in Opera's cashbook.
             if check_posted:
                 is_posted, posted_reason = self._is_already_posted(txn)
                 if is_posted:
                     txn.is_duplicate = True
-                    # For repeat entries, keep the action for visibility in Repeat Entries tab
                     if txn.action == 'repeat_entry':
                         txn.skip_reason = f'Already posted: {posted_reason}'
                     else:
