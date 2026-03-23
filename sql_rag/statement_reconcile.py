@@ -675,9 +675,45 @@ IMPORTANT EXTRACTION RULES:
         opening_balance = _safe_float(opening_bal_raw)
         closing_balance = _safe_float(closing_bal_raw)
 
-        # Use Gemini's extracted values as-is.
-        # Opening/closing balance corrections happen at the API layer
-        # (process-statement and preview-from-pdf) using Opera's reconciled balance.
+        # Validate opening and closing balances using the transaction chain.
+        # Walk from opening balance, finding each next transaction where
+        # current + (money_in - money_out) = transaction.balance.
+        # This determines the correct order AND excludes phantom transactions
+        # from other accounts (e.g. Monzo savings on a current account statement).
+        if raw_transactions and opening_balance is not None:
+            try:
+                remaining = list(range(len(raw_transactions)))
+                current_bal = opening_balance
+                chain_used = set()
+                for _ in range(len(raw_transactions)):
+                    found = False
+                    for idx in remaining:
+                        if idx in chain_used:
+                            continue
+                        t = raw_transactions[idx]
+                        mi = _safe_float(t.get('money_in')) or 0
+                        mo = _safe_float(t.get('money_out')) or 0
+                        txn_bal = _safe_float(t.get('balance'))
+                        if txn_bal is None:
+                            continue
+                        expected = round(current_bal + mi - mo, 2)
+                        if abs(expected - txn_bal) < 0.02:
+                            current_bal = txn_bal
+                            chain_used.add(idx)
+                            found = True
+                            break
+                    if not found:
+                        break
+                if chain_used:
+                    closing_balance = current_bal
+                    excluded = len(raw_transactions) - len(chain_used)
+                    if excluded > 0:
+                        logger.info(f"Balance chain: {len(chain_used)}/{len(raw_transactions)} transactions chained, "
+                                    f"{excluded} excluded (wrong account?), closing=£{closing_balance:,.2f}")
+                    else:
+                        logger.info(f"Balance chain: all {len(chain_used)} transactions chained, closing=£{closing_balance:,.2f}")
+            except Exception as chain_err:
+                logger.warning(f"Balance chain validation failed: {chain_err}")
 
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),

@@ -365,8 +365,35 @@ Important:
         opening_balance = _safe_float(opening_bal_raw)
         closing_balance = _safe_float(closing_bal_raw)
 
-        # Use Gemini's extracted values as-is.
-        # Opening/closing balance corrections happen at the API layer.
+        # Validate closing balance using transaction chain from opening.
+        if raw_transactions and opening_balance is not None:
+            try:
+                remaining = list(range(len(raw_transactions)))
+                current_bal = opening_balance
+                chain_used = set()
+                for _ in range(len(raw_transactions)):
+                    found = False
+                    for idx in remaining:
+                        if idx in chain_used:
+                            continue
+                        t = raw_transactions[idx]
+                        mi = _safe_float(t.get('money_in')) or 0
+                        mo = _safe_float(t.get('money_out')) or 0
+                        txn_bal = _safe_float(t.get('balance'))
+                        if txn_bal is None:
+                            continue
+                        expected = round(current_bal + mi - mo, 2)
+                        if abs(expected - txn_bal) < 0.02:
+                            current_bal = txn_bal
+                            chain_used.add(idx)
+                            found = True
+                            break
+                    if not found:
+                        break
+                if chain_used:
+                    closing_balance = current_bal
+            except Exception:
+                pass
 
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),

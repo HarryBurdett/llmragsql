@@ -17922,7 +17922,33 @@ async def preview_bank_import_from_pdf(
             statement_info_dict['opening_balance'] = reconciled_balance
             opening_balance = reconciled_balance
 
-        # (Sequence validation corrects the opening balance above instead of blocking)
+        # Validate closing balance using transaction balance chain from opening.
+        # Walks from opening, finding each transaction where current + amount = balance.
+        # Excludes phantom transactions from other accounts (e.g. Monzo savings).
+        if opening_balance is not None and stmt_transactions:
+            try:
+                current_bal = opening_balance
+                chain_used = set()
+                for _ in range(len(stmt_transactions)):
+                    found = False
+                    for i, st in enumerate(stmt_transactions):
+                        if i in chain_used:
+                            continue
+                        expected = round(current_bal + st.amount, 2)
+                        if st.balance is not None and abs(expected - st.balance) < 0.02:
+                            current_bal = st.balance
+                            chain_used.add(i)
+                            found = True
+                            break
+                    if not found:
+                        break
+                if chain_used:
+                    statement_info_dict['closing_balance'] = current_bal
+                    excluded = len(stmt_transactions) - len(chain_used)
+                    if excluded > 0:
+                        logger.info(f"preview-from-pdf: Balance chain excluded {excluded} phantom transaction(s), closing=£{current_bal:,.2f}")
+            except Exception as chain_err:
+                logger.warning(f"preview-from-pdf: Balance chain failed: {chain_err}")
 
         # Convert StatementTransaction to BankTransaction objects
         logger.info(f"preview-from-pdf: Converting {len(stmt_transactions)} StatementTransactions to BankTransactions")
