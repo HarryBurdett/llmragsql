@@ -383,11 +383,16 @@ Important:
                         if opening_balance is None or abs(opening_balance - calc_opening) > 1000:
                             opening_balance = calc_opening
 
-                    newest = sorted_txns[-1]
-                    newest_bal = _safe_float(newest.get('balance'))
-                    if newest_bal is not None:
-                        if closing_balance is None or abs(closing_balance - newest_bal) > 1000:
-                            closing_balance = newest_bal
+                    # Closing: opening + sum of all transactions
+                    if opening_balance is not None:
+                        total_movement = 0
+                        for t in raw_transactions:
+                            mi = _safe_float(t.get('money_in')) or 0
+                            mo = _safe_float(t.get('money_out')) or 0
+                            total_movement += mi - mo
+                        calc_closing = round(opening_balance + total_movement, 2)
+                        if closing_balance is None or abs(closing_balance - calc_closing) > 1000:
+                            closing_balance = calc_closing
             except Exception:
                 pass
 
