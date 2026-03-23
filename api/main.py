@@ -21688,48 +21688,22 @@ async def scan_all_banks_for_statements(
                                             try:
                                                 from sql_rag.statement_reconcile import StatementReconciler
                                                 reconciler = StatementReconciler(sql_connector, config=config)
-                                                # Full extraction so balance chain validation can run
-                                                _stmt_info, _stmt_txns = reconciler.extract_transactions_from_pdf(tmp_path)
-                                                if _stmt_info:
-                                                    opening = _stmt_info.opening_balance
-                                                    closing = _stmt_info.closing_balance
-
-                                                    # Correct opening using rec_bal if available
-                                                    _stmt_sort = (_stmt_info.sort_code or '').replace('-', '').replace(' ', '').strip()
-                                                    _stmt_acct = (_stmt_info.account_number or '').replace('-', '').replace(' ', '').strip()
-                                                    if _stmt_sort and _stmt_acct:
-                                                        matched_bank_code = bank_lookup.get((_stmt_sort, _stmt_acct)) or matched_bank_code
-                                                    if matched_bank_code:
-                                                        bank_rec_bal = all_banks[matched_bank_code].get('reconciled_balance')
-                                                        if bank_rec_bal is not None and (opening is None or abs(opening - bank_rec_bal) > 0.02):
-                                                            opening = bank_rec_bal
-                                                        # Chain-validate closing from corrected opening
-                                                        if opening is not None and _stmt_txns:
-                                                            cur = opening
-                                                            used = set()
-                                                            for _ in range(len(_stmt_txns)):
-                                                                fnd = False
-                                                                for j, st in enumerate(_stmt_txns):
-                                                                    if j in used:
-                                                                        continue
-                                                                    exp = round(cur + st.amount, 2)
-                                                                    if st.balance is not None and abs(exp - st.balance) < 0.02:
-                                                                        cur = st.balance
-                                                                        used.add(j)
-                                                                        fnd = True
-                                                                        break
-                                                                if not fnd:
-                                                                    break
-                                                            if used:
-                                                                closing = cur
-
+                                                info_data = reconciler.extract_statement_info_only(tmp_path)
+                                                if info_data:
+                                                    opening = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
+                                                    closing = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
                                                     stmt_entry['opening_balance'] = opening
                                                     stmt_entry['closing_balance'] = closing
-                                                    stmt_entry['period_start'] = _stmt_info.period_start.isoformat() if _stmt_info.period_start else None
-                                                    stmt_entry['period_end'] = _stmt_info.period_end.isoformat() if _stmt_info.period_end else None
-                                                    stmt_entry['bank_name'] = _stmt_info.bank_name
-                                                    stmt_entry['account_number'] = _stmt_info.account_number
-                                                    stmt_entry['sort_code'] = _stmt_info.sort_code
+                                                    stmt_entry['period_start'] = info_data.get('period_start')
+                                                    stmt_entry['period_end'] = info_data.get('period_end')
+                                                    stmt_entry['bank_name'] = info_data.get('bank_name')
+                                                    stmt_entry['account_number'] = info_data.get('account_number')
+                                                    stmt_entry['sort_code'] = info_data.get('sort_code')
+
+                                                    stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                                                    stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                                                    if stmt_sort and stmt_acct:
+                                                        matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct)) or matched_bank_code
 
                                                     pdf_extracted = True
                                                     logger.info(f"Scan-all: extracted {filename} — open={opening} close={closing}")
@@ -22112,6 +22086,18 @@ async def scan_all_banks_for_statements(
                 else:
                     # No matched bank — skip silently
                     logger.info(f"Skipping local PDF {filename}: no matching Opera bank in current company")
+
+        # --- Step 4b: Correct opening balances using reconciled balance ---
+        # The AI extraction may get the opening balance wrong for multi-account PDFs.
+        # Use Opera's reconciled balance as the authoritative opening.
+        for code, bank in all_banks.items():
+            rec_bal = bank.get('reconciled_balance')
+            if rec_bal is None:
+                continue
+            for s in bank.get('statements', []):
+                ob = s.get('opening_balance')
+                if ob is None or abs(ob - rec_bal) > 0.02:
+                    s['opening_balance'] = rec_bal
 
         # --- Step 5: Sort and finalize each bank's statements ---
         banks_with_statements = {}
