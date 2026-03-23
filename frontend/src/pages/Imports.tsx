@@ -9514,21 +9514,41 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   <div className="flex items-center gap-4 flex-wrap">
                     {/* Import Button */}
                     <button
-                      onClick={isEmailSource ? handleEmailImport : selectedPdfFile ? handlePdfImport : handleBankImport}
-                      disabled={importDisabled || isImporting || allTransactionsImported || allAlreadyInOpera}
+                      onClick={(allAlreadyInOpera || allItemsHandled) ? () => {
+                        const reconcileData = {
+                          bank_code: selectedBankCode,
+                          statement_transactions: bankPreview?.statement_transactions || [],
+                          statement_info: bankPreview?.statement_info || bankPreview?.statement_bank_info || null,
+                          source: (selectedPdfFile ? 'pdf' : 'email') as string,
+                          imported_at: new Date().toISOString(),
+                          import_id: undefined as number | undefined,
+                          filename: selectedPdfFile?.filename || selectedEmailStatement?.filename || undefined,
+                          email_id: selectedEmailStatement?.emailId || undefined,
+                          full_path: selectedPdfFile?.fullPath || undefined,
+                        };
+                        if (onImportComplete) {
+                          onImportComplete(reconcileData);
+                        } else {
+                          sessionStorage.setItem(currentCompanyId ? `reconcile_statement_data_${currentCompanyId}` : 'reconcile_statement_data', JSON.stringify(reconcileData));
+                          window.location.href = '/cashbook/statement-reconcile';
+                        }
+                      } : (isEmailSource ? handleEmailImport : selectedPdfFile ? handlePdfImport : handleBankImport)}
+                      disabled={importDisabled || isImporting || (allTransactionsImported && !allAlreadyInOpera && !allItemsHandled)}
                       className={`px-6 py-3 rounded-lg flex items-center gap-2 font-medium text-lg ${
-                        importDisabled || isImporting || allTransactionsImported || allAlreadyInOpera
-                          ? 'bg-gray-400 text-white cursor-not-allowed'
-                          : 'bg-green-600 text-white hover:bg-green-700 shadow-md hover:shadow-lg transition-all'
+                        (allAlreadyInOpera || allItemsHandled || allTransactionsImported)
+                          ? 'bg-green-600 text-white hover:bg-green-700 shadow-md hover:shadow-lg transition-all'
+                          : importDisabled || isImporting
+                            ? 'bg-gray-400 text-white cursor-not-allowed'
+                            : 'bg-green-600 text-white hover:bg-green-700 shadow-md hover:shadow-lg transition-all'
                       }`}
-                      title={allTransactionsImported
-                        ? 'All transactions have been imported'
-                        : allAlreadyInOpera
-                          ? 'All transactions are already in Opera'
+                      title={allAlreadyInOpera
+                        ? 'All transactions are already in Opera — click to reconcile'
+                        : allTransactionsImported
+                          ? 'All transactions imported — click to reconcile'
                           : importTitle || 'Import transactions to Opera'}
                     >
-                      {isImporting ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle className="h-5 w-5" />}
-                      {allTransactionsImported ? 'All Imported' : allAlreadyInOpera ? 'All Already in Opera' : 'Import to Opera'}
+                      {isImporting ? <Loader2 className="h-5 w-5 animate-spin" /> : (allAlreadyInOpera || allItemsHandled) ? <ArrowRight className="h-5 w-5" /> : <CheckCircle className="h-5 w-5" />}
+                      {allAlreadyInOpera || allItemsHandled ? 'Proceed to Reconcile' : allTransactionsImported ? 'All Imported' : 'Import to Opera'}
                       {!allTransactionsImported && !allAlreadyInOpera && importReadiness && importReadiness.totalReady > 0 && (
                         <span className="bg-green-500 text-white text-sm px-2 py-0.5 rounded-full ml-1">
                           {importReadiness.totalReady}
