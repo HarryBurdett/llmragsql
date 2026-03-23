@@ -137,20 +137,20 @@ def _ensure_company_context(company_id: str) -> None:
     if company_id in _company_sql_connectors:
         sql_connector = _company_sql_connectors[company_id]
 
-    # 2. Swap email_storage (create lazily if not yet registered)
+    # 2. Set company_data's _current_company_id FIRST (drives get_current_db_path for singletons)
+    set_current_company_id(company_id)
+
+    # 3. Swap email_storage (create lazily if not yet registered)
     if company_id not in _company_email_storages:
         try:
             email_db = get_company_db_path(company_id, "email_data.db")
             if email_db:
                 _company_email_storages[company_id] = EmailStorage(str(email_db))
-                logger.info(f"Created email storage for {company_id}")
+                logger.info(f"Created email storage for company {company_id} at {email_db}")
         except Exception as e:
             logger.warning(f"Could not create email storage for {company_id}: {e}")
     if company_id in _company_email_storages:
         email_storage = _company_email_storages[company_id]
-
-    # 3. Set company_data's _current_company_id (drives get_current_db_path)
-    set_current_company_id(company_id)
 
     # 4. Set current_company dict
     if company_id in _company_data:
@@ -21362,7 +21362,9 @@ async def scan_all_banks_for_statements(
 
         # --- Load all statement tracking data in a single consolidated SQLite query ---
         try:
+            logger.info(f"Scan: loading tracking data from {email_storage.db_path}")
             _tracking = email_storage.get_all_statement_tracking_data()
+            logger.info(f"Scan: got {len(_tracking.get('managed_keys',set()))} managed_keys, {len(_tracking.get('managed_filenames',set()))} managed_filenames")
             reconciled_keys = _tracking['reconciled_keys']
             reconciled_filenames = _tracking['reconciled_filenames']
             imported_nr_keys = _tracking['imported_nr_keys']
@@ -21452,6 +21454,7 @@ async def scan_all_banks_for_statements(
                 return m.group(1), m.group(2)
             return None, None
 
+        logger.info(f"Scan: email_storage.db_path = {getattr(email_storage, 'db_path', 'UNKNOWN')}")
         _timings['load_banks_and_lookups'] = round(_time.time() - _t1, 1)
 
         # --- Step 2b: Resolve base folder and ensure bank subfolders exist ---
@@ -21502,12 +21505,14 @@ async def scan_all_banks_for_statements(
                 # because saved PDFs may have been renamed to avoid conflicts
                 import re as _mf_re
                 _base_fn = _mf_re.sub(r'_\d+(\.\w+)$', r'\1', filename)  # "file_37.pdf" -> "file.pdf"
+                _base = filename.rsplit('.', 1)[0]
                 _is_managed = (
                     (email_id, attachment_id) in managed_keys
                     or filename in managed_filenames
-                    or any(mf == filename or mf.startswith(filename.rsplit('.', 1)[0]) for mf in managed_filenames)
+                    or any(mf.startswith(_base) for mf in managed_filenames)
                 )
                 if _is_managed:
+                    logger.info(f"Scan: skipping managed email {filename}")
                     continue
 
                 # Skip fully reconciled statements — archive from load list
@@ -21922,8 +21927,16 @@ async def scan_all_banks_for_statements(
                 status_info = email_storage.get_statement_status(filename)
 
                 file_is_imported_nr = filename in imported_nr_filenames
-                # Skip managed (archived/deleted/retained)
-                if filename in managed_filenames:
+                # Skip managed (archived/deleted/retained) — check exact AND base filename
+                _folder_base = filename.rsplit('.', 1)[0]
+                # Strip counter suffix: "file_37.pdf" base is "file_37", but we need "file"
+                import re as _fm_re
+                _folder_base_clean = _fm_re.sub(r'_\d+$', '', _folder_base)
+                _folder_is_managed = (
+                    filename in managed_filenames
+                    or any(mf.startswith(_folder_base_clean) for mf in managed_filenames)
+                )
+                if _folder_is_managed:
                     continue
                 # Skip fully reconciled statements
                 if filename in reconciled_filenames:
