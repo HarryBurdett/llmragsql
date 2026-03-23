@@ -21673,6 +21673,7 @@ async def scan_all_banks_for_statements(
                     logger.info(f"Scan-all: {filename} bank={matched_bank_code or 'unknown'}, extracted={pdf_extracted}")
 
                 # --- Save email PDF to bank subfolder (unified flow) ---
+                logger.info(f"Save section: {filename} matched_bank={matched_bank_code} base_path={base_path} content_bytes={'YES' if content_bytes else 'NO'}")
                 # If folders are configured, save the PDF to the matched bank's subfolder
                 # so the folder scan (Step 4) handles everything through one code path.
                 if matched_bank_code and base_path and base_path.exists():
@@ -21697,6 +21698,7 @@ async def scan_all_banks_for_statements(
                                 except Exception:
                                     pass
 
+                    logger.info(f"Save check: {filename} content={'YES' if content_bytes else 'NO'} dest_exists={dest_file.exists()} folder={bank_folder}")
                     if content_bytes is not None:
                         import hashlib as _hl
                         new_hash = _hl.sha256(content_bytes).hexdigest()
@@ -21717,39 +21719,45 @@ async def scan_all_banks_for_statements(
                             emails_saved_to_folders += 1
                             saved_or_exists = True
                             logger.info(f"Saved email PDF as renamed '{renamed}' to {bank_folder} (original '{filename}' had different content)")
-                        # else: file doesn't exist yet — will be saved below
+                        else:
+                            # New file — save to folder
+                            with open(dest_file, 'wb') as f:
+                                f.write(content_bytes)
+                            _folder_hashes.setdefault(folder_key, set()).add(new_hash)
+                            emails_saved_to_folders += 1
+                            saved_or_exists = True
+                            logger.info(f"Saved email PDF '{filename}' to {bank_folder}")
                     elif dest_file.exists():
                         saved_or_exists = True  # No bytes to compare, file with same name exists
                     else:
                         # File not on disk yet — download from IMAP and save to folder
-                        logger.info(f"Email PDF '{filename}' not on disk at {dest_file} — downloading from IMAP")
+                        logger.info(f"Email PDF '{filename}' not on disk at {dest_file} — downloading")
                         if content_bytes is None:
                             try:
+                                # Use direct IMAP connection for reliable download
                                 email_detail_dl = email_storage.get_email_by_id(email_id)
-                                if not email_detail_dl:
-                                    logger.warning(f"Could not find email {email_id} in storage for PDF download")
-                                elif not email_sync_manager:
-                                    logger.warning(f"No email_sync_manager available for PDF download")
-                                elif email_detail_dl and email_sync_manager:
+                                if email_detail_dl:
                                     provider_id_dl = email_detail_dl.get('provider_id')
                                     message_id_dl = email_detail_dl.get('message_id')
-                                    folder_id_dl = email_detail_dl.get('folder_id', 'INBOX')
-
-                                    logger.info(f"Download attempt: provider_id={provider_id_dl}, message_id={message_id_dl}, folder={folder_id_dl}, providers={list(email_sync_manager.providers.keys())}")
-                                    if provider_id_dl and message_id_dl and provider_id_dl in email_sync_manager.providers:
+                                    if provider_id_dl and message_id_dl and email_sync_manager and provider_id_dl in email_sync_manager.providers:
                                         provider_dl = email_sync_manager.providers[provider_id_dl]
-
+                                        # Ensure fresh IMAP connection
+                                        if not provider_dl.is_authenticated:
+                                            await provider_dl.authenticate()
+                                        # Resolve folder_id from DB integer to IMAP name
+                                        folder_id_dl = email_detail_dl.get('folder_id', 'INBOX')
                                         if isinstance(folder_id_dl, int):
-                                            with email_storage._get_connection() as conn:
-                                                cursor = conn.cursor()
-                                                cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_dl,))
-                                                row = cursor.fetchone()
-                                                if row:
-                                                    folder_id_dl = row['folder_id']
-
+                                            with email_storage._get_connection() as _fconn:
+                                                _frow = _fconn.cursor().execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_dl,)).fetchone()
+                                                if _frow:
+                                                    folder_id_dl = _frow['folder_id']
+                                        # Download attachment
                                         dl_result = await provider_dl.download_attachment(message_id_dl, attachment_id, folder_id_dl)
-                                        if not dl_result and folder_id_dl not in ('Archive/Bank Statements', 'Archive/BankStatements'):
-                                            for af in ['Archive/Bank Statements', 'Archive/BankStatements']:
+                                        if not dl_result:
+                                            # Try archive folders
+                                            for af in ['Archive/Bank Statements', 'Archive/BankStatements', 'INBOX']:
+                                                if af == folder_id_dl:
+                                                    continue
                                                 dl_result = await provider_dl.download_attachment(message_id_dl, attachment_id, af)
                                                 if dl_result:
                                                     break
@@ -21757,11 +21765,9 @@ async def scan_all_banks_for_statements(
                                             content_bytes = dl_result[0]
                                             logger.info(f"Downloaded {filename}: {len(content_bytes)} bytes")
                                         else:
-                                            logger.warning(f"Download returned None for {filename}")
-                                    else:
-                                        logger.warning(f"Provider {provider_id_dl} not registered — cannot download {filename}")
+                                            logger.warning(f"IMAP download returned None for {filename} (email_id={email_id})")
                             except Exception as dl_err:
-                                logger.warning(f"Could not download email PDF '{filename}' for folder save: {dl_err}")
+                                logger.warning(f"Could not download email PDF '{filename}': {dl_err}")
 
                         if content_bytes is not None:
                             import hashlib as _hl
