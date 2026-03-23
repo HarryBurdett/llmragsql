@@ -36469,6 +36469,143 @@ async def opera3_cancel_mandate_setup(setup_id: int):
     return await cancel_mandate_setup(setup_id)
 
 
+# ============ Opera 3 GoCardless — Proxy endpoints (no Opera data needed) ============
+# These talk only to GoCardless API or local SQLite payments DB, so they delegate
+# directly to the SE handler functions.
+
+# --- Payment Requests ---
+
+@app.get("/api/opera3/gocardless/payment-requests")
+async def opera3_list_payment_requests(
+    status: Optional[str] = Query(None, description="Filter by status"),
+    opera_account: Optional[str] = Query(None, description="Filter by Opera account"),
+    limit: int = Query(100, description="Maximum records to return")
+):
+    """List payment requests — same logic as SE."""
+    return await list_payment_requests(status=status, opera_account=opera_account, limit=limit)
+
+@app.get("/api/opera3/gocardless/payment-requests/stats")
+async def opera3_payment_request_stats():
+    """Get payment request statistics — same logic as SE."""
+    return await get_gocardless_payment_stats()
+
+@app.get("/api/opera3/gocardless/payment-requests/{request_id}")
+async def opera3_get_payment_request_detail(request_id: int):
+    """Get details of a specific payment request — same logic as SE."""
+    return await get_payment_request(request_id)
+
+@app.post("/api/opera3/gocardless/payment-requests/{request_id}/cancel")
+async def opera3_cancel_payment_request(request_id: int):
+    """Cancel a pending payment request — same logic as SE."""
+    return await cancel_payment_request(request_id)
+
+@app.post("/api/opera3/gocardless/payment-requests/sync")
+async def opera3_sync_payment_requests():
+    """Sync payment statuses from GoCardless API — same logic as SE."""
+    return await sync_payment_statuses()
+
+# --- Mandates ---
+
+@app.get("/api/opera3/gocardless/mandates")
+async def opera3_list_mandates(
+    status: Optional[str] = Query(None, description="Filter by status (active, cancelled, etc)"),
+    opera_account: Optional[str] = Query(None, description="Filter by Opera account code")
+):
+    """List all GoCardless mandates — same logic as SE."""
+    return await list_gocardless_mandates(status=status, opera_account=opera_account)
+
+@app.get("/api/opera3/gocardless/mandates/unlinked")
+async def opera3_get_unlinked_mandates():
+    """List unlinked GoCardless mandates — same logic as SE."""
+    return await list_unlinked_gocardless_mandates()
+
+@app.delete("/api/opera3/gocardless/mandates/{mandate_id}")
+async def opera3_delete_mandate(mandate_id: str):
+    """Unlink a mandate from Opera customer — same logic as SE."""
+    return await unlink_gocardless_mandate(mandate_id)
+
+# --- Subscriptions ---
+
+@app.get("/api/opera3/gocardless/subscriptions/{subscription_id}")
+async def opera3_get_subscription(subscription_id: str):
+    """Get a specific subscription — same logic as SE."""
+    return await get_gocardless_subscription(subscription_id)
+
+@app.put("/api/opera3/gocardless/subscriptions/{subscription_id}")
+async def opera3_update_subscription(subscription_id: str, request: Request):
+    """Update a subscription (name/amount) — same logic as SE."""
+    return await update_gocardless_subscription(subscription_id, request)
+
+@app.post("/api/opera3/gocardless/subscriptions/{subscription_id}/pause")
+async def opera3_pause_subscription(subscription_id: str):
+    """Pause a subscription — same logic as SE."""
+    return await pause_gocardless_subscription(subscription_id)
+
+@app.post("/api/opera3/gocardless/subscriptions/{subscription_id}/resume")
+async def opera3_resume_subscription(subscription_id: str):
+    """Resume a subscription — same logic as SE."""
+    return await resume_gocardless_subscription(subscription_id)
+
+@app.post("/api/opera3/gocardless/subscriptions/{subscription_id}/cancel")
+async def opera3_cancel_subscription(subscription_id: str):
+    """Cancel a subscription — same logic as SE."""
+    return await cancel_gocardless_subscription(subscription_id)
+
+@app.post("/api/opera3/gocardless/subscriptions/link")
+async def opera3_link_subscription(request: Request):
+    """Link a subscription to an Opera repeat document — same logic as SE."""
+    return await link_subscription_to_document(request)
+
+@app.post("/api/opera3/gocardless/subscriptions/unlink")
+async def opera3_unlink_subscription(request: Request):
+    """Unlink a subscription from an Opera repeat document — same logic as SE."""
+    return await unlink_subscription_from_document(request)
+
+@app.post("/api/opera3/gocardless/subscriptions/sync")
+async def opera3_sync_subscriptions():
+    """Sync all subscriptions from GoCardless API — same logic as SE."""
+    return await sync_gocardless_subscriptions()
+
+# --- Settings & Utilities ---
+
+@app.post("/api/opera3/gocardless/settings")
+async def opera3_save_gocardless_settings(request: Request):
+    """Save GoCardless settings — same logic as SE."""
+    return await save_gocardless_settings(request)
+
+@app.post("/api/opera3/gocardless/update-subscription-tags")
+async def opera3_update_subscription_tags(request: Request):
+    """Preview or apply subscription tag updates — same logic as SE."""
+    return await update_subscription_tags(request)
+
+@app.post("/api/opera3/gocardless/skip-payout")
+async def opera3_skip_payout(
+    request: Request,
+    payout_id: str = Query(..., description="GoCardless payout ID"),
+    bank_reference: str = Query(..., description="Bank reference (e.g., INTSYSUKLTD-XM5XEF)"),
+    gross_amount: float = Query(..., description="Gross amount"),
+    currency: str = Query("GBP", description="Currency code"),
+    payment_count: int = Query(0, description="Number of payments"),
+    reason: str = Query("manual", description="Reason for skipping: 'foreign_currency', 'manual', 'duplicate'"),
+    fx_amount: Optional[float] = Query(None, description="GBP equivalent amount for foreign currency payouts")
+):
+    """Skip a payout without importing — same logic as SE."""
+    return await skip_gocardless_payout(
+        request=request, payout_id=payout_id, bank_reference=bank_reference,
+        gross_amount=gross_amount, currency=currency, payment_count=payment_count,
+        reason=reason, fx_amount=fx_amount
+    )
+
+@app.get("/api/opera3/gocardless/api-payouts")
+async def opera3_get_api_payouts(
+    status: str = Query("paid"),
+    limit: int = Query(20),
+    days_back: int = Query(30)
+):
+    """Fetch payouts from GoCardless API — same logic as SE."""
+    return await get_gocardless_api_payouts(status=status, limit=limit, days_back=days_back)
+
+
 @app.get("/api/gocardless/eligible-customers")
 async def get_gocardless_eligible_customers():
     """
@@ -38854,6 +38991,1858 @@ async def opera3_process_statement_unified(
 
     except Exception as e:
         logger.error(f"Opera 3 unified statement processing failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Opera 3 Bank Reconciliation Proxy Endpoints
+# These mirror the SE /api/reconcile/... and /api/bank-reconciliation/... endpoints
+# for Opera 3 data sources.
+# ============================================================
+
+
+@app.get("/api/opera3/reconcile/banks")
+async def opera3_get_reconcile_banks(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Get list of bank accounts for reconciliation from Opera 3.
+    Mirrors /api/reconcile/banks.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+        nbank_records = reader.read_table('nbank')
+
+        banks = []
+        for row in nbank_records:
+            banks.append({
+                "account_code": (row.get('nk_acnt') or '').strip(),
+                "description": (row.get('nk_desc') or '').strip(),
+                "sort_code": (row.get('nk_sort') or '').strip(),
+                "account_number": (row.get('nk_number') or '').strip()
+            })
+
+        banks.sort(key=lambda x: x['account_code'])
+
+        return {
+            "success": True,
+            "banks": banks
+        }
+    except Exception as e:
+        logger.error(f"Opera 3 get reconcile banks failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/bank/{bank_code}")
+async def opera3_reconcile_bank(
+    bank_code: str,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Reconcile a specific bank account from Opera 3 FoxPro data.
+    Mirrors /api/reconcile/bank/{bank_code} — compares cashbook (aentry/atran)
+    to nominal ledger (ntran) and bank master (nbank).
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+
+        # Read required tables
+        nbank_records = reader.read_table('nbank')
+        bank_info = None
+        for row in nbank_records:
+            if (row.get('nk_acnt') or '').strip().upper() == bank_code.upper():
+                bank_info = row
+                break
+
+        if not bank_info:
+            return {"success": False, "error": f"Bank account {bank_code} not found"}
+
+        nbank_curbal_pence = float(bank_info.get('nk_curbal', 0) or 0)
+        nbank_curbal_pounds = nbank_curbal_pence / 100.0
+        nbank_recbal_pence = float(bank_info.get('nk_recbal', 0) or 0)
+
+        # Read atran for cashbook movements
+        atran_records = reader.read_table('atran')
+        cb_net_pence = 0.0
+        cb_receipts_pence = 0.0
+        cb_payments_pence = 0.0
+        cb_txn_count = 0
+        for row in atran_records:
+            if (row.get('at_acnt') or '').strip().upper() == bank_code.upper():
+                val = float(row.get('at_value', 0) or 0)
+                cb_net_pence += val
+                if val > 0:
+                    cb_receipts_pence += val
+                else:
+                    cb_payments_pence += abs(val)
+                cb_txn_count += 1
+
+        cb_net_pounds = cb_net_pence / 100.0
+
+        # Read nacnt for nominal balance
+        nacnt_records = reader.read_table('nacnt')
+        nacnt_info = None
+        for row in nacnt_records:
+            if (row.get('na_acnt') or '').strip().upper() == bank_code.upper():
+                nacnt_info = row
+                break
+
+        bf_balance = 0.0
+        nl_ytd_net = 0.0
+        if nacnt_info:
+            pry_dr = float(nacnt_info.get('na_prydr', 0) or 0)
+            pry_cr = float(nacnt_info.get('na_prycr', 0) or 0)
+            bf_balance = pry_dr - pry_cr
+            ytd_dr = float(nacnt_info.get('na_ytddr', 0) or 0)
+            ytd_cr = float(nacnt_info.get('na_ytdcr', 0) or 0)
+            nl_ytd_net = ytd_dr - ytd_cr
+
+        nl_total = nl_ytd_net if nl_ytd_net != 0 else abs(nl_ytd_net)
+
+        # Variance calculation
+        variance_nbank_nl = nbank_curbal_pounds - nl_total
+        variance_nbank_nl_abs = abs(variance_nbank_nl)
+        all_reconciled = variance_nbank_nl_abs < 1.00
+
+        reconciliation = {
+            "success": True,
+            "source": "opera3",
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "bank_code": bank_code,
+            "bank_account": {
+                "code": bank_code,
+                "description": (bank_info.get('nk_desc') or '').strip(),
+                "sort_code": (bank_info.get('nk_sort') or '').strip(),
+                "account_number": (bank_info.get('nk_number') or '').strip()
+            },
+            "cashbook": {
+                "source": "atran (Cashbook Transactions)",
+                "transaction_count": cb_txn_count,
+                "receipts": round(cb_receipts_pence / 100.0, 2),
+                "payments": round(cb_payments_pence / 100.0, 2),
+                "net": round(cb_net_pounds, 2)
+            },
+            "bank_master": {
+                "source": "nbank.nk_curbal (Bank Master Balance)",
+                "balance_pence": round(nbank_curbal_pence, 0),
+                "balance_pounds": round(nbank_curbal_pounds, 2)
+            },
+            "nominal_ledger": {
+                "source": "nacnt (Nominal Account Balances)",
+                "account": bank_code,
+                "description": (nacnt_info.get('na_desc') or '').strip() if nacnt_info else '',
+                "brought_forward": round(bf_balance, 2),
+                "ytd_net": round(nl_ytd_net, 2),
+                "total_balance": round(nl_total, 2)
+            },
+            "variance": {
+                "bank_master_vs_nominal": {
+                    "description": "nbank.nk_curbal vs nacnt YTD",
+                    "bank_master": round(nbank_curbal_pounds, 2),
+                    "nominal_ledger": round(nl_total, 2),
+                    "amount": round(variance_nbank_nl, 2),
+                    "absolute": round(variance_nbank_nl_abs, 2),
+                    "reconciled": variance_nbank_nl_abs < 1.00
+                },
+                "summary": {
+                    "bank_master_balance": round(nbank_curbal_pounds, 2),
+                    "nominal_ledger_balance": round(nl_total, 2),
+                    "all_reconciled": all_reconciled
+                }
+            },
+            "status": "RECONCILED" if all_reconciled else "UNRECONCILED",
+            "message": f"Bank {bank_code} reconciles." if all_reconciled else f"Bank {bank_code} has variance: Bank Master vs NL = £{variance_nbank_nl_abs:,.2f}"
+        }
+
+        return reconciliation
+
+    except Exception as e:
+        logger.error(f"Opera 3 bank reconciliation failed for {bank_code}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/bank/{bank_code}/unreconciled")
+async def opera3_get_unreconciled_entries(
+    bank_code: str,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    include_incomplete: bool = Query(False, description="Include incomplete entries")
+):
+    """
+    Get unreconciled cashbook entries for an Opera 3 bank account.
+    Mirrors /api/reconcile/bank/{bank_code}/unreconciled.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+        aentry_records = reader.read_table('aentry')
+
+        entries = []
+        for row in aentry_records:
+            if (row.get('ae_acnt') or '').strip().upper() != bank_code.upper():
+                continue
+
+            rec_num = int(row.get('ae_reclnum', 0) or 0)
+            if rec_num > 0:
+                continue  # Already reconciled
+
+            complet = int(row.get('ae_complet', 0) or 0)
+            if not include_incomplete and complet == 0:
+                continue
+
+            ae_value = float(row.get('ae_value', 0) or 0)
+            ae_date = row.get('ae_date')
+            if ae_date and hasattr(ae_date, 'isoformat'):
+                ae_date = ae_date.isoformat()
+            else:
+                ae_date = str(ae_date) if ae_date else ''
+
+            entries.append({
+                "entry_number": (row.get('ae_entry') or '').strip(),
+                "date": ae_date,
+                "reference": (row.get('ae_ref') or '').strip(),
+                "detail": (row.get('ae_detail') or '').strip(),
+                "value_pence": round(ae_value, 0),
+                "value_pounds": round(ae_value / 100.0, 2),
+                "complete": complet == 1
+            })
+
+        return {
+            "success": True,
+            "bank_code": bank_code,
+            "count": len(entries),
+            "entries": entries
+        }
+    except Exception as e:
+        logger.error(f"Opera 3 get unreconciled entries failed for {bank_code}: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/reconcile/bank/{bank_code}/mark-reconciled")
+async def opera3_mark_entries_reconciled(
+    bank_code: str,
+    request: ReconcileEntriesRequest,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Mark cashbook entries as reconciled in Opera 3 FoxPro.
+    Mirrors /api/reconcile/bank/{bank_code}/mark-reconciled.
+    """
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-mark-reconciled"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
+
+    try:
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
+        from datetime import datetime as dt
+
+        try:
+            foxpro_import = get_opera3_writer(data_path)
+        except Opera3AgentRequired as e:
+            release_import_lock(_bank_lock_key(bank_code))
+            return {"success": False, "error": str(e)}
+
+        stmt_date = None
+        rec_date = None
+        if request.statement_date:
+            stmt_date = dt.strptime(request.statement_date, '%Y-%m-%d').date()
+        if request.reconciliation_date:
+            rec_date = dt.strptime(request.reconciliation_date, '%Y-%m-%d').date()
+
+        result = foxpro_import.mark_entries_reconciled(
+            bank_account=bank_code,
+            entries=request.entries,
+            statement_number=request.statement_number,
+            statement_date=stmt_date,
+            reconciliation_date=rec_date
+        )
+
+        release_import_lock(_bank_lock_key(bank_code))
+        if result.success:
+            return {
+                "success": True,
+                "message": f"Reconciled {result.records_imported} entries",
+                "records_reconciled": result.records_imported,
+                "details": result.warnings
+            }
+        else:
+            return {
+                "success": False,
+                "errors": result.errors
+            }
+    except Exception as e:
+        logger.error(f"Opera 3 mark entries reconciled failed for {bank_code}: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/reconcile/bank/{bank_code}/unreconcile")
+async def opera3_unreconcile_entries(
+    bank_code: str,
+    entry_numbers: List[str],
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Unreconcile previously reconciled entries in Opera 3 FoxPro.
+    Mirrors /api/reconcile/bank/{bank_code}/unreconcile.
+    """
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-unreconcile"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
+
+    try:
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            release_import_lock(_bank_lock_key(bank_code))
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        try:
+            foxpro_import = get_opera3_writer(data_path)
+        except Opera3AgentRequired as e:
+            release_import_lock(_bank_lock_key(bank_code))
+            return {"success": False, "error": str(e)}
+
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+
+        # Read aentry and reset reconciliation fields for matching entries
+        import dbf
+        aentry_path = Path(data_path) / 'aentry.dbf'
+        if not aentry_path.exists():
+            aentry_path = Path(data_path) / 'AENTRY.DBF'
+
+        rows_affected = 0
+        entry_set = set(e.strip().upper() for e in entry_numbers)
+
+        table = dbf.Table(str(aentry_path))
+        table.open(dbf.READ_WRITE)
+        try:
+            for record in table:
+                ae_acnt = (str(record.ae_acnt) if hasattr(record, 'ae_acnt') else '').strip().upper()
+                ae_entry = (str(record.ae_entry) if hasattr(record, 'ae_entry') else '').strip().upper()
+
+                if ae_acnt == bank_code.upper() and ae_entry in entry_set:
+                    rec_num = int(record.ae_reclnum if hasattr(record, 'ae_reclnum') else 0) or 0
+                    if rec_num > 0:
+                        with record as r:
+                            r.ae_reclnum = 0
+                            r.ae_statln = 0
+                            r.ae_frstat = 0
+                            r.ae_tostat = 0
+                            r.ae_tmpstat = 0
+                        rows_affected += 1
+        finally:
+            table.close()
+
+        # Recalculate reconciled balance and update nbank
+        aentry_records = reader.read_table('aentry')
+        new_rec_total_pence = 0.0
+        for row in aentry_records:
+            if (row.get('ae_acnt') or '').strip().upper() == bank_code.upper():
+                if int(row.get('ae_reclnum', 0) or 0) > 0:
+                    new_rec_total_pence += float(row.get('ae_value', 0) or 0)
+
+        nbank_path = Path(data_path) / 'nbank.dbf'
+        if not nbank_path.exists():
+            nbank_path = Path(data_path) / 'NBANK.DBF'
+
+        nbank_table = dbf.Table(str(nbank_path))
+        nbank_table.open(dbf.READ_WRITE)
+        try:
+            for record in nbank_table:
+                nk_acnt = (str(record.nk_acnt) if hasattr(record, 'nk_acnt') else '').strip().upper()
+                if nk_acnt == bank_code.upper():
+                    with record as r:
+                        r.nk_recbal = int(new_rec_total_pence)
+                    break
+        finally:
+            nbank_table.close()
+
+        release_import_lock(_bank_lock_key(bank_code))
+        return {
+            "success": True,
+            "message": f"Unreconciled {rows_affected} entries",
+            "entries_unreconciled": rows_affected,
+            "new_reconciled_balance": new_rec_total_pence / 100.0
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 unreconcile entries failed for {bank_code}: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/reconcile/bank/{bank_code}/ignore-transaction")
+async def opera3_ignore_bank_transaction(
+    bank_code: str,
+    transaction_date: str = Query(..., description="Transaction date (YYYY-MM-DD)"),
+    amount: float = Query(..., description="Transaction amount in pounds"),
+    description: str = Query(None, description="Transaction description"),
+    reference: str = Query(None, description="Transaction reference"),
+    reason: str = Query(None, description="Reason for ignoring")
+):
+    """
+    Mark a bank transaction as ignored for Opera 3 reconciliation.
+    Mirrors /api/reconcile/bank/{bank_code}/ignore-transaction.
+    Uses same shared email_storage (SQLite) since ignored transactions are not Opera-version-specific.
+    """
+    try:
+        record_id = email_storage.ignore_bank_transaction(
+            bank_account=bank_code,
+            transaction_date=transaction_date,
+            amount=amount,
+            description=description,
+            reference=reference,
+            reason=reason,
+            ignored_by="API-Opera3"
+        )
+        return {
+            "success": True,
+            "message": f"Transaction ignored: £{amount:.2f} on {transaction_date}",
+            "record_id": record_id
+        }
+    except Exception as e:
+        logger.error(f"Opera 3 failed to ignore transaction: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/bank/{bank_code}/ignored-transactions")
+async def opera3_get_ignored_transactions(
+    bank_code: str,
+    limit: int = Query(100, description="Maximum records to return")
+):
+    """
+    Get list of ignored transactions for an Opera 3 bank account.
+    Mirrors /api/reconcile/bank/{bank_code}/ignored-transactions.
+    Uses shared email_storage.
+    """
+    try:
+        transactions = email_storage.get_ignored_transactions(
+            bank_account=bank_code,
+            limit=limit
+        )
+        return {
+            "success": True,
+            "transactions": transactions,
+            "count": len(transactions)
+        }
+    except Exception as e:
+        logger.error(f"Opera 3 failed to get ignored transactions: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/opera3/reconcile/bank/ignored-transaction/{record_id}")
+async def opera3_unignore_transaction(record_id: int):
+    """
+    Remove a transaction from the ignored list (Opera 3).
+    Mirrors /api/reconcile/bank/ignored-transaction/{record_id}.
+    Uses shared email_storage.
+    """
+    try:
+        deleted = email_storage.unignore_transaction(record_id)
+        if deleted:
+            return {"success": True, "message": "Transaction removed from ignored list"}
+        else:
+            return {"success": False, "error": "Record not found"}
+    except Exception as e:
+        logger.error(f"Opera 3 failed to unignore transaction: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/opera3/reconcile/bank/{bank_code}/unignore-transaction")
+async def opera3_unignore_transaction_by_match(
+    bank_code: str,
+    transaction_date: str = Query(...),
+    amount: float = Query(...)
+):
+    """
+    Remove a transaction from the ignored list by matching bank, date, and amount (Opera 3).
+    Mirrors /api/reconcile/bank/{bank_code}/unignore-transaction.
+    Uses shared email_storage.
+    """
+    try:
+        deleted = email_storage.unignore_transaction_by_match(bank_code, transaction_date, amount)
+        if deleted:
+            return {"success": True, "message": "Transaction removed from ignored list"}
+        else:
+            return {"success": False, "error": "No matching ignored transaction found"}
+    except Exception as e:
+        logger.error(f"Opera 3 failed to unignore transaction: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/reconcile/bank/{bank_code}/import-from-statement")
+async def opera3_import_from_statement(
+    bank_code: str,
+    transactions: List[Dict],
+    statement_date: str,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Import transactions from a bank statement using Opera 3 matching logic.
+    Mirrors /api/reconcile/bank/{bank_code}/import-from-statement.
+    """
+    try:
+        from sql_rag.bank_import_opera3 import BankStatementMatcherOpera3, BankTransaction
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        # Create bank transactions from PDF-extracted data
+        bank_txns = []
+        for i, txn in enumerate(transactions):
+            amount = float(txn['amount'])
+            txn_date = datetime.strptime(txn['date'][:10], '%Y-%m-%d')
+            description = txn.get('description', '')[:100]
+
+            bank_txn = BankTransaction(
+                row_number=i + 1,
+                date=txn_date.date(),
+                amount=amount,
+                subcategory=txn.get('type', 'Other'),
+                memo=description,
+                name=description,
+                reference=txn.get('reference') or description[:30]
+            )
+            bank_txns.append(bank_txn)
+
+        matcher = BankStatementMatcherOpera3(data_path=data_path)
+
+        matched_receipts = []
+        matched_payments = []
+        unmatched = []
+
+        for txn in bank_txns:
+            matcher._match_transaction(txn, bank_code=bank_code)
+
+            txn_data = {
+                "row": txn.row_number,
+                "date": str(txn.date),
+                "name": txn.name,
+                "reference": txn.reference,
+                "amount": txn.amount,
+                "action": txn.action,
+                "match_type": txn.match_type,
+                "matched_account": txn.matched_account,
+                "matched_name": txn.matched_name,
+                "match_score": txn.match_score,
+                "skip_reason": txn.skip_reason
+            }
+
+            if txn.action == 'sales_receipt':
+                matched_receipts.append(txn_data)
+            elif txn.action == 'purchase_payment':
+                matched_payments.append(txn_data)
+            else:
+                unmatched.append(txn_data)
+
+        return {
+            "success": True,
+            "total_transactions": len(bank_txns),
+            "matched_receipts": matched_receipts,
+            "matched_payments": matched_payments,
+            "unmatched": unmatched,
+            "summary": {
+                "receipts": len(matched_receipts),
+                "payments": len(matched_payments),
+                "unmatched": len(unmatched)
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 import from statement failed for {bank_code}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/reconcile/bank/{bank_code}/confirm-matches")
+async def opera3_confirm_statement_matches(
+    bank_code: str,
+    matches: List[Dict],
+    statement_balance: float,
+    statement_date: str,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Confirm matched transactions and mark them as reconciled in Opera 3.
+    Mirrors /api/reconcile/bank/{bank_code}/confirm-matches.
+    """
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-confirm-matches"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
+
+    try:
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
+
+        try:
+            foxpro_import = get_opera3_writer(data_path)
+        except Opera3AgentRequired as e:
+            release_import_lock(_bank_lock_key(bank_code))
+            return {"success": False, "error": str(e)}
+
+        stmt_date = datetime.strptime(statement_date, '%Y-%m-%d')
+
+        # Get the entry IDs to reconcile
+        entry_ids = [m.get('ae_entry') or m.get('opera_entry', {}).get('ae_entry') for m in matches]
+        entry_ids = [e for e in entry_ids if e]
+
+        if not entry_ids:
+            release_import_lock(_bank_lock_key(bank_code))
+            return {"success": False, "error": "No valid entry IDs provided"}
+
+        # Build entries list with statement line numbers
+        entries = []
+        for i, entry_id in enumerate(entry_ids):
+            entries.append({
+                "entry_number": entry_id,
+                "statement_line": (i + 1) * 10
+            })
+
+        # Get next statement number from nbank
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(data_path)
+        nbank_records = reader.read_table('nbank')
+        next_batch = 1
+        for row in nbank_records:
+            if (row.get('nk_acnt') or '').strip().upper() == bank_code.upper():
+                next_batch = int(row.get('nk_lstrecl', 0) or 0) + 1
+                break
+
+        result = foxpro_import.mark_entries_reconciled(
+            bank_account=bank_code,
+            entries=entries,
+            statement_number=next_batch,
+            statement_date=stmt_date.date(),
+            reconciliation_date=stmt_date.date()
+        )
+
+        release_import_lock(_bank_lock_key(bank_code))
+        if result.success:
+            return {
+                "success": True,
+                "message": f"Reconciled {result.records_imported} entries",
+                "reconciled_count": result.records_imported,
+                "batch_number": next_batch,
+                "statement_balance": statement_balance
+            }
+        else:
+            return {
+                "success": False,
+                "errors": result.errors
+            }
+
+    except Exception as e:
+        logger.error(f"Opera 3 confirm matches failed for {bank_code}: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/bank/{bank_code}/scan-emails")
+async def opera3_scan_emails_for_statements(bank_code: str, email_address: Optional[str] = None):
+    """
+    Scan email inbox for bank statement attachments (Opera 3).
+    Mirrors /api/reconcile/bank/{bank_code}/scan-emails.
+    """
+    return {
+        "success": True,
+        "message": "Email scanning not yet implemented - use file upload",
+        "statements_found": []
+    }
+
+
+@app.post("/api/opera3/reconcile/bank/{bank_code}/complete-batch/{entry_number}")
+async def opera3_complete_batch(
+    bank_code: str,
+    entry_number: str,
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Complete an incomplete cashbook batch in Opera 3, making it available for reconciliation.
+    Mirrors /api/reconcile/bank/{bank_code}/complete-batch/{entry_number}.
+    In Opera 3, batches are typically already complete (ae_complet=1) on write.
+    """
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-complete-batch"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
+
+    try:
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            release_import_lock(_bank_lock_key(bank_code))
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        # In Opera 3, ae_complet is set to 1 on creation, so this is a no-op in most cases.
+        # But we set it just in case.
+        import dbf
+        aentry_path = Path(data_path) / 'aentry.dbf'
+        if not aentry_path.exists():
+            aentry_path = Path(data_path) / 'AENTRY.DBF'
+
+        table = dbf.Table(str(aentry_path))
+        table.open(dbf.READ_WRITE)
+        found = False
+        try:
+            for record in table:
+                ae_acnt = (str(record.ae_acnt) if hasattr(record, 'ae_acnt') else '').strip().upper()
+                ae_entry_val = (str(record.ae_entry) if hasattr(record, 'ae_entry') else '').strip().upper()
+                if ae_acnt == bank_code.upper() and ae_entry_val == entry_number.upper():
+                    found = True
+                    complet = int(record.ae_complet if hasattr(record, 'ae_complet') else 0) or 0
+                    if complet == 0:
+                        with record as r:
+                            r.ae_complet = 1
+                    break
+        finally:
+            table.close()
+
+        release_import_lock(_bank_lock_key(bank_code))
+        if found:
+            return {
+                "success": True,
+                "entry_number": entry_number,
+                "message": f"Batch {entry_number} completed"
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"Entry {entry_number} not found in bank {bank_code}"
+            }
+
+    except Exception as e:
+        logger.error(f"Opera 3 complete batch failed: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/trial-balance")
+async def opera3_reconcile_trial_balance(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Trial Balance check for Opera 3 - verifies the nominal ledger as a whole balances.
+    Mirrors /api/reconcile/trial-balance.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+        nacnt_records = reader.read_table('nacnt')
+
+        type_names = {
+            'A': 'Asset', 'L': 'Liability', 'E': 'Expense',
+            'I': 'Income', 'C': 'Capital', 'P': 'P&L', 'B': 'Balance Sheet'
+        }
+
+        total_bf_debits = 0
+        total_bf_credits = 0
+        total_ytd_debits = 0
+        total_ytd_credits = 0
+        total_closing_debits = 0
+        total_closing_credits = 0
+
+        accounts = []
+        for row in nacnt_records:
+            pry_dr = float(row.get('na_prydr', 0) or 0)
+            pry_cr = float(row.get('na_prycr', 0) or 0)
+            ytd_dr = float(row.get('na_ytddr', 0) or 0)
+            ytd_cr = float(row.get('na_ytdcr', 0) or 0)
+
+            if pry_dr == 0 and pry_cr == 0 and ytd_dr == 0 and ytd_cr == 0:
+                continue
+
+            bf_balance = pry_dr - pry_cr
+            current_net = ytd_dr - ytd_cr
+            closing_balance = bf_balance + current_net
+
+            if bf_balance > 0:
+                total_bf_debits += bf_balance
+            else:
+                total_bf_credits += abs(bf_balance)
+
+            total_ytd_debits += ytd_dr
+            total_ytd_credits += ytd_cr
+
+            if closing_balance > 0:
+                total_closing_debits += closing_balance
+            else:
+                total_closing_credits += abs(closing_balance)
+
+            account_type = (row.get('na_type') or '').strip()
+            accounts.append({
+                "account": (row.get('na_acnt') or '').strip(),
+                "description": (row.get('na_desc') or '').strip(),
+                "type": account_type,
+                "type_name": type_names.get(account_type, account_type),
+                "bf_balance": round(bf_balance, 2),
+                "current_debits": round(ytd_dr, 2),
+                "current_credits": round(ytd_cr, 2),
+                "current_net": round(current_net, 2),
+                "closing_balance": round(closing_balance, 2)
+            })
+
+        bf_variance = abs(total_bf_debits - total_bf_credits)
+        current_variance = abs(total_ytd_debits - total_ytd_credits)
+        closing_variance = abs(total_closing_debits - total_closing_credits)
+        all_balanced = bf_variance < 1.00 and current_variance < 1.00 and closing_variance < 1.00
+
+        result = {
+            "success": True,
+            "source": "opera3",
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "accounts": accounts,
+            "summary": {
+                "brought_forward": {
+                    "debits": round(total_bf_debits, 2),
+                    "credits": round(total_bf_credits, 2),
+                    "variance": round(bf_variance, 2),
+                    "balanced": bf_variance < 1.00
+                },
+                "current_year": {
+                    "debits": round(total_ytd_debits, 2),
+                    "credits": round(total_ytd_credits, 2),
+                    "variance": round(current_variance, 2),
+                    "balanced": current_variance < 1.00
+                },
+                "closing": {
+                    "debits": round(total_closing_debits, 2),
+                    "credits": round(total_closing_credits, 2),
+                    "variance": round(closing_variance, 2),
+                    "balanced": closing_variance < 1.00
+                },
+                "account_count": len(accounts)
+            },
+            "status": "BALANCED" if all_balanced else "UNBALANCED",
+            "message": f"Trial Balance is correct. {len(accounts)} accounts with matching debits and credits." if all_balanced else "Trial Balance has variance."
+        }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Opera 3 trial balance check failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/summary")
+async def opera3_reconcile_summary(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Quick summary of all reconciliation checks for Opera 3.
+    Mirrors /api/reconcile/summary.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from sql_rag.opera3_config import Opera3Config
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+
+        summary = {
+            "success": True,
+            "source": "opera3",
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "checks": [],
+            "all_reconciled": True,
+            "total_checks": 0,
+            "passed_checks": 0,
+            "failed_checks": 0
+        }
+
+        # Get control accounts
+        try:
+            config_obj = Opera3Config(data_path)
+            controls = config_obj.get_control_accounts()
+            debtors_control = controls.debtors_control
+            creditors_control = controls.creditors_control
+        except Exception:
+            debtors_control = ''
+            creditors_control = ''
+
+        # ========== 1. DEBTORS CHECK ==========
+        try:
+            stran_records = reader.read_table('stran')
+            sname_records = reader.read_table('sname')
+            nacnt_records = reader.read_table('nacnt')
+
+            sl_total = sum(float(r.get('st_trbal', 0) or 0) for r in stran_records if float(r.get('st_trbal', 0) or 0) != 0)
+            sname_total = sum(float(r.get('sn_currbal', 0) or 0) for r in sname_records if float(r.get('sn_currbal', 0) or 0) != 0)
+
+            nl_debtors_total = 0
+            if debtors_control:
+                for acc in nacnt_records:
+                    if (acc.get('na_acnt') or '').strip().upper() == debtors_control.upper():
+                        nl_debtors_total = float(acc.get('na_ytddr', 0) or 0) - float(acc.get('na_ytdcr', 0) or 0)
+                        break
+
+            sl_vs_sname = abs(sl_total - sname_total)
+            sl_vs_nl = abs(sl_total - nl_debtors_total)
+            debtors_ok = sl_vs_sname < 1.00 and sl_vs_nl < 1.00
+
+            summary["checks"].append({
+                "name": "Debtors",
+                "icon": "users",
+                "reconciled": debtors_ok,
+                "details": [
+                    {"label": "Sales Ledger (stran)", "value": round(sl_total, 2)},
+                    {"label": "Customer Master (sname)", "value": round(sname_total, 2)},
+                    {"label": f"Nominal ({debtors_control})", "value": round(nl_debtors_total, 2)},
+                ],
+                "variances": [
+                    {"label": "SL vs Master", "value": round(sl_vs_sname, 2), "ok": sl_vs_sname < 1.00},
+                    {"label": "SL vs NL", "value": round(sl_vs_nl, 2), "ok": sl_vs_nl < 1.00},
+                ]
+            })
+        except Exception as e:
+            summary["checks"].append({"name": "Debtors", "icon": "users", "reconciled": False, "error": str(e)})
+
+        # ========== 2. CREDITORS CHECK ==========
+        try:
+            ptran_records = reader.read_table('ptran')
+            pname_records = reader.read_table('pname')
+
+            pl_total = sum(float(r.get('pt_trbal', 0) or 0) for r in ptran_records if float(r.get('pt_trbal', 0) or 0) != 0)
+            pname_total = sum(float(r.get('pn_currbal', 0) or 0) for r in pname_records if float(r.get('pn_currbal', 0) or 0) != 0)
+
+            nl_creditors_total = 0
+            if creditors_control:
+                for acc in nacnt_records:
+                    if (acc.get('na_acnt') or '').strip().upper() == creditors_control.upper():
+                        nl_creditors_total = -(float(acc.get('na_ytddr', 0) or 0) - float(acc.get('na_ytdcr', 0) or 0))
+                        break
+
+            pl_vs_pname = abs(pl_total - pname_total)
+            pl_vs_nl = abs(pl_total - nl_creditors_total)
+            creditors_ok = pl_vs_pname < 1.00 and pl_vs_nl < 1.00
+
+            summary["checks"].append({
+                "name": "Creditors",
+                "icon": "building",
+                "reconciled": creditors_ok,
+                "details": [
+                    {"label": "Purchase Ledger (ptran)", "value": round(pl_total, 2)},
+                    {"label": "Supplier Master (pname)", "value": round(pname_total, 2)},
+                    {"label": f"Nominal ({creditors_control})", "value": round(nl_creditors_total, 2)},
+                ],
+                "variances": [
+                    {"label": "PL vs Master", "value": round(pl_vs_pname, 2), "ok": pl_vs_pname < 1.00},
+                    {"label": "PL vs NL", "value": round(pl_vs_nl, 2), "ok": pl_vs_nl < 1.00},
+                ]
+            })
+        except Exception as e:
+            summary["checks"].append({"name": "Creditors", "icon": "building", "reconciled": False, "error": str(e)})
+
+        # ========== 3. CASHBOOK CHECK ==========
+        try:
+            nbank_records = reader.read_table('nbank')
+
+            bank_master_total = 0
+            nl_bank_total = 0
+            for bank in nbank_records:
+                bank_code = (bank.get('nk_acnt') or '').strip()
+                master_bal = float(bank.get('nk_curbal', 0) or 0) / 100.0
+                bank_master_total += master_bal
+
+                for acc in nacnt_records:
+                    if (acc.get('na_acnt') or '').strip().upper() == bank_code.upper():
+                        nl_bal = float(acc.get('na_ytddr', 0) or 0) - float(acc.get('na_ytdcr', 0) or 0)
+                        nl_bank_total += nl_bal
+                        break
+
+            bank_variance = abs(bank_master_total - nl_bank_total)
+            cashbook_ok = bank_variance < 1.00
+
+            summary["checks"].append({
+                "name": "Cashbook",
+                "icon": "book",
+                "reconciled": cashbook_ok,
+                "details": [
+                    {"label": "Bank Master (nbank)", "value": round(bank_master_total, 2)},
+                    {"label": "Nominal Ledger", "value": round(nl_bank_total, 2)},
+                ],
+                "variances": [
+                    {"label": "Bank vs NL", "value": round(bank_variance, 2), "ok": cashbook_ok},
+                ]
+            })
+        except Exception as e:
+            summary["checks"].append({"name": "Cashbook", "icon": "book", "reconciled": False, "error": str(e)})
+
+        # Calculate overall status
+        summary["total_checks"] = len(summary["checks"])
+        summary["passed_checks"] = sum(1 for c in summary["checks"] if c.get("reconciled", False))
+        summary["failed_checks"] = summary["total_checks"] - summary["passed_checks"]
+        summary["all_reconciled"] = summary["failed_checks"] == 0
+
+        return summary
+
+    except Exception as e:
+        logger.error(f"Opera 3 reconciliation summary failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/vat")
+async def opera3_reconcile_vat(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    VAT reconciliation for Opera 3.
+    Mirrors /api/reconcile/vat.
+    Reads zvtran and ztax tables from FoxPro to analyse VAT positions.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+
+        # Read VAT-related tables
+        try:
+            zvtran_records = reader.read_table('zvtran')
+        except Exception:
+            zvtran_records = []
+        try:
+            ztax_records = reader.read_table('ztax')
+        except Exception:
+            ztax_records = []
+        try:
+            nvat_records = reader.read_table('nvat')
+        except Exception:
+            nvat_records = []
+
+        # Summarise uncommitted VAT from zvtran
+        output_total = 0.0
+        input_total = 0.0
+        output_count = 0
+        input_count = 0
+
+        for row in zvtran_records:
+            done = (row.get('va_done', 0) or 0)
+            if done == 1:
+                continue
+            vat_type = (row.get('va_vattype') or '').strip()
+            vat_val = float(row.get('va_vatval', 0) or 0)
+
+            if vat_type == 'S':
+                output_total += vat_val
+                output_count += 1
+            elif vat_type == 'P':
+                input_total += vat_val
+                input_count += 1
+
+        net_liability = output_total - input_total
+
+        # VAT codes from ztax
+        vat_codes = []
+        for row in ztax_records:
+            ctry = (row.get('tx_ctrytyp') or '').strip()
+            if ctry != 'H':
+                continue
+            vat_codes.append({
+                "code": (row.get('tx_code') or '').strip(),
+                "description": (row.get('tx_desc') or '').strip(),
+                "rate": float(row.get('tx_rate1', 0) or 0),
+                "type": (row.get('tx_trantyp') or '').strip(),
+                "nominal_account": (row.get('tx_nominal') or '').strip()
+            })
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "reconciliation_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "vat_codes": vat_codes,
+            "current_quarter": {
+                "uncommitted": {
+                    "source": "zvtran (VAT Return Transactions - va_done=0)",
+                    "output_vat": {
+                        "total": round(output_total, 2),
+                        "transaction_count": output_count
+                    },
+                    "input_vat": {
+                        "total": round(input_total, 2),
+                        "transaction_count": input_count
+                    },
+                    "net_liability": round(net_liability, 2)
+                }
+            },
+            "status": "RECONCILED" if abs(net_liability) < 1.00 else "DATA_AVAILABLE",
+            "message": f"Uncommitted VAT: Output £{output_total:,.2f}, Input £{input_total:,.2f}, Net £{net_liability:,.2f}"
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 VAT reconciliation failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/vat/diagnostic")
+async def opera3_vat_diagnostic(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    VAT diagnostic for Opera 3.
+    Mirrors /api/reconcile/vat/diagnostic.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+        result = {"tables": {}}
+
+        try:
+            zvtran_records = reader.read_table('zvtran')
+            total = len(zvtran_records)
+            uncommitted = sum(1 for r in zvtran_records if (r.get('va_done', 0) or 0) == 0)
+            committed = total - uncommitted
+            total_vat = sum(float(r.get('va_vatval', 0) or 0) for r in zvtran_records)
+            result["tables"]["zvtran"] = {
+                "total_rows": total,
+                "uncommitted": uncommitted,
+                "committed": committed,
+                "total_vat": round(total_vat, 2)
+            }
+        except Exception as e:
+            result["tables"]["zvtran"] = {"error": str(e)}
+
+        try:
+            nvat_records = reader.read_table('nvat')
+            total_vat = sum(float(r.get('nv_vatval', 0) or 0) for r in nvat_records)
+            result["tables"]["nvat"] = {
+                "total_rows": len(nvat_records),
+                "total_vat": round(total_vat, 2)
+            }
+        except Exception as e:
+            result["tables"]["nvat"] = {"error": str(e)}
+
+        try:
+            ztax_records = reader.read_table('ztax')
+            home_codes = sum(1 for r in ztax_records if (r.get('tx_ctrytyp') or '').strip() == 'H')
+            result["tables"]["ztax"] = {"total_codes": home_codes}
+        except Exception as e:
+            result["tables"]["ztax"] = {"error": str(e)}
+
+        return result
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/opera3/reconcile/vat/variance-drilldown")
+async def opera3_vat_variance_drilldown(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    VAT variance drilldown for Opera 3.
+    Mirrors /api/reconcile/vat/variance-drilldown.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        reader = Opera3Reader(data_path)
+
+        try:
+            zvtran_records = reader.read_table('zvtran')
+        except Exception:
+            zvtran_records = []
+
+        # Uncommitted VAT by type
+        output_total = 0.0
+        input_total = 0.0
+        uncommitted_count = 0
+
+        largest_uncommitted = []
+        for row in zvtran_records:
+            done = (row.get('va_done', 0) or 0)
+            if done == 1:
+                continue
+            uncommitted_count += 1
+            vat_type = (row.get('va_vattype') or '').strip()
+            vat_val = float(row.get('va_vatval', 0) or 0)
+
+            if vat_type == 'S':
+                output_total += vat_val
+            elif vat_type == 'P':
+                input_total += vat_val
+
+            largest_uncommitted.append({
+                "date": str(row.get('va_taxdate') or ''),
+                "type": vat_type,
+                "vat_amount": round(vat_val, 2),
+                "net_amount": round(float(row.get('va_trvalue', 0) or 0), 2),
+                "vat_code": (row.get('va_anvat') or '').strip()
+            })
+
+        # Sort by absolute value descending
+        largest_uncommitted.sort(key=lambda x: abs(x['vat_amount']), reverse=True)
+
+        # Get VAT nominal accounts from ztax
+        try:
+            ztax_records = reader.read_table('ztax')
+        except Exception:
+            ztax_records = []
+
+        vat_nominals = set()
+        for row in ztax_records:
+            if (row.get('tx_ctrytyp') or '').strip() == 'H':
+                nominal = (row.get('tx_nominal') or '').strip()
+                if nominal:
+                    vat_nominals.add(nominal)
+
+        # Get NL balance on VAT accounts
+        try:
+            nacnt_records = reader.read_table('nacnt')
+        except Exception:
+            nacnt_records = []
+
+        nl_total = 0.0
+        nl_count = 0
+        for acc in nacnt_records:
+            acnt = (acc.get('na_acnt') or '').strip()
+            if acnt in vat_nominals:
+                ytd_dr = float(acc.get('na_ytddr', 0) or 0)
+                ytd_cr = float(acc.get('na_ytdcr', 0) or 0)
+                nl_total += -(ytd_dr - ytd_cr)
+                nl_count += 1
+
+        uncommitted_net = output_total - input_total
+        variance = uncommitted_net - nl_total
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "vat_nominal_accounts": list(vat_nominals),
+            "analysis": {
+                "largest_uncommitted": largest_uncommitted[:50]
+            },
+            "summary": {
+                "uncommitted_vat": {
+                    "output": round(output_total, 2),
+                    "input": round(input_total, 2),
+                    "net": round(uncommitted_net, 2),
+                    "record_count": uncommitted_count
+                },
+                "nominal_balance": {
+                    "total": round(nl_total, 2),
+                    "record_count": nl_count
+                },
+                "variance": round(variance, 2),
+                "variance_explanation": []
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 VAT variance drilldown failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/bank-reconciliation/validate-statement")
+async def opera3_validate_statement_for_reconciliation(
+    bank_code: str = Query(..., description="Bank account code"),
+    opening_balance: float = Query(..., description="Statement opening balance (pounds)"),
+    closing_balance: float = Query(..., description="Statement closing balance (pounds)"),
+    statement_date: str = Query(..., description="Statement date (YYYY-MM-DD)"),
+    statement_number: Optional[int] = Query(None, description="Statement number"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Validate a statement is ready for reconciliation in Opera 3.
+    Mirrors /api/bank-reconciliation/validate-statement.
+    """
+    try:
+        from sql_rag.opera3_data_provider import Opera3DataProvider
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"valid": False, "error_message": f"Opera 3 data path not found: {data_path}"}
+
+        provider = Opera3DataProvider(data_path)
+        seq_result = provider.validate_statement_sequence(bank_code, opening_balance)
+
+        if seq_result.get('status') == 'error':
+            return {"valid": False, "error_message": seq_result.get('error', 'Unknown error')}
+
+        rec_bal = seq_result.get('reconciled_balance', 0)
+        tolerance = 0.02
+        balance_ok = abs(opening_balance - rec_bal) <= tolerance
+
+        return {
+            "valid": balance_ok,
+            "reconciled_balance": rec_bal,
+            "opening_balance": opening_balance,
+            "closing_balance": closing_balance,
+            "balance_difference": round(opening_balance - rec_bal, 2),
+            "error_message": None if balance_ok else f"Opening balance £{opening_balance:,.2f} does not match Opera reconciled balance £{rec_bal:,.2f}",
+            "source": "opera3"
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 validate statement failed: {e}")
+        return {"valid": False, "error_message": str(e)}
+
+
+@app.post("/api/opera3/bank-reconciliation/match-statement")
+async def opera3_match_statement_to_cashbook(
+    bank_code: str = Query(..., description="Bank account code"),
+    date_tolerance_days: int = Query(3, description="Days tolerance for date matching"),
+    import_id: Optional[int] = Query(None, description="Import record ID"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    request_body: Dict[str, Any] = Body(None)
+):
+    """
+    Match statement lines to unreconciled Opera 3 cashbook entries.
+    Mirrors /api/bank-reconciliation/match-statement.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}"}
+
+        # Load transactions from DB if import_id provided
+        statement_transactions = None
+        if import_id and email_storage:
+            db_txns = email_storage.get_statement_transactions(import_id)
+            if db_txns:
+                statement_transactions = [
+                    {
+                        "line_number": t['line_number'],
+                        "date": t['date'],
+                        "amount": t['amount'],
+                        "reference": t.get('reference', ''),
+                        "description": t.get('description', ''),
+                        "balance": t.get('balance'),
+                        "transaction_type": t.get('transaction_type', '')
+                    }
+                    for t in db_txns
+                ]
+
+        if not statement_transactions:
+            if not request_body or 'statement_transactions' not in request_body:
+                return {"success": False, "error": "Request body must include statement_transactions (or provide import_id)"}
+            statement_transactions = request_body['statement_transactions']
+
+        # Read Opera 3 unreconciled entries
+        reader = Opera3Reader(data_path)
+        aentry_records = reader.read_table('aentry')
+
+        unreconciled = []
+        for row in aentry_records:
+            if (row.get('ae_acnt') or '').strip().upper() != bank_code.upper():
+                continue
+            if int(row.get('ae_reclnum', 0) or 0) > 0:
+                continue
+            if int(row.get('ae_complet', 0) or 0) == 0:
+                continue
+
+            ae_value = float(row.get('ae_value', 0) or 0)
+            ae_date = row.get('ae_date')
+
+            unreconciled.append({
+                "entry_number": (row.get('ae_entry') or '').strip(),
+                "date": ae_date.isoformat() if hasattr(ae_date, 'isoformat') else str(ae_date or ''),
+                "value_pence": ae_value,
+                "value_pounds": ae_value / 100.0,
+                "reference": (row.get('ae_ref') or '').strip(),
+                "detail": (row.get('ae_detail') or '').strip(),
+                "comment": (row.get('ae_comment') or '').strip()
+            })
+
+        # Simple matching: match by amount and date proximity
+        auto_matched = []
+        suggested_matched = []
+        unmatched_statement = []
+        unmatched_cashbook = list(unreconciled)
+
+        for txn in statement_transactions:
+            stmt_amount = float(txn.get('amount', 0))
+            stmt_amount_pence = round(stmt_amount * 100)
+            stmt_date_str = txn.get('date', '')
+
+            best_match = None
+            best_score = 0
+
+            for entry in unmatched_cashbook:
+                entry_pence = round(entry['value_pence'])
+
+                # Amount must match exactly
+                if entry_pence != stmt_amount_pence:
+                    continue
+
+                # Date proximity scoring
+                try:
+                    from datetime import date as date_type
+                    if isinstance(stmt_date_str, str) and stmt_date_str:
+                        stmt_dt = date_type.fromisoformat(stmt_date_str[:10])
+                    else:
+                        stmt_dt = None
+                    entry_dt_str = entry['date']
+                    if isinstance(entry_dt_str, str) and entry_dt_str:
+                        entry_dt = date_type.fromisoformat(entry_dt_str[:10])
+                    else:
+                        entry_dt = None
+                    if stmt_dt and entry_dt:
+                        day_diff = abs((stmt_dt - entry_dt).days)
+                        if day_diff <= date_tolerance_days:
+                            score = 1.0 - (day_diff / (date_tolerance_days + 1))
+                        elif day_diff <= 14:
+                            score = 0.5
+                        else:
+                            score = 0.3
+                    else:
+                        score = 0.6
+                except Exception:
+                    score = 0.5
+
+                if score > best_score:
+                    best_score = score
+                    best_match = entry
+
+            if best_match:
+                match_entry = {
+                    "statement_line": txn.get('line_number'),
+                    "statement_date": txn.get('date'),
+                    "statement_amount": stmt_amount,
+                    "statement_reference": txn.get('reference', ''),
+                    "statement_description": txn.get('description', ''),
+                    "entry_number": best_match['entry_number'],
+                    "entry_date": best_match['date'],
+                    "entry_amount": best_match['value_pounds'],
+                    "entry_reference": best_match['reference'],
+                    "confidence": best_score
+                }
+
+                if best_score >= 0.8:
+                    auto_matched.append(match_entry)
+                else:
+                    suggested_matched.append(match_entry)
+
+                unmatched_cashbook.remove(best_match)
+            else:
+                unmatched_statement.append({
+                    "statement_line": txn.get('line_number'),
+                    "statement_date": txn.get('date'),
+                    "statement_amount": stmt_amount,
+                    "statement_reference": txn.get('reference', ''),
+                    "statement_description": txn.get('description', '')
+                })
+
+        # Filter ignored from unmatched
+        if email_storage:
+            filtered_unmatched = []
+            for txn in unmatched_statement:
+                if not email_storage.is_transaction_ignored(bank_code, txn.get('statement_date', ''), txn.get('statement_amount', 0)):
+                    filtered_unmatched.append(txn)
+            unmatched_statement = filtered_unmatched
+
+        result = {
+            "success": True,
+            "source": "opera3",
+            "auto_matched": auto_matched,
+            "suggested_matched": suggested_matched,
+            "unmatched_statement": unmatched_statement,
+            "unmatched_cashbook": [
+                {
+                    "entry_number": e['entry_number'],
+                    "entry_date": e['date'],
+                    "entry_amount": e['value_pounds'],
+                    "entry_reference": e['reference']
+                }
+                for e in unmatched_cashbook
+            ],
+            "summary": {
+                "auto_matched": len(auto_matched),
+                "suggested_matched": len(suggested_matched),
+                "unmatched_statement": len(unmatched_statement),
+                "unmatched_cashbook": len(unmatched_cashbook)
+            }
+        }
+
+        if import_id:
+            result['import_id'] = import_id
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Opera 3 match statement failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/opera3/bank-reconciliation/complete")
+async def opera3_complete_reconciliation(
+    bank_code: str = Query(..., description="Bank account code"),
+    statement_number: int = Query(..., description="Statement number"),
+    statement_date: str = Query(..., description="Statement date (YYYY-MM-DD)"),
+    closing_balance: float = Query(..., description="Statement closing balance (pounds)"),
+    partial: bool = Query(False, description="Partial reconciliation"),
+    import_id: Optional[int] = Query(None, description="Import record ID"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    request_body: Dict[str, Any] = Body(None)
+):
+    """
+    Complete bank reconciliation for Opera 3 - mark matched entries as reconciled.
+    Mirrors /api/bank-reconciliation/complete.
+    """
+    if not request_body:
+        return {"success": False, "error": "Request body required"}
+
+    matched_entries = request_body.get('matched_entries', [])
+    if not matched_entries:
+        return {"success": False, "error": "No matched entries provided"}
+
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-bank-reconciliation-complete"):
+        return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
+
+    try:
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
+
+        try:
+            foxpro_import = get_opera3_writer(data_path)
+        except Opera3AgentRequired as e:
+            release_import_lock(_bank_lock_key(bank_code))
+            return {"success": False, "error": str(e)}
+
+        stmt_date = datetime.strptime(statement_date, '%Y-%m-%d').date()
+
+        # Build entries list
+        entries = []
+        for entry in matched_entries:
+            entries.append({
+                "entry_number": entry.get('entry_number', ''),
+                "statement_line": entry.get('statement_line', 0)
+            })
+
+        result = foxpro_import.mark_entries_reconciled(
+            bank_account=bank_code,
+            entries=entries,
+            statement_number=statement_number,
+            statement_date=stmt_date,
+            reconciliation_date=stmt_date,
+            partial=partial
+        )
+
+        # Update DB tracking if import_id provided
+        if result.success and import_id and email_storage:
+            try:
+                matches_to_save = []
+                for entry in matched_entries:
+                    matches_to_save.append({
+                        'line_number': entry.get('statement_line'),
+                        'matched_entry': entry.get('entry_number'),
+                        'match_confidence': 1.0,
+                        'match_type': 'manual'
+                    })
+                if matches_to_save:
+                    email_storage.update_transaction_matches_bulk(import_id, matches_to_save)
+
+                email_storage.mark_transactions_reconciled(import_id)
+
+                if not partial:
+                    email_storage.mark_statement_reconciled(
+                        filename='',
+                        reconciled_count=result.records_imported,
+                        bank_code=bank_code
+                    )
+                    with email_storage._get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            UPDATE bank_statement_imports
+                            SET is_reconciled = 1,
+                                reconciled_date = ?,
+                                reconciled_count = ?
+                            WHERE id = ?
+                        """, (datetime.now().isoformat(), result.records_imported, import_id))
+            except Exception as db_err:
+                logger.warning(f"Could not update reconciliation status in DB: {db_err}")
+
+        release_import_lock(_bank_lock_key(bank_code))
+        return {
+            "success": result.success,
+            "entries_reconciled": result.records_imported if result.success else 0,
+            "messages": result.warnings if result.success else result.errors,
+            "partial": partial,
+            "statement_number": statement_number,
+            "statement_date": statement_date,
+            "closing_balance": closing_balance
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 complete reconciliation failed: {e}")
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/bank-reconciliation/statement-transactions/{import_id}")
+async def opera3_get_statement_transactions(import_id: int):
+    """
+    Retrieve stored statement transactions for an Opera 3 import.
+    Mirrors /api/bank-reconciliation/statement-transactions/{import_id}.
+    Uses shared email_storage (same SQLite DB).
+    """
+    try:
+        if not email_storage:
+            return {"success": False, "error": "Email storage not initialized"}
+
+        transactions = email_storage.get_statement_transactions(import_id)
+
+        with email_storage._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, bank_code, filename, opening_balance, closing_balance,
+                       statement_date, account_number, sort_code, source,
+                       transactions_imported, total_receipts, total_payments,
+                       COALESCE(is_reconciled, 0) as is_reconciled
+                FROM bank_statement_imports WHERE id = ?
+            """, (import_id,))
+            row = cursor.fetchone()
+            import_record = dict(row) if row else None
+
+        if not import_record:
+            return {"success": False, "error": f"Import record {import_id} not found"}
+
+        return {
+            "success": True,
+            "source": "opera3",
+            "import_id": import_id,
+            "import_record": import_record,
+            "transactions": transactions,
+            "count": len(transactions),
+            "statement_info": {
+                "opening_balance": import_record.get('opening_balance'),
+                "closing_balance": import_record.get('closing_balance'),
+                "statement_date": import_record.get('statement_date'),
+                "account_number": import_record.get('account_number'),
+                "sort_code": import_record.get('sort_code'),
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 get statement transactions failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/bank-reconciliation/status")
+async def opera3_get_bank_reconciliation_status(
+    bank_code: str = Query(..., description="Bank account code"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Get current reconciliation status for an Opera 3 bank account.
+    Mirrors /api/bank-reconciliation/status.
+    """
+    try:
+        from sql_rag.opera3_data_provider import Opera3DataProvider
+
+        provider = Opera3DataProvider(data_path)
+        status = provider.get_bank_reconciliation_status(bank_code)
+
+        if not status.get('success', False):
+            return status
+
+        return {
+            "success": True,
+            "source": "opera3",
+            **status
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 bank reconciliation status failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/opera3/bank-reconciliation/unreconciled-entries")
+async def opera3_get_bank_reconciliation_unreconciled(
+    bank_code: str = Query(..., description="Bank account code"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    include_incomplete: bool = Query(False, description="Include incomplete entries")
+):
+    """
+    Get unreconciled cashbook entries for an Opera 3 bank account.
+    Mirrors /api/bank-reconciliation/unreconciled-entries.
+    Delegates to /api/opera3/reconcile/bank/{bank_code}/unreconciled.
+    """
+    return await opera3_get_unreconciled_entries(bank_code, data_path, include_incomplete)
+
+
+@app.get("/api/opera3/cashbook/bank-accounts")
+async def opera3_get_cashbook_bank_accounts(
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Get list of bank accounts for transfers from Opera 3.
+    Mirrors /api/cashbook/bank-accounts.
+    """
+    try:
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from pathlib import Path
+
+        if not Path(data_path).exists():
+            return {"success": False, "error": f"Opera 3 data path not found: {data_path}", "accounts": []}
+
+        reader = Opera3Reader(data_path)
+        nbank_records = reader.read_table('nbank')
+
+        accounts = []
+        for row in nbank_records:
+            # Exclude foreign currency banks (nk_forgn) and petty cash if needed
+            is_foreign = (row.get('nk_forgn', 0) or 0) == 1
+            if is_foreign:
+                continue
+
+            accounts.append({
+                "code": (row.get('nk_acnt') or '').strip(),
+                "description": (row.get('nk_desc') or '').strip(),
+                "sort_code": (row.get('nk_sort') or '').strip(),
+                "account_number": (row.get('nk_number') or '').strip(),
+                "balance": float(row.get('nk_curbal', 0) or 0) / 100.0
+            })
+
+        accounts.sort(key=lambda x: x['code'])
+
+        return {
+            "success": True,
+            "accounts": accounts,
+            "count": len(accounts)
+        }
+
+    except Exception as e:
+        logger.error(f"Opera 3 get cashbook bank accounts failed: {e}")
+        return {"success": False, "error": str(e), "accounts": []}
+
+
+@app.post("/api/opera3/cashbook/create-bank-transfer")
+async def opera3_create_bank_transfer(
+    source_bank: str = Query(..., description="Source bank account code"),
+    dest_bank: str = Query(..., description="Destination bank account code"),
+    amount: float = Query(..., description="Transfer amount (positive)"),
+    reference: str = Query(..., description="Reference (max 20 chars)"),
+    date: str = Query(..., description="Transfer date YYYY-MM-DD"),
+    comment: str = Query("", description="Optional comment"),
+    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+):
+    """
+    Create a bank transfer between two Opera 3 bank accounts.
+    Mirrors /api/cashbook/create-bank-transfer.
+    """
+    try:
+        from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
+        from datetime import date as date_type
+
+        if source_bank == dest_bank:
+            return {"success": False, "error": "Source and destination bank must be different"}
+
+        if amount <= 0:
+            return {"success": False, "error": "Transfer amount must be positive"}
+
+        try:
+            transfer_date = date_type.fromisoformat(date[:10])
+        except ValueError:
+            return {"success": False, "error": f"Invalid date format: {date}. Use YYYY-MM-DD"}
+
+        try:
+            foxpro_import = get_opera3_writer(data_path)
+        except Opera3AgentRequired as e:
+            return {"success": False, "error": str(e)}
+
+        result = foxpro_import.import_bank_transfer(
+            source_bank=source_bank,
+            dest_bank=dest_bank,
+            amount_pounds=amount,
+            reference=reference[:20] if reference else "",
+            post_date=transfer_date,
+            comment=comment[:50] if comment else "",
+            input_by="RECONCILE"
+        )
+
+        # import_bank_transfer returns a dict in Opera 3
+        if isinstance(result, dict):
+            if result.get('success', False):
+                return {
+                    "success": True,
+                    "source_entry": result.get('source_entry', ''),
+                    "dest_entry": result.get('dest_entry', ''),
+                    "source_bank": source_bank,
+                    "dest_bank": dest_bank,
+                    "amount": amount,
+                    "message": f"Bank transfer created: {result.get('source_entry', '')} / {result.get('dest_entry', '')}",
+                    "warnings": result.get('warnings', [])
+                }
+            else:
+                return {"success": False, "error": result.get('error', 'Unknown error')}
+        else:
+            # Handle ImportResult-style return
+            if result.success:
+                entry_num = getattr(result, 'entry_number', '') or ''
+                entries = entry_num.split('/') if entry_num else ['', '']
+                return {
+                    "success": True,
+                    "source_entry": entries[0] if len(entries) > 0 else '',
+                    "dest_entry": entries[1] if len(entries) > 1 else '',
+                    "source_bank": source_bank,
+                    "dest_bank": dest_bank,
+                    "amount": amount,
+                    "message": f"Bank transfer created: {entry_num}",
+                    "warnings": result.warnings or []
+                }
+            else:
+                return {"success": False, "error": result.errors[0] if result.errors else 'Unknown error'}
+
+    except Exception as e:
+        logger.error(f"Opera 3 create bank transfer failed: {e}")
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
