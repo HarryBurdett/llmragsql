@@ -22506,6 +22506,23 @@ async def manage_bank_statements(request: Request):
                             logger.info(f"Manage: archived file {filename} → {dest}")
 
                 elif action == 'delete':
+                    # Also delete the local PDF copy from bank folder (if it was saved there by scan)
+                    if filename and bank_code and bank_code != 'UNKNOWN':
+                        try:
+                            settings = _load_company_settings()
+                            base_folder = settings.get("bank_statements_base_folder", "")
+                            if base_folder:
+                                bp = Path(base_folder)
+                                if bp.exists():
+                                    for child in bp.iterdir():
+                                        if child.is_dir() and child.name.upper().startswith(bank_code):
+                                            local_pdf = child / filename
+                                            if local_pdf.exists():
+                                                local_pdf.unlink()
+                                                logger.info(f"Manage: deleted local PDF copy {local_pdf}")
+                        except Exception as local_err:
+                            logger.warning(f"Could not delete local PDF copy: {local_err}")
+
                     if source == 'email' and email_id:
                         if not email_storage:
                             result_entry['error'] = "Email storage not initialised"
