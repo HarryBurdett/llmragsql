@@ -489,8 +489,11 @@ class StatementReconciler:
             info_data, _ = cached
             return info_data
 
-        prompt = """Look at ONLY the header/summary area of this bank statement PDF.
-Extract the statement details — do NOT extract individual transactions.
+        prompt = """Look at this bank statement PDF and extract the statement details.
+
+If the opening balance is not shown explicitly (e.g. "Balance brought forward"),
+look at the FIRST transaction line — take its running balance, then subtract its
+credit or add back its debit to calculate the opening balance.
 
 Return ONLY this JSON:
 {
@@ -659,6 +662,19 @@ IMPORTANT EXTRACTION RULES:
         closing_bal_raw = info_data.get('closing_balance')
         opening_balance = float(opening_bal_raw) if opening_bal_raw is not None else None
         closing_balance = float(closing_bal_raw) if closing_bal_raw is not None else None
+
+        # If opening balance not extracted, calculate from first transaction
+        if opening_balance is None and raw_transactions:
+            try:
+                first_txn = raw_transactions[0]
+                first_bal = float(first_txn['balance']) if first_txn.get('balance') is not None else None
+                if first_bal is not None:
+                    money_in = float(first_txn.get('money_in') or 0)
+                    money_out = float(first_txn.get('money_out') or 0)
+                    opening_balance = round(first_bal - money_in + money_out, 2)
+                    logger.info(f"Calculated opening balance from first transaction: £{opening_balance:,.2f}")
+            except Exception:
+                pass
 
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),

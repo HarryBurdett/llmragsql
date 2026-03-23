@@ -22131,6 +22131,20 @@ async def scan_all_banks_for_statements(
                     current_bal = round(cb, 2)
 
                 # Keep only chained statements + any without balance info
+                # Sort no_balance by period dates from filename or period_start
+                import re as _sort_re
+                def _period_sort_key(s):
+                    # Try period_start first
+                    ps = s.get('period_start', '')
+                    if ps:
+                        return ps
+                    # Extract from filename: YYYY-MM-DD pattern
+                    fn = s.get('filename', '')
+                    m = _sort_re.search(r'(\d{4}-\d{2}-\d{2})', fn)
+                    if m:
+                        return m.group(1)
+                    return '9999'
+                no_balance.sort(key=_period_sort_key)
                 stmts = chained + no_balance
 
             bank['statements'] = stmts
