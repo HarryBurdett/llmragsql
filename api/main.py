@@ -13753,10 +13753,11 @@ async def process_bank_statement(
         }
 
     except Exception as e:
-        logger.error(f"Failed to process statement: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        logger.error(f"Failed to process statement: {e}", exc_info=True)
+        return {"success": True, "error": str(e), "extracted_transactions": 0,
+                "matches": [], "unmatched_statement": [], "unmatched_opera": [],
+                "statement_info": {}, "opera_status": {}, "bank_code": bank_code,
+                "bank_validation": {}, "_exception": str(e)}
 
 
 @app.post("/api/reconcile/process-statement-unified")

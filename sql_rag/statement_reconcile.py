@@ -353,7 +353,19 @@ class StatementReconciler:
         current_balance = float(df.iloc[0]['current_balance']) if df.iloc[0]['current_balance'] else 0.0
         last_stmt_no = int(df.iloc[0]['last_statement_number']) if df.iloc[0]['last_statement_number'] else 0
 
-        opening_balance = statement_info.opening_balance or 0.0
+        opening_balance = statement_info.opening_balance
+
+        # If opening balance wasn't extracted, can't validate sequence — proceed anyway
+        if opening_balance is None:
+            logger.warning(f"Statement opening balance not extracted — skipping sequence validation")
+            return {
+                'status': 'process',
+                'reconciled_balance': reconciled_balance,
+                'opening_balance': None,
+                'current_balance': current_balance,
+                'last_statement_number': last_stmt_no,
+                'warning': 'Opening balance not available — sequence not validated'
+            }
 
         # Compare with small tolerance for floating point
         tolerance = 0.01
