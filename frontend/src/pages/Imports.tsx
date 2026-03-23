@@ -2715,15 +2715,21 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // Check if all statement items are already in Opera (nothing to import, but can reconcile)
   const allAlreadyInOpera = (() => {
     if (!bankPreview || allTransactionsImported) return false;
-    if (bankImportResult?.success) return false; // Import already happened, use allTransactionsImported instead
+    if (bankImportResult?.success) return false;
     const receipts = bankPreview.matched_receipts || [];
     const payments = bankPreview.matched_payments || [];
     const refunds = bankPreview.matched_refunds || [];
     const unmatched = bankPreview.unmatched || [];
     const allItems = [...receipts, ...payments, ...refunds, ...unmatched];
+    // In bankRecOnly mode (from Bank Statement Hub), unmatched items don't block
+    // reconciliation — they're statement transactions not yet in Opera that can
+    // be left for a later import or ignored during reconcile
     const needsImport = allItems.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
+    const needsImportExcludingUnmatched = bankRecOnly
+      ? [...receipts, ...payments, ...refunds].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
+      : needsImport;
     const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
-    return needsImport.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
+    return needsImportExcludingUnmatched.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
   })();
 
   // All items are accounted for (imported, in Opera, or ignored) — user can proceed to reconcile
