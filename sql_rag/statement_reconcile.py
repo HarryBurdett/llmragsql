@@ -675,24 +675,36 @@ IMPORTANT EXTRACTION RULES:
         opening_balance = _safe_float(opening_bal_raw)
         closing_balance = _safe_float(closing_bal_raw)
 
-        # If opening balance not extracted, calculate from the oldest transaction.
-        # Sort by date, take the earliest, then: opening = balance - amount
-        # (reverse the transaction to get the balance before it)
-        if opening_balance is None and raw_transactions:
+        # Calculate opening/closing from transactions if not extracted or incorrect.
+        # Sort transactions by date to find oldest and newest.
+        if raw_transactions:
             try:
-                # Find the oldest transaction by date
                 sorted_txns = sorted(
-                    [t for t in raw_transactions if t.get('date')],
+                    [t for t in raw_transactions if t.get('date') and t.get('balance') is not None],
                     key=lambda t: str(t['date'])
                 )
                 if sorted_txns:
+                    # Opening: from oldest transaction (balance before it)
                     oldest = sorted_txns[0]
                     oldest_bal = _safe_float(oldest.get('balance'))
                     if oldest_bal is not None:
                         money_in = _safe_float(oldest.get('money_in')) or 0
                         money_out = _safe_float(oldest.get('money_out')) or 0
                         txn_amount = money_in - money_out
-                        opening_balance = round(oldest_bal - txn_amount, 2)
+                        calc_opening = round(oldest_bal - txn_amount, 2)
+                        if opening_balance is None or abs(opening_balance - calc_opening) > 1000:
+                            if opening_balance is not None:
+                                logger.info(f"Correcting opening balance: extracted £{opening_balance:,.2f} → calculated £{calc_opening:,.2f}")
+                            opening_balance = calc_opening
+
+                    # Closing: last transaction's running balance
+                    newest = sorted_txns[-1]
+                    newest_bal = _safe_float(newest.get('balance'))
+                    if newest_bal is not None:
+                        if closing_balance is None or abs(closing_balance - newest_bal) > 1000:
+                            if closing_balance is not None:
+                                logger.info(f"Correcting closing balance: extracted £{closing_balance:,.2f} → last txn balance £{newest_bal:,.2f}")
+                            closing_balance = newest_bal
                         logger.info(f"Calculated opening balance from oldest transaction ({oldest.get('date')}): "
                                     f"bal £{oldest_bal:,.2f} - amount £{txn_amount:,.2f} = £{opening_balance:,.2f}")
             except Exception:
