@@ -22098,6 +22098,18 @@ async def scan_all_banks_for_statements(
                     else:
                         no_balance.append(s)
 
+                # Sort helper
+                import re as _sort_re
+                def _period_sort_key(s):
+                    ps = s.get('period_start', '')
+                    if ps:
+                        return ps
+                    fn = s.get('filename', '')
+                    m = _sort_re.search(r'(\d{4}-\d{2}-\d{2})', fn)
+                    if m:
+                        return m.group(1)
+                    return '9999'
+
                 # Walk the chain from rec_bal forward
                 chained = []
                 current_bal = round(rec_bal, 2)
@@ -22111,6 +22123,12 @@ async def scan_all_banks_for_statements(
                             picked = c
                             visited.add(cid)
                             break
+                    # If no match in by_opening, check no_balance for the next
+                    # statement chronologically (opening balance wasn't extracted)
+                    if picked is None and no_balance:
+                        no_balance.sort(key=_period_sort_key)
+                        picked = no_balance.pop(0)
+                        visited.add(id(picked))
                     if picked is None:
                         break
                     chained.append(picked)
@@ -22119,25 +22137,16 @@ async def scan_all_banks_for_statements(
                         break
                     current_bal = round(cb, 2)
 
-                # Keep only chained statements + any without balance info
-                # Sort no_balance by period dates from filename or period_start
-                import re as _sort_re
-                def _period_sort_key(s):
-                    # Try period_start first
-                    ps = s.get('period_start', '')
-                    if ps:
-                        return ps
-                    # Extract from filename: YYYY-MM-DD pattern
-                    fn = s.get('filename', '')
-                    m = _sort_re.search(r'(\d{4}-\d{2}-\d{2})', fn)
-                    if m:
-                        return m.group(1)
-                    return '9999'
-                # Collect unchained statements (have balances but don't connect from rec_bal)
+                # Collect unchained statements with balances that don't connect
+                # Filter out any whose closing balance matches rec_bal (already done)
                 unchained = []
                 for bal_list in by_opening.values():
                     for s in bal_list:
                         if id(s) not in visited:
+                            cb = s.get('closing_balance')
+                            # Skip if closing equals rec_bal — this was the last reconciled statement
+                            if cb is not None and abs(cb - rec_bal) < 0.01:
+                                continue
                             unchained.append(s)
                 unchained.sort(key=_period_sort_key)
                 no_balance.sort(key=_period_sort_key)
