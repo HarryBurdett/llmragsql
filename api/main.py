@@ -21450,7 +21450,7 @@ async def scan_all_banks_for_statements(
                 total_pdfs_found += 1
 
                 # Skip managed (archived/deleted/retained) — these are explicitly dismissed
-                if (email_id, attachment_id) in managed_keys:
+                if (email_id, attachment_id) in managed_keys or filename in managed_filenames:
                     continue
 
                 # Skip fully reconciled statements — archive from load list
