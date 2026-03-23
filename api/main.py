@@ -750,6 +750,19 @@ async def auth_middleware(request: Request, call_next):
         request.state.user = user
         request.state.user_permissions = user_auth.get_user_permissions(user['id'])
 
+        # Set company context from session — ensures every request uses the
+        # correct company's sql_connector, email_storage, settings, etc.
+        import sqlite3 as _sq3
+        try:
+            _conn = _sq3.connect(str(user_auth.DB_PATH))
+            _row = _conn.execute('SELECT company_id FROM sessions WHERE token = ?', (token,)).fetchone()
+            _conn.close()
+            if _row and _row[0]:
+                _ensure_company_context(_row[0])
+                _request_company_id.set(_row[0])
+        except Exception:
+            pass
+
     return await call_next(request)
 
 # Include Opera integration rules API router
@@ -5625,21 +5638,6 @@ async def trigger_email_sync(request: Request, provider_id: Optional[int] = None
     """Trigger email sync (all providers or specific one)."""
     if not email_sync_manager:
         raise HTTPException(status_code=503, detail="Email sync manager not initialized")
-
-    # Ensure correct company context — read session company from DB
-    # (the middleware may not have set it due to module caching on reload)
-    auth_header = request.headers.get('Authorization', '')
-    token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
-    if token and user_auth:
-        try:
-            import sqlite3 as _sq
-            _conn = _sq.connect(str(user_auth.DB_PATH))
-            _row = _conn.execute('SELECT company_id FROM sessions WHERE token = ?', (token,)).fetchone()
-            _conn.close()
-            if _row and _row[0]:
-                _ensure_company_context(_row[0])
-        except Exception:
-            pass
 
     try:
         if provider_id:
