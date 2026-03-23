@@ -22530,6 +22530,137 @@ async def archive_bank_statement(
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/bank-import/archived-statements")
+async def get_archived_statements():
+    """Get list of archived/deleted bank statement records."""
+    try:
+        results = email_storage.get_archived_statements()
+        return {"success": True, "statements": results, "count": len(results)}
+    except Exception as e:
+        logger.error(f"Error fetching archived statements: {e}")
+        return {"success": False, "error": str(e), "statements": [], "count": 0}
+
+
+@app.post("/api/bank-import/restore-statement")
+async def restore_archived_statement(request: Request):
+    """
+    Restore an archived bank statement back to its bank subfolder.
+
+    Body: { "record_id": int }
+    """
+    try:
+        import shutil
+        from pathlib import Path
+
+        body = await request.json()
+        record_id = body.get("record_id")
+        if not record_id:
+            return {"success": False, "error": "record_id is required"}
+
+        # Look up the tracking record
+        record = email_storage.get_bank_statement_import_by_id(record_id)
+        if not record:
+            return {"success": False, "error": f"Record {record_id} not found"}
+
+        filename = record.get("filename", "")
+        bank_code = record.get("bank_code", "")
+
+        if not filename:
+            return {"success": False, "error": "Record has no filename"}
+
+        # Find the file in archive folders
+        settings = _load_company_settings()
+        base_folder = settings.get("bank_statements_base_folder", "")
+        archive_folder = settings.get("bank_statements_archive_folder", "")
+
+        if not base_folder:
+            return {"success": False, "error": "No bank_statements_base_folder configured"}
+
+        bp = Path(base_folder)
+        if not archive_folder:
+            archive_folder = str(bp / "archive")
+
+        # Search archive subfolders for the file
+        archive_path = Path(archive_folder)
+        found_file = None
+        if archive_path.exists():
+            for sub in archive_path.iterdir():
+                if sub.is_dir():
+                    candidate = sub / filename
+                    if candidate.exists():
+                        found_file = candidate
+                        break
+            # Also check archive root
+            if not found_file:
+                candidate = archive_path / filename
+                if candidate.exists():
+                    found_file = candidate
+
+        if not found_file:
+            # Try base_folder/archive as fallback
+            fallback_archive = bp / "archive"
+            if fallback_archive.exists() and fallback_archive != archive_path:
+                for sub in fallback_archive.iterdir():
+                    if sub.is_dir():
+                        candidate = sub / filename
+                        if candidate.exists():
+                            found_file = candidate
+                            break
+                if not found_file:
+                    candidate = fallback_archive / filename
+                    if candidate.exists():
+                        found_file = candidate
+
+        if not found_file:
+            # File not found on disk — just delete tracking record
+            email_storage.delete_bank_statement_import_record(record_id)
+            return {
+                "success": True,
+                "message": f"Tracking record removed (file not found in archive)",
+                "file_restored": False
+            }
+
+        # Find the bank subfolder to restore to
+        dest_folder = None
+        if bank_code and bp.exists():
+            for child in bp.iterdir():
+                if child.is_dir() and child.name.startswith(bank_code):
+                    dest_folder = child
+                    break
+
+        if not dest_folder:
+            # Fallback: restore to base folder
+            dest_folder = bp
+
+        dest_folder.mkdir(parents=True, exist_ok=True)
+        dest_path = dest_folder / filename
+
+        # Handle name collision
+        if dest_path.exists():
+            stem, suffix = dest_path.stem, dest_path.suffix
+            counter = 1
+            while dest_path.exists():
+                dest_path = dest_folder / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        shutil.move(str(found_file), str(dest_path))
+
+        # Delete the tracking record
+        email_storage.delete_bank_statement_import_record(record_id)
+
+        logger.info(f"Restored archived statement: {filename} → {dest_path}")
+        return {
+            "success": True,
+            "message": f"Restored {filename} to {dest_folder.name}/",
+            "file_restored": True,
+            "restored_path": str(dest_path)
+        }
+
+    except Exception as e:
+        logger.error(f"Error restoring archived statement: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/bank-import/manage-statements")
 async def manage_bank_statements(request: Request):
     """

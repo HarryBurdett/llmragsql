@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import { Landmark, RefreshCw, FileText, ArrowRight, CheckCircle, AlertTriangle, Search, ChevronDown, ChevronRight, Mail, FolderOpen, X, Archive, Trash2, Eye, Clock, ShieldAlert } from 'lucide-react';
+import { Landmark, RefreshCw, FileText, ArrowRight, CheckCircle, AlertTriangle, Search, ChevronDown, ChevronRight, Mail, FolderOpen, X, Archive, Trash2, Eye, Clock, ShieldAlert, RotateCcw } from 'lucide-react';
 import { authFetch, friendlyError } from '../api/client';
 import { Imports } from './Imports';
 import { BankStatementReconcileWithBoundary as BankStatementReconcile } from './BankStatementReconcile';
@@ -134,6 +134,8 @@ export function BankStatementHub() {
   const [inProgressLoading, setInProgressLoading] = useState(false);
   const [completedStatements, setCompletedStatements] = useState<InProgressStatement[]>([]);
   const [completedLoading, setCompletedLoading] = useState(false);
+  const [archivedStatements, setArchivedStatements] = useState<{ id: number; filename: string; bank_code: string; import_date: string; period_start?: string; period_end?: string; source: string; imported_by: string; target_system: string }[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
   const [expandedBanks, setExpandedBanks] = useState<Set<string>>(new Set());
   const [manualUploadMode, setManualUploadMode] = useState(false);
 
@@ -185,10 +187,45 @@ export function BankStatementHub() {
     }
   }, []);
 
+  const fetchArchived = useCallback(async () => {
+    setArchivedLoading(true);
+    try {
+      const resp = await authFetch('/api/bank-import/archived-statements');
+      const data = await resp.json();
+      if (data.success) {
+        setArchivedStatements(data.statements || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch archived statements:', err);
+    } finally {
+      setArchivedLoading(false);
+    }
+  }, []);
+
+  const handleRestoreArchived = useCallback(async (recordId: number) => {
+    try {
+      const resp = await authFetch('/api/bank-import/restore-statement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ record_id: recordId }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        fetchArchived();
+        fetchCompleted();
+      } else {
+        alert(data.error || 'Failed to restore statement');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Failed to restore statement');
+    }
+  }, [fetchArchived, fetchCompleted]);
+
   useEffect(() => {
     fetchInProgress();
     fetchCompleted();
-  }, [fetchInProgress, fetchCompleted]);
+    fetchArchived();
+  }, [fetchInProgress, fetchCompleted, fetchArchived]);
 
   const handleScan = useCallback(async () => {
     setScanning(true);
@@ -517,7 +554,7 @@ export function BankStatementHub() {
     { key: 'pending', label: 'Load Statements', disabled: false, badge: scanResult?.total_statements, secondaryBadge: inProgressStatements.length || undefined },
     { key: 'process', label: 'Process & Import', disabled: !selectedStatement },
     { key: 'reconcile', label: 'Reconcile', disabled: !reconcileData && !resumeStatement },
-    { key: 'manage', label: 'Manage', disabled: !scanResult && completedStatements.length === 0, badge: (nonCurrentCount + completedStatements.length) || undefined },
+    { key: 'manage', label: 'Manage', disabled: !scanResult && completedStatements.length === 0 && archivedStatements.length === 0, badge: (nonCurrentCount + completedStatements.length + archivedStatements.length) || undefined },
   ];
 
   return (
@@ -614,11 +651,14 @@ export function BankStatementHub() {
         </div>
       )}
 
-      {activeTab === 'manage' && (scanResult || completedStatements.length > 0) && (
+      {activeTab === 'manage' && (scanResult || completedStatements.length > 0 || archivedStatements.length > 0) && (
         <ManageStatementsTab
           nonCurrent={scanResult?.non_current || { already_processed: [], old_statements: [], not_classified: [], advanced: [] }}
           completedStatements={completedStatements}
           completedLoading={completedLoading}
+          archivedStatements={archivedStatements}
+          archivedLoading={archivedLoading}
+          onRestoreArchived={handleRestoreArchived}
           onRefresh={handleScan}
           onProcess={(stmt) => {
             if (stmt.matched_bank_code) {
@@ -1142,12 +1182,18 @@ function ManageStatementsTab({
   nonCurrent,
   completedStatements,
   completedLoading,
+  archivedStatements,
+  archivedLoading,
+  onRestoreArchived,
   onRefresh,
   onProcess,
 }: {
   nonCurrent: NonCurrentStatements;
   completedStatements: InProgressStatement[];
   completedLoading: boolean;
+  archivedStatements: { id: number; filename: string; bank_code: string; import_date: string; period_start?: string; period_end?: string; source: string; imported_by: string; target_system: string }[];
+  archivedLoading: boolean;
+  onRestoreArchived: (recordId: number) => void;
   onRefresh: () => void;
   onProcess?: (stmt: StatementEntry) => void;
 }) {
@@ -1315,8 +1361,19 @@ function ManageStatementsTab({
         <CompletedStatementsSection statements={completedStatements} />
       )}
 
+      {/* Archived Statements */}
+      {archivedLoading && (
+        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+          <RefreshCw className="h-5 w-5 text-gray-400 mx-auto mb-1 animate-spin" />
+          <p className="text-gray-500 text-xs">Loading archived statements...</p>
+        </div>
+      )}
+      {archivedStatements.length > 0 && (
+        <ArchivedStatementsSection statements={archivedStatements} onRestore={onRestoreArchived} />
+      )}
+
       {/* All empty */}
-      {Object.values(nonCurrent).every(arr => arr.length === 0) && completedStatements.length === 0 && (
+      {Object.values(nonCurrent).every(arr => arr.length === 0) && completedStatements.length === 0 && archivedStatements.length === 0 && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
           <CheckCircle className="h-8 w-8 text-green-400 mx-auto mb-2" />
           <p className="text-green-700 text-sm font-medium">No statements to manage</p>
@@ -1401,6 +1458,91 @@ function CompletedStatementsSection({ statements: rawStatements }: { statements:
                     <span className="inline-flex items-center gap-1 text-xs text-green-600">
                       <CheckCircle className="h-3 w-3" /> {stmt.reconciled_count || 0}
                     </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Archived Statements Section ----
+
+function ArchivedStatementsSection({
+  statements,
+  onRestore,
+}: {
+  statements: { id: number; filename: string; bank_code: string; import_date: string; period_start?: string; period_end?: string; source: string; imported_by: string; target_system: string }[];
+  onRestore: (recordId: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [restoringId, setRestoringId] = useState<number | null>(null);
+
+  const formatDate = (dateStr: string | undefined) => {
+    if (!dateStr) return '\u2014';
+    try {
+      return new Date(dateStr).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    } catch { return dateStr; }
+  };
+
+  const handleRestore = (id: number) => {
+    setRestoringId(id);
+    onRestore(id);
+    // Reset after a brief delay (parent will refresh the list)
+    setTimeout(() => setRestoringId(null), 2000);
+  };
+
+  return (
+    <div className="border rounded-lg overflow-hidden bg-gray-50 border-gray-200">
+      <button onClick={() => setExpanded(!expanded)}
+        className="w-full px-4 py-3 flex items-center justify-between hover:bg-white/30 transition-colors">
+        <div className="flex items-center gap-2">
+          {expanded ? <ChevronDown className="h-4 w-4 text-gray-400" /> : <ChevronRight className="h-4 w-4 text-gray-400" />}
+          <Archive className="h-4 w-4 text-gray-400" />
+          <span className="text-sm font-medium text-gray-900">Archived</span>
+          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-gray-200 text-gray-700">
+            {statements.length}
+          </span>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="bg-white">
+          <p className="px-4 py-2 text-xs text-gray-500 border-t border-gray-100">Statements that have been archived or deleted from active processing</p>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 text-xs text-gray-500 uppercase border-t border-gray-100">
+                <th className="px-4 py-2 text-left font-medium">Filename</th>
+                <th className="px-4 py-2 text-left font-medium">Bank</th>
+                <th className="px-4 py-2 text-left font-medium">Archived Date</th>
+                <th className="px-4 py-2 text-right font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {statements.map((stmt) => (
+                <tr key={stmt.id} className="border-t border-gray-50 hover:bg-gray-50/50">
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <FileText className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                      <span className="text-gray-800 font-medium truncate max-w-[220px]" title={stmt.filename}>{stmt.filename}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-600">
+                    <span className="font-medium">{stmt.bank_code}</span>
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-600">{formatDate(stmt.import_date)}</td>
+                  <td className="px-4 py-2 text-right">
+                    <button
+                      onClick={() => handleRestore(stmt.id)}
+                      disabled={restoringId === stmt.id}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 disabled:opacity-50"
+                    >
+                      <RotateCcw className={`h-3 w-3 ${restoringId === stmt.id ? 'animate-spin' : ''}`} />
+                      {restoringId === stmt.id ? 'Restoring...' : 'Restore'}
+                    </button>
                   </td>
                 </tr>
               ))}

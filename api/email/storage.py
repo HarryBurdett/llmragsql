@@ -1960,6 +1960,21 @@ class EmailStorage:
             cursor.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_archived_statements(self, limit: int = 100) -> list:
+        """Get archived/deleted statement records."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT bsi.id, bsi.filename, bsi.bank_code, bsi.import_date,
+                       bsi.period_start, bsi.period_end, bsi.source,
+                       bsi.imported_by, bsi.target_system
+                FROM bank_statement_imports bsi
+                WHERE bsi.target_system IN ('archived', 'deleted')
+                ORDER BY bsi.import_date DESC
+                LIMIT ?
+            """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
     def delete_bank_statement_import_record(self, record_id: int) -> bool:
         """
         Delete a single bank statement import record by ID.
