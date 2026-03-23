@@ -268,7 +268,9 @@ class StatementReconcilerOpera3:
         cached = cache.get(pdf_hash)
         if cached:
             info_data, raw_transactions = cached
-            return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
+            # Skip info-only cache entries (from lightweight scan extraction)
+            if not info_data.get('_info_only'):
+                return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
 
         # Use Gemini to extract transactions
         extraction_prompt = """Analyze this bank statement and extract ALL transactions.
@@ -351,11 +353,39 @@ Important:
         Returns:
             Tuple of (StatementInfo, list of StatementTransaction)
         """
-        # Parse balance values - Gemini may return them as strings
+        # Parse balance values - Gemini may return them as strings (possibly with commas)
+        def _safe_float(val):
+            if val is None: return None
+            if isinstance(val, (int, float)): return float(val)
+            s = str(val).replace(',', '').replace('£', '').replace('$', '').strip()
+            return float(s) if s else None
+
         opening_bal_raw = info_data.get('opening_balance')
         closing_bal_raw = info_data.get('closing_balance')
-        opening_balance = float(opening_bal_raw) if opening_bal_raw is not None else None
-        closing_balance = float(closing_bal_raw) if closing_bal_raw is not None else None
+        opening_balance = _safe_float(opening_bal_raw)
+        closing_balance = _safe_float(closing_bal_raw)
+
+        # If opening balance not extracted, calculate from the oldest transaction.
+        # Sort by date, take the earliest, then: opening = balance - amount
+        # (reverse the transaction to get the balance before it)
+        if opening_balance is None and raw_transactions:
+            try:
+                sorted_txns = sorted(
+                    [t for t in raw_transactions if t.get('date')],
+                    key=lambda t: str(t['date'])
+                )
+                if sorted_txns:
+                    oldest = sorted_txns[0]
+                    oldest_bal = _safe_float(oldest.get('balance'))
+                    if oldest_bal is not None:
+                        money_in = _safe_float(oldest.get('money_in')) or 0
+                        money_out = _safe_float(oldest.get('money_out')) or 0
+                        txn_amount = money_in - money_out
+                        opening_balance = round(oldest_bal - txn_amount, 2)
+                        logger.info(f"Calculated opening balance from oldest transaction ({oldest.get('date')}): "
+                                    f"bal £{oldest_bal:,.2f} - amount £{txn_amount:,.2f} = £{opening_balance:,.2f}")
+            except Exception:
+                pass
 
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),
@@ -398,7 +428,7 @@ Important:
                 date=date,
                 description=txn_data.get('description', ''),
                 amount=amount,
-                balance=txn_data.get('balance'),
+                balance=_parse_amount(txn_data.get('balance')),
                 transaction_type=txn_data.get('type'),
                 reference=txn_data.get('reference'),
                 raw_text=json.dumps(txn_data)

@@ -663,11 +663,17 @@ IMPORTANT EXTRACTION RULES:
         # Debug logging for extracted statement info
         logger.info(f"Parsing statement_info: {json.dumps(info_data, indent=2, default=str)}")
 
-        # Parse balance values - Gemini may return them as strings
+        # Parse balance values - Gemini may return them as strings (possibly with commas)
+        def _safe_float(val):
+            if val is None: return None
+            if isinstance(val, (int, float)): return float(val)
+            s = str(val).replace(',', '').replace('£', '').replace('$', '').strip()
+            return float(s) if s else None
+
         opening_bal_raw = info_data.get('opening_balance')
         closing_bal_raw = info_data.get('closing_balance')
-        opening_balance = float(opening_bal_raw) if opening_bal_raw is not None else None
-        closing_balance = float(closing_bal_raw) if closing_bal_raw is not None else None
+        opening_balance = _safe_float(opening_bal_raw)
+        closing_balance = _safe_float(closing_bal_raw)
 
         # If opening balance not extracted, calculate from the oldest transaction.
         # Sort by date, take the earliest, then: opening = balance - amount
@@ -681,11 +687,6 @@ IMPORTANT EXTRACTION RULES:
                 )
                 if sorted_txns:
                     oldest = sorted_txns[0]
-                    def _safe_float(val):
-                        if val is None: return None
-                        if isinstance(val, (int, float)): return float(val)
-                        s = str(val).replace(',', '').replace('£', '').replace('$', '').strip()
-                        return float(s) if s else None
                     oldest_bal = _safe_float(oldest.get('balance'))
                     if oldest_bal is not None:
                         money_in = _safe_float(oldest.get('money_in')) or 0

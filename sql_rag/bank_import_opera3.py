@@ -387,26 +387,10 @@ class BankStatementMatcherOpera3:
         print(matcher.get_preview_summary(result))
     """
 
-    # Names/patterns to skip (not real customer/supplier names)
-    SKIP_PATTERNS = [
-        r'^GC\s+C\d+',  # GoCardless references
-        r'^HMRC',  # Tax payments
-        r'^SALARY',
-        r'^UBER',
-        r'^LINKEDIN',
-        r'^SCREWFIX',
-        r'^Amazon\.co\.uk',
-        r'^EDF\s+ENERGY',
-        r'^O2\s*$',
-        r'^WWW\.',
-    ]
-
-    # Subcategories that are typically not customer/supplier transactions
-    SKIP_SUBCATEGORIES = [
-        'Direct Debit',
-        'Standing Order',
-        'Debit',
-    ]
+    # No hardcoded skip patterns — all transactions are checked against Opera.
+    # The already-posted check and customer/supplier matching handle everything.
+    SKIP_PATTERNS = []
+    SKIP_SUBCATEGORIES = []
 
     def __init__(self,
                  data_path: str,
@@ -1030,20 +1014,28 @@ class BankStatementMatcherOpera3:
             bank_code: Bank account code for duplicate checking
         """
         for txn in transactions:
+            # Check if should skip (name pattern match)
             skip_reason = self._should_skip(txn.name, txn.subcategory)
-            if skip_reason:
+
+            if not skip_reason:
+                # Match to customer/supplier
+                self._match_transaction(txn, bank_code)
+            else:
                 txn.action = 'skip'
                 txn.skip_reason = skip_reason
-                continue
+                logger.debug(f"MATCH_DEBUG: SKIPPED '{txn.name}' subcat='{txn.subcategory}' reason='{skip_reason}'")
 
-            self._match_transaction(txn, bank_code)
-
-            # Check for duplicates after matching (including repeat entries)
-            if check_duplicates and txn.action in ('sales_receipt', 'purchase_payment', 'repeat_entry'):
-                is_posted, reason = self._is_already_posted(txn, bank_code)
+            # Check if already posted — run for ALL transactions including skipped ones.
+            # A GC payout or other "skipped" transaction may already be in Opera's cashbook.
+            if check_duplicates:
+                is_posted, posted_reason = self._is_already_posted(txn, bank_code)
                 if is_posted:
-                    txn.action = 'skip'
-                    txn.skip_reason = reason
+                    txn.is_duplicate = True
+                    if txn.action == 'repeat_entry':
+                        txn.skip_reason = f'Already posted: {posted_reason}'
+                    else:
+                        txn.action = 'skip'
+                        txn.skip_reason = f'Already posted: {posted_reason}'
 
     def preview_file(self, filepath: str) -> MatchPreviewResult:
         """
