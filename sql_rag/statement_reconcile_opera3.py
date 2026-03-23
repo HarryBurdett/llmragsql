@@ -365,36 +365,8 @@ Important:
         opening_balance = _safe_float(opening_bal_raw)
         closing_balance = _safe_float(closing_bal_raw)
 
-        # Calculate opening/closing from transactions if not extracted or incorrect.
-        if raw_transactions:
-            try:
-                sorted_txns = sorted(
-                    [t for t in raw_transactions if t.get('date') and t.get('balance') is not None],
-                    key=lambda t: str(t['date'])
-                )
-                if sorted_txns:
-                    oldest = sorted_txns[0]
-                    oldest_bal = _safe_float(oldest.get('balance'))
-                    if oldest_bal is not None:
-                        money_in = _safe_float(oldest.get('money_in')) or 0
-                        money_out = _safe_float(oldest.get('money_out')) or 0
-                        txn_amount = money_in - money_out
-                        calc_opening = round(oldest_bal - txn_amount, 2)
-                        if opening_balance is None or abs(opening_balance - calc_opening) > 1000:
-                            opening_balance = calc_opening
-
-                    # Closing: opening + sum of all transactions
-                    if opening_balance is not None:
-                        total_movement = 0
-                        for t in raw_transactions:
-                            mi = _safe_float(t.get('money_in')) or 0
-                            mo = _safe_float(t.get('money_out')) or 0
-                            total_movement += mi - mo
-                        calc_closing = round(opening_balance + total_movement, 2)
-                        if closing_balance is None or abs(closing_balance - calc_closing) > 1000:
-                            closing_balance = calc_closing
-            except Exception:
-                pass
+        # Use Gemini's extracted values as-is.
+        # Opening/closing balance corrections happen at the API layer.
 
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),

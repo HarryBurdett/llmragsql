@@ -675,47 +675,9 @@ IMPORTANT EXTRACTION RULES:
         opening_balance = _safe_float(opening_bal_raw)
         closing_balance = _safe_float(closing_bal_raw)
 
-        # Calculate opening/closing from transactions if not extracted or incorrect.
-        # Sort transactions by date to find oldest and newest.
-        if raw_transactions:
-            try:
-                # Sort by date, preserving original PDF order for same-date transactions
-                sorted_txns = sorted(
-                    [(i, t) for i, t in enumerate(raw_transactions) if t.get('date') and t.get('balance') is not None],
-                    key=lambda pair: (str(pair[1]['date']), pair[0])
-                )
-                sorted_txns = [t for _, t in sorted_txns]
-                if sorted_txns:
-                    # Opening: from oldest transaction (balance before it)
-                    oldest = sorted_txns[0]
-                    oldest_bal = _safe_float(oldest.get('balance'))
-                    if oldest_bal is not None:
-                        money_in = _safe_float(oldest.get('money_in')) or 0
-                        money_out = _safe_float(oldest.get('money_out')) or 0
-                        txn_amount = money_in - money_out
-                        calc_opening = round(oldest_bal - txn_amount, 2)
-                        if opening_balance is None or abs(opening_balance - calc_opening) > 1000:
-                            if opening_balance is not None:
-                                logger.info(f"Correcting opening balance: extracted £{opening_balance:,.2f} → calculated £{calc_opening:,.2f}")
-                            opening_balance = calc_opening
-
-                    # Closing: calculate from opening + sum of all transactions
-                    # This is mathematically correct regardless of transaction order
-                    if opening_balance is not None:
-                        total_movement = 0
-                        for t in raw_transactions:
-                            mi = _safe_float(t.get('money_in')) or 0
-                            mo = _safe_float(t.get('money_out')) or 0
-                            total_movement += mi - mo
-                        calc_closing = round(opening_balance + total_movement, 2)
-                        if closing_balance is None or abs(closing_balance - calc_closing) > 1000:
-                            if closing_balance is not None:
-                                logger.info(f"Correcting closing balance: extracted £{closing_balance:,.2f} → calculated £{calc_closing:,.2f}")
-                            closing_balance = calc_closing
-                        logger.info(f"Calculated opening balance from oldest transaction ({oldest.get('date')}): "
-                                    f"bal £{oldest_bal:,.2f} - amount £{txn_amount:,.2f} = £{opening_balance:,.2f}")
-            except Exception:
-                pass
+        # Use Gemini's extracted values as-is.
+        # Opening/closing balance corrections happen at the API layer
+        # (process-statement and preview-from-pdf) using Opera's reconciled balance.
 
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),
