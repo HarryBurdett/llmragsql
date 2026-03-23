@@ -167,6 +167,51 @@ class StatementReconcilerOpera3:
         logger.warning(f"No matching bank account found for sort code '{sort_code}', account '{account_number}'")
         return None
 
+    def check_reconciliation_in_progress(self, bank_acnt: str) -> Dict[str, Any]:
+        """
+        Check if there's a reconciliation in progress in Opera 3 that needs to be cleared.
+
+        Checks for entries with ae_tmpstat populated (partial reconciliation) for the given bank.
+
+        Args:
+            bank_acnt: The Opera bank account code
+
+        Returns:
+            Dict with 'in_progress' (bool) and details if true
+        """
+        try:
+            aentry_records = self.reader.read_table('aentry')
+            if not aentry_records:
+                return {'in_progress': False}
+
+            bank_code_upper = bank_acnt.strip().upper()
+            partial_count = 0
+            for entry in aentry_records:
+                ae_acnt = str(entry.get('AE_ACNT', entry.get('ae_acnt', ''))).strip().upper()
+                if ae_acnt != bank_code_upper:
+                    continue
+                ae_tmpstat = entry.get('AE_TMPSTAT', entry.get('ae_tmpstat', 0))
+                try:
+                    tmpstat_val = int(float(ae_tmpstat or 0))
+                except (ValueError, TypeError):
+                    tmpstat_val = 0
+                if tmpstat_val != 0:
+                    partial_count += 1
+
+            if partial_count > 0:
+                logger.info(f"Bank {bank_acnt} has {partial_count} entries with ae_tmpstat set (will be cleared on reconciliation)")
+                return {
+                    'in_progress': True,
+                    'partial_entries': partial_count,
+                    'message': f"{partial_count} entries have partial reconciliation markers from Opera or a previous session. These will be cleared automatically when you reconcile."
+                }
+
+            return {'in_progress': False}
+
+        except Exception as e:
+            logger.warning(f"Error checking reconciliation in progress for {bank_acnt}: {e}")
+            return {'in_progress': False}
+
     def validate_statement_bank(self, bank_acnt: str, statement_info: StatementInfo) -> Dict[str, Any]:
         """
         Validate that the statement's bank details match the selected Opera 3 bank account.
@@ -247,6 +292,67 @@ class StatementReconcilerOpera3:
             'suggested_bank': actual_bank
         }
 
+    def extract_statement_info_only(self, pdf_path: str) -> Optional[Dict]:
+        """
+        Lightweight extraction — gets only statement header info (balances, dates,
+        bank details) without extracting individual transactions. Much faster than
+        full extraction, suitable for scanning.
+
+        Returns dict with opening_balance, closing_balance, period_start, period_end,
+        bank_name, account_number, sort_code — or None on failure.
+        """
+        pdf_bytes = Path(pdf_path).read_bytes()
+
+        # Check cache first
+        from sql_rag.pdf_extraction_cache import get_extraction_cache
+        cache = get_extraction_cache()
+        pdf_hash = cache.hash_pdf(pdf_bytes)
+        cached = cache.get(pdf_hash)
+        if cached:
+            info_data, _ = cached
+            return info_data
+
+        prompt = """Look at this bank statement PDF and extract the statement details.
+
+Look carefully for the opening balance. It may be labelled as:
+- "Balance brought forward" or "Opening balance" (traditional banks)
+- "Money in/out" summary showing start balance (Monzo, Starling)
+- The first line item showing a starting balance before any transactions
+- A summary section at the top showing the account balance at start of period
+
+If you still cannot find it, look at the VERY FIRST transaction chronologically,
+take its running balance, and reverse the transaction to get the balance before it.
+
+Return ONLY this JSON:
+{
+    "bank_name": "Bank name",
+    "account_number": "Account number",
+    "sort_code": "Sort code (e.g. 12-34-56)",
+    "statement_date": "YYYY-MM-DD",
+    "period_start": "YYYY-MM-DD",
+    "period_end": "YYYY-MM-DD",
+    "opening_balance": 12345.67,
+    "closing_balance": 12345.67
+}
+
+IMPORTANT: Return actual values from this document, not examples. Return ONLY valid JSON."""
+
+        try:
+            file_part = {"mime_type": "application/pdf", "data": pdf_bytes}
+            response = self.model.generate_content([file_part, prompt])
+            json_match = re.search(r'\{[\s\S]*\}', response.text)
+            if not json_match:
+                return None
+            info_data = json.loads(json_match.group())
+            # Mark as info-only so full extraction knows to re-extract
+            info_data['_info_only'] = True
+            cache.put(pdf_hash, info_data, [])
+            logger.info(f"Extracted statement info: open={info_data.get('opening_balance')}, close={info_data.get('closing_balance')}")
+            return info_data
+        except Exception as e:
+            logger.warning(f"Statement info extraction failed: {e}")
+            return None
+
     def extract_transactions_from_pdf(self, pdf_path: str) -> Tuple[StatementInfo, List[StatementTransaction]]:
         """
         Extract transactions from a bank statement PDF using Gemini Vision.
@@ -273,40 +379,49 @@ class StatementReconcilerOpera3:
                 return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
 
         # Use Gemini to extract transactions
-        extraction_prompt = """Analyze this bank statement and extract ALL transactions.
+        extraction_prompt = """Analyze this bank statement PDF and extract ALL transactions and statement details.
 
-Return a JSON object with this exact structure:
+CRITICAL INSTRUCTIONS:
+1. Extract the ACTUAL values from this specific PDF document
+2. Do NOT use example/placeholder values like "2024-01-01" or 1000.00
+3. Look carefully at the statement header area for account details and balances
+
+Return a JSON object with this structure:
 {
     "statement_info": {
-        "bank_name": "e.g. Barclays",
-        "account_number": "e.g. 90764205",
-        "sort_code": "e.g. 20-96-89",
-        "statement_date": "YYYY-MM-DD",
-        "period_start": "YYYY-MM-DD",
-        "period_end": "YYYY-MM-DD",
-        "opening_balance": 18076.42,
-        "closing_balance": 51574.97
+        "bank_name": "The bank name shown on the statement (e.g., NatWest, Barclays, HSBC, Lloyds)",
+        "account_number": "The actual account number from the statement",
+        "sort_code": "The actual sort code (e.g., 12-34-56)",
+        "statement_date": "The date of the statement in YYYY-MM-DD format",
+        "period_start": "The period FROM date in YYYY-MM-DD format (often shown as 'Statement period: DD Mon YYYY to DD Mon YYYY')",
+        "period_end": "The period TO date in YYYY-MM-DD format",
+        "opening_balance": "The OPENING/BROUGHT FORWARD balance as a decimal number (e.g., 12345.67)",
+        "closing_balance": "The CLOSING/CARRIED FORWARD balance as a decimal number"
     },
     "transactions": [
         {
             "date": "YYYY-MM-DD",
-            "description": "Full description text",
-            "money_out": 22.00,
-            "money_in": null,
-            "balance": 18054.42,
+            "description": "Full description text from statement",
+            "money_out": null or amount,
+            "money_in": null or amount,
+            "balance": null or running balance,
             "type": "DD|STO|Giro|Card|Transfer|Other",
             "reference": "Any reference number if present"
         }
     ]
 }
 
-Important:
-- Extract EVERY transaction, don't skip any
-- Use the year from the statement date for all transactions
-- money_out and money_in should be numbers or null (not both populated)
-- type should be: DD (Direct Debit), STO (Standing Order), Giro (Direct Credit/BACS), Card (Card payment), Transfer, or Other
-- Include the full description exactly as shown
-- Return ONLY valid JSON, no other text"""
+IMPORTANT EXTRACTION RULES:
+- opening_balance: Look for "Balance brought forward", "Opening balance", "Previous balance", "Money in/out" summary start balance, or the balance at the very start of the period. For Monzo/fintech: check the summary section showing starting balance
+- closing_balance: Look for "Balance carried forward", "Closing balance", end balance, or the balance at the very end of the period
+- Extract EVERY transaction — do not skip any. Include ALL pages of the statement
+- For UK bank statements, balances are typically in GBP (£) - extract just the number
+- period_start and period_end: Usually shown near the top as "Statement period" or similar
+- Extract EVERY transaction row, including DD (Direct Debit), STO (Standing Order), Giro credits, card payments
+- Use the year from the statement period for transaction dates if only day/month shown
+- money_out = payments/debits (money leaving the account)
+- money_in = receipts/credits (money entering the account)
+- Return ONLY valid JSON, no other text or explanation"""
 
         # Create the file part for Gemini
         file_part = {
@@ -324,7 +439,20 @@ Important:
         if not json_match:
             raise ValueError(f"Could not extract JSON from Gemini response: {response_text[:500]}")
 
-        data = json.loads(json_match.group())
+        json_text = json_match.group()
+
+        # Try to parse JSON, with fallback repair attempts
+        try:
+            data = json.loads(json_text)
+        except json.JSONDecodeError as e:
+            # Attempt to repair common JSON issues
+            logger.warning(f"JSON parse error: {e}. Attempting repair...")
+            repaired = self._repair_json(json_text)
+            try:
+                data = json.loads(repaired)
+                logger.info("JSON repair successful")
+            except json.JSONDecodeError as e2:
+                raise ValueError(f"Could not parse JSON even after repair: {e2}. Original error: {e}")
 
         # Extract raw data for caching
         info_data = data.get('statement_info', {})
@@ -445,6 +573,44 @@ Important:
 
         logger.info(f"Extracted {len(transactions)} transactions from {source_label}")
         return statement_info, transactions
+
+    def _repair_json(self, json_text: str) -> str:
+        """
+        Attempt to repair common JSON issues from LLM responses.
+        """
+        import re
+
+        text = json_text
+
+        # Remove trailing commas before ] or }
+        text = re.sub(r',(\s*[}\]])', r'\1', text)
+
+        # Fix single quotes to double quotes (careful with apostrophes)
+        # Only replace single quotes that look like JSON string delimiters
+        text = re.sub(r"(?<=[{,:\[])\s*'([^']*?)'\s*(?=[,}\]:])", r'"\1"', text)
+
+        # Remove any trailing content after the last }
+        last_brace = text.rfind('}')
+        if last_brace != -1:
+            text = text[:last_brace + 1]
+
+        # Try to fix truncated arrays - close any unclosed brackets
+        open_braces = text.count('{') - text.count('}')
+        open_brackets = text.count('[') - text.count(']')
+
+        # If we have unclosed structures, try to close them
+        if open_brackets > 0 or open_braces > 0:
+            # Find the last complete transaction entry and truncate there
+            # Look for the pattern of a complete object in the transactions array
+            match = re.search(r'("transactions"\s*:\s*\[.*?)(\{[^{}]*\})\s*,?\s*(\{[^}]*$)', text, re.DOTALL)
+            if match:
+                # Truncate at the last complete object
+                text = match.group(1) + match.group(2) + ']}'
+            else:
+                # Just close the brackets
+                text += ']' * open_brackets + '}' * open_braces
+
+        return text
 
     def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
         """Parse a date string in various formats."""
@@ -658,50 +824,74 @@ Important:
         opera_amount = round(opera_entry['value_pounds'], 2)
 
         if abs(stmt_amount - opera_amount) < 0.01:
-            score += 0.6
+            score += 0.5
             reasons.append(f"Amount matches exactly: {stmt_amount}")
         else:
             # No match if amounts don't match
             return 0.0, []
+
+        # Reference/description similarity — check BEFORE date so that
+        # a strong reference match can compensate for date differences
+        desc_lower = stmt_txn.description.lower()
+        opera_ref = (opera_entry.get('ae_ref') or '').lower().strip()
+        opera_detail = (opera_entry.get('ae_detail') or '').lower().strip()
+
+        ref_matched = False
+        # Check if Opera reference appears in statement description (or vice versa)
+        if opera_ref and len(opera_ref) > 3:
+            if opera_ref in desc_lower or desc_lower[:30] in opera_ref:
+                score += 0.3
+                reasons.append(f"Reference match: '{opera_ref.strip()}'")
+                ref_matched = True
+        # Also check if any significant portion of the Opera reference is in the description
+        if not ref_matched and opera_ref:
+            # Extract alphanumeric reference parts (e.g. "Y6A8JY7MX" from "CLOUDSIS-Y6A8JY7MX")
+            import re as _re
+            ref_parts = [p for p in _re.split(r'[\s\-/]+', opera_ref) if len(p) >= 4]
+            for part in ref_parts:
+                if part in desc_lower:
+                    score += 0.3
+                    reasons.append(f"Reference part '{part}' found in description")
+                    ref_matched = True
+                    break
+        if not ref_matched and opera_detail and len(opera_detail) > 3:
+            opera_words = set(w for w in opera_detail.split() if len(w) > 3)
+            desc_words = set(w for w in desc_lower.split() if len(w) > 3)
+            common_words = opera_words & desc_words
+            if common_words:
+                score += 0.1
+                reasons.append(f"Common words: {', '.join(list(common_words)[:3])}")
 
         # Date match
         stmt_date = stmt_txn.date.date() if isinstance(stmt_txn.date, datetime) else stmt_txn.date
         opera_date = opera_entry['ae_date']
         if isinstance(opera_date, datetime):
             opera_date = opera_date.date()
+        elif hasattr(opera_date, 'date'):
+            opera_date = opera_date.date()
 
-        if stmt_date and opera_date:
-            date_diff = abs((stmt_date - opera_date).days)
+        date_diff = abs((stmt_date - opera_date).days)
 
-            if date_diff == 0:
-                score += 0.3
-                reasons.append("Date matches exactly")
-            elif date_diff <= date_tolerance_days:
-                date_score = 0.3 * (1 - date_diff / (date_tolerance_days + 1))
-                score += date_score
-                reasons.append(f"Date within {date_diff} days")
+        if date_diff == 0:
+            score += 0.2
+            reasons.append("Date matches exactly")
+        elif date_diff <= date_tolerance_days:
+            date_score = 0.2 * (1 - date_diff / (date_tolerance_days + 1))
+            score += date_score
+            reasons.append(f"Date within {date_diff} days")
+        elif date_diff <= 14:
+            # Extended tolerance — reduced score but still considered
+            # (bank transfers, GC payouts can take several days)
+            date_score = 0.1 * (1 - (date_diff - date_tolerance_days) / 14)
+            score += max(date_score, 0)
+            reasons.append(f"Date within {date_diff} days (extended tolerance)")
+        else:
+            # Date very far off — only match if reference is strong
+            if ref_matched:
+                reasons.append(f"Date differs by {date_diff} days (reference match overrides)")
             else:
-                # Date too far off, reduce score significantly
                 score *= 0.5
                 reasons.append(f"Date differs by {date_diff} days")
-
-        # Reference/description similarity bonus
-        desc_lower = stmt_txn.description.lower()
-        opera_ref = (opera_entry.get('ae_ref') or '').lower()
-        opera_detail = (opera_entry.get('ae_detail') or '').lower()
-
-        # Check for common keywords
-        if opera_ref and opera_ref in desc_lower:
-            score += 0.1
-            reasons.append(f"Reference '{opera_ref}' found in description")
-        elif opera_detail:
-            # Check if any significant words match
-            opera_words = set(w for w in opera_detail.split() if len(w) > 3)
-            desc_words = set(w for w in desc_lower.split() if len(w) > 3)
-            common_words = opera_words & desc_words
-            if common_words:
-                score += 0.05
-                reasons.append(f"Common words: {', '.join(list(common_words)[:3])}")
 
         return min(score, 1.0), reasons
 

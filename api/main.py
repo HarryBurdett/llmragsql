@@ -30969,54 +30969,76 @@ async def opera3_preview_bank_import_from_pdf(
                         "error": "Bank account mismatch"
                     }
 
-        # Validate statement sequence (opening balance must match reconciled balance)
-        if statement_info and statement_info.opening_balance is not None and reconciled_balance is not None:
+        # Check statement sequence — correct opening balance if AI got it wrong
+        # (parity with SE preview-from-pdf: don't reject, just correct)
+        opening_balance = statement_info.opening_balance if statement_info else None
+        if opening_balance is not None and reconciled_balance is not None:
             tolerance = 0.02
-            if abs(statement_info.opening_balance - reconciled_balance) > tolerance:
-                if statement_info.opening_balance < reconciled_balance - tolerance:
-                    return {
-                        "success": False,
-                        "source": "opera3",
-                        "status": "skipped",
-                        "reason": "already_processed",
-                        "bank_code": bank_code,
-                        "filename": filename,
-                        "statement_info": {
-                            "bank_name": statement_info.bank_name if statement_info else None,
-                            "account_number": statement_info.account_number if statement_info else None,
-                            "opening_balance": statement_info.opening_balance if statement_info else None,
-                            "closing_balance": statement_info.closing_balance if statement_info else None,
-                        },
-                        "reconciled_balance": reconciled_balance,
-                        "errors": [
-                            "STATEMENT ALREADY PROCESSED",
-                            f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
-                            f"Opera 3 Reconciled Balance: £{reconciled_balance:,.2f}",
-                            "This statement has a lower opening balance than Opera's reconciled balance, indicating it has already been processed."
-                        ]
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "source": "opera3",
-                        "status": "out_of_sequence",
-                        "reason": "out_of_sequence",
-                        "bank_code": bank_code,
-                        "filename": filename,
-                        "statement_info": {
-                            "bank_name": statement_info.bank_name if statement_info else None,
-                            "account_number": statement_info.account_number if statement_info else None,
-                            "opening_balance": statement_info.opening_balance if statement_info else None,
-                            "closing_balance": statement_info.closing_balance if statement_info else None,
-                        },
-                        "reconciled_balance": reconciled_balance,
-                        "errors": [
-                            "STATEMENT OUT OF SEQUENCE",
-                            f"Statement Opening Balance: £{statement_info.opening_balance:,.2f}",
-                            f"Opera 3 Reconciled Balance: £{reconciled_balance:,.2f}",
-                            "Statement opening balance does not match Opera's reconciled balance. Please import earlier statements first."
-                        ]
-                    }
+            if abs(opening_balance - reconciled_balance) > tolerance:
+                # AI likely extracted wrong opening balance — use reconciled balance
+                logger.warning(f"Opera 3 preview-from-pdf: Opening balance mismatch: extracted £{opening_balance:,.2f} vs reconciled £{reconciled_balance:,.2f} — using reconciled")
+                if statement_info:
+                    statement_info = type(statement_info)(
+                        bank_name=statement_info.bank_name,
+                        account_number=statement_info.account_number,
+                        sort_code=statement_info.sort_code,
+                        statement_date=statement_info.statement_date,
+                        period_start=statement_info.period_start,
+                        period_end=statement_info.period_end,
+                        opening_balance=reconciled_balance,
+                        closing_balance=statement_info.closing_balance
+                    )
+                opening_balance = reconciled_balance
+        elif opening_balance is None and reconciled_balance is not None:
+            if statement_info:
+                statement_info = type(statement_info)(
+                    bank_name=statement_info.bank_name,
+                    account_number=statement_info.account_number,
+                    sort_code=statement_info.sort_code,
+                    statement_date=statement_info.statement_date,
+                    period_start=statement_info.period_start,
+                    period_end=statement_info.period_end,
+                    opening_balance=reconciled_balance,
+                    closing_balance=statement_info.closing_balance
+                )
+            opening_balance = reconciled_balance
+
+        # Validate closing balance using transaction balance chain from opening.
+        # Walks from opening, finding each transaction where current + amount = balance.
+        # Excludes phantom transactions from other accounts (e.g. Monzo savings).
+        if opening_balance is not None and stmt_transactions:
+            try:
+                current_bal = opening_balance
+                chain_used = set()
+                for _ in range(len(stmt_transactions)):
+                    found = False
+                    for i, st in enumerate(stmt_transactions):
+                        if i in chain_used:
+                            continue
+                        expected = round(current_bal + st.amount, 2)
+                        if st.balance is not None and abs(expected - st.balance) < 0.02:
+                            current_bal = st.balance
+                            chain_used.add(i)
+                            found = True
+                            break
+                    if not found:
+                        break
+                if chain_used and statement_info:
+                    statement_info = type(statement_info)(
+                        bank_name=statement_info.bank_name,
+                        account_number=statement_info.account_number,
+                        sort_code=statement_info.sort_code,
+                        statement_date=statement_info.statement_date,
+                        period_start=statement_info.period_start,
+                        period_end=statement_info.period_end,
+                        opening_balance=statement_info.opening_balance,
+                        closing_balance=current_bal
+                    )
+                    excluded = len(stmt_transactions) - len(chain_used)
+                    if excluded > 0:
+                        logger.info(f"Opera 3 preview-from-pdf: Balance chain excluded {excluded} phantom transaction(s), closing=£{current_bal:,.2f}")
+            except Exception as chain_err:
+                logger.warning(f"Opera 3 preview-from-pdf: Balance chain failed: {chain_err}")
 
         # Use matcher to categorize transactions
         matcher = BankStatementMatcherOpera3(data_path)
@@ -31492,6 +31514,33 @@ async def opera3_import_bank_statement_from_pdf(
                         logger.warning(f"Could not save Opera 3 statement transactions: {txn_err}")
             except Exception as e:
                 logger.warning(f"Could not record Opera 3 import history: {e}")
+
+        # Learn patterns from successful imports (parity with SE version)
+        if overrides:
+            try:
+                from sql_rag.bank_patterns import BankPatternLearner
+                company_code = os.path.basename(data_path.rstrip('/\\')) or 'opera3_default'
+                pattern_learner = BankPatternLearner(company_code=company_code)
+
+                # Learn from overrides (user's explicit choices)
+                for override in overrides:
+                    if override.get('account') and override.get('ledger_type'):
+                        # Find the transaction memo
+                        txn = next((t for t in transactions if t.row_number == override.get('row')), None)
+                        if txn:
+                            pattern_learner.learn_pattern(
+                                description=txn.memo or txn.name,
+                                transaction_type=override.get('transaction_type', 'PI' if txn.amount < 0 else 'SI'),
+                                account_code=override['account'],
+                                account_name=override.get('account_name'),
+                                ledger_type=override['ledger_type'],
+                                vat_code=override.get('vat_code'),
+                                nominal_code=override.get('nominal_code'),
+                                net_amount=override.get('net_amount')
+                            )
+                logger.info(f"Learned patterns from {len(overrides)} overrides (Opera 3 PDF)")
+            except Exception as e:
+                logger.warning(f"Could not learn patterns (Opera 3 PDF): {e}")
 
         return {
             "success": len(imported) > 0,
@@ -38523,6 +38572,21 @@ async def opera3_process_statement(
         reader = Opera3Reader(data_path)
         reconciler = StatementReconcilerOpera3(reader, config=config)
 
+        # Check if there's a reconciliation in progress in Opera 3
+        try:
+            rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
+        except Exception as rec_err:
+            logger.error(f"process-statement-Opera3: check_reconciliation_in_progress failed: {rec_err}")
+            rec_in_progress = {'in_progress': False}
+        if rec_in_progress['in_progress']:
+            return {
+                "success": False,
+                "error": rec_in_progress['message'],
+                "bank_code": bank_code,
+                "reconciliation_in_progress": True,
+                "partial_entries": rec_in_progress.get('partial_entries', 0)
+            }
+
         # Extract transactions from statement
         statement_info, transactions = reconciler.extract_transactions_from_pdf(file_path)
 
@@ -38592,6 +38656,37 @@ async def opera3_process_statement(
                             "closing_balance": statement_info.closing_balance,
                         }
                     }
+
+        # Validate statement sequence — correct opening balance if AI got it wrong
+        # (parity with SE process-statement: don't block, just correct opening to rec_bal)
+        rec_bal = None
+        try:
+            nbank_records = reader.read_table("nbank")
+            for record in nbank_records:
+                nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', record.get('nk_acnt', '')))).strip().upper()
+                if nb_acnt == bank_code.upper():
+                    nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
+                    rec_bal = nk_recbal / 100.0
+                    break
+        except Exception as e:
+            logger.warning(f"Could not get Opera 3 reconciled balance for sequence check: {e}")
+
+        if rec_bal is not None and statement_info.opening_balance is not None:
+            tolerance = 0.02
+            if abs(statement_info.opening_balance - rec_bal) > tolerance:
+                logger.warning(f"Opera 3 process-statement: Opening balance mismatch: extracted £{statement_info.opening_balance:,.2f}, "
+                               f"Opera 3 reconciled £{rec_bal:.2f} — using reconciled balance")
+                from sql_rag.statement_reconcile import StatementInfo
+                statement_info = StatementInfo(
+                    bank_name=statement_info.bank_name,
+                    account_number=statement_info.account_number,
+                    sort_code=statement_info.sort_code,
+                    statement_date=statement_info.statement_date,
+                    period_start=statement_info.period_start,
+                    period_end=statement_info.period_end,
+                    opening_balance=rec_bal,
+                    closing_balance=statement_info.closing_balance
+                )
 
         # Get unreconciled Opera entries for the date range (with 7 day buffer)
         from datetime import timedelta

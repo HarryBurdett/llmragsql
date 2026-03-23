@@ -395,6 +395,7 @@ class BankStatementMatcherOpera3:
     def __init__(self,
                  data_path: str,
                  min_match_score: float = 0.6,
+                 learn_threshold: float = 0.8,
                  use_extended_fields: bool = True,
                  alias_manager=None):
         """
@@ -403,6 +404,7 @@ class BankStatementMatcherOpera3:
         Args:
             data_path: Path to Opera 3 company data folder (e.g., C:\\Apps\\O3 Server VFP\\COMPANY01)
             min_match_score: Minimum fuzzy match score (0-1) to consider a match
+            learn_threshold: Minimum score (0-1) to save as alias for future (default 0.8)
             use_extended_fields: Use payee/search keys for matching (default True)
             alias_manager: Optional BankAliasManager for alias lookups
         """
@@ -410,7 +412,7 @@ class BankStatementMatcherOpera3:
         self.min_match_score = min_match_score
         self.use_extended_fields = use_extended_fields
         self.alias_manager = alias_manager
-        self.learn_threshold = 0.85  # Save alias if score >= this
+        self.learn_threshold = learn_threshold
 
         # Initialize Opera 3 reader
         self.reader = Opera3Reader(str(self.data_path))
@@ -536,8 +538,85 @@ class BankStatementMatcherOpera3:
         Returns True if matched as repeat entry, False otherwise.
         """
         try:
-            # Amount in pence for comparison with arline.at_value
-            amount_pence = int(txn.amount * 100)  # Keep sign (receipts positive, payments negative)
+            # Step 1: Check alias table first (fast path for previously learned names)
+            if self.alias_manager:
+                alias_match = self.alias_manager.lookup_repeat_entry_alias(txn.name, bank_code)
+                if alias_match:
+                    entry_ref = alias_match['entry_ref']
+                    entry_desc = alias_match['entry_desc']
+                    use_count = alias_match.get('use_count', 1)
+
+                    # Validate the entry still exists and is active in Opera 3
+                    arhead_records = self.reader.read_table("arhead")
+                    valid_entry = None
+                    bank_code_upper = bank_code.strip().upper()
+                    for h in (arhead_records or []):
+                        ae_entry = str(h.get('AE_ENTRY', '')).strip()
+                        ae_acnt = str(h.get('AE_ACNT', '')).strip().upper()
+                        ae_posted = float(h.get('AE_POSTED', 0) or 0)
+                        ae_topost = float(h.get('AE_TOPOST', 0) or 0)
+                        if ae_entry == entry_ref and ae_acnt == bank_code_upper:
+                            if ae_topost == 0 or ae_posted < ae_topost:
+                                valid_entry = h
+                                break
+
+                    if valid_entry:
+                        # Parse next post date for tolerance check
+                        next_post_raw = valid_entry.get('AE_NXTPOST')
+                        next_post_date = None
+                        if next_post_raw:
+                            if isinstance(next_post_raw, str):
+                                try:
+                                    next_post_date = datetime.strptime(next_post_raw[:10], '%Y-%m-%d').date()
+                                except ValueError:
+                                    next_post_date = None
+                            elif hasattr(next_post_raw, 'date'):
+                                next_post_date = next_post_raw.date()
+                            else:
+                                next_post_date = next_post_raw
+
+                        # Don't match if transaction date is too far before the next_post_date
+                        from datetime import timedelta
+                        tolerance_days = 10
+                        if next_post_date and txn.date < (next_post_date - timedelta(days=tolerance_days)):
+                            logger.debug(f"Alias found for '{txn.name}' but transaction date {txn.date} is more than {tolerance_days} days before next_post_date {next_post_date} - skipping")
+                        else:
+                            txn.action = 'repeat_entry'
+                            txn.skip_reason = None
+                            txn.repeat_entry_ref = entry_ref
+                            txn.repeat_entry_desc = entry_desc or str(valid_entry.get('AE_DESC', '')).strip()
+                            txn.repeat_entry_next_date = next_post_date
+                            txn.repeat_entry_posted = int(valid_entry.get('AE_POSTED', 0) or 0)
+                            txn.repeat_entry_total = int(valid_entry.get('AE_TOPOST', 0) or 0)
+
+                            freq = str(valid_entry.get('AE_FREQ', '')).strip().upper()
+                            every = int(valid_entry.get('AE_EVERY', 1) or 1)
+                            txn.repeat_entry_freq = freq
+                            txn.repeat_entry_every = every
+
+                            freq_map = {'D': 'Daily', 'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'Y': 'Yearly'}
+                            freq_desc = freq_map.get(freq, freq)
+                            if every > 1:
+                                freq_desc = f"Every {every} {freq_desc.lower()}s"
+
+                            logger.info(f"Repeat entry matched (alias, {use_count} uses): '{txn.name}' -> {entry_ref} ({txn.repeat_entry_desc}) - {freq_desc}")
+                            return True
+                    else:
+                        logger.debug(f"Alias found for '{txn.name}' -> {entry_ref} but entry no longer active, falling through to amount/ref match")
+
+            # Step 2: Amount in pence for comparison with arline.at_value
+            amount_pence_abs = abs(int(txn.amount * 100))
+
+            # Build search terms from transaction name, reference, and memo
+            # (parity with SE version's SQL LIKE matching)
+            search_terms = []
+            for text in [txn.name, txn.reference, txn.memo]:
+                if text and len(text.strip()) >= 3:
+                    clean = text.strip().upper()
+                    # Extract key words (at least 3 chars)
+                    words = [w for w in clean.split() if len(w) >= 3]
+                    search_terms.extend(words[:3])  # Limit to first 3 words
+            search_terms = search_terms[:5]  # Limit to 5 terms total
 
             # Read repeat entry tables
             arhead_records = self.reader.read_table("arhead")
@@ -562,9 +641,12 @@ class BankStatementMatcherOpera3:
             if not matching_headers:
                 return False
 
-            # Find lines matching amount
+            # Score each header+line pair by amount match and reference match
+            # (parity with SE version which uses amount_match and ref_match columns)
+            candidates = []
             for header in matching_headers:
                 ae_entry = str(header.get('AE_ENTRY', '')).strip()
+                ae_desc = str(header.get('AE_DESC', '')).strip().upper()
 
                 for line in arline_records:
                     at_entry = str(line.get('AT_ENTRY', '')).strip()
@@ -572,40 +654,83 @@ class BankStatementMatcherOpera3:
 
                     if at_entry == ae_entry and at_acnt == bank_code_upper:
                         at_value = int(float(line.get('AT_VALUE', 0) or 0))
+                        at_comment = str(line.get('AT_COMMENT', '')).strip().upper()
 
                         # Check amount match (10p tolerance)
-                        if abs(at_value - amount_pence) < 10:
-                            # Check date proximity
-                            next_post_raw = header.get('AE_NXTPOST')
-                            if next_post_raw:
-                                if isinstance(next_post_raw, str):
-                                    try:
-                                        next_post_date = datetime.strptime(next_post_raw[:10], '%Y-%m-%d').date()
-                                    except ValueError:
-                                        next_post_date = None
-                                elif hasattr(next_post_raw, 'date'):
-                                    next_post_date = next_post_raw.date()
-                                else:
-                                    next_post_date = next_post_raw
+                        amount_match = abs(abs(at_value) - amount_pence_abs) < 10
 
-                                if next_post_date:
-                                    date_diff = abs((txn.date - next_post_date).days)
-                                    if date_diff > 5:
-                                        continue  # Date too far, check next
+                        # Check reference keyword match against ae_desc and at_comment
+                        ref_match = False
+                        if search_terms:
+                            combined_text = f"{ae_desc} {at_comment}"
+                            for term in search_terms:
+                                if term in combined_text:
+                                    ref_match = True
+                                    break
 
-                                    # Found matching repeat entry
-                                    txn.action = 'repeat_entry'
-                                    txn.skip_reason = None
-                                    txn.repeat_entry_ref = ae_entry
-                                    txn.repeat_entry_desc = str(header.get('AE_DESC', '')).strip() or str(line.get('AT_COMMENT', '')).strip()
-                                    txn.repeat_entry_next_date = next_post_date
-                                    txn.repeat_entry_posted = int(header.get('AE_POSTED', 0) or 0)
-                                    txn.repeat_entry_total = int(header.get('AE_TOPOST', 0) or 0)
-                                    txn.repeat_entry_freq = str(header.get('AE_FREQ', '')).strip().upper()
-                                    txn.repeat_entry_every = int(header.get('AE_EVERY', 1) or 1)
+                        if amount_match or ref_match:
+                            candidates.append({
+                                'header': header,
+                                'line': line,
+                                'amount_match': amount_match,
+                                'ref_match': ref_match,
+                                'ae_entry': ae_entry,
+                            })
 
-                                    logger.info(f"Repeat entry matched: '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc})")
-                                    return True
+            if not candidates:
+                logger.debug(f"No repeat entry match found for amount={amount_pence_abs}p or refs={search_terms} on bank {bank_code}")
+                return False
+
+            # Sort: prefer amount matches, then reference matches
+            candidates.sort(key=lambda c: (0 if c['amount_match'] else 1,))
+
+            # Try candidates in order, checking date proximity
+            from datetime import timedelta
+            for cand in candidates:
+                header = cand['header']
+                line = cand['line']
+                ae_entry = cand['ae_entry']
+                match_type = "amount" if cand['amount_match'] else ("reference" if cand['ref_match'] else "unknown")
+
+                # Parse next post date
+                next_post_raw = header.get('AE_NXTPOST')
+                next_post_date = None
+                if next_post_raw:
+                    if isinstance(next_post_raw, str):
+                        try:
+                            next_post_date = datetime.strptime(next_post_raw[:10], '%Y-%m-%d').date()
+                        except ValueError:
+                            next_post_date = None
+                    elif hasattr(next_post_raw, 'date'):
+                        next_post_date = next_post_raw.date()
+                    else:
+                        next_post_date = next_post_raw
+
+                # Don't match if transaction date is too far before the next_post_date
+                tolerance_days = 10
+                if next_post_date and txn.date < (next_post_date - timedelta(days=tolerance_days)):
+                    logger.debug(f"Repeat entry {match_type} match found but transaction date {txn.date} is more than {tolerance_days} days before next_post_date {next_post_date} - skipping")
+                    continue
+
+                if next_post_date:
+                    date_diff = abs((txn.date - next_post_date).days)
+                    if date_diff > 5 and not cand['ref_match']:
+                        # For amount-only matches, enforce 5-day proximity
+                        continue
+
+                # Found matching repeat entry
+                txn.action = 'repeat_entry'
+                txn.skip_reason = None
+                txn.repeat_entry_ref = ae_entry
+                txn.repeat_entry_desc = str(header.get('AE_DESC', '')).strip() or str(line.get('AT_COMMENT', '')).strip()
+                txn.repeat_entry_next_date = next_post_date
+                txn.repeat_entry_posted = int(header.get('AE_POSTED', 0) or 0)
+                txn.repeat_entry_total = int(header.get('AE_TOPOST', 0) or 0)
+                txn.repeat_entry_freq = str(header.get('AE_FREQ', '')).strip().upper()
+                txn.repeat_entry_every = int(header.get('AE_EVERY', 1) or 1)
+
+                logger.info(f"Repeat entry matched ({match_type}): '{txn.name}' -> {txn.repeat_entry_ref} ({txn.repeat_entry_desc})")
+                return True
 
         except Exception as e:
             logger.warning(f"Error checking repeat entries: {e}")
