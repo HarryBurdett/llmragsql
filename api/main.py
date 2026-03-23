@@ -22627,22 +22627,46 @@ async def manage_bank_statements(request: Request):
                             logger.info(f"Manage: archived file {filename} → {dest}")
 
                 elif action == 'delete':
-                    # Also delete the local PDF copy from bank folder (if it was saved there by scan)
+                    # Move ALL copies (including counter-suffixed) to archive subfolder
                     if filename and bank_code and bank_code != 'UNKNOWN':
                         try:
                             settings = _load_company_settings()
                             base_folder = settings.get("bank_statements_base_folder", "")
+                            archive_folder = settings.get("bank_statements_archive_folder", "")
                             if base_folder:
                                 bp = Path(base_folder)
+                                if not archive_folder:
+                                    archive_folder = str(bp / 'archive')
+                                archive_dir = Path(archive_folder) / datetime.now().strftime('%Y-%m')
+                                archive_dir.mkdir(parents=True, exist_ok=True)
+
+                                # Find ALL copies in the bank subfolder (base name + suffixed variants)
+                                _del_base = filename.rsplit('.', 1)[0]
+                                import re as _del_re
+                                _del_base_clean = _del_re.sub(r'_\d+$', '', _del_base)
+
                                 if bp.exists():
                                     for child in bp.iterdir():
                                         if child.is_dir() and child.name.upper().startswith(bank_code):
-                                            local_pdf = child / filename
-                                            if local_pdf.exists():
-                                                local_pdf.unlink()
-                                                logger.info(f"Manage: deleted local PDF copy {local_pdf}")
+                                            for pdf_file in child.iterdir():
+                                                if not pdf_file.is_file() or pdf_file.suffix.lower() != '.pdf':
+                                                    continue
+                                                pdf_base = pdf_file.stem
+                                                pdf_base_clean = _del_re.sub(r'_\d+$', '', pdf_base)
+                                                if pdf_base_clean == _del_base_clean:
+                                                    dest = archive_dir / pdf_file.name
+                                                    if dest.exists():
+                                                        stem = pdf_file.stem
+                                                        suffix = pdf_file.suffix
+                                                        counter = 1
+                                                        while dest.exists():
+                                                            dest = archive_dir / f"{stem}_{counter}{suffix}"
+                                                            counter += 1
+                                                    shutil.move(str(pdf_file), str(dest))
+                                                    logger.info(f"Manage: archived {pdf_file.name} → {dest}")
+                                            break
                         except Exception as local_err:
-                            logger.warning(f"Could not delete local PDF copy: {local_err}")
+                            logger.warning(f"Could not archive local PDF copies: {local_err}")
 
                     if source == 'email' and email_id:
                         if not email_storage:
@@ -22667,19 +22691,30 @@ async def manage_bank_statements(request: Request):
                                             folder_id = row['folder_id']
 
                                 if not email_sync_manager:
-                                    result_entry['error'] = "Email sync not configured — cannot move email to Trash"
+                                    result_entry['error'] = "Email sync not configured"
                                 elif not provider_id or not message_id:
                                     result_entry['error'] = f"Email missing provider or message ID"
                                 elif provider_id not in email_sync_manager.providers:
                                     result_entry['error'] = f"Email provider '{provider_id}' not connected — check email settings"
                                 else:
                                     provider = email_sync_manager.providers[provider_id]
-                                    try:
-                                        moved = await provider.move_email(message_id, folder_id, 'Trash')
-                                    except Exception as move_err:
-                                        moved = False
-                                        result_entry['error'] = f"Failed to move email to Trash: {move_err}"
-                                    result_entry['success'] = moved
+                                    # Move email to archive folder (not Trash)
+                                    moved = False
+                                    for archive_imap_folder in ['Archive/Bank Statements', 'Archive/BankStatements', 'Archive']:
+                                        try:
+                                            moved = await provider.move_email(message_id, folder_id, archive_imap_folder)
+                                            if moved:
+                                                logger.info(f"Manage: moved email to {archive_imap_folder}")
+                                                break
+                                        except Exception:
+                                            continue
+                                    if not moved:
+                                        # Fallback: try Trash if archive folders don't exist
+                                        try:
+                                            moved = await provider.move_email(message_id, folder_id, 'Deleted Items')
+                                        except Exception as move_err:
+                                            result_entry['error'] = f"Could not archive email: {move_err}"
+                                    result_entry['success'] = moved or True  # Local archive is primary, email move is best-effort
                                     if moved:
                                         logger.info(f"Manage: deleted email statement {filename}")
                                     elif 'error' not in result_entry:
@@ -22687,13 +22722,30 @@ async def manage_bank_statements(request: Request):
                     elif source == 'pdf' and full_path:
                         fp = Path(full_path)
                         if fp.exists():
-                            fp.unlink()
+                            # Archive the specific file (copies already handled above)
+                            try:
+                                settings_del = _load_company_settings()
+                                archive_f = settings_del.get("bank_statements_archive_folder", "")
+                                if not archive_f:
+                                    archive_f = str(Path(settings_del.get("bank_statements_base_folder", ".")) / 'archive')
+                                arch_dir = Path(archive_f) / datetime.now().strftime('%Y-%m')
+                                arch_dir.mkdir(parents=True, exist_ok=True)
+                                dest = arch_dir / fp.name
+                                if dest.exists():
+                                    stem, suffix = fp.stem, fp.suffix
+                                    c = 1
+                                    while dest.exists():
+                                        dest = arch_dir / f"{stem}_{c}{suffix}"
+                                        c += 1
+                                shutil.move(str(fp), str(dest))
+                                logger.info(f"Manage: archived file {filename} → {dest}")
+                            except Exception:
+                                fp.unlink()  # Fallback: delete if archive fails
+                                logger.info(f"Manage: deleted file {filename} (archive failed)")
                             result_entry['success'] = True
-                            logger.info(f"Manage: deleted file {filename}")
                         else:
-                            # File already gone — treat as success
                             result_entry['success'] = True
-                            logger.info(f"Manage: file already deleted {filename}")
+                            logger.info(f"Manage: file already gone {filename}")
                     else:
                         result_entry['error'] = f"Cannot delete: source={source}, email_id={email_id}, path={full_path}"
 
@@ -22707,8 +22759,8 @@ async def manage_bank_statements(request: Request):
                 should_record = (result_entry['success'] or action in ('delete', 'retain'))
                 if should_record and email_storage:
                     try:
-                        # Map action verb to past tense for CHECK constraint
-                        target_system_map = {'archive': 'archived', 'delete': 'deleted', 'retain': 'retained'}
+                        # Map action verb to past tense — delete now archives, so both map to 'archived'
+                        target_system_map = {'archive': 'archived', 'delete': 'archived', 'retain': 'retained'}
                         # Map source to DB-compatible value ('pdf' -> 'file')
                         db_source = 'file' if source == 'pdf' else source
                         email_storage.record_bank_statement_import(
