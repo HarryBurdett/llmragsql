@@ -17950,6 +17950,28 @@ async def preview_bank_import_from_pdf(
             except Exception as chain_err:
                 logger.warning(f"preview-from-pdf: Balance chain failed: {chain_err}")
 
+        # Update extraction cache with corrected balances so the scan listing is correct
+        try:
+            from sql_rag.pdf_extraction_cache import get_extraction_cache
+            _cache = get_extraction_cache()
+            _pdf_bytes = open(file_path, 'rb').read()
+            _pdf_hash = _cache.hash_pdf(_pdf_bytes)
+            _cached = _cache.get(_pdf_hash)
+            if _cached:
+                _info, _txns = _cached
+                changed = False
+                if statement_info_dict.get('opening_balance') is not None and _info.get('opening_balance') != statement_info_dict['opening_balance']:
+                    _info['opening_balance'] = statement_info_dict['opening_balance']
+                    changed = True
+                if statement_info_dict.get('closing_balance') is not None and _info.get('closing_balance') != statement_info_dict['closing_balance']:
+                    _info['closing_balance'] = statement_info_dict['closing_balance']
+                    changed = True
+                if changed:
+                    _cache.put(_pdf_hash, _info, _txns)
+                    logger.info(f"preview-from-pdf: Updated extraction cache with corrected balances")
+        except Exception:
+            pass
+
         # Convert StatementTransaction to BankTransaction objects
         logger.info(f"preview-from-pdf: Converting {len(stmt_transactions)} StatementTransactions to BankTransactions")
         transactions = []
