@@ -231,7 +231,8 @@ export function BankStatementHub() {
       });
       const data = await resp.json();
       if (data.success) {
-        // Remove from scan result in-place for instant feedback, then refresh
+        // Remove from scan result in-place for instant feedback
+        // Do NOT auto-rescan — the email scan would re-download the PDF
         if (scanResult) {
           const updated = { ...scanResult };
           for (const bankCode of Object.keys(updated.banks)) {
@@ -241,9 +242,9 @@ export function BankStatementHub() {
             };
             updated.banks[bankCode].statement_count = updated.banks[bankCode].statements.length;
           }
+          updated.total_statements = Object.values(updated.banks).reduce((sum, b) => sum + (b.statement_count || 0), 0);
           setScanResult(updated);
         }
-        setTimeout(() => handleScan(), 1000);
       } else {
         alert(data.error || data.message || 'Failed to delete statement');
       }
