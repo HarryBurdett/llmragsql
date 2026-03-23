@@ -2729,7 +2729,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       ? [...receipts, ...payments, ...refunds].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
       : needsImport;
     const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
-    return needsImportExcludingUnmatched.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
+    const result = needsImportExcludingUnmatched.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
+    if (bankRecOnly) {
+      console.log('allAlreadyInOpera:', result, 'needsExcl:', needsImportExcludingUnmatched.length, 'dupCount:', duplicateCount, 'alreadyPosted:', bankPreview.already_posted?.length);
+    }
+    return result;
   })();
 
   // All items are accounted for (imported, in Opera, or ignored) — user can proceed to reconcile
@@ -2740,8 +2744,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const refunds = bankPreview.matched_refunds || [];
     const unmatched = bankPreview.unmatched || [];
     const allItems = [...receipts, ...payments, ...refunds, ...unmatched];
+    if (allItems.length === 0 && (bankPreview.already_posted?.length || 0) > 0) return true;
     if (allItems.length === 0) return false;
-    const unhandled = allItems.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
+    // In bankRecOnly mode, unmatched items don't block reconciliation
+    const itemsToCheck = bankRecOnly
+      ? [...receipts, ...payments, ...refunds]
+      : allItems;
+    const unhandled = itemsToCheck.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
     return unhandled.length === 0;
   })();
 
