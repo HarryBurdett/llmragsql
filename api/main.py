@@ -13502,7 +13502,7 @@ async def process_bank_statement(
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
     try:
-        from sql_rag.statement_reconcile import StatementReconciler
+        from sql_rag.statement_reconcile import StatementReconciler, StatementInfo
         from pathlib import Path
 
         if not Path(file_path).exists():
@@ -13616,14 +13616,24 @@ async def process_bank_statement(
 
         # Validate statement sequence (opening balance must match reconciled balance)
         sequence_validation = reconciler.validate_statement_sequence(bank_code, statement_info)
+        rec_bal_validated = sequence_validation.get('reconciled_balance')
 
-        if sequence_validation['status'] == 'skip':
-            # Log but don't block — the extracted opening balance may be wrong
-            logger.warning(f"Sequence validation: skip suggested (opening £{statement_info.opening_balance} vs reconciled £{sequence_validation['reconciled_balance']}) — proceeding anyway")
-
-        if sequence_validation['status'] == 'pending':
-            # Log but don't block — the extracted opening balance may be wrong
-            logger.warning(f"Sequence validation: pending suggested (opening £{statement_info.opening_balance} vs reconciled £{sequence_validation['reconciled_balance']}) — proceeding anyway")
+        # If the extracted opening balance doesn't match the reconciled balance,
+        # the AI likely misread the PDF (e.g. picked up a savings account balance).
+        # Use the reconciled balance as the authoritative opening balance.
+        if sequence_validation['status'] != 'process' and rec_bal_validated is not None:
+            logger.warning(f"Opening balance mismatch: extracted £{statement_info.opening_balance}, "
+                           f"Opera reconciled £{rec_bal_validated:.2f} — using reconciled balance")
+            statement_info = StatementInfo(
+                bank_name=statement_info.bank_name,
+                account_number=statement_info.account_number,
+                sort_code=statement_info.sort_code,
+                statement_date=statement_info.statement_date,
+                period_start=statement_info.period_start,
+                period_end=statement_info.period_end,
+                opening_balance=rec_bal_validated,
+                closing_balance=statement_info.closing_balance
+            )
 
         # Get unreconciled Opera entries for the date range
         # Use wider date range to catch entries that might have been posted with slightly different dates
