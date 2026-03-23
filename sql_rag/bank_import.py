@@ -505,26 +505,10 @@ class BankStatementImport:
     6. Import unposted transactions
     """
 
-    # Names/patterns to skip (not real customer/supplier names)
-    SKIP_PATTERNS = [
-        r'^GC\s+C\d+',  # GoCardless references like "GC C1"
-        r'^HMRC',  # Tax payments
-        r'^SALARY',
-        r'^UBER',
-        r'^LINKEDIN',
-        r'^SCREWFIX',
-        r'^Amazon\.co\.uk',
-        r'^EDF\s+ENERGY',
-        r'^O2\s*$',
-        r'^WWW\.',
-    ]
-
-    # Subcategories that are typically not customer/supplier transactions
-    SKIP_SUBCATEGORIES = [
-        'Direct Debit',
-        'Standing Order',
-        'Debit',
-    ]
+    # No hardcoded skip patterns — all transactions are checked against Opera.
+    # The already-posted check and customer/supplier matching handle everything.
+    SKIP_PATTERNS = []
+    SKIP_SUBCATEGORIES = []
 
     def __init__(self,
                  bank_code: str = "",
