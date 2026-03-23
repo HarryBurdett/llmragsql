@@ -491,9 +491,14 @@ class StatementReconciler:
 
         prompt = """Look at this bank statement PDF and extract the statement details.
 
-If the opening balance is not shown explicitly (e.g. "Balance brought forward"),
-look at the FIRST transaction line — take its running balance, then subtract its
-credit or add back its debit to calculate the opening balance.
+Look carefully for the opening balance. It may be labelled as:
+- "Balance brought forward" or "Opening balance" (traditional banks)
+- "Money in/out" summary showing start balance (Monzo, Starling)
+- The first line item showing a starting balance before any transactions
+- A summary section at the top showing the account balance at start of period
+
+If you still cannot find it, look at the VERY FIRST transaction chronologically,
+take its running balance, and reverse the transaction to get the balance before it.
 
 Return ONLY this JSON:
 {
@@ -586,8 +591,9 @@ Return a JSON object with this structure:
 }
 
 IMPORTANT EXTRACTION RULES:
-- opening_balance: Look for "Balance brought forward", "Opening balance", "Previous balance", or the first balance shown
-- closing_balance: Look for "Balance carried forward", "Closing balance", or the last balance shown
+- opening_balance: Look for "Balance brought forward", "Opening balance", "Previous balance", "Money in/out" summary start balance, or the balance at the very start of the period. For Monzo/fintech: check the summary section showing starting balance
+- closing_balance: Look for "Balance carried forward", "Closing balance", end balance, or the balance at the very end of the period
+- Extract EVERY transaction — do not skip any. Include ALL pages of the statement
 - For UK bank statements, balances are typically in GBP (£) - extract just the number
 - period_start and period_end: Usually shown near the top as "Statement period" or similar
 - Extract EVERY transaction row, including DD (Direct Debit), STO (Standing Order), Giro credits, card payments
