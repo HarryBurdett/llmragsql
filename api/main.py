@@ -21814,8 +21814,14 @@ async def scan_all_banks_for_statements(
                                 logger.info(f"Saved email PDF '{save_path.name}' to {bank_folder}")
 
                     if saved_or_exists:
-                        continue  # Folder scan (Step 4) will pick this up
-                    # else: download failed — fall through to legacy email flow below
+                        # Verify the file actually exists in the folder before skipping
+                        if dest_file.exists() or any(
+                            f.name == filename for f in bank_folder.iterdir() if f.is_file()
+                        ):
+                            continue  # Folder scan (Step 4) will pick this up
+                        else:
+                            logger.warning(f"Email PDF '{filename}' reported saved but not found in {bank_folder} — keeping as email entry")
+                    # else: download failed or file not in folder — fall through to legacy email flow
 
                 # --- Legacy fallback: build email stmt_entry when no folder configured or download failed ---
                 cat = stmt_entry.get('category')
@@ -22061,6 +22067,7 @@ async def scan_all_banks_for_statements(
 
         for code, bank in all_banks.items():
             stmts = bank['statements']
+            logger.info(f"Step 5: bank {code} has {len(stmts)} statements before filtering")
             if not stmts:
                 continue
 
@@ -22144,10 +22151,19 @@ async def scan_all_banks_for_statements(
                     if m:
                         return m.group(1)
                     return '9999'
+                # Collect unchained statements (have balances but don't connect from rec_bal)
+                unchained = []
+                for bal_list in by_opening.values():
+                    for s in bal_list:
+                        if id(s) not in visited:
+                            unchained.append(s)
+                unchained.sort(key=_period_sort_key)
                 no_balance.sort(key=_period_sort_key)
-                stmts = chained + no_balance
+                stmts = chained + unchained + no_balance
+                logger.info(f"Step 5 chain: {code} chained={len(chained)} unchained={len(unchained)} no_balance={len(no_balance)} total={len(stmts)}")
 
             bank['statements'] = stmts
+            logger.info(f"Step 5 final: {code} = {len(stmts)} statements")
 
             # Clean up internal sort keys and add sequence numbers
             for i, s in enumerate(stmts, start=1):
@@ -22234,7 +22250,11 @@ async def scan_all_banks_for_statements(
 
         # Remove reconciled statements from bank lists
         for code, bank in all_banks.items():
+            before = len(bank['statements'])
             bank['statements'] = [s for s in bank['statements'] if s.get('filename') not in final_rec_filenames]
+            after = len(bank['statements'])
+            if before != after:
+                logger.info(f"Final cleanup: {code} reduced from {before} to {after} statements")
 
         # Remove reconciled statements from non_current lists
         for nc_key in non_current:
