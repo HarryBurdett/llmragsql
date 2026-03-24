@@ -11,12 +11,14 @@ import { PageHeader, Card, LoadingState, Alert } from '../components/ui';
 // ─── Types ───────────────────────────────────────────────────
 
 interface DashboardData {
-  statements_this_month: number;
-  pending_approvals: number;
-  open_queries: number;
-  overdue_queries: number;
-  match_rate: number;
-  alerts: DashboardAlert[];
+  kpis: {
+    statements_month: number;
+    pending_approvals: number;
+    open_queries: number;
+    overdue_queries: number;
+    match_rate_percent: number | null;
+  };
+  alerts: Record<string, DashboardAlert[]> | DashboardAlert[];
   recent_statements: RecentStatement[];
   recent_responses: RecentResponse[];
 }
@@ -260,27 +262,27 @@ export default function SupplierDashboard() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <KpiCard
             label="Statements This Month"
-            value={dashboard.statements_this_month}
+            value={dashboard.kpis?.statements_month ?? 0}
             icon={FileText}
             color="blue"
           />
           <KpiCard
             label="Pending Approvals"
-            value={dashboard.pending_approvals}
+            value={dashboard.kpis?.pending_approvals ?? 0}
             icon={Clock}
             color="amber"
-            highlight={dashboard.pending_approvals > 0 ? 'amber' : null}
+            highlight={dashboard.kpis?.pending_approvals ?? 0 > 0 ? 'amber' : null}
           />
           <KpiCard
             label="Open Queries"
-            value={dashboard.open_queries}
+            value={dashboard.kpis?.open_queries ?? 0}
             icon={MessageSquare}
             color="red"
-            highlight={dashboard.overdue_queries > 0 ? 'red' : null}
+            highlight={dashboard.kpis?.overdue_queries ?? 0 > 0 ? 'red' : null}
           />
           <KpiCard
             label="Match Rate"
-            value={dashboard.match_rate.toFixed(1)}
+            value={(dashboard.kpis?.match_rate_percent ?? 0).toFixed(1)}
             suffix="%"
             icon={TrendingUp}
             color="emerald"
@@ -301,18 +303,29 @@ export default function SupplierDashboard() {
 
         {/* Alerts */}
         <Card title="Alerts" icon={AlertTriangle}>
-          {dashboard?.alerts && dashboard.alerts.length > 0 ? (
-            <div className="space-y-2">
-              {dashboard.alerts.map((alert, i) => (
-                <AlertItem key={i} alert={alert} />
-              ))}
-            </div>
-          ) : dashboard && !dashLoading ? (
+          {dashboard?.alerts && (() => {
+            const alertList = Array.isArray(dashboard.alerts)
+              ? dashboard.alerts
+              : Object.values(dashboard.alerts).flat();
+            return alertList.length > 0 ? (
+              <div className="space-y-2">
+                {alertList.map((alert: DashboardAlert, i: number) => (
+                  <AlertItem key={i} alert={alert} />
+                ))}
+              </div>
+            ) : null;
+          })()}
+          {dashboard && !dashLoading && (() => {
+            const alertList = Array.isArray(dashboard.alerts)
+              ? dashboard.alerts
+              : Object.values(dashboard.alerts || {}).flat();
+            return alertList.length === 0 ? (
             <div className="flex flex-col items-center py-6 text-gray-400">
               <CheckCircle className="h-8 w-8 mb-2 text-emerald-400" />
               <p className="text-sm">No active alerts</p>
             </div>
-          ) : null}
+          ) : null;
+          })()}
         </Card>
       </div>
 
@@ -321,9 +334,9 @@ export default function SupplierDashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Recent Statements Received */}
           <Card title="Recent Statements" icon={Mail}>
-            {dashboard.recent_statements.length > 0 ? (
+            {(dashboard.recent_statements || []).length > 0 ? (
               <div className="divide-y divide-gray-100">
-                {dashboard.recent_statements.map((stmt, i) => (
+                {(dashboard.recent_statements || []).map((stmt, i) => (
                   <div key={i} className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-gray-900 truncate">{stmt.supplier_name}</p>
@@ -358,9 +371,9 @@ export default function SupplierDashboard() {
 
           {/* Recent Responses Sent */}
           <Card title="Recent Responses" icon={Send}>
-            {dashboard.recent_responses.length > 0 ? (
+            {(dashboard.recent_responses || []).length > 0 ? (
               <div className="divide-y divide-gray-100">
-                {dashboard.recent_responses.map((resp, i) => (
+                {(dashboard.recent_responses || []).map((resp, i) => (
                   <div key={i} className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-gray-900 truncate">{resp.supplier_name}</p>
