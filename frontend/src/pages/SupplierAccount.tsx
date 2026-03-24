@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
@@ -6,6 +6,7 @@ import {
   RefreshCw,
   Search,
   ArrowLeft,
+  X,
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, LoadingState, EmptyState, Alert } from '../components/ui';
@@ -76,13 +77,133 @@ interface SupplierAccountResponse {
 
 type TabType = 'general' | 'memo' | 'view';
 
-// Search uses native HTML datalist with allSuppliers — no custom dropdown needed
+// Searchable supplier dropdown — exact same pattern as GoCardless CustomerAccountSearch
+async function fetchSupplierSearch(search: string): Promise<Array<{account: string; name: string; balance: number}>> {
+  const res = await authFetch(`/api/creditors/search?query=${encodeURIComponent(search)}&limit=20`);
+  if (!res.ok) throw new Error('Failed to fetch suppliers');
+  const data = await res.json();
+  return (data.suppliers || []).map((s: Record<string, unknown>) => ({
+    account: String(s.account || ''),
+    name: String(s.supplier_name || s.name || ''),
+    balance: Number(s.balance || 0),
+  }));
+}
+
+function SupplierAccountSearch({
+  value,
+  valueName,
+  onChange,
+}: {
+  value: string;
+  valueName?: string;
+  onChange: (account: string, name: string) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [selectedName, setSelectedName] = useState(valueName || '');
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (valueName) setSelectedName(valueName);
+  }, [valueName]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setDebouncedSearch('');
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const { data: results = [], isLoading } = useQuery({
+    queryKey: ['supplier-search-account', debouncedSearch],
+    queryFn: () => fetchSupplierSearch(debouncedSearch),
+    enabled: debouncedSearch.length >= 2 && !value,
+    staleTime: 30000,
+    gcTime: 60000,
+  });
+
+  const handleSelect = (s: {account: string; name: string}) => {
+    onChange(s.account, s.name);
+    setSelectedName(s.name);
+    setSearch('');
+    setDebouncedSearch('');
+  };
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      {value ? (
+        <div className="flex items-center gap-2 px-3 py-2 border border-blue-300 bg-blue-50 rounded-lg text-sm w-80">
+          <span className="font-medium">{value}</span>
+          <span className="text-gray-500 truncate flex-1">{selectedName}</span>
+          <button
+            type="button"
+            onClick={() => { onChange('', ''); setSelectedName(''); setSearch(''); setDebouncedSearch(''); }}
+            className="text-gray-400 hover:text-red-500"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : (
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            className="w-80 pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-blue-500 focus:border-blue-500"
+            placeholder="Type to search suppliers..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && results.length > 0) {
+                e.preventDefault();
+                handleSelect(results[0]);
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setSearch('');
+                setDebouncedSearch('');
+              }
+            }}
+          />
+          {isLoading && (
+            <RefreshCw className="w-4 h-4 absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 animate-spin" />
+          )}
+        </div>
+      )}
+      {results.length > 0 && !value && (
+        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {results.map((s) => (
+            <button
+              key={s.account}
+              type="button"
+              className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-b-0 hover:bg-blue-50"
+              onClick={() => handleSelect(s)}
+            >
+              <div className="font-medium">{s.name}</div>
+              <div className="text-sm text-gray-500">{s.account} • {s.balance.toLocaleString('en-GB', {minimumFractionDigits: 2})}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function SupplierAccount() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const accountCode = searchParams.get('account') || '';
-  const [searchQuery, setSearchQuery] = useState('');
+  // searchQuery state removed — SupplierAccountSearch component manages its own state
   const [activeAccount, setActiveAccount] = useState(accountCode);
   const [activeTab, setActiveTab] = useState<TabType>('general');
   const [viewFilter, setViewFilter] = useState<'outstanding' | 'all'>('outstanding');
@@ -103,22 +224,7 @@ export function SupplierAccount() {
     }
   }, [accountCode]);
 
-  // Load all suppliers for searchable datalist
-  const { data: allSuppliersData } = useQuery<{success: boolean; suppliers: Array<{account: string; name: string; balance: number}>}>({
-    queryKey: ['allSuppliersLookup'],
-    queryFn: async () => {
-      const response = await authFetch('/api/creditors/search?query=&limit=500');
-      if (!response.ok) throw new Error('Failed to load suppliers');
-      const data = await response.json();
-      return { success: true, suppliers: (data.suppliers || []).map((s: Record<string, unknown>) => ({
-        account: s.account || s.pn_account || '',
-        name: s.supplier_name || s.name || '',
-        balance: Number(s.balance || s.pn_currbal || 0),
-      }))};
-    },
-    staleTime: 10 * 60 * 1000,
-  });
-  const allSuppliers = (allSuppliersData?.suppliers || []).sort((a, b) => a.account.localeCompare(b.account));
+  // (Supplier search handled by SupplierAccountSearch component)
 
   // Supplier account details - cached for 5 minutes
   const accountQuery = useQuery<SupplierAccountResponse>({
@@ -136,12 +242,16 @@ export function SupplierAccount() {
     gcTime: 10 * 60 * 1000,
   });
 
-  // (Search handled by datalist + allSuppliers query above)
+  // (Search handled by SupplierAccountSearch component)
 
   const selectSupplier = (account: string) => {
-    setActiveAccount(account);
-    setSearchQuery('');
-    navigate(`/supplier/account?account=${account}`);
+    if (!account) {
+      setActiveAccount('');
+      navigate('/supplier/account');
+    } else {
+      setActiveAccount(account);
+      navigate(`/supplier/account?account=${account}`);
+    }
   };
 
   const formatDate = (dateStr: string | null): string => {
@@ -185,42 +295,13 @@ export function SupplierAccount() {
           <ArrowLeft className="h-5 w-5 text-gray-600" />
         </button>
         <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-            <input
-              type="text"
-              list="supplier-list"
-              placeholder="Search supplier..."
-              value={searchQuery}
-              onChange={(e) => {
-                setSearchQuery(e.target.value);
-                // Check if the value matches a supplier account code from the datalist
-                const match = allSuppliers.find(s =>
-                  e.target.value === s.account ||
-                  e.target.value === `${s.account} — ${s.name}`
-                );
-                if (match) selectSupplier(match.account);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && searchQuery.trim()) {
-                  const match = allSuppliers.find(s =>
-                    s.account.toUpperCase() === searchQuery.trim().toUpperCase() ||
-                    s.name.toLowerCase().includes(searchQuery.trim().toLowerCase())
-                  );
-                  if (match) selectSupplier(match.account);
-                  else selectSupplier(searchQuery.trim().toUpperCase());
-                }
-              }}
-              className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-80"
-            />
-            <datalist id="supplier-list">
-              {allSuppliers.map((s) => (
-                <option key={s.account} value={s.account}>
-                  {s.name} ({formatCurrency(s.balance)})
-                </option>
-              ))}
-            </datalist>
-          </div>
+          <SupplierAccountSearch
+            value={activeAccount}
+            valueName={supplier?.company_name}
+            onChange={(account, _name) => {
+              selectSupplier(account);
+            }}
+          />
           <button
             onClick={() => accountQuery.refetch()}
             disabled={accountQuery.isFetching}
