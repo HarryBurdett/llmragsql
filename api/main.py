@@ -9545,7 +9545,7 @@ async def check_recurring_entries(bank_code: str):
                     customer_accounts.add(acct)
             if supplier_accounts:
                 acct_list = ",".join(f"'{a}'" for a in supplier_accounts)
-                sdf = sql_connector.execute_query(f"SELECT RTRIM(pn_acnt) as code, RTRIM(pn_name) as description FROM pname WITH (NOLOCK) WHERE RTRIM(pn_acnt) IN ({acct_list})")
+                sdf = sql_connector.execute_query(f"SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as description FROM pname WITH (NOLOCK) WHERE RTRIM(pn_account) IN ({acct_list})")
                 if sdf is not None:
                     for _, r in sdf.iterrows():
                         account_descs[str(r.get("code", "")).strip()] = str(r.get("description", "")).strip()
@@ -12996,7 +12996,7 @@ async def get_purchase_orders(
                 sq_crdate AS created_date,
                 RTRIM(dc_ref2) AS reference
             FROM dohead
-            LEFT JOIN pname pn ON dc_account = pn.pn_acnt
+            LEFT JOIN pname pn ON dc_account = pn.pn_account
             WHERE {where_clause}
             ORDER BY sq_crdate DESC, dc_ref DESC
             OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
@@ -13063,7 +13063,7 @@ async def get_purchase_order_detail(po_number: str):
                 RTRIM(dc_narr1) AS narrative_1,
                 RTRIM(dc_narr2) AS narrative_2
             FROM dohead
-            LEFT JOIN pname pn ON dc_account = pn.pn_acnt
+            LEFT JOIN pname pn ON dc_account = pn.pn_account
             WHERE dc_ref = '{po_number.replace(chr(39), chr(39)+chr(39))}'
         """
 
@@ -13247,7 +13247,7 @@ async def get_grn_detail(grn_number: str):
                 RTRIM(ci_dcref) AS po_reference,
                 ci_dcline AS po_line
             FROM cgline
-            LEFT JOIN pname pn ON ci_account = pn.pn_acnt
+            LEFT JOIN pname pn ON ci_account = pn.pn_account
             WHERE ci_chref = '{grn_number.replace(chr(39), chr(39)+chr(39))}'
             ORDER BY ci_line
         """
@@ -13290,13 +13290,13 @@ async def get_suppliers_for_pop(
         search_term = search.replace("'", "''")
         query = f"""
             SELECT TOP 20
-                RTRIM(pn_acnt) AS account,
+                RTRIM(pn_account) AS account,
                 RTRIM(pn_name) AS name,
                 RTRIM(pn_addr1) AS address1,
-                RTRIM(pn_pcode) AS postcode,
-                RTRIM(pn_phone) AS phone
-            FROM pname
-            WHERE (pn_acnt LIKE '%{search_term}%' OR pn_name LIKE '%{search_term}%')
+                RTRIM(pn_pstcode) AS postcode,
+                RTRIM(pn_teleno) AS phone
+            FROM pname WITH (NOLOCK)
+            WHERE (pn_account LIKE '%{search_term}%' OR pn_name LIKE '%{search_term}%')
             ORDER BY pn_name
         """
 
@@ -13552,7 +13552,7 @@ async def get_po_outstanding(po_number: str):
             SELECT dc_ref, RTRIM(dc_account) AS supplier_account,
                    RTRIM(pn.pn_name) AS supplier_name, dc_cancel
             FROM dohead
-            LEFT JOIN pname pn ON dc_account = pn.pn_acnt
+            LEFT JOIN pname pn ON dc_account = pn.pn_account
             WHERE dc_ref = '{po_number.replace(chr(39), chr(39)+chr(39))}'
         """
 
