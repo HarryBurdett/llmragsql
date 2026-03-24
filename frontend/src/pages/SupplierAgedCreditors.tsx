@@ -113,7 +113,24 @@ export default function SupplierAgedCreditors() {
       if (!response.ok) {
         throw new Error(`Failed to load aged creditors: ${response.statusText}`);
       }
-      return response.json();
+      const raw = await response.json();
+      // Map API snake_case to frontend camelCase
+      const mapBuckets = (b: Record<string, number>) => ({
+        current: b.current ?? 0,
+        days30: b.days_30 ?? 0,
+        days60: b.days_60 ?? 0,
+        days90: b.days_90 ?? 0,
+        days120: b.days_120_plus ?? 0,
+        total: b.total ?? 0,
+      });
+      return {
+        ...raw,
+        summary: mapBuckets(raw.summary || {}),
+        suppliers: (raw.suppliers || []).map((s: Record<string, unknown>) => ({
+          ...s,
+          ...mapBuckets(s as Record<string, number>),
+        })),
+      };
     },
     refetchOnWindowFocus: false,
   });
@@ -375,6 +392,20 @@ export default function SupplierAgedCreditors() {
                   />
                 ))}
               </tbody>
+              {/* Column totals */}
+              {data?.summary && (
+                <tfoot>
+                  <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold text-sm">
+                    <td className="px-4 py-3" colSpan={3}>Totals</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.current)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days30)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days60)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days90)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days120)}</td>
+                    <td className="px-4 py-3 text-right font-bold">{formatCurrency(data.summary.total)}</td>
+                  </tr>
+                </tfoot>
+              )}
             </table>
           </div>
 
