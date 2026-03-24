@@ -42,7 +42,14 @@ interface Transaction {
   debit: number | null;
   credit: number | null;
   balance: number;
+  currency: string | null;
+  fc_curr: string | null;
+  fc_rate: number | null;
+  fc_debit: number | null;
+  fc_credit: number | null;
+  fc_balance: number | null;
   due_date: string | null;
+  last_payment: string | null;
   unique_id: string;
   raw_type: string;
 }
@@ -67,7 +74,7 @@ interface SupplierAccountResponse {
   error?: string;
 }
 
-type TabType = 'general' | 'memo' | 'list';
+type TabType = 'general' | 'memo' | 'view';
 
 interface SupplierSearchResult {
   account: string;
@@ -93,6 +100,9 @@ export function SupplierAccount() {
   const [activeAccount, setActiveAccount] = useState(accountCode);
   const [activeTab, setActiveTab] = useState<TabType>('general');
   const [showSearch, setShowSearch] = useState(false);
+  const [viewFilter, setViewFilter] = useState<'outstanding' | 'all'>('outstanding');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
 
   // Debounce search query - only search after 300ms of no typing
   useEffect(() => {
@@ -125,9 +135,12 @@ export function SupplierAccount() {
 
   // Supplier account details - cached for 5 minutes
   const accountQuery = useQuery<SupplierAccountResponse>({
-    queryKey: ['supplierAccount', activeAccount],
+    queryKey: ['supplierAccount', activeAccount, viewFilter, dateFrom, dateTo],
     queryFn: async () => {
-      const response = await authFetch(`/api/supplier/account/${activeAccount}`);
+      const params = new URLSearchParams({ view: viewFilter });
+      if (dateFrom) params.set('date_from', dateFrom);
+      if (dateTo) params.set('date_to', dateTo);
+      const response = await authFetch(`/api/supplier/account/${activeAccount}?${params.toString()}`);
       if (!response.ok) throw new Error(`Failed to load supplier: ${response.statusText}`);
       return response.json();
     },
@@ -318,7 +331,7 @@ export function SupplierAccount() {
           {/* Tabs */}
           <div className="bg-gray-200 border-b border-gray-300 px-2 pt-2">
             <div className="flex gap-1">
-              {(['general', 'memo', 'list'] as TabType[]).map((tab) => (
+              {(['general', 'memo', 'view'] as TabType[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -515,8 +528,37 @@ export function SupplierAccount() {
             )}
 
             {/* List Tab - Outstanding Transactions */}
-            {activeTab === 'list' && (
+            {activeTab === 'view' && (
               <div className="p-4">
+                {/* View Filters — matches Opera's "View Account Transactions" dialog */}
+                <div className="flex items-center gap-4 mb-3 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-600">View:</span>
+                    <select
+                      value={viewFilter}
+                      onChange={(e) => setViewFilter(e.target.value as 'outstanding' | 'all')}
+                      className="border border-gray-300 rounded px-2 py-1 text-sm"
+                    >
+                      <option value="outstanding">Outstanding</option>
+                      <option value="all">All</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-600">From:</span>
+                    <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+                      className="border border-gray-300 rounded px-2 py-1 text-sm" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-600">To:</span>
+                    <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+                      className="border border-gray-300 rounded px-2 py-1 text-sm" />
+                  </div>
+                  {(dateFrom || dateTo) && (
+                    <button onClick={() => { setDateFrom(''); setDateTo(''); }}
+                      className="text-xs text-blue-600 hover:underline">Clear dates</button>
+                  )}
+                </div>
+
                 {/* Transactions Table */}
                 <div className="border border-gray-300 rounded overflow-hidden mb-4">
                   <div className="max-h-[400px] overflow-y-auto">
@@ -548,14 +590,29 @@ export function SupplierAccount() {
                             Balance
                           </th>
                           <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Currency
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            FC Debit
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            FC Credit
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            FC Balance
+                          </th>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
                             Due Date
+                          </th>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Last Payment
                           </th>
                         </tr>
                       </thead>
                       <tbody>
                         {transactions.length === 0 ? (
                           <tr>
-                            <td colSpan={9} className="py-8 text-center text-gray-400">
+                            <td colSpan={13} className="py-8 text-center text-gray-400">
                               No outstanding transactions
                             </td>
                           </tr>
@@ -581,7 +638,18 @@ export function SupplierAccount() {
                               <td className="py-1.5 px-3 text-right font-mono text-gray-900 font-medium">
                                 {formatCurrency(txn.balance)}
                               </td>
+                              <td className="py-1.5 px-3 text-gray-600 text-xs">{txn.fc_curr || ''}</td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                                {txn.fc_debit ? formatCurrency(txn.fc_debit) : ''}
+                              </td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                                {txn.fc_credit ? formatCurrency(txn.fc_credit) : ''}
+                              </td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-900">
+                                {txn.fc_balance ? formatCurrency(txn.fc_balance) : ''}
+                              </td>
                               <td className="py-1.5 px-3 text-gray-700">{formatDate(txn.due_date)}</td>
+                              <td className="py-1.5 px-3 text-gray-700">{formatDate(txn.last_payment)}</td>
                             </tr>
                           ))
                         )}

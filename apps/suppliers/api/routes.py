@@ -3534,7 +3534,12 @@ async def get_first_supplier_account():
 
 
 @router.get("/api/supplier/account/{account}")
-async def get_supplier_account_view(account: str):
+async def get_supplier_account_view(
+    account: str,
+    view: str = Query("outstanding", description="'all' or 'outstanding'"),
+    date_from: Optional[str] = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Filter to date (YYYY-MM-DD)"),
+):
     """
     Get full supplier account view matching Opera's Purchase Processing screen.
     Returns supplier details, outstanding transactions, and aging analysis.
@@ -3558,9 +3563,14 @@ async def get_supplier_account_view(account: str):
                 RTRIM(pn_contact) AS ac_contact,
                 RTRIM(pn_email) AS email,
                 RTRIM(pn_teleno) AS telephone,
+                RTRIM(ISNULL(pn_faxno, '')) AS facsimile,
                 pn_currbal AS current_balance,
                 ISNULL(pn_ordrbal, 0) AS order_balance,
-                pn_trnover AS turnover
+                pn_trnover AS turnover,
+                ISNULL(pn_crlim, 0) AS credit_limit,
+                ISNULL(pn_avgday, 0) AS avg_creditor_days,
+                pn_fcreate AS first_created,
+                pn_fmodify AS last_modified
             FROM pname WITH (NOLOCK)
             WHERE pn_account = '{account}'
         """
@@ -3588,16 +3598,32 @@ async def get_supplier_account_view(account: str):
                 END AS type,
                 RTRIM(pt_trref) AS ref1,
                 RTRIM(pt_supref) AS ref2,
-                '' AS stat,
-                CASE WHEN pt_trtype IN ('I', 'J') AND pt_trvalue > 0 THEN pt_trvalue ELSE NULL END AS debit,
+                CASE RTRIM(pt_paid)
+                    WHEN 'A' THEN 'A'
+                    WHEN 'P' THEN 'P'
+                    ELSE ''
+                END AS stat,
+                CASE WHEN pt_trtype IN ('I', 'J', 'D') AND pt_trvalue > 0 THEN pt_trvalue ELSE NULL END AS debit,
                 CASE WHEN pt_trtype IN ('C', 'P', 'F') OR pt_trvalue < 0 THEN ABS(pt_trvalue) ELSE NULL END AS credit,
                 pt_trbal AS balance,
+                RTRIM(ISNULL(pt_fcurr, '')) AS currency,
+                RTRIM(ISNULL(pt_fcurr, '')) AS fc_curr,
+                ISNULL(pt_fcrate, 0) AS fc_rate,
+                ISNULL(pt_fcdec, 0) AS fc_dec,
+                CASE WHEN RTRIM(ISNULL(pt_fcurr, '')) != '' AND pt_trtype IN ('I', 'J', 'D') AND pt_fcval > 0
+                    THEN pt_fcval ELSE NULL END AS fc_debit,
+                CASE WHEN RTRIM(ISNULL(pt_fcurr, '')) != '' AND (pt_trtype IN ('C', 'P', 'F') OR pt_fcval < 0)
+                    THEN ABS(pt_fcval) ELSE NULL END AS fc_credit,
+                CASE WHEN RTRIM(ISNULL(pt_fcurr, '')) != '' THEN pt_fcbal ELSE NULL END AS fc_balance,
                 pt_dueday AS due_date,
+                pt_lastpay AS last_payment,
                 pt_unique AS unique_id,
                 pt_trtype AS raw_type
             FROM ptran WITH (NOLOCK)
             WHERE pt_account = '{account}'
-            AND pt_trbal <> 0
+            {"AND pt_trbal <> 0" if view == "outstanding" else ""}
+            {"AND pt_trdate >= '" + date_from + "'" if date_from else ""}
+            {"AND pt_trdate <= '" + date_to + "'" if date_to else ""}
             ORDER BY pt_trdate DESC, pt_trref
         """
 
@@ -3608,6 +3634,14 @@ async def get_supplier_account_view(account: str):
             transactions = transactions_result.to_dict('records')
         else:
             transactions = transactions_result or []
+
+        # Convert FC values from minor units
+        for txn in transactions:
+            fc_dec = int(float(txn.get('fc_dec', 0) or 0))
+            if fc_dec > 0:
+                for fc_field in ('fc_debit', 'fc_credit', 'fc_balance'):
+                    if txn.get(fc_field) is not None:
+                        txn[fc_field] = float(txn[fc_field]) / (10 ** fc_dec)
 
         # Calculate aging analysis
         import pandas as pd
