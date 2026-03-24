@@ -1,274 +1,243 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
-  MessageSquare,
-  Clock,
-  AlertTriangle,
-  CheckCircle,
-  RefreshCw,
-  Search,
-  Calendar,
-  Building,
+  MessageSquare, Clock, AlertTriangle, CheckCircle, RefreshCw,
+  Send, Building, Calendar
 } from 'lucide-react';
-import apiClient from '../api/client';
-import type { SupplierQueriesResponse } from '../api/client';
-import { PageHeader, LoadingState, EmptyState, StatusBadge, Card } from '../components/ui';
+import { authFetch } from '../api/client';
+import { PageHeader, Card, StatusBadge, Alert } from '../components/ui';
 
-type StatusFilter = 'all' | 'open' | 'overdue' | 'resolved';
+type TabType = 'open' | 'overdue' | 'resolved';
 
-export function SupplierQueries() {
-  const queryClient = useQueryClient();
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('open');
-  const [searchQuery, setSearchQuery] = useState('');
+interface SupplierQuery {
+  query_id: number;
+  supplier_code: string;
+  supplier_name: string;
+  reference: string | null;
+  query_type: string;
+  description: string | null;
+  debit: number | null;
+  credit: number | null;
+  query_sent_at: string | null;
+  days_outstanding: number | null;
+  status: string;
+  resolved_at: string | null;
+}
 
-  const queriesQuery = useQuery<SupplierQueriesResponse>({
-    queryKey: ['supplierQueries', statusFilter === 'all' ? undefined : statusFilter],
+interface QueriesResponse {
+  queries: SupplierQuery[];
+  counts: { open: number; overdue: number; resolved: number };
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '-';
+  return new Date(dateStr).toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+  });
+}
+
+export default function SupplierQueries() {
+  const [activeTab, setActiveTab] = useState<TabType>('open');
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'open', label: 'Open', icon: Clock },
+    { id: 'overdue', label: 'Overdue', icon: AlertTriangle },
+    { id: 'resolved', label: 'Resolved', icon: CheckCircle },
+  ];
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['supplier-queries', activeTab],
     queryFn: async () => {
-      const response = await apiClient.supplierQueries(
-        statusFilter === 'all' ? undefined : statusFilter
-      );
-      return response.data;
+      const url = activeTab === 'overdue'
+        ? '/api/supplier-queries/overdue'
+        : `/api/supplier-queries?status=${activeTab}`;
+      const res = await authFetch(url);
+      if (!res.ok) throw new Error('Failed to fetch supplier queries');
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      return json as QueriesResponse;
     },
+    staleTime: 30000,
     refetchInterval: 60000,
   });
 
-  const resolveMutation = useMutation({
-    mutationFn: async (queryId: number) => {
-      const response = await apiClient.supplierQueryResolve(queryId);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['supplierQueries'] });
-      queryClient.invalidateQueries({ queryKey: ['supplierStatementDashboard'] });
-    },
-  });
-
-  const queries = queriesQuery.data?.queries || [];
-  const counts = queriesQuery.data?.counts || { open: 0, overdue: 0, resolved: 0 };
-
-  const filteredQueries = queries.filter(q => {
-    if (!searchQuery) return true;
-    const search = searchQuery.toLowerCase();
-    return (
-      q.supplier_name?.toLowerCase().includes(search) ||
-      q.supplier_code?.toLowerCase().includes(search) ||
-      q.reference?.toLowerCase().includes(search) ||
-      q.description?.toLowerCase().includes(search)
-    );
-  });
-
-  const formatDate = (dateStr: string | null): string => {
-    if (!dateStr) return '-';
-    return new Date(dateStr).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-    });
-  };
-
-  const formatCurrency = (value: number | null): string => {
-    if (value === null) return '-';
-    return `£${Math.abs(value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  };
-
-  const getStatusVariant = (status: string): 'success' | 'warning' | 'danger' | 'neutral' => {
-    switch (status) {
-      case 'open': return 'warning';
-      case 'overdue': return 'danger';
-      case 'resolved': return 'success';
-      default: return 'neutral';
+  const handleResolve = async (queryId: number) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await authFetch(`/api/supplier-queries/${queryId}/resolve`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Failed to resolve query');
+      setSuccess(json.message || 'Query marked as resolved');
+      refetch();
+    } catch (e: any) {
+      setError(e.message);
     }
   };
 
+  const handleSendReminder = async (queryId: number) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await authFetch(`/api/supplier-queries/${queryId}/remind`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Failed to send reminder');
+      setSuccess(json.message || 'Reminder sent');
+      refetch();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+
+  const queries = data?.queries || [];
+
   return (
     <div className="space-y-6">
-      {/* Header */}
       <PageHeader icon={MessageSquare} title="Supplier Queries" subtitle="Track and manage outstanding supplier queries">
         <button
-          onClick={() => queriesQuery.refetch()}
-          disabled={queriesQuery.isFetching}
-          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+          onClick={() => refetch()}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
-          <RefreshCw className={`h-4 w-4 ${queriesQuery.isFetching ? 'animate-spin' : ''}`} />
+          <RefreshCw className="w-4 h-4" />
           Refresh
         </button>
       </PageHeader>
 
-      {/* Status Tabs */}
-      <div className="flex gap-2 border-b border-gray-200 pb-4">
-        <button
-          onClick={() => setStatusFilter('all')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            statusFilter === 'all'
-              ? 'bg-gray-900 text-white'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          All ({counts.open + counts.overdue + counts.resolved})
-        </button>
-        <button
-          onClick={() => setStatusFilter('open')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            statusFilter === 'open'
-              ? 'bg-amber-500 text-white'
-              : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
-          }`}
-        >
-          <Clock className="h-4 w-4" />
-          Open ({counts.open})
-        </button>
-        <button
-          onClick={() => setStatusFilter('overdue')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            statusFilter === 'overdue'
-              ? 'bg-red-500 text-white'
-              : 'bg-red-50 text-red-700 hover:bg-red-100'
-          }`}
-        >
-          <AlertTriangle className="h-4 w-4" />
-          Overdue ({counts.overdue})
-        </button>
-        <button
-          onClick={() => setStatusFilter('resolved')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            statusFilter === 'resolved'
-              ? 'bg-emerald-500 text-white'
-              : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-          }`}
-        >
-          <CheckCircle className="h-4 w-4" />
-          Resolved ({counts.resolved})
-        </button>
-      </div>
-
-      {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
-        <input
-          type="text"
-          placeholder="Search by supplier, reference, or description..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-        />
-      </div>
-
-      {/* Loading State */}
-      {queriesQuery.isLoading && (
-        <LoadingState message="Loading queries..." />
+      {error && (
+        <Alert variant="error" title="Error" onDismiss={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+      {success && (
+        <Alert variant="success" onDismiss={() => setSuccess(null)}>
+          {success}
+        </Alert>
       )}
 
-      {/* Queries Table */}
-      {!queriesQuery.isLoading && (
-        <Card padding={false}>
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 border-b border-gray-200">
+      <Card padding={false} className="overflow-hidden">
+        {/* Tabs */}
+        <div className="border-b border-gray-200">
+          <nav className="flex">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 -mb-px ${
+                  activeTab === tab.id
+                    ? 'border-green-500 text-green-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <tab.icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* Tab Content */}
+        <div className="p-4">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <RefreshCw className="w-6 h-6 text-gray-400 animate-spin" />
+            </div>
+          ) : queries.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              No {activeTab} queries found
+            </div>
+          ) : (
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Supplier
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Query Type
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Reference
-                  </th>
-                  <th className="text-right py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Amount
-                  </th>
-                  <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Sent
-                  </th>
-                  <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Days Out
-                  </th>
-                  <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="text-right py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Supplier</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Invoice Ref</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Query Type</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Sent Date</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Age (days)</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
-                {filteredQueries.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="py-12 text-center">
-                      <EmptyState
-                        icon={MessageSquare}
-                        title="No queries found"
-                        message={
-                          statusFilter === 'all'
-                            ? 'No queries have been raised yet'
-                            : `No ${statusFilter} queries`
-                        }
-                      />
+              <tbody className="divide-y divide-gray-200">
+                {queries.map(q => (
+                  <tr key={q.query_id} className="hover:bg-gray-50">
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-2">
+                        <Building className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                        <div>
+                          <div className="text-sm font-medium text-gray-900">{q.supplier_name}</div>
+                          <div className="text-xs text-gray-500">{q.supplier_code}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="text-sm font-medium text-gray-700">{q.reference || '-'}</div>
+                      {q.description && (
+                        <div className="text-xs text-gray-500 truncate max-w-[200px]">{q.description}</div>
+                      )}
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusBadge variant={
+                        q.query_type === 'missing_invoice' ? 'warning' :
+                        q.query_type === 'amount_mismatch' ? 'danger' :
+                        q.query_type === 'duplicate' ? 'info' :
+                        'neutral'
+                      }>
+                        {q.query_type.replace(/_/g, ' ')}
+                      </StatusBadge>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-1 text-sm text-gray-600">
+                        <Calendar className="h-3.5 w-3.5" />
+                        {formatDate(q.query_sent_at)}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      <span className={`text-sm font-semibold ${
+                        (q.days_outstanding || 0) > 14 ? 'text-red-600' :
+                        (q.days_outstanding || 0) > 7 ? 'text-amber-600' :
+                        'text-gray-600'
+                      }`}>
+                        {Math.round(q.days_outstanding || 0)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        {q.status !== 'resolved' && (
+                          <>
+                            <button
+                              onClick={() => handleResolve(q.query_id)}
+                              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg hover:bg-green-100"
+                              title="Mark as resolved"
+                            >
+                              <CheckCircle className="w-3 h-3" />
+                              Resolve
+                            </button>
+                            <button
+                              onClick={() => handleSendReminder(q.query_id)}
+                              className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100"
+                              title="Send reminder to supplier"
+                            >
+                              <Send className="w-3 h-3" />
+                              Send Reminder
+                            </button>
+                          </>
+                        )}
+                        {q.status === 'resolved' && (
+                          <span className="text-xs text-gray-400">Resolved {formatDate(q.resolved_at)}</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
-                ) : (
-                  filteredQueries.map((query) => (
-                    <tr key={query.query_id} className="hover:bg-gray-50 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2">
-                          <Building className="h-4 w-4 text-gray-400" />
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">{query.supplier_name}</p>
-                            <p className="text-xs text-gray-500">{query.supplier_code}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="text-sm text-gray-700">{query.query_type}</span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">{query.reference || '-'}</p>
-                          <p className="text-xs text-gray-500 truncate max-w-[200px]">{query.description}</p>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <span className="text-sm font-medium text-gray-900">
-                          {query.debit ? formatCurrency(query.debit) : query.credit ? formatCurrency(query.credit) : '-'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-1 text-sm text-gray-600">
-                          <Calendar className="h-4 w-4" />
-                          {formatDate(query.query_sent_at)}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <span className={`text-sm font-semibold ${query.status === 'overdue' ? 'text-red-600' : 'text-gray-600'}`}>
-                          {Math.round(query.days_outstanding || 0)}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <StatusBadge variant={getStatusVariant(query.status)}>
-                          {query.status}
-                        </StatusBadge>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        {query.status !== 'resolved' && (
-                          <button
-                            onClick={() => resolveMutation.mutate(query.query_id)}
-                            disabled={resolveMutation.isPending}
-                            className="text-sm text-emerald-600 hover:text-emerald-700 font-medium"
-                          >
-                            Mark Resolved
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
+                ))}
               </tbody>
             </table>
-          </div>
-        </Card>
-      )}
+          )}
+        </div>
+      </Card>
     </div>
   );
 }
 
-export default SupplierQueries;
+export { SupplierQueries };

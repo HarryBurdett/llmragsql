@@ -292,8 +292,8 @@ function GoCardlessImportInner() {
   const [bankAccounts, setBankAccounts] = useState<{ code: string; description: string }[]>([]);
   const [feesNominalAccount, setFeesNominalAccount] = useState('');
   const [gcBankCode, setGcBankCode] = useState('');
-  const [transferCbtype, setTransferCbtype] = useState('');
-  const [transferTypes, setTransferTypes] = useState<{ code: string; description: string }[]>([]);
+  const [, setTransferCbtype] = useState('');
+  const [, setTransferTypes] = useState<{ code: string; description: string }[]>([]);
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
 
   // History state
@@ -312,6 +312,7 @@ function GoCardlessImportInner() {
     payment_count: number;
     receipt_date: string;
     imported_by: string;
+    import_date?: string;
     payments_json?: string;
   }>>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -348,7 +349,7 @@ function GoCardlessImportInner() {
   const [searchLoading, setSearchLoading] = useState(false);
 
   // Settings state (loaded from saved settings for import defaults)
-  const [dataSource, setDataSource] = useState<'email' | 'api' | 'history'>('api');
+  const [, setDataSource] = useState<'email' | 'api' | 'history'>('api');
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [apiKeyHint, setApiKeyHint] = useState('');
   const [apiSandbox, setApiSandbox] = useState(false);
@@ -361,7 +362,7 @@ function GoCardlessImportInner() {
   const [emailBatches, setEmailBatches] = useState<EmailBatch[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
-  const [companyReference, setCompanyReference] = useState('');
+  const [, setCompanyReference] = useState('');
   const [scanStats, setScanStats] = useState<{
     total_payouts: number;
     available: number;
@@ -1168,7 +1169,7 @@ function GoCardlessImportInner() {
             {historyData.slice(0, 2).map((h, i) => (
               <span key={h.id} className="ml-2">
                 {i > 0 && '• '}
-                {new Date(h.import_date).toLocaleDateString()} - £{h.gross_amount?.toFixed(2) || '0.00'}
+                {new Date(h.import_date || h.email_date).toLocaleDateString()} - £{h.gross_amount?.toFixed(2) || '0.00'}
               </span>
             ))}
           </div>
@@ -1407,7 +1408,7 @@ function GoCardlessImportInner() {
                       const currencySymbol = isEur ? '€' : '£';
                       return (<>
                       <tr key={h.id} className="hover:bg-gray-50">
-                        <td className="p-2 text-gray-900">{new Date(h.import_date).toLocaleDateString()}</td>
+                        <td className="p-2 text-gray-900">{new Date(h.import_date || h.email_date).toLocaleDateString()}</td>
                         <td className="p-2 text-gray-600 font-mono text-xs">{h.bank_reference || '-'}</td>
                         <td className="p-2 text-center">
                           <span className={`px-2 py-0.5 rounded text-xs ${h.source === 'api' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>

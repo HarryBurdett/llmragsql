@@ -1,592 +1,264 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
-  FileText,
-  Search,
-  Filter,
-  RefreshCw,
-  Eye,
-  Play,
-  Clock,
-  CheckCircle,
-  XCircle,
-  AlertTriangle,
-  Mail,
-  Calendar,
-  Building,
-  ChevronDown,
-  Inbox,
+  FileText, RefreshCw, Clock, CheckCircle, Send, Eye, Play,
+  Inbox
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
-import apiClient from '../api/client';
-import type { SupplierStatementQueueItem, SupplierStatementQueueResponse } from '../api/client';
-import { PageHeader, Card, LoadingState, EmptyState, Alert } from '../components/ui';
+import { authFetch } from '../api/client';
+import { PageHeader, Card, StatusBadge, Alert } from '../components/ui';
 
-type StatusFilter = 'all' | 'received' | 'processing' | 'reconciled' | 'queued' | 'sent' | 'error';
+type TabType = 'all' | 'received' | 'processing' | 'reconciled' | 'approved' | 'sent';
 
-const STATUS_CONFIG: Record<string, { label: string; color: string; icon: typeof Clock; bg: string }> = {
-  received: {
-    label: 'Received',
-    color: 'text-blue-700',
-    bg: 'bg-blue-100 border-blue-200',
-    icon: Inbox,
-  },
-  processing: {
-    label: 'Processing',
-    color: 'text-amber-700',
-    bg: 'bg-amber-100 border-amber-200',
-    icon: RefreshCw,
-  },
-  reconciled: {
-    label: 'Reconciled',
-    color: 'text-emerald-700',
-    bg: 'bg-emerald-100 border-emerald-200',
-    icon: CheckCircle,
-  },
-  queued: {
-    label: 'Awaiting Approval',
-    color: 'text-violet-700',
-    bg: 'bg-violet-100 border-violet-200',
-    icon: Clock,
-  },
-  approved: {
-    label: 'Approved',
-    color: 'text-indigo-700',
-    bg: 'bg-indigo-100 border-indigo-200',
-    icon: CheckCircle,
-  },
-  sent: {
-    label: 'Sent',
-    color: 'text-gray-600',
-    bg: 'bg-gray-100 border-gray-200',
-    icon: Mail,
-  },
-  error: {
-    label: 'Error',
-    color: 'text-red-700',
-    bg: 'bg-red-100 border-red-200',
-    icon: XCircle,
-  },
+interface SupplierStatement {
+  id: number;
+  supplier_account: string;
+  supplier_name: string;
+  supplier_code: string;
+  statement_date: string;
+  status: string;
+  received_date: string;
+  match_rate: number | null;
+  total_items: number;
+  matched_count: number;
+  query_count: number;
+  closing_balance: number | null;
+  sender_email: string | null;
+  error_message: string | null;
+  acknowledged_at: string | null;
+  processed_at: string | null;
+  approved_by: string | null;
+  sent_at: string | null;
+  line_count: number;
+}
+
+interface StatementsResponse {
+  statements: SupplierStatement[];
+  total: number;
+}
+
+const STATUS_VARIANT: Record<string, 'info' | 'success' | 'warning' | 'danger' | 'neutral'> = {
+  received: 'info',
+  processing: 'warning',
+  reconciled: 'success',
+  approved: 'success',
+  sent: 'neutral',
+  error: 'danger',
 };
 
-export function SupplierStatementQueue() {
-  const queryClient = useQueryClient();
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedStatement, setSelectedStatement] = useState<SupplierStatementQueueItem | null>(null);
-  const [showFilters, setShowFilters] = useState(false);
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '-';
+  return new Date(dateStr).toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+  });
+}
 
-  // Fetch statements
-  const statementsQuery = useQuery<SupplierStatementQueueResponse>({
-    queryKey: ['supplierStatementQueue', statusFilter === 'all' ? undefined : statusFilter],
+function formatMatchRate(rate: number | null): string {
+  if (rate === null || rate === undefined) return '-';
+  return `${Math.round(rate * 100)}%`;
+}
+
+export default function SupplierStatementQueue() {
+  const [activeTab, setActiveTab] = useState<TabType>('all');
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'all', label: 'All', icon: Inbox },
+    { id: 'received', label: 'Received', icon: FileText },
+    { id: 'processing', label: 'Processing', icon: Clock },
+    { id: 'reconciled', label: 'Reconciled', icon: CheckCircle },
+    { id: 'approved', label: 'Approved', icon: CheckCircle },
+    { id: 'sent', label: 'Sent', icon: Send },
+  ];
+
+  const { data, isLoading, refetch } = useQuery({
+    queryKey: ['supplier-statements', activeTab],
     queryFn: async () => {
-      const response = await apiClient.supplierStatementQueue(
-        statusFilter === 'all' ? undefined : statusFilter
-      );
-      return response.data;
+      const url = activeTab === 'all'
+        ? '/api/supplier-statements'
+        : `/api/supplier-statements?status=${activeTab}`;
+      const res = await authFetch(url);
+      if (!res.ok) throw new Error('Failed to fetch supplier statements');
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      return json as StatementsResponse;
     },
-    refetchInterval: 30000, // Refresh every 30 seconds
+    staleTime: 30000,
+    refetchInterval: 30000,
   });
 
-  // Process statement mutation
-  const processMutation = useMutation({
-    mutationFn: async (statementId: number) => {
-      const response = await apiClient.supplierStatementProcess(statementId);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['supplierStatementQueue'] });
-      queryClient.invalidateQueries({ queryKey: ['supplierStatementDashboard'] });
-    },
-  });
-
-  const statements = statementsQuery.data?.statements || [];
-
-  // Filter statements by search query
-  const filteredStatements = statements.filter((s) => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      s.supplier_name?.toLowerCase().includes(query) ||
-      s.supplier_code?.toLowerCase().includes(query) ||
-      s.sender_email?.toLowerCase().includes(query)
-    );
-  });
-
-  // Group statements by status for summary
-  const statusCounts = statements.reduce((acc, s) => {
-    acc[s.status] = (acc[s.status] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  const formatDate = (dateStr: string | null): string => {
-    if (!dateStr) return '-';
-    return new Date(dateStr).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+  const handleProcess = async (id: number) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await authFetch(`/api/supplier-statements/${id}/process`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Failed to process statement');
+      setSuccess(json.message || 'Statement processing started');
+      refetch();
+    } catch (e: any) {
+      setError(e.message);
+    }
   };
 
-  const formatShortDate = (dateStr: string | null): string => {
-    if (!dateStr) return '-';
-    return new Date(dateStr).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: 'short',
-    });
+  const handleApprove = async (id: number) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await authFetch(`/api/supplier-statements/${id}/approve`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Failed to approve statement');
+      setSuccess(json.message || 'Statement approved');
+      refetch();
+    } catch (e: any) {
+      setError(e.message);
+    }
   };
 
-  const formatCurrency = (value: number | null): string => {
-    if (value === null) return '-';
-    return `£${Math.abs(value).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  };
-
-  const getStatusConfig = (status: string) => {
-    return STATUS_CONFIG[status] || STATUS_CONFIG.received;
-  };
-
-  const getTimeSince = (dateStr: string): string => {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMins / 60);
-    const diffDays = Math.floor(diffHours / 24);
-
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return formatShortDate(dateStr);
-  };
+  const statements = data?.statements || [];
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <PageHeader
-        icon={Inbox}
-        title="Statement Queue"
-        subtitle="Incoming supplier statements awaiting processing"
-      >
-        <Link
-          to="/supplier/dashboard"
-          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors text-sm font-medium text-gray-700"
-        >
-          Dashboard
-        </Link>
+      <PageHeader icon={FileText} title="Statement Queue" subtitle="Process and reconcile supplier statements">
         <button
-          onClick={() => statementsQuery.refetch()}
-          disabled={statementsQuery.isFetching}
-          className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors text-sm font-medium text-gray-700"
+          onClick={() => refetch()}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
-          <RefreshCw className={`h-4 w-4 ${statementsQuery.isFetching ? 'animate-spin' : ''}`} />
+          <RefreshCw className="w-4 h-4" />
           Refresh
         </button>
       </PageHeader>
 
-      {/* Status Summary Pills */}
-      <div className="flex flex-wrap gap-2">
-        <button
-          onClick={() => setStatusFilter('all')}
-          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-            statusFilter === 'all'
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-          }`}
-        >
-          All ({statements.length})
-        </button>
-        {Object.entries(STATUS_CONFIG).map(([key, config]) => {
-          const count = statusCounts[key] || 0;
-          if (count === 0 && key !== statusFilter) return null;
-          return (
-            <button
-              key={key}
-              onClick={() => setStatusFilter(key as StatusFilter)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${
-                statusFilter === key
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              <config.icon className="h-4 w-4" />
-              {config.label} ({count})
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Search and Filters */}
-      <Card>
-        <div className="flex items-center gap-4">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by supplier name, code, or email..."
-              className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-            />
-          </div>
-          <button
-            onClick={() => setShowFilters(!showFilters)}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border transition-all ${
-              showFilters
-                ? 'bg-blue-50 border-blue-200 text-blue-700'
-                : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
-            }`}
-          >
-            <Filter className="h-4 w-4" />
-            Filters
-            <ChevronDown className={`h-4 w-4 transition-transform ${showFilters ? 'rotate-180' : ''}`} />
-          </button>
-        </div>
-
-        {/* Expanded Filters */}
-        {showFilters && (
-          <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Date Range</label>
-              <select className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="all">All time</option>
-                <option value="today">Today</option>
-                <option value="week">This week</option>
-                <option value="month">This month</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Sort By</label>
-              <select className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="received_desc">Newest first</option>
-                <option value="received_asc">Oldest first</option>
-                <option value="supplier">Supplier name</option>
-                <option value="balance">Balance (high to low)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
-              <select className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="all">All priorities</option>
-                <option value="high">High priority</option>
-                <option value="normal">Normal</option>
-              </select>
-            </div>
-          </div>
-        )}
-      </Card>
-
-      {/* Loading State */}
-      {statementsQuery.isLoading && (
-        <Card>
-          <LoadingState message="Loading statements..." size="lg" />
-        </Card>
+      {error && (
+        <Alert variant="error" title="Error" onDismiss={() => setError(null)}>
+          {error}
+        </Alert>
       )}
-
-      {/* Error State */}
-      {statementsQuery.isError && (
-        <Alert variant="error" title="Error loading statements">
-          {statementsQuery.error instanceof Error ? statementsQuery.error.message : 'Failed to load data'}
+      {success && (
+        <Alert variant="success" onDismiss={() => setSuccess(null)}>
+          {success}
         </Alert>
       )}
 
-      {/* Statement List */}
-      {!statementsQuery.isLoading && !statementsQuery.isError && (
-        <Card padding={false}>
-          {filteredStatements.length === 0 ? (
-            <EmptyState
-              icon={FileText}
-              title="No Statements Found"
-              message={
-                searchQuery
-                  ? `No statements match "${searchQuery}"`
-                  : statusFilter !== 'all'
-                  ? `No statements with status "${STATUS_CONFIG[statusFilter]?.label || statusFilter}"`
-                  : 'No statements have been received yet. Statements will appear here when suppliers send them.'
-              }
-            />
+      <Card padding={false} className="overflow-hidden">
+        {/* Tabs */}
+        <div className="border-b border-gray-200">
+          <nav className="flex">
+            {tabs.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 -mb-px ${
+                  activeTab === tab.id
+                    ? 'border-green-500 text-green-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <tab.icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* Tab Content */}
+        <div className="p-4">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <RefreshCw className="w-6 h-6 text-gray-400 animate-spin" />
+            </div>
+          ) : statements.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              No statements found{activeTab !== 'all' ? ` with status "${activeTab}"` : ''}
+            </div>
           ) : (
-            <div className="divide-y divide-gray-100">
-              {filteredStatements.map((statement) => {
-                const statusConfig = getStatusConfig(statement.status);
-                const StatusIcon = statusConfig.icon;
-
-                return (
-                  <div
-                    key={statement.id}
-                    className="p-5 hover:bg-gray-50 transition-colors"
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Supplier</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Received</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Match Rate</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {statements.map(stmt => (
+                  <tr
+                    key={stmt.id}
+                    className="hover:bg-gray-50 cursor-pointer"
+                    onClick={() => window.location.href = `/suppliers/statements/${stmt.id}`}
                   >
-                    <div className="flex items-start justify-between gap-4">
-                      {/* Left: Supplier Info */}
-                      <div className="flex items-start gap-4 flex-1">
-                        <div className="p-3 bg-gray-100 rounded-xl">
-                          <Building className="h-6 w-6 text-gray-500" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-3 mb-1">
-                            <h3 className="font-semibold text-gray-900 truncate">
-                              {statement.supplier_name || statement.supplier_code}
-                            </h3>
-                            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${statusConfig.bg} ${statusConfig.color}`}>
-                              <StatusIcon className="h-3.5 w-3.5" />
-                              {statusConfig.label}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-4 text-sm text-gray-500">
-                            <span className="flex items-center gap-1">
-                              <Calendar className="h-4 w-4" />
-                              Statement: {formatShortDate(statement.statement_date)}
-                            </span>
-                            <span className="flex items-center gap-1">
-                              <Mail className="h-4 w-4" />
-                              {statement.sender_email || 'Unknown sender'}
-                            </span>
-                            <span className="text-gray-400">
-                              Received {getTimeSince(statement.received_date)}
-                            </span>
-                          </div>
-                          {statement.error_message && (
-                            <div className="mt-2 flex items-center gap-2 text-sm text-red-600">
-                              <AlertTriangle className="h-4 w-4" />
-                              {statement.error_message}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Middle: Stats */}
-                      <div className="flex items-center gap-6 text-center">
-                        <div>
-                          <div className="text-lg font-semibold text-gray-900">
-                            {statement.line_count || 0}
-                          </div>
-                          <div className="text-xs text-gray-500">Lines</div>
-                        </div>
-                        {statement.matched_count > 0 && (
-                          <div>
-                            <div className="text-lg font-semibold text-emerald-600">
-                              {statement.matched_count}
-                            </div>
-                            <div className="text-xs text-gray-500">Matched</div>
-                          </div>
-                        )}
-                        {statement.query_count > 0 && (
-                          <div>
-                            <div className="text-lg font-semibold text-amber-600">
-                              {statement.query_count}
-                            </div>
-                            <div className="text-xs text-gray-500">Queries</div>
-                          </div>
-                        )}
-                        <div>
-                          <div className="text-lg font-semibold text-gray-900">
-                            {formatCurrency(statement.closing_balance)}
-                          </div>
-                          <div className="text-xs text-gray-500">Balance</div>
-                        </div>
-                      </div>
-
-                      {/* Right: Actions */}
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setSelectedStatement(statement)}
-                          className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-                        >
-                          <Eye className="h-4 w-4" />
-                          View
-                        </button>
-                        {statement.status === 'received' && (
+                    <td className="px-3 py-3">
+                      <div className="text-sm font-medium text-gray-900">{stmt.supplier_name || stmt.supplier_code}</div>
+                      <div className="text-xs text-gray-500">{stmt.supplier_code}</div>
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-700">
+                      {formatDate(stmt.statement_date)}
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      <StatusBadge variant={STATUS_VARIANT[stmt.status] || 'neutral'}>
+                        {stmt.status.charAt(0).toUpperCase() + stmt.status.slice(1)}
+                      </StatusBadge>
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-500">
+                      {formatDate(stmt.received_date)}
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      {stmt.match_rate !== null ? (
+                        <span className={`text-sm font-medium ${
+                          stmt.match_rate >= 0.9 ? 'text-green-600' :
+                          stmt.match_rate >= 0.7 ? 'text-amber-600' :
+                          'text-red-600'
+                        }`}>
+                          {formatMatchRate(stmt.match_rate)}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-gray-400">-</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      <div className="flex items-center justify-center gap-2" onClick={e => e.stopPropagation()}>
+                        {stmt.status === 'received' && (
                           <button
-                            onClick={() => processMutation.mutate(statement.id)}
-                            disabled={processMutation.isPending}
-                            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-50"
+                            onClick={() => handleProcess(stmt.id)}
+                            className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100"
+                            title="Process statement"
                           >
-                            {processMutation.isPending ? (
-                              <RefreshCw className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Play className="h-4 w-4" />
-                            )}
+                            <Play className="w-3 h-3" />
                             Process
                           </button>
                         )}
-                        {statement.status === 'queued' && (
-                          <Link
-                            to={`/supplier/statements/reconciliations?id=${statement.id}`}
-                            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors"
-                          >
-                            <CheckCircle className="h-4 w-4" />
-                            Review
-                          </Link>
-                        )}
-                        {statement.status === 'error' && (
+                        {stmt.status === 'reconciled' && (
                           <button
-                            onClick={() => processMutation.mutate(statement.id)}
-                            disabled={processMutation.isPending}
-                            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg transition-colors disabled:opacity-50"
+                            onClick={() => handleApprove(stmt.id)}
+                            className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg hover:bg-green-100"
+                            title="Approve statement"
                           >
-                            <RefreshCw className="h-4 w-4" />
-                            Retry
+                            <CheckCircle className="w-3 h-3" />
+                            Approve
                           </button>
                         )}
+                        <button
+                          onClick={() => window.location.href = `/suppliers/statements/${stmt.id}`}
+                          className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-700 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100"
+                          title="View details"
+                        >
+                          <Eye className="w-3 h-3" />
+                          View
+                        </button>
                       </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
-        </Card>
-      )}
-
-      {/* Statement Detail Modal */}
-      {selectedStatement && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden">
-            {/* Modal Header */}
-            <div className="p-6 border-b border-gray-100">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h2 className="text-xl font-bold text-gray-900">
-                    {selectedStatement.supplier_name || selectedStatement.supplier_code}
-                  </h2>
-                  <p className="text-gray-500">
-                    Statement dated {formatShortDate(selectedStatement.statement_date)}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setSelectedStatement(null)}
-                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  <XCircle className="h-5 w-5 text-gray-400" />
-                </button>
-              </div>
-            </div>
-
-            {/* Modal Content */}
-            <div className="p-6 overflow-y-auto max-h-[60vh]">
-              <div className="grid grid-cols-2 gap-4 mb-6">
-                <div className="bg-gray-50 rounded-xl p-4">
-                  <div className="text-sm text-gray-500 mb-1">Status</div>
-                  <div className={`inline-flex items-center gap-2 font-medium ${getStatusConfig(selectedStatement.status).color}`}>
-                    {(() => {
-                      const StatusIcon = getStatusConfig(selectedStatement.status).icon;
-                      return <StatusIcon className="h-5 w-5" />;
-                    })()}
-                    {getStatusConfig(selectedStatement.status).label}
-                  </div>
-                </div>
-                <div className="bg-gray-50 rounded-xl p-4">
-                  <div className="text-sm text-gray-500 mb-1">Closing Balance</div>
-                  <div className="text-xl font-bold text-gray-900">
-                    {formatCurrency(selectedStatement.closing_balance)}
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                  <span className="text-gray-500">Supplier Code</span>
-                  <span className="font-medium text-gray-900">{selectedStatement.supplier_code}</span>
-                </div>
-                <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                  <span className="text-gray-500">Received</span>
-                  <span className="font-medium text-gray-900">{formatDate(selectedStatement.received_date)}</span>
-                </div>
-                <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                  <span className="text-gray-500">Sender Email</span>
-                  <span className="font-medium text-gray-900">{selectedStatement.sender_email || '-'}</span>
-                </div>
-                <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                  <span className="text-gray-500">Opening Balance</span>
-                  <span className="font-medium text-gray-900">{formatCurrency(selectedStatement.opening_balance)}</span>
-                </div>
-                <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                  <span className="text-gray-500">Line Items</span>
-                  <span className="font-medium text-gray-900">{selectedStatement.line_count || 0}</span>
-                </div>
-                {selectedStatement.matched_count > 0 && (
-                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                    <span className="text-gray-500">Matched Items</span>
-                    <span className="font-medium text-emerald-600">{selectedStatement.matched_count}</span>
-                  </div>
-                )}
-                {selectedStatement.query_count > 0 && (
-                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                    <span className="text-gray-500">Queries Raised</span>
-                    <span className="font-medium text-amber-600">{selectedStatement.query_count}</span>
-                  </div>
-                )}
-                {selectedStatement.acknowledged_at && (
-                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                    <span className="text-gray-500">Acknowledged</span>
-                    <span className="font-medium text-gray-900">{formatDate(selectedStatement.acknowledged_at)}</span>
-                  </div>
-                )}
-                {selectedStatement.processed_at && (
-                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                    <span className="text-gray-500">Processed</span>
-                    <span className="font-medium text-gray-900">{formatDate(selectedStatement.processed_at)}</span>
-                  </div>
-                )}
-                {selectedStatement.approved_by && (
-                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                    <span className="text-gray-500">Approved By</span>
-                    <span className="font-medium text-gray-900">{selectedStatement.approved_by}</span>
-                  </div>
-                )}
-                {selectedStatement.sent_at && (
-                  <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                    <span className="text-gray-500">Response Sent</span>
-                    <span className="font-medium text-gray-900">{formatDate(selectedStatement.sent_at)}</span>
-                  </div>
-                )}
-                {selectedStatement.error_message && (
-                  <div className="py-3">
-                    <span className="text-gray-500 block mb-2">Error</span>
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
-                      {selectedStatement.error_message}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-6 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
-              <button
-                onClick={() => setSelectedStatement(null)}
-                className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
-              >
-                Close
-              </button>
-              {selectedStatement.status === 'received' && (
-                <button
-                  onClick={() => {
-                    processMutation.mutate(selectedStatement.id);
-                    setSelectedStatement(null);
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
-                >
-                  <Play className="h-4 w-4" />
-                  Process Statement
-                </button>
-              )}
-              {selectedStatement.status === 'queued' && (
-                <Link
-                  to={`/supplier/statements/reconciliations?id=${selectedStatement.id}`}
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors"
-                >
-                  <CheckCircle className="h-4 w-4" />
-                  Review & Approve
-                </Link>
-              )}
-            </div>
-          </div>
         </div>
-      )}
+      </Card>
     </div>
   );
 }
 
-export default SupplierStatementQueue;
+export { SupplierStatementQueue };

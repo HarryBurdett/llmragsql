@@ -7,15 +7,23 @@ so that switching between installations preserves learned data.
 
 Directory structure:
     data/{company_id}/
-        bank_patterns.db
-        bank_aliases.db
-        supplier_statements.db
-        email_data.db
-        gocardless_payments.db
-        pdf_extraction_cache.db
-        import_locks.db
-        lock_monitor.db
-        chroma_db/
+        core/
+            auth.db
+            email_data.db
+            company_settings.json
+            chroma_db/
+        bank_reconcile/
+            bank_aliases.db
+            bank_patterns.db
+            import_locks.db
+            pdf_extraction_cache.db
+        gocardless/
+            gocardless_payments.db
+            gocardless_settings.json
+        suppliers/
+            supplier_statements.db
+        lock_monitor/
+            lock_monitor.db
 
 Shared (stays in project root):
     users.db — cross-company authentication
@@ -38,6 +46,27 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 # Current active company ID (set by api/main.py on startup and company switch)
 _current_company_id: Optional[str] = None
+
+# Route database files to app subdirectories for clean organisation.
+# Files not in this map stay at the company root (backward compatible).
+_DB_APP_SUBDIR = {
+    # core
+    'auth.db': 'core',
+    'email_data.db': 'core',
+    'company_settings.json': 'core',
+    # bank_reconcile
+    'bank_aliases.db': 'bank_reconcile',
+    'bank_patterns.db': 'bank_reconcile',
+    'import_locks.db': 'bank_reconcile',
+    'pdf_extraction_cache.db': 'bank_reconcile',
+    # gocardless
+    'gocardless_payments.db': 'gocardless',
+    'gocardless_settings.json': 'gocardless',
+    # suppliers
+    'supplier_statements.db': 'suppliers',
+    # lock_monitor
+    'lock_monitor.db': 'lock_monitor',
+}
 
 # Databases that should be per-company (all except users.db)
 PER_COMPANY_DATABASES = [
@@ -91,7 +120,43 @@ def set_current_company_id(company_id: str):
     """Set the currently active company ID. Called on startup and company switch."""
     global _current_company_id
     _current_company_id = company_id
+    # Eagerly migrate all known files to app subdirectories
+    _migrate_company_data(company_id)
     logger.info(f"Active company set to: {company_id}")
+
+
+def _migrate_company_data(company_id: str):
+    """Move any flat-layout data files into app subdirectories."""
+    data_dir = BASE_DATA_DIR / company_id
+    if not data_dir.exists():
+        return
+    for db_name, subdir in _DB_APP_SUBDIR.items():
+        old_path = data_dir / db_name
+        if not old_path.exists():
+            continue
+        app_dir = data_dir / subdir
+        new_path = app_dir / db_name
+        if new_path.exists():
+            # Already migrated — remove old copy
+            try:
+                old_path.unlink()
+                for suffix in ('-shm', '-wal', '-journal'):
+                    old_j = data_dir / (db_name + suffix)
+                    if old_j.exists():
+                        old_j.unlink()
+            except Exception:
+                pass
+            continue
+        try:
+            app_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_path), str(new_path))
+            for suffix in ('-shm', '-wal', '-journal'):
+                old_j = data_dir / (db_name + suffix)
+                if old_j.exists():
+                    shutil.move(str(old_j), str(app_dir / (db_name + suffix)))
+            logger.info(f"Migrated {db_name} → {subdir}/{db_name} for {company_id}")
+        except Exception as e:
+            logger.warning(f"Could not migrate {db_name} to {subdir}/: {e}")
 
 
 def get_company_data_dir(company_id: str) -> Path:
@@ -113,14 +178,42 @@ def get_company_db_path(company_id: str, db_name: str) -> Path:
     """
     Return the path to a specific database for a company.
 
+    Files are routed to app subdirectories (e.g., bank_patterns.db → bank_reconcile/).
+    If a file exists at the old flat location but not at the new location, it is
+    auto-migrated on first access.
+
     Args:
         company_id: Company identifier
         db_name: Database filename (e.g., 'bank_patterns.db')
 
     Returns:
-        Path to data/{company_id}/{db_name}
+        Path to data/{company_id}/{app_subdir}/{db_name}
     """
     data_dir = get_company_data_dir(company_id)
+    subdir = _DB_APP_SUBDIR.get(db_name)
+
+    if subdir:
+        app_dir = data_dir / subdir
+        app_dir.mkdir(parents=True, exist_ok=True)
+        new_path = app_dir / db_name
+
+        # Auto-migrate: if file exists at old flat location, move it
+        old_path = data_dir / db_name
+        if old_path.exists() and not new_path.exists():
+            try:
+                shutil.move(str(old_path), str(new_path))
+                # Also move SQLite journal files (-shm, -wal) if present
+                for suffix in ('-shm', '-wal', '-journal'):
+                    old_journal = data_dir / (db_name + suffix)
+                    if old_journal.exists():
+                        shutil.move(str(old_journal), str(app_dir / (db_name + suffix)))
+                logger.info(f"Migrated {db_name} → {subdir}/{db_name} for {company_id}")
+            except Exception as e:
+                logger.warning(f"Could not migrate {db_name} to {subdir}/: {e}")
+                return old_path  # Fall back to old location
+
+        return new_path
+
     return data_dir / db_name
 
 
@@ -132,12 +225,25 @@ def get_company_chroma_dir(company_id: str) -> Path:
         company_id: Company identifier
 
     Returns:
-        Path to data/{company_id}/chroma_db/
+        Path to data/{company_id}/core/chroma_db/
     """
     data_dir = get_company_data_dir(company_id)
-    chroma_dir = data_dir / "chroma_db"
-    chroma_dir.mkdir(parents=True, exist_ok=True)
-    return chroma_dir
+    new_chroma_dir = data_dir / "core" / "chroma_db"
+
+    # Auto-migrate from old flat location
+    old_chroma_dir = data_dir / "chroma_db"
+    if old_chroma_dir.exists() and not new_chroma_dir.exists():
+        try:
+            new_chroma_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(old_chroma_dir), str(new_chroma_dir))
+            logger.info(f"Migrated chroma_db/ → core/chroma_db/ for {company_id}")
+        except Exception as e:
+            logger.warning(f"Could not migrate chroma_db to core/: {e}")
+            old_chroma_dir.mkdir(parents=True, exist_ok=True)
+            return old_chroma_dir
+
+    new_chroma_dir.mkdir(parents=True, exist_ok=True)
+    return new_chroma_dir
 
 
 def get_current_db_path(db_name: str) -> Optional[Path]:

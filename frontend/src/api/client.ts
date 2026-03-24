@@ -1088,7 +1088,7 @@ export const apiClient = {
   deleteSystem: (id: string) =>
     api.delete<{ success: boolean; error?: string }>(`/systems/${id}`),
   activateSystem: (id: string) =>
-    api.post<{ success: boolean; message?: string }>(`/systems/${id}/activate`),
+    api.post<{ success: boolean; message?: string; error?: string; detail?: string }>(`/systems/${id}/activate`),
 
   // Opera Configuration
   getOperaConfig: () => api.get<OperaConfig>('/config/opera'),

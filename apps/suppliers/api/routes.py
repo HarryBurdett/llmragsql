@@ -13,13 +13,55 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 from fastapi import APIRouter, HTTPException, Query, Body
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ============================================================
+# Database Migrations (safe ALTER TABLE)
+# ============================================================
+
+def _run_migrations(db_path: Path):
+    """Run safe schema migrations — adds columns if they don't exist."""
+    if not db_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+        # Check if response_text column exists on supplier_statements
+        cursor.execute("PRAGMA table_info(supplier_statements)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'response_text' not in columns:
+            cursor.execute("ALTER TABLE supplier_statements ADD COLUMN response_text TEXT")
+            logger.info("Migration: added response_text column to supplier_statements")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Migration check failed (non-fatal): {e}")
+
+
+def _get_db_path() -> Path:
+    """Get the supplier statements database path for the current company."""
+    from sql_rag.company_data import get_current_db_path
+    return get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
+
+
+# ============================================================
+# Request/Response Models
+# ============================================================
+
+class EditResponseRequest(BaseModel):
+    response_text: str
+
+class BulkApproveRequest(BaseModel):
+    statement_ids: List[int]
+    approved_by: str = "System"
 
 
 # ============================================================
@@ -146,7 +188,7 @@ async def get_supplier_statement_dashboard():
         cursor.execute("""
             SELECT id, supplier_code, field_name, old_value, new_value, changed_at, changed_by
             FROM supplier_change_audit
-            WHERE verified = 0 AND field_name IN ('pn_bank', 'pn_acno', 'pn_sort')
+            WHERE verified = 0 AND field_name IN ('pn_bankac', 'pn_banksor')
             ORDER BY changed_at DESC LIMIT 10
         """)
         for row in cursor.fetchall():
@@ -695,6 +737,242 @@ async def auto_resolve_supplier_queries():
         return {"success": False, "error": str(e)}
 
 
+@router.post("/api/supplier-queries/{query_id}/send-reminder")
+async def send_query_reminder(query_id: int):
+    """
+    Send a follow-up reminder email to the supplier about an unresolved query.
+
+    Gets the query details from statement_lines, looks up the supplier
+    contact email, sends a reminder, and records in the communications
+    audit trail.
+
+    Returns:
+        {success, sent_to}
+    """
+    from api.main import sql_connector
+    from sql_rag.supplier_statement_db import get_supplier_statement_db
+
+    db_path = _get_db_path()
+    _run_migrations(db_path)
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get query details from statement_lines
+        cursor.execute("""
+            SELECT sl.id, sl.reference, sl.description, sl.debit, sl.credit,
+                   sl.query_type, sl.query_sent_at, sl.query_resolved_at,
+                   sl.statement_id,
+                   ss.supplier_code, ss.statement_date
+            FROM statement_lines sl
+            JOIN supplier_statements ss ON sl.statement_id = ss.id
+            WHERE sl.id = ? AND sl.query_type IS NOT NULL
+        """, (query_id,))
+        query = cursor.fetchone()
+
+        if not query:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Query not found")
+
+        if query['query_resolved_at'] is not None:
+            conn.close()
+            return {"success": False, "error": "Query has already been resolved"}
+
+        supplier_code = query['supplier_code']
+        reference = query['reference'] or 'N/A'
+        amount = query['debit'] or query['credit'] or 0
+
+        # Get supplier name from Opera
+        supplier_name = supplier_code
+        if sql_connector:
+            try:
+                name_df = sql_connector.execute_query(
+                    f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
+                )
+                if name_df is not None and len(name_df) > 0:
+                    supplier_name = name_df.iloc[0]['name']
+            except Exception:
+                pass
+
+        # Get supplier contact email
+        recipient_email = _get_supplier_contact_email(
+            cursor, supplier_code, None
+        )
+
+        # Fallback: try sender_email from the statement
+        if not recipient_email:
+            cursor.execute(
+                "SELECT sender_email FROM supplier_statements WHERE id = ?",
+                (query['statement_id'],)
+            )
+            stmt_row = cursor.fetchone()
+            if stmt_row and stmt_row['sender_email']:
+                recipient_email = stmt_row['sender_email']
+
+        if not recipient_email:
+            conn.close()
+            return {"success": False, "error": "No contact email found for this supplier"}
+
+        # Build reminder email
+        email_subject = f"Follow-up: Outstanding Query - {supplier_name} - Ref {reference}"
+        email_body = (
+            f"Dear {supplier_name},\n\n"
+            f"We are following up on our query regarding invoice {reference} "
+            f"for the amount of \u00a3{amount:,.2f}.\n\n"
+            f"Query type: {query['query_type'] or 'General query'}\n"
+            f"Original query date: {query['query_sent_at'] or 'N/A'}\n"
+            f"Statement date: {query['statement_date'] or 'N/A'}\n\n"
+            f"We would appreciate your earliest response to help us "
+            f"reconcile our records.\n\n"
+            f"Regards,\n"
+            f"Accounts Department"
+        )
+
+        # Send email
+        email_sent = False
+        email_error = None
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                email_resp = await client.post(
+                    "http://127.0.0.1:8000/api/email/send",
+                    json={
+                        "to": recipient_email,
+                        "subject": email_subject,
+                        "body": email_body,
+                        "from_email": "intsys@wimbledoncloud.net"
+                    },
+                    timeout=30.0
+                )
+                if email_resp.status_code == 200:
+                    email_sent = True
+                else:
+                    email_error = f"Email send failed: {email_resp.status_code}"
+        except Exception as e:
+            email_error = f"Email send error: {str(e)}"
+            logger.warning(f"Failed to send query reminder for query {query_id}: {e}")
+
+        # Record in communications audit trail
+        try:
+            db = get_supplier_statement_db()
+            db.log_communication(
+                supplier_code=supplier_code,
+                direction='outbound',
+                comm_type='query_reminder',
+                email_subject=email_subject,
+                email_body=email_body,
+                statement_id=query['statement_id'],
+                sent_by='System'
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log query reminder communication for query {query_id}: {e}")
+
+        conn.close()
+
+        result = {
+            "success": email_sent,
+            "sent_to": recipient_email if email_sent else None,
+            "message": "Reminder sent" if email_sent else "Failed to send reminder"
+        }
+        if email_error:
+            result["email_error"] = email_error
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending query reminder: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/supplier-queries/overdue")
+async def get_overdue_supplier_queries(days_overdue: Optional[int] = None):
+    """
+    Return queries where query_sent_at is older than threshold and
+    query_resolved_at IS NULL.
+
+    Query params:
+        days_overdue: Override threshold (default from config 'query_response_days')
+
+    Returns:
+        {success, queries: [...], count}
+    """
+    from api.main import sql_connector
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "queries": [], "count": 0}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get threshold from config if not provided
+        if days_overdue is None:
+            cursor.execute("SELECT value FROM supplier_automation_config WHERE key = 'query_response_days'")
+            row = cursor.fetchone()
+            days_overdue = int(row['value']) if row else 5
+
+        overdue_cutoff = (datetime.now() - timedelta(days=days_overdue)).isoformat()
+
+        cursor.execute("""
+            SELECT
+                sl.id as query_id,
+                sl.statement_id,
+                ss.supplier_code,
+                sl.reference,
+                sl.description,
+                sl.debit,
+                sl.credit,
+                sl.query_type,
+                sl.query_sent_at,
+                julianday('now') - julianday(sl.query_sent_at) as days_outstanding
+            FROM statement_lines sl
+            JOIN supplier_statements ss ON sl.statement_id = ss.id
+            WHERE sl.query_type IS NOT NULL
+              AND sl.query_resolved_at IS NULL
+              AND sl.query_sent_at < ?
+            ORDER BY sl.query_sent_at ASC
+        """, (overdue_cutoff,))
+
+        queries = [dict(row) for row in cursor.fetchall()]
+
+        # Enrich with supplier names from Opera
+        if sql_connector and queries:
+            codes = list(set(q['supplier_code'] for q in queries if q.get('supplier_code')))
+            if codes:
+                code_list = ','.join(f"'{c}'" for c in codes)
+                names_df = sql_connector.execute_query(f"""
+                    SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as name
+                    FROM pname WITH (NOLOCK) WHERE pn_account IN ({code_list})
+                """)
+                if names_df is not None and len(names_df) > 0:
+                    name_map = dict(zip(names_df['code'], names_df['name']))
+                    for q in queries:
+                        q['supplier_name'] = name_map.get(q['supplier_code'], q['supplier_code'])
+
+        # Round days_outstanding
+        for q in queries:
+            if q.get('days_outstanding') is not None:
+                q['days_outstanding'] = int(q['days_outstanding'])
+
+        conn.close()
+        return {"success": True, "queries": queries, "count": len(queries)}
+
+    except Exception as e:
+        logger.error(f"Error getting overdue queries: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @router.post("/api/supplier-statements/{statement_id}/send-updated-status")
 async def send_updated_statement_status(statement_id: int):
     """
@@ -1023,6 +1301,300 @@ async def list_security_audit_log(days: int = 90):
         return {"success": False, "error": str(e)}
 
 
+@router.post("/api/supplier-security/scan-changes")
+async def scan_supplier_changes():
+    """
+    Scan all suppliers in Opera pname for changes to sensitive fields
+    (bank, account number, sort code, email) and compare against last
+    known values stored in supplier_change_audit.
+
+    For each changed field, logs via db.log_supplier_change().
+    Sends email alert to security_alert_recipients if bank details changed.
+
+    Returns:
+        {success, changes_detected: count, alerts_sent: count}
+    """
+    from api.main import sql_connector
+    from sql_rag.supplier_statement_db import get_supplier_statement_db
+
+    if not sql_connector:
+        raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    try:
+        db = get_supplier_statement_db()
+
+        # Get all suppliers with sensitive fields from Opera
+        suppliers_df = sql_connector.execute_query("""
+            SELECT
+                RTRIM(pn_account) AS account,
+                RTRIM(pn_name) AS name,
+                RTRIM(ISNULL(pn_bankac, '')) AS pn_bankac,
+                RTRIM(ISNULL(pn_banksor, '')) AS pn_banksor,
+                RTRIM(ISNULL(pn_email, '')) AS pn_email
+            FROM pname WITH (NOLOCK)
+        """)
+
+        if suppliers_df is None or len(suppliers_df) == 0:
+            return {"success": True, "changes_detected": 0, "alerts_sent": 0}
+
+        if hasattr(suppliers_df, 'to_dict'):
+            suppliers = suppliers_df.to_dict('records')
+        else:
+            suppliers = suppliers_df or []
+
+        # Get last known values from the change audit table
+        db_path = _get_db_path()
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Build a map of supplier_code -> field_name -> latest new_value
+        cursor.execute("""
+            SELECT supplier_code, field_name, new_value
+            FROM supplier_change_audit
+            WHERE id IN (
+                SELECT MAX(id) FROM supplier_change_audit
+                GROUP BY supplier_code, field_name
+            )
+        """)
+        last_known = {}
+        for row in cursor.fetchall():
+            key = (row['supplier_code'], row['field_name'])
+            last_known[key] = row['new_value'] or ''
+
+        conn.close()
+
+        # Compare current Opera values against last known
+        sensitive_fields = ['pn_bankac', 'pn_banksor', 'pn_email']
+        bank_fields = {'pn_bankac', 'pn_banksor'}
+        changes_detected = 0
+        bank_change_suppliers = []
+
+        for supplier in suppliers:
+            account = supplier['account']
+            for field in sensitive_fields:
+                current_value = (supplier.get(field) or '').strip()
+                known_key = (account, field)
+
+                if known_key in last_known:
+                    previous_value = (last_known[known_key] or '').strip()
+                    if current_value != previous_value:
+                        # Change detected
+                        db.log_supplier_change(
+                            supplier_code=account,
+                            field_name=field,
+                            old_value=previous_value,
+                            new_value=current_value,
+                            changed_by='scan'
+                        )
+                        changes_detected += 1
+
+                        if field in bank_fields:
+                            bank_change_suppliers.append({
+                                "account": account,
+                                "name": supplier.get('name', account),
+                                "field": field,
+                                "old": previous_value,
+                                "new": current_value
+                            })
+                else:
+                    # First time seeing this supplier/field - record baseline
+                    if current_value:
+                        db.log_supplier_change(
+                            supplier_code=account,
+                            field_name=field,
+                            old_value='',
+                            new_value=current_value,
+                            changed_by='scan_baseline'
+                        )
+                        # Immediately verify baseline entries so they don't show as alerts
+                        try:
+                            baseline_conn = sqlite3.connect(str(_get_db_path()))
+                            baseline_conn.execute("""
+                                UPDATE supplier_change_audit
+                                SET verified = 1, verified_by = 'scan_baseline', verified_at = CURRENT_TIMESTAMP
+                                WHERE supplier_code = ? AND field_name = ? AND changed_by = 'scan_baseline' AND verified = 0
+                            """, (account, field))
+                            baseline_conn.commit()
+                            baseline_conn.close()
+                        except Exception:
+                            pass
+
+        # Send email alerts if bank details changed
+        alerts_sent = 0
+        if bank_change_suppliers:
+            try:
+                db_path = _get_db_path()
+                alert_conn = sqlite3.connect(str(db_path))
+                alert_conn.row_factory = sqlite3.Row
+                alert_cursor = alert_conn.cursor()
+                alert_cursor.execute("SELECT value FROM supplier_automation_config WHERE key = 'security_alert_recipients'")
+                row = alert_cursor.fetchone()
+                alert_conn.close()
+
+                recipients = (row['value'] or '').strip() if row else ''
+                if recipients:
+                    # Build alert email
+                    alert_lines = ["SECURITY ALERT: Supplier Bank Detail Changes Detected\n"]
+                    alert_lines.append(f"Scan time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    alert_lines.append(f"Changes detected: {len(bank_change_suppliers)}\n")
+                    alert_lines.append("-" * 60)
+
+                    for change in bank_change_suppliers:
+                        alert_lines.append(
+                            f"\nSupplier: {change['name']} ({change['account']})\n"
+                            f"  Field: {change['field']}\n"
+                            f"  Old value: {change['old'] or '(empty)'}\n"
+                            f"  New value: {change['new'] or '(empty)'}"
+                        )
+
+                    alert_lines.append("\n" + "-" * 60)
+                    alert_lines.append("\nPlease verify these changes are legitimate.")
+                    alert_body = "\n".join(alert_lines)
+
+                    import httpx
+                    for recipient in recipients.split(','):
+                        recipient = recipient.strip()
+                        if not recipient:
+                            continue
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.post(
+                                    "http://127.0.0.1:8000/api/email/send",
+                                    json={
+                                        "to": recipient,
+                                        "subject": f"SECURITY ALERT: {len(bank_change_suppliers)} Supplier Bank Detail Change(s)",
+                                        "body": alert_body,
+                                        "from_email": "intsys@wimbledoncloud.net"
+                                    },
+                                    timeout=30.0
+                                )
+                                if resp.status_code == 200:
+                                    alerts_sent += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to send security alert to {recipient}: {e}")
+
+            except Exception as e:
+                logger.warning(f"Error sending bank change alerts: {e}")
+
+        return {
+            "success": True,
+            "changes_detected": changes_detected,
+            "alerts_sent": alerts_sent,
+            "bank_changes": bank_change_suppliers
+        }
+
+    except Exception as e:
+        logger.error(f"Error scanning supplier changes: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/supplier-security/email-flags")
+async def get_flagged_emails():
+    """
+    Return statements where the incoming email body or statement line
+    descriptions mention bank details.
+
+    Checks for keywords like 'bank details', 'sort code',
+    'account number', 'bank account changed'.
+
+    Returns:
+        {success, flagged: [...]}
+    """
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "flagged": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        flagged = []
+
+        # Check statement lines for bank detail keywords
+        cursor.execute("""
+            SELECT sl.id as line_id, sl.statement_id, sl.reference, sl.description,
+                   ss.supplier_code, ss.statement_date, ss.sender_email
+            FROM statement_lines sl
+            JOIN supplier_statements ss ON sl.statement_id = ss.id
+            WHERE sl.description IS NOT NULL AND sl.description != ''
+        """)
+
+        for row in cursor.fetchall():
+            description = row['description'] or ''
+            if _check_bank_detail_keywords(description):
+                flagged.append({
+                    "type": "statement_line",
+                    "line_id": row['line_id'],
+                    "statement_id": row['statement_id'],
+                    "supplier_code": row['supplier_code'],
+                    "statement_date": row['statement_date'],
+                    "sender_email": row['sender_email'],
+                    "reference": row['reference'],
+                    "flagged_text": description,
+                    "reason": "Bank detail keywords found in statement line description"
+                })
+
+        # Check communication bodies (inbound emails) for bank detail keywords
+        cursor.execute("""
+            SELECT id, supplier_code, statement_id, email_subject, email_body, created_at
+            FROM supplier_communications
+            WHERE direction = 'inbound' AND email_body IS NOT NULL AND email_body != ''
+        """)
+
+        for row in cursor.fetchall():
+            body = row['email_body'] or ''
+            subject = row['email_subject'] or ''
+            if _check_bank_detail_keywords(body) or _check_bank_detail_keywords(subject):
+                flagged.append({
+                    "type": "email_communication",
+                    "communication_id": row['id'],
+                    "statement_id": row['statement_id'],
+                    "supplier_code": row['supplier_code'],
+                    "email_subject": row['email_subject'],
+                    "flagged_text": subject if _check_bank_detail_keywords(subject) else body[:200],
+                    "created_at": row['created_at'],
+                    "reason": "Bank detail keywords found in email communication"
+                })
+
+        conn.close()
+        return {"success": True, "flagged": flagged}
+
+    except Exception as e:
+        logger.error(f"Error checking email flags: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+def _check_bank_detail_keywords(text: str) -> bool:
+    """
+    Scan text for bank-detail-related phrases.
+
+    Returns True if any of the following keywords/phrases are found
+    (case-insensitive): 'bank details', 'sort code', 'account number',
+    'bank account changed', 'new bank', 'updated bank', 'change of bank',
+    'remittance details changed'.
+    """
+    if not text:
+        return False
+
+    text_lower = text.lower()
+    keywords = [
+        'bank details',
+        'sort code',
+        'account number',
+        'bank account changed',
+        'new bank',
+        'updated bank',
+        'change of bank',
+        'remittance details changed',
+    ]
+    return any(kw in text_lower for kw in keywords)
+
+
 @router.get("/api/supplier-security/approved-senders")
 async def list_approved_senders(supplier_code: Optional[str] = None):
     """List approved email senders for suppliers."""
@@ -1321,38 +1893,552 @@ async def list_supplier_directory(search: Optional[str] = None):
 
 @router.post("/api/supplier-statements/{statement_id}/approve")
 async def approve_supplier_statement(statement_id: int, approved_by: str = "System"):
-    """Approve a reconciled statement for sending."""
-    from sql_rag.company_data import get_current_db_path
+    """
+    Approve a reconciled statement and send the response email.
 
-    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
+    Marks the statement as approved, sends the response email to the supplier,
+    and records the communication in the audit trail.
+    """
+    from api.main import sql_connector
+    from sql_rag.supplier_statement_db import get_supplier_statement_db
+
+    db_path = _get_db_path()
+    _run_migrations(db_path)
 
     if not db_path.exists():
         raise HTTPException(status_code=404, detail="Database not found")
 
     try:
         conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        cursor.execute("""
-            UPDATE supplier_statements
-            SET status = 'approved', approved_by = ?, approved_at = ?
-            WHERE id = ? AND status = 'queued'
-        """, (approved_by, datetime.now().isoformat(), statement_id))
+        # Get statement details
+        cursor.execute("SELECT * FROM supplier_statements WHERE id = ? AND status = 'queued'", (statement_id,))
+        stmt = cursor.fetchone()
 
-        if cursor.rowcount == 0:
+        if not stmt:
             conn.close()
             raise HTTPException(status_code=404, detail="Statement not found or not in queued status")
 
+        stmt = dict(stmt)
+        supplier_code = stmt['supplier_code']
+        now_iso = datetime.now().isoformat()
+
+        # Determine recipient email
+        recipient_email = _get_supplier_contact_email(cursor, supplier_code, stmt.get('sender_email'))
+
+        # Build response text — use edited response_text if available, else generate default
+        response_text = stmt.get('response_text') or _generate_default_response(
+            cursor, statement_id, supplier_code, stmt.get('statement_date'), sql_connector
+        )
+
+        # Get supplier name for email subject
+        supplier_name = supplier_code
+        if sql_connector:
+            try:
+                name_df = sql_connector.execute_query(
+                    f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
+                )
+                if name_df is not None and len(name_df) > 0:
+                    supplier_name = name_df.iloc[0]['name']
+            except Exception:
+                pass
+
+        email_subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
+
+        # Send the response email
+        email_sent = False
+        email_error = None
+        if recipient_email:
+            try:
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    email_resp = await client.post(
+                        "http://127.0.0.1:8000/api/email/send",
+                        json={
+                            "to": recipient_email,
+                            "subject": email_subject,
+                            "body": response_text,
+                            "from_email": "intsys@wimbledoncloud.net"
+                        },
+                        timeout=30.0
+                    )
+                    if email_resp.status_code == 200:
+                        email_sent = True
+                    else:
+                        email_error = f"Email send failed: {email_resp.status_code}"
+            except Exception as e:
+                email_error = f"Email send error: {str(e)}"
+                logger.warning(f"Failed to send approval email for statement {statement_id}: {e}")
+
+        # Update statement status
+        cursor.execute("""
+            UPDATE supplier_statements
+            SET status = 'approved', approved_by = ?, approved_at = ?,
+                sent_at = CASE WHEN ? THEN ? ELSE sent_at END
+            WHERE id = ?
+        """, (approved_by, now_iso, email_sent, now_iso if email_sent else None, statement_id))
+
         conn.commit()
+
+        # Record in communications audit trail
+        try:
+            db = get_supplier_statement_db()
+            db.log_communication(
+                supplier_code=supplier_code,
+                direction='outbound',
+                comm_type='approval_response',
+                email_subject=email_subject,
+                email_body=response_text,
+                statement_id=statement_id,
+                sent_by=approved_by,
+                approved_by=approved_by
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log communication for statement {statement_id}: {e}")
+
         conn.close()
 
-        return {"success": True, "message": "Statement approved"}
+        result = {
+            "success": True,
+            "message": "Statement approved" + (" and response sent" if email_sent else ""),
+            "email_sent": email_sent,
+            "recipient": recipient_email,
+            "subject": email_subject,
+        }
+        if email_error:
+            result["email_error"] = email_error
+
+        return result
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error approving statement: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
+
+
+@router.post("/api/supplier-statements/{statement_id}/acknowledge")
+async def acknowledge_supplier_statement(statement_id: int):
+    """
+    Send acknowledgment email to the supplier for a received statement.
+
+    Uses the acknowledgment_template from supplier_automation_config if set,
+    otherwise uses a default template. Gets the supplier contact email from
+    supplier_contacts_ext (is_statement_contact) or falls back to sender_email.
+    Respects acknowledgment_delay_minutes from config (0 = immediate).
+    """
+    from api.main import sql_connector
+    from sql_rag.supplier_statement_db import get_supplier_statement_db
+
+    db_path = _get_db_path()
+    _run_migrations(db_path)
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Get statement
+        cursor.execute("SELECT * FROM supplier_statements WHERE id = ?", (statement_id,))
+        stmt = cursor.fetchone()
+        if not stmt:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Statement not found")
+
+        stmt = dict(stmt)
+        supplier_code = stmt['supplier_code']
+
+        # Check if already acknowledged
+        if stmt.get('acknowledged_at'):
+            conn.close()
+            return {"success": False, "error": "Statement has already been acknowledged"}
+
+        # Check acknowledgment delay from config
+        cursor.execute("SELECT value FROM supplier_automation_config WHERE key = 'acknowledgment_delay_minutes'")
+        row = cursor.fetchone()
+        delay_minutes = int(row['value']) if row else 0
+
+        if delay_minutes > 0:
+            received = stmt.get('received_date')
+            if received:
+                try:
+                    received_dt = datetime.fromisoformat(received)
+                    earliest_send = received_dt + timedelta(minutes=delay_minutes)
+                    if datetime.now() < earliest_send:
+                        conn.close()
+                        return {
+                            "success": False,
+                            "error": f"Acknowledgment delayed. Earliest send time: {earliest_send.isoformat()}",
+                            "earliest_send_at": earliest_send.isoformat()
+                        }
+                except (ValueError, TypeError):
+                    pass  # If date parsing fails, proceed anyway
+
+        # Get acknowledgment template from config
+        cursor.execute("SELECT value FROM supplier_automation_config WHERE key = 'acknowledgment_template'")
+        row = cursor.fetchone()
+        default_template = (
+            "Thank you for sending your statement dated {date}. "
+            "We have received it and are currently processing."
+        )
+        template = row['value'] if row and row['value'] else default_template
+
+        # Format the template
+        statement_date = stmt.get('statement_date') or 'N/A'
+        ack_body = template.format(date=statement_date)
+
+        # Get supplier name for subject
+        supplier_name = supplier_code
+        if sql_connector:
+            try:
+                name_df = sql_connector.execute_query(
+                    f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
+                )
+                if name_df is not None and len(name_df) > 0:
+                    supplier_name = name_df.iloc[0]['name']
+            except Exception:
+                pass
+
+        # Determine recipient email
+        recipient_email = _get_supplier_contact_email(cursor, supplier_code, stmt.get('sender_email'))
+
+        if not recipient_email:
+            conn.close()
+            return {"success": False, "error": "No contact email found for this supplier"}
+
+        email_subject = f"Statement Received - {supplier_name} - {statement_date}"
+
+        # Send acknowledgment email
+        email_sent = False
+        email_error = None
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                email_resp = await client.post(
+                    "http://127.0.0.1:8000/api/email/send",
+                    json={
+                        "to": recipient_email,
+                        "subject": email_subject,
+                        "body": ack_body,
+                        "from_email": "intsys@wimbledoncloud.net"
+                    },
+                    timeout=30.0
+                )
+                if email_resp.status_code == 200:
+                    email_sent = True
+                else:
+                    email_error = f"Email send failed: {email_resp.status_code}"
+        except Exception as e:
+            email_error = f"Email send error: {str(e)}"
+            logger.warning(f"Failed to send acknowledgment email for statement {statement_id}: {e}")
+
+        # Update statement status to acknowledged
+        now_iso = datetime.now().isoformat()
+        cursor.execute("""
+            UPDATE supplier_statements
+            SET status = 'acknowledged', acknowledged_at = ?, updated_at = ?
+            WHERE id = ?
+        """, (now_iso, now_iso, statement_id))
+        conn.commit()
+
+        # Record in communications audit trail
+        try:
+            db = get_supplier_statement_db()
+            db.log_communication(
+                supplier_code=supplier_code,
+                direction='outbound',
+                comm_type='acknowledgment',
+                email_subject=email_subject,
+                email_body=ack_body,
+                statement_id=statement_id,
+                sent_by='System'
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log acknowledgment communication for statement {statement_id}: {e}")
+
+        conn.close()
+
+        result = {
+            "success": True,
+            "message": "Statement acknowledged" + (" and email sent" if email_sent else ""),
+            "email_sent": email_sent,
+            "recipient": recipient_email,
+            "subject": email_subject,
+            "body": ack_body
+        }
+        if email_error:
+            result["email_error"] = email_error
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error acknowledging statement: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/api/supplier-statements/{statement_id}/edit-response")
+async def edit_statement_response(statement_id: int, body: EditResponseRequest):
+    """
+    Store an edited response text on the statement record.
+
+    This allows users to customise the auto-generated response before
+    sending/approving. The response_text column is added to the table
+    if it does not already exist.
+    """
+    db_path = _get_db_path()
+    _run_migrations(db_path)
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Verify statement exists
+        cursor.execute("SELECT id, status FROM supplier_statements WHERE id = ?", (statement_id,))
+        stmt = cursor.fetchone()
+        if not stmt:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Statement not found")
+
+        # Update response_text
+        cursor.execute("""
+            UPDATE supplier_statements
+            SET response_text = ?, updated_at = ?
+            WHERE id = ?
+        """, (body.response_text, datetime.now().isoformat(), statement_id))
+
+        conn.commit()
+
+        # Return the updated statement
+        cursor.execute("SELECT * FROM supplier_statements WHERE id = ?", (statement_id,))
+        updated = dict(cursor.fetchone())
+
+        conn.close()
+
+        return {"success": True, "message": "Response text updated", "statement": updated}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error editing statement response: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/api/supplier-statements/queue/bulk-approve")
+async def bulk_approve_statements(body: BulkApproveRequest):
+    """
+    Approve and send responses for multiple statements at once.
+
+    Iterates through each statement_id, approves it, and sends the
+    response email. Returns a summary of successes and failures.
+    """
+    from api.main import sql_connector
+    from sql_rag.supplier_statement_db import get_supplier_statement_db
+
+    db_path = _get_db_path()
+    _run_migrations(db_path)
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    approved_count = 0
+    failed = []
+
+    for stmt_id in body.statement_ids:
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Get statement
+            cursor.execute("SELECT * FROM supplier_statements WHERE id = ? AND status = 'queued'", (stmt_id,))
+            stmt = cursor.fetchone()
+
+            if not stmt:
+                conn.close()
+                failed.append({"id": stmt_id, "error": "Statement not found or not in queued status"})
+                continue
+
+            stmt = dict(stmt)
+            supplier_code = stmt['supplier_code']
+            now_iso = datetime.now().isoformat()
+
+            # Determine recipient email
+            recipient_email = _get_supplier_contact_email(cursor, supplier_code, stmt.get('sender_email'))
+
+            # Build response text
+            response_text = stmt.get('response_text') or _generate_default_response(
+                cursor, stmt_id, supplier_code, stmt.get('statement_date'), sql_connector
+            )
+
+            # Get supplier name
+            supplier_name = supplier_code
+            if sql_connector:
+                try:
+                    name_df = sql_connector.execute_query(
+                        f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
+                    )
+                    if name_df is not None and len(name_df) > 0:
+                        supplier_name = name_df.iloc[0]['name']
+                except Exception:
+                    pass
+
+            email_subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
+
+            # Send the response email
+            email_sent = False
+            if recipient_email:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient() as client:
+                        email_resp = await client.post(
+                            "http://127.0.0.1:8000/api/email/send",
+                            json={
+                                "to": recipient_email,
+                                "subject": email_subject,
+                                "body": response_text,
+                                "from_email": "intsys@wimbledoncloud.net"
+                            },
+                            timeout=30.0
+                        )
+                        if email_resp.status_code == 200:
+                            email_sent = True
+                except Exception as e:
+                    logger.warning(f"Failed to send email for statement {stmt_id} during bulk approve: {e}")
+
+            # Update statement status
+            cursor.execute("""
+                UPDATE supplier_statements
+                SET status = 'approved', approved_by = ?, approved_at = ?,
+                    sent_at = CASE WHEN ? THEN ? ELSE sent_at END
+                WHERE id = ?
+            """, (body.approved_by, now_iso, email_sent, now_iso if email_sent else None, stmt_id))
+
+            conn.commit()
+
+            # Record in audit trail
+            try:
+                db = get_supplier_statement_db()
+                db.log_communication(
+                    supplier_code=supplier_code,
+                    direction='outbound',
+                    comm_type='approval_response',
+                    email_subject=email_subject,
+                    email_body=response_text,
+                    statement_id=stmt_id,
+                    sent_by=body.approved_by,
+                    approved_by=body.approved_by
+                )
+            except Exception as e:
+                logger.warning(f"Failed to log communication for statement {stmt_id}: {e}")
+
+            conn.close()
+            approved_count += 1
+
+        except Exception as e:
+            logger.error(f"Error bulk-approving statement {stmt_id}: {e}", exc_info=True)
+            failed.append({"id": stmt_id, "error": str(e)})
+
+    return {
+        "success": True,
+        "approved": approved_count,
+        "failed": failed
+    }
+
+
+# ============================================================
+# Helper Functions (used by approve, acknowledge, bulk-approve)
+# ============================================================
+
+def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_email: Optional[str] = None) -> Optional[str]:
+    """
+    Get the best contact email for a supplier.
+
+    Priority:
+    1. supplier_contacts_ext with is_statement_contact = 1
+    2. sender_email from the statement record
+    """
+    try:
+        cursor.execute("""
+            SELECT email FROM supplier_contacts_ext
+            WHERE supplier_code = ? AND is_statement_contact = 1 AND email IS NOT NULL AND email != ''
+            LIMIT 1
+        """, (supplier_code,))
+        row = cursor.fetchone()
+        if row and row['email']:
+            return row['email']
+    except Exception:
+        pass  # Table may not exist yet
+
+    return fallback_sender_email
+
+
+def _generate_default_response(cursor, statement_id: int, supplier_code: str,
+                                statement_date: Optional[str], sql_connector) -> str:
+    """Generate a default response text for a statement approval."""
+    supplier_name = supplier_code
+    if sql_connector:
+        try:
+            name_df = sql_connector.execute_query(
+                f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
+            )
+            if name_df is not None and len(name_df) > 0:
+                supplier_name = name_df.iloc[0]['name']
+        except Exception:
+            pass
+
+    # Get line details
+    cursor.execute("""
+        SELECT reference, debit, credit, match_status, query_type
+        FROM statement_lines WHERE statement_id = ?
+    """, (statement_id,))
+    lines = cursor.fetchall()
+
+    response_lines = []
+    response_lines.append(f"Dear {supplier_name},")
+    response_lines.append("")
+    response_lines.append(f"Thank you for your statement dated {statement_date or 'N/A'}.")
+    response_lines.append("")
+
+    matched_count = sum(1 for l in lines if l['match_status'] == 'matched')
+    query_count = sum(1 for l in lines if l['match_status'] == 'query')
+    total_lines = len(lines)
+
+    if total_lines > 0:
+        response_lines.append(f"We have reviewed {total_lines} line(s):")
+        response_lines.append(f"  - {matched_count} agreed")
+        if query_count > 0:
+            response_lines.append(f"  - {query_count} queried (details below)")
+        response_lines.append("")
+
+    if query_count > 0:
+        response_lines.append("QUERIES:")
+        response_lines.append("-" * 40)
+        for line in lines:
+            if line['match_status'] == 'query':
+                amount = line['debit'] or line['credit'] or 0
+                ref = line['reference'] or 'N/A'
+                response_lines.append(f"  Ref: {ref} - Amount: {amount:,.2f} - {line['query_type'] or 'Query'}")
+        response_lines.append("")
+        response_lines.append("Please could you provide further details on the items queried above.")
+    else:
+        response_lines.append("All items have been agreed. Thank you.")
+
+    response_lines.append("")
+    response_lines.append("Regards,")
+    response_lines.append("Accounts Department")
+
+    return "\n".join(response_lines)
 
 
 @router.get("/api/supplier-statements/{statement_id}")

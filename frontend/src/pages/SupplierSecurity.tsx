@@ -1,383 +1,350 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
-  Shield,
-  AlertTriangle,
-  FileText,
-  Users,
-  CheckCircle,
-  XCircle,
-  Building,
-  Mail,
-  Trash2,
-  Plus,
+  Shield, AlertTriangle, CheckCircle, RefreshCw, Clock,
+  Building, Mail, Flag, Phone
 } from 'lucide-react';
-import { useLocation } from 'react-router-dom';
-import apiClient from '../api/client';
-import type {
-  SupplierSecurityAlertsResponse,
-  SupplierSecurityAuditResponse,
-  SupplierApprovedSendersResponse,
-} from '../api/client';
-import { PageHeader, LoadingState, EmptyState, Alert, Card } from '../components/ui';
+import { authFetch } from '../api/client';
+import { PageHeader, Card, StatusBadge, Alert } from '../components/ui';
 
-type Tab = 'alerts' | 'audit' | 'senders';
+type TabType = 'pending' | 'verified' | 'all';
 
-export function SupplierSecurity() {
-  const location = useLocation();
-  const queryClient = useQueryClient();
+interface SecurityAlert {
+  id: number;
+  supplier_code: string;
+  supplier_name: string;
+  field_name: string;
+  old_value: string | null;
+  new_value: string | null;
+  changed_at: string;
+  changed_by: string | null;
+  status: string;
+  verified_at: string | null;
+  verified_by: string | null;
+}
 
-  // Determine initial tab from URL
-  const getInitialTab = (): Tab => {
-    if (location.pathname.includes('/audit')) return 'audit';
-    if (location.pathname.includes('/senders')) return 'senders';
-    return 'alerts';
+interface AlertsResponse {
+  alerts: SecurityAlert[];
+  total: number;
+}
+
+interface EmailFlag {
+  id: number;
+  supplier_code: string;
+  supplier_name: string;
+  email_subject: string;
+  sender: string;
+  flag_reason: string;
+  flagged_at: string;
+  reviewed: boolean;
+}
+
+interface EmailFlagsResponse {
+  flags: EmailFlag[];
+  total: number;
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '-';
+  return new Date(dateStr).toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+export default function SupplierSecurity() {
+  const [activeTab, setActiveTab] = useState<TabType>('pending');
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [phoneConfirmed, setPhoneConfirmed] = useState<Set<number>>(new Set());
+
+  const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'pending', label: 'Pending', icon: AlertTriangle },
+    { id: 'verified', label: 'Verified', icon: CheckCircle },
+    { id: 'all', label: 'All', icon: Shield },
+  ];
+
+  // Fetch security alerts
+  const { data: alertsData, isLoading: alertsLoading, refetch: refetchAlerts } = useQuery({
+    queryKey: ['supplier-security-alerts', activeTab],
+    queryFn: async () => {
+      const res = await authFetch('/api/supplier-security/alerts');
+      if (!res.ok) throw new Error('Failed to fetch security alerts');
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      return json as AlertsResponse;
+    },
+    staleTime: 30000,
+  });
+
+  // Fetch email flags
+  const { data: flagsData, isLoading: flagsLoading } = useQuery({
+    queryKey: ['supplier-security-email-flags'],
+    queryFn: async () => {
+      const res = await authFetch('/api/supplier-security/email-flags');
+      if (!res.ok) throw new Error('Failed to fetch email flags');
+      const json = await res.json();
+      if (json.error) throw new Error(json.error);
+      return json as EmailFlagsResponse;
+    },
+    staleTime: 60000,
+  });
+
+  const handleVerify = async (alertId: number) => {
+    setError(null);
+    setSuccess(null);
+    try {
+      const res = await authFetch(`/api/supplier-security/alerts/${alertId}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone_confirmed: true }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Failed to verify alert');
+      setSuccess(json.message || 'Alert verified successfully');
+      setPhoneConfirmed(prev => {
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
+      refetchAlerts();
+    } catch (e: any) {
+      setError(e.message);
+    }
   };
 
-  const [activeTab, setActiveTab] = useState<Tab>(getInitialTab());
-  const [days, setDays] = useState(90);
-  const [newSenderSupplier, setNewSenderSupplier] = useState('');
-  const [newSenderEmail, setNewSenderEmail] = useState('');
-
-  // Queries
-  const alertsQuery = useQuery<SupplierSecurityAlertsResponse>({
-    queryKey: ['supplierSecurityAlerts'],
-    queryFn: async () => {
-      const response = await apiClient.supplierSecurityAlerts();
-      return response.data;
-    },
-    enabled: activeTab === 'alerts',
-  });
-
-  const auditQuery = useQuery<SupplierSecurityAuditResponse>({
-    queryKey: ['supplierSecurityAudit', days],
-    queryFn: async () => {
-      const response = await apiClient.supplierSecurityAudit(days);
-      return response.data;
-    },
-    enabled: activeTab === 'audit',
-  });
-
-  const sendersQuery = useQuery<SupplierApprovedSendersResponse>({
-    queryKey: ['supplierApprovedSenders'],
-    queryFn: async () => {
-      const response = await apiClient.supplierApprovedSenders();
-      return response.data;
-    },
-    enabled: activeTab === 'senders',
-  });
-
-  // Mutations
-  const verifyMutation = useMutation({
-    mutationFn: async (alertId: number) => {
-      const response = await apiClient.supplierSecurityAlertVerify(alertId, 'User');
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['supplierSecurityAlerts'] });
-      queryClient.invalidateQueries({ queryKey: ['supplierSecurityAudit'] });
-    },
-  });
-
-  const addSenderMutation = useMutation({
-    mutationFn: async ({ supplierCode, email }: { supplierCode: string; email: string }) => {
-      const response = await apiClient.supplierApprovedSenderAdd(supplierCode, email);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['supplierApprovedSenders'] });
-      setNewSenderSupplier('');
-      setNewSenderEmail('');
-    },
-  });
-
-  const removeSenderMutation = useMutation({
-    mutationFn: async (senderId: number) => {
-      const response = await apiClient.supplierApprovedSenderRemove(senderId);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['supplierApprovedSenders'] });
-    },
-  });
-
-  const formatDate = (dateStr: string | null): string => {
-    if (!dateStr) return '-';
-    return new Date(dateStr).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
+  const togglePhoneConfirm = (alertId: number) => {
+    setPhoneConfirmed(prev => {
+      const next = new Set(prev);
+      if (next.has(alertId)) {
+        next.delete(alertId);
+      } else {
+        next.add(alertId);
+      }
+      return next;
     });
   };
 
-  const alerts = alertsQuery.data?.alerts || [];
-  const auditEntries = auditQuery.data?.entries || [];
-  const senders = sendersQuery.data?.senders || [];
+  // Filter alerts based on active tab
+  const allAlerts = alertsData?.alerts || [];
+  const filteredAlerts = activeTab === 'all'
+    ? allAlerts
+    : allAlerts.filter(a =>
+        activeTab === 'pending' ? a.status !== 'verified' : a.status === 'verified'
+      );
+
+  const emailFlags = flagsData?.flags || [];
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <PageHeader icon={Shield} title="Security" subtitle="Monitor supplier changes and manage approved senders" />
-
-      {/* Tabs */}
-      <div className="flex gap-2 border-b border-gray-200 pb-4">
+      <PageHeader icon={Shield} title="Security Alerts" subtitle="Monitor supplier changes and verify suspicious activity">
         <button
-          onClick={() => setActiveTab('alerts')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            activeTab === 'alerts'
-              ? 'bg-red-500 text-white'
-              : 'bg-red-50 text-red-700 hover:bg-red-100'
-          }`}
+          onClick={() => refetchAlerts()}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
-          <AlertTriangle className="h-4 w-4" />
-          Alerts ({alerts.length})
+          <RefreshCw className="w-4 h-4" />
+          Refresh
         </button>
-        <button
-          onClick={() => setActiveTab('audit')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            activeTab === 'audit'
-              ? 'bg-gray-900 text-white'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          <FileText className="h-4 w-4" />
-          Audit Log
-        </button>
-        <button
-          onClick={() => setActiveTab('senders')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-            activeTab === 'senders'
-              ? 'bg-blue-500 text-white'
-              : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
-          }`}
-        >
-          <Users className="h-4 w-4" />
-          Approved Senders
-        </button>
-      </div>
+      </PageHeader>
 
-      {/* Alerts Tab */}
-      {activeTab === 'alerts' && (
-        <div className="space-y-4">
-          {alertsQuery.isLoading && (
-            <LoadingState message="Loading security alerts..." />
-          )}
-
-          {!alertsQuery.isLoading && alerts.length === 0 && (
-            <Alert variant="success" title="No pending alerts">
-              All supplier changes have been verified
-            </Alert>
-          )}
-
-          {!alertsQuery.isLoading && alerts.map((alert) => (
-            <Card key={alert.id} className="border-red-200">
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-3">
-                  <div className="p-2 bg-red-100 rounded-lg">
-                    <AlertTriangle className="h-5 w-5 text-red-600" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Building className="h-4 w-4 text-gray-400" />
-                      <span className="text-sm font-semibold text-gray-900">{alert.supplier_name}</span>
-                      <span className="text-xs text-gray-500">({alert.supplier_code})</span>
-                    </div>
-                    <p className="text-sm font-semibold text-red-700 mt-1">
-                      {alert.field_name} Changed
-                    </p>
-                    <div className="mt-2 grid grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <span className="text-gray-500">Previous: </span>
-                        <span className="text-gray-700">{alert.old_value || '(empty)'}</span>
-                      </div>
-                      <div>
-                        <span className="text-gray-500">New: </span>
-                        <span className="font-medium text-red-700">{alert.new_value || '(empty)'}</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      Changed by: {alert.changed_by || 'Unknown'} at {formatDate(alert.changed_at)}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => verifyMutation.mutate(alert.id)}
-                  disabled={verifyMutation.isPending}
-                  className="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 transition-colors"
-                >
-                  Verify
-                </button>
-              </div>
-            </Card>
-          ))}
-        </div>
+      {error && (
+        <Alert variant="error" title="Error" onDismiss={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+      {success && (
+        <Alert variant="success" onDismiss={() => setSuccess(null)}>
+          {success}
+        </Alert>
       )}
 
-      {/* Audit Tab */}
-      {activeTab === 'audit' && (
-        <div className="space-y-4">
-          <div className="flex justify-end">
-            <select
-              value={days}
-              onChange={(e) => setDays(Number(e.target.value))}
-              className="px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value={30}>Last 30 days</option>
-              <option value={90}>Last 90 days</option>
-              <option value={180}>Last 6 months</option>
-              <option value={365}>Last year</option>
-            </select>
-          </div>
-
-          {auditQuery.isLoading && (
-            <LoadingState message="Loading audit log..." />
-          )}
-
-          {!auditQuery.isLoading && (
-            <Card padding={false}>
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Supplier</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Field</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Previous</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">New</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Changed</th>
-                    <th className="text-center py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Verified</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {auditEntries.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="py-12 text-center">
-                        <EmptyState icon={FileText} title="No audit entries" />
-                      </td>
-                    </tr>
-                  ) : (
-                    auditEntries.map((entry) => (
-                      <tr key={entry.id} className="hover:bg-gray-50">
-                        <td className="py-3 px-4">
-                          <p className="text-sm font-medium text-gray-900">{entry.supplier_name}</p>
-                          <p className="text-xs text-gray-500">{entry.supplier_code}</p>
-                        </td>
-                        <td className="py-3 px-4 text-sm text-gray-700">{entry.field_name}</td>
-                        <td className="py-3 px-4 text-sm text-gray-600">{entry.old_value || '-'}</td>
-                        <td className="py-3 px-4 text-sm text-gray-900 font-medium">{entry.new_value || '-'}</td>
-                        <td className="py-3 px-4">
-                          <p className="text-sm text-gray-600">{formatDate(entry.changed_at)}</p>
-                          <p className="text-xs text-gray-400">{entry.changed_by || 'Unknown'}</p>
-                        </td>
-                        <td className="py-3 px-4 text-center">
-                          {entry.verified ? (
-                            <CheckCircle className="h-5 w-5 text-emerald-500 mx-auto" />
-                          ) : (
-                            <XCircle className="h-5 w-5 text-red-500 mx-auto" />
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </Card>
-          )}
-        </div>
-      )}
-
-      {/* Approved Senders Tab */}
-      {activeTab === 'senders' && (
-        <div className="space-y-4">
-          {/* Add New Sender */}
-          <Card title="Add Approved Sender" icon={Plus}>
-            <div className="flex gap-3">
-              <input
-                type="text"
-                placeholder="Supplier Code"
-                value={newSenderSupplier}
-                onChange={(e) => setNewSenderSupplier(e.target.value)}
-                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <input
-                type="email"
-                placeholder="Email Address"
-                value={newSenderEmail}
-                onChange={(e) => setNewSenderEmail(e.target.value)}
-                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+      <Card padding={false} className="overflow-hidden">
+        {/* Tabs */}
+        <div className="border-b border-gray-200">
+          <nav className="flex">
+            {tabs.map(tab => (
               <button
-                onClick={() => addSenderMutation.mutate({ supplierCode: newSenderSupplier, email: newSenderEmail })}
-                disabled={!newSenderSupplier || !newSenderEmail || addSenderMutation.isPending}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-6 py-3 text-sm font-medium border-b-2 -mb-px ${
+                  activeTab === tab.id
+                    ? 'border-green-500 text-green-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
               >
-                <Plus className="h-4 w-4" />
-                Add
+                <tab.icon className="w-4 h-4" />
+                {tab.label}
               </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* Tab Content */}
+        <div className="p-4">
+          {alertsLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <RefreshCw className="w-6 h-6 text-gray-400 animate-spin" />
             </div>
-          </Card>
-
-          {sendersQuery.isLoading && (
-            <LoadingState message="Loading approved senders..." />
-          )}
-
-          {!sendersQuery.isLoading && (
-            <Card padding={false}>
-              <table className="w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Supplier</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Email</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Domain</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Added</th>
-                    <th className="text-right py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {senders.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="py-12 text-center">
-                        <EmptyState icon={Users} title="No approved senders" message="Add sender email addresses above" />
-                      </td>
-                    </tr>
-                  ) : (
-                    senders.map((sender) => (
-                      <tr key={sender.id} className="hover:bg-gray-50">
-                        <td className="py-3 px-4">
-                          <p className="text-sm font-medium text-gray-900">{sender.supplier_name}</p>
-                          <p className="text-xs text-gray-500">{sender.supplier_code}</p>
-                        </td>
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-2">
-                            <Mail className="h-4 w-4 text-gray-400" />
-                            <span className="text-sm text-gray-700">{sender.email_address}</span>
-                          </div>
-                        </td>
-                        <td className="py-3 px-4 text-sm text-gray-600">{sender.email_domain}</td>
-                        <td className="py-3 px-4">
-                          <p className="text-sm text-gray-600">{formatDate(sender.added_at)}</p>
-                          <p className="text-xs text-gray-400">{sender.added_by || 'Unknown'}</p>
-                        </td>
-                        <td className="py-3 px-4 text-right">
+          ) : filteredAlerts.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              {activeTab === 'pending'
+                ? 'No pending alerts - all supplier changes have been verified'
+                : `No ${activeTab} alerts found`}
+            </div>
+          ) : (
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Supplier</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Field Changed</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Old Value</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">New Value</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Changed At</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {filteredAlerts.map(alert => (
+                  <tr key={alert.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-2">
+                        <Building className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                        <div>
+                          <div className="text-sm font-medium text-gray-900">{alert.supplier_name}</div>
+                          <div className="text-xs text-gray-500">{alert.supplier_code}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="text-sm font-medium text-red-700">{alert.field_name}</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="text-sm text-gray-600">{alert.old_value || '(empty)'}</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="text-sm font-medium text-gray-900">{alert.new_value || '(empty)'}</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="text-sm text-gray-600">{formatDate(alert.changed_at)}</div>
+                      {alert.changed_by && (
+                        <div className="text-xs text-gray-400">by {alert.changed_by}</div>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      <StatusBadge variant={alert.status === 'verified' ? 'success' : 'danger'}>
+                        {alert.status === 'verified' ? 'Verified' : 'Pending'}
+                      </StatusBadge>
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      {alert.status !== 'verified' ? (
+                        <div className="flex flex-col items-center gap-2">
+                          <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={phoneConfirmed.has(alert.id)}
+                              onChange={() => togglePhoneConfirm(alert.id)}
+                              className="rounded border-gray-300 text-green-600 focus:ring-green-500"
+                            />
+                            <Phone className="w-3 h-3" />
+                            Phone confirmed
+                          </label>
                           <button
-                            onClick={() => removeSenderMutation.mutate(sender.id)}
-                            disabled={removeSenderMutation.isPending}
-                            className="text-red-600 hover:text-red-700"
+                            onClick={() => handleVerify(alert.id)}
+                            disabled={!phoneConfirmed.has(alert.id)}
+                            className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-lg ${
+                              phoneConfirmed.has(alert.id)
+                                ? 'text-green-700 bg-green-50 border border-green-200 hover:bg-green-100'
+                                : 'text-gray-400 bg-gray-50 border border-gray-200 cursor-not-allowed'
+                            }`}
+                            title={phoneConfirmed.has(alert.id) ? 'Verify change' : 'Please confirm by phone first'}
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <CheckCircle className="w-3 h-3" />
+                            Verify
                           </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </Card>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-400">
+                          {alert.verified_by && `by ${alert.verified_by}`}
+                          {alert.verified_at && ` on ${formatDate(alert.verified_at)}`}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
-      )}
+      </Card>
+
+      {/* Email Flags Section */}
+      <Card padding={false} className="overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+          <div className="flex items-center gap-2">
+            <Flag className="w-4 h-4 text-amber-500" />
+            <h3 className="text-sm font-semibold text-gray-700">Email Flags</h3>
+            <span className="text-xs text-gray-500">({emailFlags.length})</span>
+          </div>
+        </div>
+        <div className="p-4">
+          {flagsLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <RefreshCw className="w-5 h-5 text-gray-400 animate-spin" />
+            </div>
+          ) : emailFlags.length === 0 ? (
+            <div className="text-center py-8 text-gray-500 text-sm">
+              No flagged emails
+            </div>
+          ) : (
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Supplier</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email Subject</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Sender</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Flag Reason</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Flagged At</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Reviewed</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {emailFlags.map(flag => (
+                  <tr key={flag.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-3">
+                      <div className="text-sm font-medium text-gray-900">{flag.supplier_name}</div>
+                      <div className="text-xs text-gray-500">{flag.supplier_code}</div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="text-sm text-gray-700 truncate max-w-[250px]">{flag.email_subject}</div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex items-center gap-1 text-sm text-gray-600">
+                        <Mail className="w-3.5 h-3.5" />
+                        {flag.sender}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <StatusBadge variant="warning">{flag.flag_reason}</StatusBadge>
+                    </td>
+                    <td className="px-3 py-3 text-sm text-gray-500">
+                      {formatDate(flag.flagged_at)}
+                    </td>
+                    <td className="px-3 py-3 text-center">
+                      {flag.reviewed ? (
+                        <CheckCircle className="w-4 h-4 text-green-500 mx-auto" />
+                      ) : (
+                        <Clock className="w-4 h-4 text-amber-500 mx-auto" />
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }
 
-export default SupplierSecurity;
+export { SupplierSecurity };

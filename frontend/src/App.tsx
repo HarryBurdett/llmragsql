@@ -38,6 +38,7 @@ import { SupplierCommunications } from './pages/SupplierCommunications';
 import { SupplierDirectory } from './pages/SupplierDirectory';
 import { SupplierSecurity } from './pages/SupplierSecurity';
 import { SupplierSettings } from './pages/SupplierSettings';
+import { SupplierAgedCreditors } from './pages/SupplierAgedCreditors';
 import { SupplierAccount } from './pages/SupplierAccount';
 import { UserActivity } from './pages/UserActivity';
 import { PensionExport } from './pages/PensionExport';
@@ -220,6 +221,7 @@ function AppRoutes() {
                   <Route path="/supplier/security/audit" element={<SupplierSecurity />} />
                   <Route path="/supplier/security/senders" element={<SupplierSecurity />} />
                   <Route path="/supplier/settings" element={<SupplierSettings />} />
+                  <Route path="/supplier/aged-creditors" element={<SupplierAgedCreditors />} />
                   <Route path="/supplier/account" element={<SupplierAccount />} />
 
                   {/* Archive routes - existing features */}

@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Crakd.ai — Direct Debit Setup</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .crakd-gradient { background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%); }
+    .crakd-logo { background: linear-gradient(135deg, #3b82f6, #8b5cf6); }
+    .glow { box-shadow: 0 0 40px rgba(16, 185, 129, 0.15); }
+    .pulse-ring { animation: pulse-ring 2s ease-out infinite; }
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); opacity: 0.7; }
+      50% { transform: scale(1); opacity: 1; }
+      100% { transform: scale(0.95); opacity: 0.7; }
+    }
+    .fade-in { animation: fadeIn 0.4s ease-out; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .spinner { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="min-h-screen bg-gray-50">
+
+  <!-- Sandbox banner — shown when sandbox mode is active -->
+  <div id="sandbox-banner" class="bg-amber-400 text-amber-900 text-center py-1.5 text-xs font-semibold tracking-wide hidden">
+    SANDBOX MODE — Test environment, no real payments
+  </div>
+
+  <!-- Header -->
+  <header class="crakd-gradient text-white">
+    <div class="max-w-4xl mx-auto px-6 py-8 text-center">
+      <div class="inline-flex items-center gap-3 mb-4 cursor-pointer select-none" id="logo-trigger">
+        <div class="w-10 h-10 rounded-xl crakd-logo flex items-center justify-center font-extrabold text-lg text-white shadow-sm">
+          C
+        </div>
+        <span class="text-2xl font-bold tracking-tight">Crakd<span class="text-blue-400">.ai</span></span>
+      </div>
+      <h1 class="text-3xl sm:text-4xl font-extrabold mb-3">Start Collecting Direct Debits</h1>
+      <p class="text-gray-300 text-lg max-w-xl mx-auto">
+        Set up GoCardless in minutes. Collect payments from your customers automatically,
+        with everything posted straight into your accounting system.
+      </p>
+    </div>
+  </header>
+
+  <!-- Main content -->
+  <main class="max-w-xl mx-auto px-6 -mt-6 pb-16">
+
+    <!-- Step: Welcome -->
+    <div id="step-welcome" class="bg-white rounded-2xl border border-gray-200 shadow-lg glow p-8 fade-in">
+      <h2 class="text-xl font-bold text-gray-900 mb-4">Why GoCardless?</h2>
+
+      <div class="space-y-3 mb-6">
+        <div class="flex items-start gap-3">
+          <div class="mt-0.5 w-6 h-6 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <div>
+            <p class="font-medium text-gray-900">Automated payment collection</p>
+            <p class="text-sm text-gray-500">Collect Direct Debit payments on schedule — no chasing invoices</p>
+          </div>
+        </div>
+        <div class="flex items-start gap-3">
+          <div class="mt-0.5 w-6 h-6 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <div>
+            <p class="font-medium text-gray-900">Straight into your accounts</p>
+            <p class="text-sm text-gray-500">Payments auto-post as Sales Receipts with invoice allocation</p>
+          </div>
+        </div>
+        <div class="flex items-start gap-3">
+          <div class="mt-0.5 w-6 h-6 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <div>
+            <p class="font-medium text-gray-900">Fees tracked with VAT</p>
+            <p class="text-sm text-gray-500">GoCardless fees posted with input VAT — ready for your VAT return</p>
+          </div>
+        </div>
+        <div class="flex items-start gap-3">
+          <div class="mt-0.5 w-6 h-6 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+          </div>
+          <div>
+            <p class="font-medium text-gray-900">Complete audit trail</p>
+            <p class="text-sm text-gray-500">Every transaction matched, posted, and reconciled in Opera</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-gray-50 rounded-xl p-4 mb-6">
+        <p class="text-sm text-gray-600">
+          <strong>How it works:</strong> You sign up for a GoCardless account, set up mandates for your customers,
+          and Crakd.ai handles everything else — matching payments to invoices, posting to your ledgers,
+          and reconciling your bank.
+        </p>
+      </div>
+
+      <button onclick="showStep('details')" class="w-full py-3 px-6 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2">
+        Get Started
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
+      </button>
+
+      <p class="text-center text-xs text-gray-400 mt-4">
+        Powered by <a href="https://gocardless.com" target="_blank" rel="noopener" class="text-gray-500 hover:underline">GoCardless</a> &middot;
+        FCA regulated &middot; Bacs approved
+      </p>
+    </div>
+
+    <!-- Step: Details -->
+    <div id="step-details" class="bg-white rounded-2xl border border-gray-200 shadow-lg glow p-8 fade-in" style="display:none">
+      <h2 class="text-xl font-bold text-gray-900 mb-2">Your Company Details</h2>
+      <p class="text-sm text-gray-500 mb-6">We'll use these to set up your GoCardless account.</p>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
+          <input id="company-name" type="text" placeholder="e.g. Acme Trading Ltd"
+            class="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+          <input id="company-email" type="email" placeholder="accounts@yourcompany.com"
+            class="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Contact Name</label>
+          <input id="contact-name" type="text" placeholder="Your name"
+            class="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all" />
+        </div>
+      </div>
+
+      <div id="error-box" class="mt-4 p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 hidden"></div>
+
+      <div class="flex gap-3 mt-6">
+        <button onclick="initiateSignup()" id="btn-signup"
+          class="flex-1 py-3 px-6 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl transition-colors flex items-center justify-center gap-2">
+          Continue to GoCardless
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+        </button>
+        <button onclick="showStep('welcome')" class="py-3 px-5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-xl transition-colors">
+          Back
+        </button>
+      </div>
+    </div>
+
+    <!-- Step: Waiting -->
+    <div id="step-waiting" class="bg-white rounded-2xl border border-gray-200 shadow-lg glow p-8 text-center fade-in" style="display:none">
+      <div class="pulse-ring inline-block mb-4">
+        <div class="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center mx-auto">
+          <svg class="w-8 h-8 text-blue-600 spinner" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+        </div>
+      </div>
+      <h2 class="text-xl font-bold text-gray-900 mb-2">Complete Your Registration</h2>
+      <p class="text-sm text-gray-500 mb-4">
+        A GoCardless registration page has opened in a new tab.<br>
+        Complete the process there and this page will update automatically.
+      </p>
+      <a id="reopen-link" href="#" target="_blank" rel="noopener noreferrer"
+        class="inline-flex items-center gap-2 py-2 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-xl transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+        Reopen GoCardless
+      </a>
+      <p class="text-xs text-gray-400 mt-4">Checking every 5 seconds...</p>
+    </div>
+
+    <!-- Step: Complete -->
+    <div id="step-complete" class="bg-white rounded-2xl border border-gray-200 shadow-lg glow p-8 text-center fade-in" style="display:none">
+      <div class="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
+        <svg class="w-10 h-10 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+        </svg>
+      </div>
+      <h2 class="text-xl font-bold text-gray-900 mb-2">You're All Set!</h2>
+      <p id="complete-org" class="text-sm font-medium text-emerald-700 mb-2"></p>
+      <p class="text-sm text-gray-500 mb-6">
+        Your GoCardless account is connected to Crakd.ai.<br>
+        You can now set up mandates for your customers and start collecting Direct Debit payments.
+      </p>
+      <div class="bg-gray-50 rounded-xl p-4 text-left space-y-2">
+        <p class="text-sm font-medium text-gray-900">What happens next:</p>
+        <div class="flex items-start gap-2">
+          <span class="text-emerald-500 font-bold text-sm mt-0.5">1.</span>
+          <p class="text-sm text-gray-600">We'll configure your Crakd.ai account to use your new GoCardless credentials</p>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="text-emerald-500 font-bold text-sm mt-0.5">2.</span>
+          <p class="text-sm text-gray-600">Set up Direct Debit mandates for your customers</p>
+        </div>
+        <div class="flex items-start gap-2">
+          <span class="text-emerald-500 font-bold text-sm mt-0.5">3.</span>
+          <p class="text-sm text-gray-600">Payments will auto-post into your Opera accounts</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Admin Login -->
+    <div id="step-admin-login" class="bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-8 fade-in" style="display:none">
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-2">
+          <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+          <h2 class="text-lg font-bold text-indigo-900">Crakd<span class="text-blue-500">.ai</span> Admin</h2>
+        </div>
+        <button onclick="showStep('welcome')" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Password</label>
+          <input id="admin-password" type="password" placeholder="Enter admin password"
+            class="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none"
+            onkeydown="if(event.key==='Enter') adminLogin()" />
+        </div>
+        <div id="admin-login-error" class="p-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 hidden"></div>
+        <button onclick="adminLogin()" id="btn-admin-login"
+          class="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-sm transition-colors">
+          Sign In
+        </button>
+      </div>
+    </div>
+
+    <!-- Admin Panel -->
+    <div id="step-admin" class="bg-white rounded-2xl border-2 border-indigo-200 shadow-lg p-8 fade-in" style="display:none">
+      <div class="flex items-center justify-between mb-6">
+        <div class="flex items-center gap-2">
+          <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          <h2 class="text-lg font-bold text-indigo-900">Admin Configuration</h2>
+        </div>
+        <button onclick="showStep('welcome')" class="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+      </div>
+
+      <!-- Status indicator -->
+      <div id="admin-status" class="mb-5 p-3 rounded-xl text-sm hidden"></div>
+
+      <!-- API Base URL -->
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">API Base URL</label>
+          <input id="cfg-api-base" type="text" placeholder="Auto-detected from network"
+            class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none" />
+          <p class="text-xs text-gray-400 mt-1">Backend server address</p>
+        </div>
+
+        <!-- Partner OAuth Credentials -->
+        <div class="border-t border-gray-100 pt-4">
+          <h3 class="text-sm font-semibold text-gray-700 mb-3">GoCardless Partner Credentials</h3>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Client ID</label>
+              <input id="cfg-client-id" type="text" placeholder="Partner OAuth Client ID"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Client Secret</label>
+              <input id="cfg-client-secret" type="password" placeholder="Partner OAuth Client Secret"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Redirect URI</label>
+              <input id="cfg-redirect-uri" type="text" placeholder="Auto-detected from network"
+                class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Sandbox Toggle -->
+        <div class="border-t border-gray-100 pt-4">
+          <label class="flex items-center gap-3 cursor-pointer">
+            <input id="cfg-sandbox" type="checkbox" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-400"
+              onchange="updateDashboardLink(this.checked)" />
+            <div>
+              <span class="text-sm font-medium text-gray-700">Sandbox Mode</span>
+              <p class="text-xs text-gray-400">Use GoCardless sandbox for testing (no real payments)</p>
+            </div>
+          </label>
+        </div>
+
+        <!-- Save / Test -->
+        <div class="flex gap-3 pt-2">
+          <button onclick="saveAdminConfig()" id="btn-admin-save"
+            class="flex-1 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-sm transition-colors">
+            Save Configuration
+          </button>
+          <button onclick="testConnection()" id="btn-admin-test"
+            class="py-2.5 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-xl text-sm transition-colors">
+            Test
+          </button>
+        </div>
+
+        <!-- GoCardless Dashboard Link -->
+        <div class="border-t border-gray-100 pt-4">
+          <h3 class="text-sm font-semibold text-gray-700 mb-3">GoCardless Dashboard</h3>
+          <div class="flex gap-2">
+            <a id="gc-dashboard-link" href="#" target="_blank" rel="noopener noreferrer"
+              class="flex-1 py-2.5 px-4 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-700 font-medium rounded-lg text-sm transition-colors flex items-center justify-center gap-2">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+              <span id="gc-dashboard-label">Open GoCardless</span>
+            </a>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">Manage your OAuth app, view credentials, and check merchant activity</p>
+        </div>
+
+        <!-- Change Admin Password -->
+        <div class="border-t border-gray-100 pt-4">
+          <h3 class="text-sm font-semibold text-gray-700 mb-3">Admin Password</h3>
+          <div class="flex gap-2">
+            <input id="cfg-new-password" type="password" placeholder="New password"
+              class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none" />
+            <button onclick="changePassword()" id="btn-change-pw"
+              class="py-2 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium rounded-lg text-sm transition-colors">
+              Update
+            </button>
+          </div>
+          <p class="text-xs text-gray-400 mt-1">Change the password used to access this admin panel</p>
+        </div>
+
+        <!-- Merchant List -->
+        <div class="border-t border-gray-100 pt-4">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-gray-700">Onboarded Merchants</h3>
+            <button onclick="loadMerchants()" class="text-xs text-indigo-600 hover:underline">Refresh</button>
+          </div>
+          <div id="merchant-list" class="space-y-2">
+            <p class="text-xs text-gray-400 italic">Click Refresh to load</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="bg-white border-t border-gray-200 py-6 text-center">
+    <p class="text-xs text-gray-400">
+      &copy; 2026 Crakd<span class="text-blue-400">.ai</span> &middot; Intsys UK Ltd &middot;
+      Direct Debit payments processed by <a href="https://gocardless.com" target="_blank" rel="noopener" class="hover:underline">GoCardless</a>
+    </p>
+  </footer>
+
+  <script>
+    // ── Configuration ──
+    const CONFIG_KEY = 'crakd_admin_config';
+
+    function getConfig() {
+      try {
+        return JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}');
+      } catch { return {}; }
+    }
+
+    function saveConfig(cfg) {
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+    }
+
+    function getApiBase() {
+      const cfg = getConfig();
+      if (cfg.api_base) return cfg.api_base;
+      // Default: use current origin so portal works from any machine on the network
+      // If served from port 8000 (API), use relative paths; otherwise use origin with port 8000
+      if (window.location.port === '8000') return '';
+      return window.location.protocol + '//' + window.location.hostname + ':8000';
+    }
+
+    let pollInterval = null;
+    let authUrl = null;
+
+    // ── Check sandbox on load ──
+    (async function checkSandbox() {
+      try {
+        const res = await fetch(getApiBase() + '/api/gocardless/partner/config');
+        const data = await res.json();
+        if (data.success && data.partner_sandbox) {
+          document.getElementById('sandbox-banner').classList.remove('hidden');
+        }
+      } catch {}
+    })();
+
+    // ── Hidden admin panel — triple-click logo OR long-press 2s ──
+    let clickCount = 0;
+    let clickTimer = null;
+    let pressTimer = null;
+    const logo = document.getElementById('logo-trigger');
+
+    // Triple-click
+    logo.addEventListener('click', (e) => {
+      e.preventDefault();
+      window.getSelection()?.removeAllRanges(); // prevent text selection
+      clickCount++;
+      if (clickTimer) clearTimeout(clickTimer);
+      if (clickCount >= 3) {
+        clickCount = 0;
+        openAdmin();
+      } else {
+        clickTimer = setTimeout(() => { clickCount = 0; }, 800);
+      }
+    });
+
+    // Long-press fallback (mobile)
+    logo.addEventListener('touchstart', (e) => {
+      pressTimer = setTimeout(() => { openAdmin(); }, 2000);
+    });
+    logo.addEventListener('touchend', () => { if (pressTimer) clearTimeout(pressTimer); });
+    logo.addEventListener('touchcancel', () => { if (pressTimer) clearTimeout(pressTimer); });
+
+    let adminUnlocked = false;
+
+    async function openAdmin() {
+      if (!adminUnlocked) {
+        showStep('admin-login');
+        return;
+      }
+
+      // Load saved config into fields
+      const cfg = getConfig();
+      document.getElementById('cfg-api-base').value = cfg.api_base || getApiBase();
+      document.getElementById('cfg-client-id').value = cfg.partner_client_id || '';
+      document.getElementById('cfg-client-secret').value = cfg.partner_client_secret ? '********' : '';
+      document.getElementById('cfg-redirect-uri').value = cfg.partner_redirect_uri || '';
+      document.getElementById('cfg-sandbox').checked = cfg.sandbox || false;
+
+      // Fetch live config from server
+      fetchServerConfig();
+
+      showStep('admin');
+    }
+
+    function updateDashboardLink(sandbox) {
+      const link = document.getElementById('gc-dashboard-link');
+      const label = document.getElementById('gc-dashboard-label');
+      if (sandbox) {
+        link.href = 'https://manage-sandbox.gocardless.com';
+        label.textContent = 'Open GoCardless Sandbox';
+      } else {
+        link.href = 'https://manage.gocardless.com';
+        label.textContent = 'Open GoCardless Live';
+      }
+    }
+
+    async function fetchServerConfig() {
+      try {
+        const res = await fetch(getApiBase() + '/api/gocardless/partner/config');
+        const data = await res.json();
+        if (data.success) {
+          document.getElementById('cfg-sandbox').checked = data.partner_sandbox || false;
+          updateDashboardLink(data.partner_sandbox || false);
+          if (data.redirect_uri) {
+            document.getElementById('cfg-redirect-uri').value = data.redirect_uri;
+          }
+          if (data.partner_configured) {
+            document.getElementById('cfg-client-id').placeholder = 'Configured (saved on server)';
+            document.getElementById('cfg-client-secret').placeholder = 'Configured (saved on server)';
+          }
+          showAdminStatus('Connected to API', 'success');
+        }
+      } catch {
+        showAdminStatus('Cannot reach API server', 'error');
+      }
+    }
+
+    async function saveAdminConfig() {
+      const btn = document.getElementById('btn-admin-save');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+
+      const apiBase = document.getElementById('cfg-api-base').value.trim().replace(/\/$/, '');
+      const clientId = document.getElementById('cfg-client-id').value.trim();
+      const clientSecret = document.getElementById('cfg-client-secret').value.trim();
+      const redirectUri = document.getElementById('cfg-redirect-uri').value.trim();
+      const sandbox = document.getElementById('cfg-sandbox').checked;
+
+      // Save API base locally (browser only)
+      const cfg = getConfig();
+      cfg.api_base = apiBase;
+      cfg.sandbox = sandbox;
+      saveConfig(cfg);
+
+      // Save partner credentials to the server
+      try {
+        const payload = {
+          api_sandbox: sandbox,
+        };
+        if (clientId && !clientId.startsWith('Configured')) payload.partner_client_id = clientId;
+        if (clientSecret && clientSecret !== '********') payload.partner_client_secret = clientSecret;
+        if (redirectUri) payload.partner_redirect_uri = redirectUri;
+
+        const res = await fetch(apiBase + '/api/gocardless/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          showAdminStatus('Configuration saved', 'success');
+          // Update sandbox banner
+          if (sandbox) {
+            document.getElementById('sandbox-banner').classList.remove('hidden');
+          } else {
+            document.getElementById('sandbox-banner').classList.add('hidden');
+          }
+        } else {
+          showAdminStatus(data.error || 'Failed to save', 'error');
+        }
+      } catch {
+        showAdminStatus('Could not connect to API server', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save Configuration';
+      }
+    }
+
+    async function testConnection() {
+      const btn = document.getElementById('btn-admin-test');
+      btn.disabled = true;
+      btn.textContent = 'Testing...';
+
+      try {
+        const res = await fetch(getApiBase() + '/api/gocardless/partner/config');
+        const data = await res.json();
+        if (data.success) {
+          const parts = [];
+          parts.push(data.partner_configured ? 'Partner credentials: OK' : 'Partner credentials: NOT SET');
+          parts.push(data.partner_sandbox ? 'Mode: Sandbox' : 'Mode: Live');
+          showAdminStatus(parts.join(' | '), data.partner_configured ? 'success' : 'warning');
+        } else {
+          showAdminStatus('API responded but returned an error', 'error');
+        }
+      } catch {
+        showAdminStatus('Cannot connect to API at ' + getApiBase(), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Test';
+      }
+    }
+
+    async function loadMerchants() {
+      const container = document.getElementById('merchant-list');
+      container.innerHTML = '<p class="text-xs text-gray-400 italic">Loading...</p>';
+
+      try {
+        const res = await fetch(getApiBase() + '/api/gocardless/partner/merchants');
+        const data = await res.json();
+
+        if (!data.success) {
+          container.innerHTML = '<p class="text-xs text-red-500">Failed to load: ' + (data.error || 'Unknown error') + '</p>';
+          return;
+        }
+
+        if (!data.merchants || data.merchants.length === 0) {
+          container.innerHTML = '<p class="text-xs text-gray-400 italic">No merchants signed up yet</p>';
+          return;
+        }
+
+        container.innerHTML = data.merchants.map(m => {
+          const statusColors = {
+            completed: 'bg-emerald-100 text-emerald-700',
+            pending: 'bg-amber-100 text-amber-700',
+            failed: 'bg-red-100 text-red-700',
+            activated: 'bg-blue-100 text-blue-700',
+          };
+          const statusClass = statusColors[m.status] || 'bg-gray-100 text-gray-700';
+          const name = m.merchant_creditor_name || m.company_name || 'Unknown';
+          const date = m.created_at ? new Date(m.created_at).toLocaleDateString('en-GB') : '';
+          const appUrl = m.merchant_app_url || '';
+          const canActivate = m.has_token && (m.status === 'completed' || m.status === 'activated');
+          const activateBtn = canActivate
+            ? '<button onclick="activateMerchant(' + m.id + ')" class="text-xs px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition-colors">' +
+              (m.status === 'activated' ? 'Re-activate' : 'Activate') + '</button>'
+            : '';
+          return '<div class="p-3 bg-gray-50 rounded-lg space-y-2">' +
+            '<div class="flex items-center justify-between">' +
+              '<div class="min-w-0 flex-1">' +
+                '<p class="text-sm font-medium text-gray-900 truncate">' + name + '</p>' +
+                '<p class="text-xs text-gray-400 truncate">' + (m.company_email || '') + (date ? ' &middot; ' + date : '') + '</p>' +
+              '</div>' +
+              '<div class="flex items-center gap-2 shrink-0 ml-3">' +
+                (m.has_token ? '<span class="w-2 h-2 bg-emerald-400 rounded-full" title="Token obtained"></span>' : '') +
+                '<span class="text-xs px-2 py-0.5 rounded-full font-medium ' + statusClass + '">' + m.status + '</span>' +
+              '</div>' +
+            '</div>' +
+            (canActivate ? '<div class="flex gap-2 items-center">' +
+              '<input id="app-url-' + m.id + '" type="text" value="' + appUrl + '" placeholder="https://client-app.example.com"' +
+              ' class="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-xs font-mono focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 outline-none"' +
+              ' onblur="saveAppUrl(' + m.id + ', this.value)" />' +
+              activateBtn +
+            '</div>' : '') +
+          '</div>';
+        }).join('');
+      } catch {
+        container.innerHTML = '<p class="text-xs text-red-500">Cannot connect to API</p>';
+      }
+    }
+
+    async function changePassword() {
+      const newPw = document.getElementById('cfg-new-password').value.trim();
+      if (!newPw) { showAdminStatus('Please enter a new password', 'error'); return; }
+      if (newPw.length < 4) { showAdminStatus('Password must be at least 4 characters', 'error'); return; }
+
+      const btn = document.getElementById('btn-change-pw');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+
+      try {
+        const res = await fetch(getApiBase() + '/api/gocardless/partner/admin-password', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: newPw }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          document.getElementById('cfg-new-password').value = '';
+          showAdminStatus('Password updated', 'success');
+        } else {
+          showAdminStatus(data.error || 'Failed to update password', 'error');
+        }
+      } catch {
+        showAdminStatus('Cannot reach server', 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Update';
+      }
+    }
+
+    async function saveAppUrl(signupId, url) {
+      try {
+        await fetch(getApiBase() + '/api/gocardless/partner/merchant-app-url', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signup_id: signupId, app_url: url.trim() }),
+        });
+      } catch { /* silent save */ }
+    }
+
+    async function activateMerchant(signupId) {
+      const urlField = document.getElementById('app-url-' + signupId);
+      const appUrl = urlField ? urlField.value.trim() : '';
+
+      if (!appUrl) {
+        showAdminStatus('Enter the merchant\'s app URL first', 'error');
+        if (urlField) urlField.focus();
+        return;
+      }
+
+      if (!confirm('Activate this merchant?\n\nToken will be deployed to:\n' + appUrl)) return;
+
+      try {
+        // Save the URL first
+        await saveAppUrl(signupId, appUrl);
+
+        // Then activate — pushes token to the merchant's app
+        const res = await fetch(getApiBase() + '/api/gocardless/partner/activate-merchant', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signup_id: signupId }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          showAdminStatus('Merchant activated — token deployed to ' + appUrl, 'success');
+          loadMerchants();
+        } else {
+          showAdminStatus(data.error || 'Failed to activate', 'error');
+        }
+      } catch {
+        showAdminStatus('Cannot reach server', 'error');
+      }
+    }
+
+    function showAdminStatus(msg, type) {
+      const el = document.getElementById('admin-status');
+      el.classList.remove('hidden', 'bg-emerald-50', 'text-emerald-700', 'bg-red-50', 'text-red-700', 'bg-amber-50', 'text-amber-700');
+      if (type === 'success') { el.classList.add('bg-emerald-50', 'text-emerald-700'); }
+      else if (type === 'error') { el.classList.add('bg-red-50', 'text-red-700'); }
+      else { el.classList.add('bg-amber-50', 'text-amber-700'); }
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    // ── Admin Login ──
+    async function adminLogin() {
+      const pw = document.getElementById('admin-password').value;
+      const errBox = document.getElementById('admin-login-error');
+      const btn = document.getElementById('btn-admin-login');
+      errBox.classList.add('hidden');
+
+      if (!pw) { errBox.textContent = 'Please enter the password'; errBox.classList.remove('hidden'); return; }
+
+      btn.disabled = true;
+      btn.textContent = 'Checking...';
+
+      try {
+        const res = await fetch(getApiBase() + '/api/gocardless/partner/admin-auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pw }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          adminUnlocked = true;
+          document.getElementById('admin-password').value = '';
+          openAdmin();
+        } else {
+          errBox.textContent = data.error || 'Incorrect password';
+          errBox.classList.remove('hidden');
+        }
+      } catch {
+        errBox.textContent = 'Cannot reach server';
+        errBox.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+      }
+    }
+
+    // ── Step Navigation ──
+    function showStep(step) {
+      document.querySelectorAll('[id^="step-"]').forEach(el => el.style.display = 'none');
+      const el = document.getElementById('step-' + step);
+      if (el) {
+        el.style.display = 'block';
+        el.classList.remove('fade-in');
+        void el.offsetWidth;
+        el.classList.add('fade-in');
+      }
+    }
+
+    // ── Initiate Signup ──
+    async function initiateSignup() {
+      const companyName = document.getElementById('company-name').value.trim();
+      const companyEmail = document.getElementById('company-email').value.trim();
+      const contactName = document.getElementById('contact-name').value.trim();
+      const errorBox = document.getElementById('error-box');
+      const btn = document.getElementById('btn-signup');
+
+      errorBox.classList.add('hidden');
+
+      if (!companyName) { showError('Please enter your company name.'); return; }
+      if (!companyEmail) { showError('Please enter your email address.'); return; }
+      if (!companyEmail.includes('@')) { showError('Please enter a valid email address.'); return; }
+
+      btn.disabled = true;
+      btn.innerHTML = '<svg class="w-5 h-5 spinner" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Setting up...';
+
+      try {
+        const res = await fetch(getApiBase() + '/api/gocardless/partner/initiate-signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            company_name: companyName,
+            company_email: companyEmail,
+            contact_name: contactName,
+          }),
+        });
+        const data = await res.json();
+
+        if (data.success && data.authorisation_url) {
+          authUrl = data.authorisation_url;
+          document.getElementById('reopen-link').href = authUrl;
+          window.open(authUrl, '_blank', 'noopener,noreferrer');
+          showStep('waiting');
+          startPolling();
+        } else if (data.success && !data.authorisation_url) {
+          showError('Partner credentials are not yet configured. Please contact Crakd.ai support.');
+        } else {
+          showError(data.error || 'Something went wrong. Please try again.');
+        }
+      } catch (e) {
+        showError('Could not connect to server. Please try again.');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = 'Continue to GoCardless <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>';
+      }
+    }
+
+    // ── Poll for completion ──
+    function startPolling() {
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(getApiBase() + '/api/gocardless/partner/signup-status');
+          const data = await res.json();
+          if (data.success && data.signup?.status === 'completed') {
+            clearInterval(pollInterval);
+            const orgName = data.signup.merchant_creditor_name || data.signup.company_name || '';
+            if (orgName) {
+              document.getElementById('complete-org').textContent = orgName;
+            }
+            showStep('complete');
+          }
+        } catch { /* keep polling */ }
+      }, 5000);
+    }
+
+    // ── Error display ──
+    function showError(msg) {
+      const box = document.getElementById('error-box');
+      box.textContent = msg;
+      box.classList.remove('hidden');
+    }
+  </script>
+
+</body>
+</html>

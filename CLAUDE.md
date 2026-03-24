@@ -13,14 +13,14 @@ This is **SQL RAG** - a financial management application that integrates with **
 
 **Read these before working on Opera-related tasks:**
 
-- `docs/opera_knowledge_base.md` - Comprehensive guide to Opera database tables, field conventions, amount storage (pence vs pounds), reference formats, and integration patterns. **Includes:**
+- `apps/core/docs/opera_knowledge_base.md` - Comprehensive guide to Opera database tables, field conventions, amount storage (pence vs pounds), reference formats, and integration patterns. **Includes:**
   - Cashbook transaction types (atype table, at_type values 1-6)
   - anoml transfer file patterns for all transaction types
   - Unique ID generation format (`_XXXXXXXXX` base-36)
   - Period posting rules and control accounts
 
-- `docs/manual-gocardless.md` - **User instruction manual** for GoCardless Import routine (settings, workflow, SUB tags, payment requests, allocation, fees)
-- `docs/manual-bank-reconciliation.md` - **User instruction manual** for Bank Statement Reconciliation (5-stage workflow, matching, aliases, patterns, duplicate prevention)
+- `marketing/manuals/manual-gocardless.md` - **User instruction manual** for GoCardless Import routine (settings, workflow, SUB tags, payment requests, allocation, fees)
+- `marketing/manuals/manual-bank-reconciliation.md` - **User instruction manual** for Bank Statement Reconciliation (5-stage workflow, matching, aliases, patterns, duplicate prevention)
 
 - `docs/opera-modules/` - **Opera Modules Modernization Project** (ongoing)
   - `README.md` - Project overview, phases, and status
@@ -154,10 +154,35 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 
 ## Development Guidelines
 
+### Knowledge Base Must Be Updated (MANDATORY)
+**CRITICAL**: When any Opera-related knowledge is learned, corrected, or changed — whether posting rules, table structures, field conventions, matching logic, or integration patterns — the knowledge base at `apps/core/docs/opera_knowledge_base.md` MUST be updated in the same commit. This is the single source of truth for Opera integration knowledge. Stale or missing knowledge causes repeated bugs.
+
+### No Quick Fixes (MANDATORY)
+**CRITICAL**: This is a finance system. Every fix must be robust, permanent, and production-grade:
+- **No temporary workarounds** — find and fix the root cause, not the symptom
+- **No hardcoded values** — account codes, bank names, company IDs, skip patterns must NEVER be hardcoded
+- **No partial fixes** — if a bug is found, trace it through ALL code paths (SE, Opera 3, all endpoints, all callers)
+- **Verify before claiming fixed** — test the actual endpoint, not just that the code compiles
+- **100% reliability** — this system handles real money. Incorrect figures, missing transactions, or silent failures are unacceptable
+- **Understand before changing** — read the existing code, understand why it works the way it does, then make targeted changes
+
+### Opera 3 Full Parity (MANDATORY)
+**CRITICAL**: Every change to Opera SE code MUST have the equivalent Opera 3 change in the same commit. No exceptions. This includes:
+- Bug fixes (if a matching bug is fixed in SE, fix it in Opera 3 too)
+- New features (if an endpoint is added for SE, add the Opera 3 version)
+- Logic changes (if import behaviour changes in SE, change it in Opera 3)
+- API endpoints (if `/api/xxx` is modified, `/api/opera3/xxx` must match)
+
+Files that must stay in sync:
+- `sql_rag/bank_import.py` ↔ `sql_rag/bank_import_opera3.py`
+- `sql_rag/opera_sql_import.py` ↔ `sql_rag/opera3_foxpro_import.py`
+- `sql_rag/statement_reconcile.py` ↔ `sql_rag/statement_reconcile_opera3.py`
+- SE endpoints in `apps/` ↔ Opera 3 endpoints in `apps/`
+
 ### Keep Instruction Manuals Updated (MANDATORY)
 **CRITICAL**: When making changes to the GoCardless import or Bank Statement Reconciliation routines, you MUST update the corresponding instruction manual in the same commit:
-- `docs/manual-gocardless.md` — GoCardless Import instruction manual
-- `docs/manual-bank-reconciliation.md` — Bank Statement Reconciliation instruction manual
+- `marketing/manuals/manual-gocardless.md` — GoCardless Import instruction manual
+- `marketing/manuals/manual-bank-reconciliation.md` — Bank Statement Reconciliation instruction manual
 
 These manuals are user-facing documentation that must accurately reflect current behaviour. Any change to workflow, matching logic, settings, posting rules, allocation behaviour, or error handling must be reflected in the relevant manual. Update the "Last updated" date at the bottom of the file.
 
@@ -408,7 +433,7 @@ When posting transactions **with VAT**, you MUST also create:
 }
 ```
 
-**Demo files location**: `/Users/maccb/llmragsql/demos/`
+**Demo files location**: `/Users/maccb/llmragsql/marketing/demos/`
 - index.html (menu page)
 - dashboard-demo.html
 - cashbook-reconcile-demo.html (includes bank statement import)

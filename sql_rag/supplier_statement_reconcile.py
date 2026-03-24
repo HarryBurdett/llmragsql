@@ -24,6 +24,23 @@ class MatchStatus(str, Enum):
     IN_OUR_FAVOUR = "in_our_favour"      # Discrepancy benefits us - stay quiet
 
 
+class QueryType(str, Enum):
+    """Query type for items requiring action."""
+    REQUEST_COPY = "request_copy"               # Invoice on their statement, not in our system
+    AMOUNT_DISCREPANCY = "amount_discrepancy"   # Their amount higher than ours
+    REQUEST_CREDIT_NOTE = "request_credit_note" # Credit note they claim sent, we don't have
+    PAYMENT_NOTIFICATION = "payment_notification"  # Payments we've made not on their statement
+    MANUAL_REVIEW = "manual_review"             # Large discrepancies above threshold
+
+
+class DiscrepancyClassification(str, Enum):
+    """Classification of a discrepancy for business rule application."""
+    AUTO_QUERY = "auto_query"       # In supplier's favour - raise query
+    STAY_QUIET = "stay_quiet"       # In our favour - don't raise
+    ALWAYS_NOTIFY = "always_notify" # Always notify (e.g. payments made)
+    FLAG_FOR_REVIEW = "flag_for_review"  # Large discrepancy needing manual review
+
+
 @dataclass
 class ReconciliationLine:
     """A reconciled line item."""
@@ -42,6 +59,7 @@ class ReconciliationLine:
     match_status: MatchStatus = MatchStatus.NOT_IN_OPERA
     difference: float = 0.0
     query_required: bool = False
+    query_type: Optional[str] = None
     query_text: Optional[str] = None
     notify_payment: bool = False
     payment_details: Optional[str] = None
@@ -104,6 +122,7 @@ class ReconciliationResult:
                     "match_status": l.match_status.value,
                     "difference": l.difference,
                     "query_required": l.query_required,
+                    "query_type": l.query_type,
                     "query_text": l.query_text,
                     "notify_payment": l.notify_payment,
                     "payment_details": l.payment_details
@@ -323,6 +342,26 @@ class SupplierStatementReconciler:
             elif recon_line.match_status == MatchStatus.IN_OUR_FAVOUR:
                 result.in_our_favour_count += 1
 
+        # Apply business rules to all reconciled lines
+        self._apply_business_rules(result.lines)
+
+        # Recount after business rules have been applied (rules may change statuses)
+        result.matched_count = 0
+        result.query_count = 0
+        result.in_our_favour_count = 0
+        result.queries = []
+        for line in result.lines:
+            if line.match_status == MatchStatus.MATCHED:
+                result.matched_count += 1
+            elif line.match_status == MatchStatus.PAID:
+                result.matched_count += 1
+            elif line.match_status == MatchStatus.IN_OUR_FAVOUR:
+                result.in_our_favour_count += 1
+            elif line.query_required:
+                result.query_count += 1
+                if line.query_text:
+                    result.queries.append(line.query_text)
+
         # Check for Opera items not on statement (potential payment notifications)
         # Only notify about payments made in the last 90 days to keep response focused
         cutoff_date = datetime.now() - timedelta(days=90)
@@ -390,6 +429,7 @@ class SupplierStatementReconciler:
                 # Their amount is higher - query (not in our favour)
                 recon.match_status = MatchStatus.AMOUNT_MISMATCH
                 recon.query_required = True
+                recon.query_type = QueryType.AMOUNT_DISCREPANCY.value
                 recon.query_text = (
                     f"Invoice {recon.statement_ref}: Your statement shows {self._format_currency(stmt_amt)}, "
                     f"our records show {self._format_currency(opera_amt)}. "
@@ -425,6 +465,7 @@ class SupplierStatementReconciler:
                 # Not in our system - query
                 recon.match_status = MatchStatus.NOT_IN_OPERA
                 recon.query_required = True
+                recon.query_type = QueryType.REQUEST_COPY.value
                 recon.query_text = (
                     f"Invoice {recon.statement_ref or 'unknown'} for {self._format_currency(stmt_amt)} "
                     f"dated {recon.statement_date}: We do not have this invoice on our system. "
@@ -432,6 +473,624 @@ class SupplierStatementReconciler:
                 )
 
         return recon
+
+    def _apply_business_rules(
+        self,
+        reconciled_lines: List[ReconciliationLine],
+        large_discrepancy_threshold: float = 500.0
+    ) -> None:
+        """
+        Apply bought ledger business rules to reconciled lines.
+
+        Rules follow the "only query when not in our favour" principle:
+
+        Auto-Query (in supplier's favour):
+        - Invoice on their statement, not in our system -> request_copy
+        - Their amount higher than ours -> amount_discrepancy
+        - Credit note they claim sent, we don't have -> request_credit_note
+
+        Stay Quiet (in our favour):
+        - Overpayment from supplier
+        - Credit we have that they've forgotten
+        - Their amount lower than ours
+        - Invoice we have that they haven't billed
+
+        Always Notify:
+        - Payments we've made not on their statement -> payment_notification
+
+        Flag for Review:
+        - Large discrepancies above threshold -> manual_review
+
+        Args:
+            reconciled_lines: List of ReconciliationLine objects to apply rules to.
+                              Modified in place.
+            large_discrepancy_threshold: Amount above which discrepancies are flagged
+                                         for manual review (default 500.0).
+        """
+        for line in reconciled_lines:
+            stmt_type = (line.statement_type or "").upper()
+            stmt_amt = line.statement_amount or 0.0
+            opera_amt = line.opera_amount or 0.0
+            is_debit = stmt_type in ("INV", "INVOICE", "DB", "DEBIT")
+
+            # --- Invoice on their statement, not in our system ---
+            if line.match_status == MatchStatus.NOT_IN_OPERA:
+                if stmt_type in ("CN", "CREDIT", "CREDIT NOTE", "CR"):
+                    # Credit note they claim they sent, we don't have
+                    # This is in our favour (they owe us less / we owe them less)
+                    # but we still want the credit note applied to our account
+                    line.query_required = True
+                    line.query_type = QueryType.REQUEST_CREDIT_NOTE.value
+                    line.query_text = (
+                        f"Credit note {line.statement_ref or 'unknown'} for "
+                        f"{self._format_currency(stmt_amt)} dated {line.statement_date}: "
+                        f"We do not have this credit note on our records. "
+                        f"Please resend so we can apply it to our account."
+                    )
+                elif stmt_type in ("PMT", "PAYMENT", "PAY", "P"):
+                    # Payment on their statement that we don't recognise
+                    # Could be them recording our payment - stay quiet unless
+                    # the amount doesn't match anything we've sent
+                    line.match_status = MatchStatus.IN_OUR_FAVOUR
+                    line.query_required = False
+                    line.query_type = None
+                    line.query_text = None
+                else:
+                    # Invoice on their statement, not in our system
+                    # In supplier's favour - auto query
+                    line.query_required = True
+                    line.query_type = QueryType.REQUEST_COPY.value
+                    line.query_text = (
+                        f"Invoice {line.statement_ref or 'unknown'} for "
+                        f"{self._format_currency(stmt_amt)} dated {line.statement_date}: "
+                        f"We do not have this invoice on our system. "
+                        f"Please send a copy."
+                    )
+
+            # --- Amount mismatch: classify direction ---
+            elif line.match_status == MatchStatus.AMOUNT_MISMATCH:
+                classification = self._classify_discrepancy(
+                    stmt_amt, opera_amt, is_debit
+                )
+
+                if classification == DiscrepancyClassification.FLAG_FOR_REVIEW.value:
+                    # Large discrepancy - always flag regardless of direction
+                    line.query_required = True
+                    line.query_type = QueryType.MANUAL_REVIEW.value
+                    line.query_text = (
+                        f"Invoice {line.statement_ref}: Large discrepancy of "
+                        f"{self._format_currency(abs(line.difference))} between your "
+                        f"statement ({self._format_currency(stmt_amt)}) and our records "
+                        f"({self._format_currency(opera_amt)}). Flagged for manual review."
+                    )
+                elif classification == DiscrepancyClassification.AUTO_QUERY.value:
+                    # Supplier's favour - query them
+                    line.query_required = True
+                    line.query_type = QueryType.AMOUNT_DISCREPANCY.value
+                    line.query_text = (
+                        f"Invoice {line.statement_ref}: Your statement shows "
+                        f"{self._format_currency(stmt_amt)}, our records show "
+                        f"{self._format_currency(opera_amt)}. "
+                        f"Please clarify the difference of "
+                        f"{self._format_currency(abs(line.difference))}."
+                    )
+                elif classification == DiscrepancyClassification.STAY_QUIET.value:
+                    # Our favour - don't raise a query
+                    line.match_status = MatchStatus.IN_OUR_FAVOUR
+                    line.query_required = False
+                    line.query_type = None
+                    line.query_text = None
+
+                # Check if the absolute discrepancy exceeds the large threshold
+                # and override classification to flag_for_review
+                if abs(line.difference) >= large_discrepancy_threshold:
+                    line.query_required = True
+                    line.query_type = QueryType.MANUAL_REVIEW.value
+                    line.query_text = (
+                        f"Invoice {line.statement_ref}: Large discrepancy of "
+                        f"{self._format_currency(abs(line.difference))} between your "
+                        f"statement ({self._format_currency(stmt_amt)}) and our records "
+                        f"({self._format_currency(opera_amt)}). Flagged for manual review."
+                    )
+
+            # --- Items not on their statement (in our system only) ---
+            elif line.match_status == MatchStatus.NOT_ON_STATEMENT:
+                opera_type = (line.opera_type or "").upper()
+                if opera_type in ("PAYMENT", "P"):
+                    # Payment we've made not on their statement - always notify
+                    line.query_required = True
+                    line.query_type = QueryType.PAYMENT_NOTIFICATION.value
+                    line.notify_payment = True
+                    line.payment_details = (
+                        f"Payment of {self._format_currency(opera_amt)} on "
+                        f"{line.opera_date} (Ref: {line.opera_ref})"
+                    )
+                    line.query_text = (
+                        f"We made a payment of {self._format_currency(opera_amt)} on "
+                        f"{line.opera_date} (Ref: {line.opera_ref}) which does not appear "
+                        f"on your statement. Please confirm receipt."
+                    )
+                elif opera_type in ("CREDIT NOTE", "C"):
+                    # Credit note we have that they've forgotten - in our favour, stay quiet
+                    line.match_status = MatchStatus.IN_OUR_FAVOUR
+                    line.query_required = False
+                    line.query_type = None
+                    line.query_text = None
+                elif opera_type in ("INVOICE", "I"):
+                    # Invoice we have that they haven't billed - in our favour, stay quiet
+                    line.match_status = MatchStatus.IN_OUR_FAVOUR
+                    line.query_required = False
+                    line.query_type = None
+                    line.query_text = None
+
+            # --- Matched items with zero balance (paid) ---
+            elif line.match_status == MatchStatus.PAID:
+                # Already paid - no action needed, keep as matched/paid
+                line.query_required = False
+                line.query_type = None
+
+            # --- Matched items ---
+            elif line.match_status == MatchStatus.MATCHED:
+                # Fully matched - no action needed
+                line.query_required = False
+                line.query_type = None
+
+            # --- In our favour items ---
+            elif line.match_status == MatchStatus.IN_OUR_FAVOUR:
+                # Already classified as in our favour - stay quiet
+                line.query_required = False
+                line.query_type = None
+                line.query_text = None
+
+    def _classify_discrepancy(
+        self,
+        statement_amount: Optional[float],
+        opera_amount: Optional[float],
+        is_debit: bool
+    ) -> str:
+        """
+        Classify a discrepancy between statement and Opera amounts.
+
+        Returns one of: 'auto_query', 'stay_quiet', 'always_notify', 'flag_for_review'
+
+        Logic:
+        - For invoices (debits): if their amount > ours, they think we owe more -> auto_query
+                                 if their amount < ours, they think we owe less -> stay_quiet
+        - For credits: if their credit > ours, they're giving us more back -> stay_quiet
+                       if their credit < ours, they're giving us less back -> auto_query
+
+        Args:
+            statement_amount: Amount on the supplier's statement
+            opera_amount: Amount in our Opera records
+            is_debit: True if the transaction is a debit/invoice (we owe them)
+
+        Returns:
+            String classification value from DiscrepancyClassification
+        """
+        stmt_amt = statement_amount or 0.0
+        op_amt = opera_amount or 0.0
+        difference = stmt_amt - op_amt
+
+        if abs(difference) < 0.01:
+            # No meaningful discrepancy
+            return DiscrepancyClassification.STAY_QUIET.value
+
+        if is_debit:
+            # Invoice/debit: supplier says we owe them money
+            if difference > 0:
+                # Their amount is higher - they think we owe MORE -> in supplier's favour
+                return DiscrepancyClassification.AUTO_QUERY.value
+            else:
+                # Their amount is lower - they think we owe LESS -> in our favour
+                return DiscrepancyClassification.STAY_QUIET.value
+        else:
+            # Credit note: supplier is reducing what we owe
+            if difference > 0:
+                # Their credit is higher - they're giving us MORE back -> in our favour
+                return DiscrepancyClassification.STAY_QUIET.value
+            else:
+                # Their credit is lower - they're giving us LESS back -> in supplier's favour
+                return DiscrepancyClassification.AUTO_QUERY.value
+
+    def calculate_payment_forecast(
+        self,
+        sql_connector,
+        supplier_code: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Calculate expected payment dates for a supplier's outstanding invoices.
+
+        Queries Opera for supplier payment terms from pname, outstanding invoices
+        from ptran, and calculates expected payment dates based on due dates.
+
+        Args:
+            sql_connector: SQL connector for Opera database queries
+            supplier_code: The Opera supplier account code (pn_account)
+
+        Returns:
+            List of dicts, each with:
+                - invoice_ref: str - the invoice reference
+                - amount: float - outstanding balance in pounds
+                - due_date: str - the due date (dd/mm/yyyy)
+                - days_until_due: int - days from today until due (negative = overdue)
+        """
+        forecast = []
+        today = datetime.now().date()
+
+        # Get outstanding invoices (positive balance = still owed) for this supplier
+        # pt_trtype 'I' = Invoice, pt_trbal > 0 = still has outstanding balance
+        clean_code = supplier_code.replace("'", "''")
+        query = f"""
+            SELECT
+                pt_trref,
+                pt_trvalue,
+                pt_trbal,
+                pt_trdate,
+                pt_dueday
+            FROM ptran WITH (NOLOCK)
+            WHERE pt_account = '{clean_code}'
+              AND pt_trtype = 'I'
+              AND pt_trbal > 0
+            ORDER BY pt_dueday ASC
+        """
+        result = sql_connector.execute_query(query)
+
+        if result is None or len(result) == 0:
+            return forecast
+
+        for _, row in result.iterrows():
+            invoice_ref = str(row.get("pt_trref", "")).strip() if row.get("pt_trref") else ""
+            amount = float(row.get("pt_trbal", 0) or 0)
+            due_date_raw = row.get("pt_dueday")
+
+            # Parse the due date
+            due_date_obj = None
+            due_date_str = ""
+
+            if due_date_raw is not None:
+                if isinstance(due_date_raw, datetime):
+                    due_date_obj = due_date_raw.date()
+                elif hasattr(due_date_raw, 'date'):
+                    # pandas Timestamp or similar
+                    due_date_obj = due_date_raw.date()
+                elif isinstance(due_date_raw, str):
+                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+                        try:
+                            due_date_obj = datetime.strptime(due_date_raw[:10], fmt).date()
+                            break
+                        except ValueError:
+                            continue
+
+            if due_date_obj:
+                due_date_str = due_date_obj.strftime("%d/%m/%Y")
+                days_until_due = (due_date_obj - today).days
+            else:
+                # No due date available - estimate from invoice date + default 30 days
+                invoice_date_raw = row.get("pt_trdate")
+                if invoice_date_raw is not None:
+                    inv_date_obj = None
+                    if isinstance(invoice_date_raw, datetime):
+                        inv_date_obj = invoice_date_raw.date()
+                    elif hasattr(invoice_date_raw, 'date'):
+                        inv_date_obj = invoice_date_raw.date()
+                    elif isinstance(invoice_date_raw, str):
+                        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+                            try:
+                                inv_date_obj = datetime.strptime(invoice_date_raw[:10], fmt).date()
+                                break
+                            except ValueError:
+                                continue
+
+                    if inv_date_obj:
+                        # Default to 30 days from invoice date if no due date
+                        estimated_due = inv_date_obj + timedelta(days=30)
+                        due_date_str = estimated_due.strftime("%d/%m/%Y") + " (est.)"
+                        days_until_due = (estimated_due - today).days
+                    else:
+                        due_date_str = "Unknown"
+                        days_until_due = 0
+                else:
+                    due_date_str = "Unknown"
+                    days_until_due = 0
+
+            forecast.append({
+                "invoice_ref": invoice_ref,
+                "amount": amount,
+                "due_date": due_date_str,
+                "days_until_due": days_until_due
+            })
+
+        return forecast
+
+    def generate_response(
+        self,
+        reconciliation_result: ReconciliationResult,
+        payment_forecast: List[Dict[str, Any]],
+        company_name: str
+    ) -> Dict[str, Any]:
+        """
+        Generate the structured response from the reconciliation.
+
+        Produces a complete response dict with all sections needed for
+        the supplier statement response email or API output.
+
+        Args:
+            reconciliation_result: The completed ReconciliationResult
+            payment_forecast: Output from calculate_payment_forecast()
+            company_name: The company name to use in the response
+
+        Returns:
+            Dict with:
+                - matched_summary: list of matched item dicts
+                - queries: list of items requiring supplier response
+                - payment_notifications: payments we've made not on their statement
+                - payment_forecast: upcoming payment schedule
+                - response_text: the full formatted email body text
+        """
+        matched_summary = []
+        queries = []
+        payment_notifications = []
+
+        for line in reconciliation_result.lines:
+            line_data = {
+                "statement_ref": line.statement_ref,
+                "statement_amount": line.statement_amount,
+                "opera_ref": line.opera_ref,
+                "opera_amount": line.opera_amount,
+                "difference": line.difference,
+                "status": line.match_status.value,
+                "query_type": line.query_type
+            }
+
+            if line.match_status in (MatchStatus.MATCHED, MatchStatus.PAID, MatchStatus.IN_OUR_FAVOUR):
+                matched_summary.append(line_data)
+            elif line.query_required and line.query_type == QueryType.PAYMENT_NOTIFICATION.value:
+                payment_notifications.append({
+                    "opera_ref": line.opera_ref,
+                    "opera_amount": line.opera_amount,
+                    "opera_date": line.opera_date,
+                    "payment_details": line.payment_details
+                })
+            elif line.query_required:
+                queries.append({
+                    "statement_ref": line.statement_ref,
+                    "statement_amount": line.statement_amount,
+                    "opera_ref": line.opera_ref,
+                    "opera_amount": line.opera_amount,
+                    "query_type": line.query_type,
+                    "query_text": line.query_text,
+                    "difference": line.difference
+                })
+
+        # Also include payment notifications from the result.payment_info
+        # (these are Opera payments not on the statement, found during reconcile())
+        for info_text in reconciliation_result.payment_info:
+            # Avoid duplicates - check if already captured from lines
+            already_captured = any(
+                pn.get("payment_details") and info_text in pn["payment_details"]
+                for pn in payment_notifications
+            )
+            if not already_captured:
+                payment_notifications.append({
+                    "payment_details": info_text
+                })
+
+        # Build the formatted email body text
+        response_text = self._build_response_email(
+            reconciliation_result=reconciliation_result,
+            matched_summary=matched_summary,
+            queries=queries,
+            payment_notifications=payment_notifications,
+            payment_forecast=payment_forecast,
+            company_name=company_name
+        )
+
+        return {
+            "matched_summary": matched_summary,
+            "queries": queries,
+            "payment_notifications": payment_notifications,
+            "payment_forecast": payment_forecast,
+            "response_text": response_text
+        }
+
+    def _build_response_email(
+        self,
+        reconciliation_result: ReconciliationResult,
+        matched_summary: List[Dict[str, Any]],
+        queries: List[Dict[str, Any]],
+        payment_notifications: List[Dict[str, Any]],
+        payment_forecast: List[Dict[str, Any]],
+        company_name: str
+    ) -> str:
+        """
+        Build the full formatted email body text for the supplier response.
+
+        Args:
+            reconciliation_result: The completed ReconciliationResult
+            matched_summary: List of matched item dicts
+            queries: List of items requiring supplier response
+            payment_notifications: Payments we've made not on their statement
+            payment_forecast: Upcoming payment schedule
+            company_name: Company name for the email header
+
+        Returns:
+            Formatted email body text string
+        """
+        lines = []
+        r = reconciliation_result
+
+        # Header
+        lines.append(f"Subject: Statement Reconciliation - {r.supplier_name} - {r.statement_date}")
+        lines.append("")
+        lines.append("Dear Accounts Team,")
+        lines.append("")
+        lines.append(
+            f"Thank you for your statement dated {r.statement_date}. "
+            f"Please find our reconciliation below on behalf of {company_name}."
+        )
+        lines.append("")
+
+        # Old statement warning
+        if r.is_old_statement:
+            lines.append("=" * 50)
+            lines.append("IMPORTANT: OLD STATEMENT")
+            lines.append("=" * 50)
+            lines.append(f"This statement is {r.statement_age_days} days old.")
+            lines.append("Please send a current statement for accurate reconciliation.")
+            lines.append("")
+
+        # Balance comparison
+        lines.append("ACCOUNT SUMMARY")
+        lines.append("=" * 50)
+        lines.append(f"Your statement balance:  {self._format_currency(r.statement_balance or 0)}")
+        lines.append(f"Our records balance:     {self._format_currency(r.opera_balance or 0)}")
+        if abs(r.variance) >= 0.01:
+            lines.append(f"Variance:                {self._format_currency(r.variance)}")
+        else:
+            lines.append("Status: RECONCILED")
+        lines.append("")
+
+        # Matched items summary
+        if matched_summary:
+            lines.append("AGREED ITEMS")
+            lines.append("=" * 80)
+            lines.append("")
+            lines.append(f"{'Reference':<20} {'Your Amount':>12}  {'Our Amount':>12}  {'Status':<20}")
+            lines.append("-" * 70)
+
+            for item in matched_summary:
+                ref = (item.get("statement_ref") or item.get("opera_ref") or "-")[:20]
+                your_amt = self._format_currency(item["statement_amount"]) if item.get("statement_amount") is not None else "-"
+                our_amt = self._format_currency(item["opera_amount"]) if item.get("opera_amount") is not None else "-"
+
+                status = item.get("status", "")
+                if status == MatchStatus.MATCHED.value:
+                    display_status = "AGREED"
+                elif status == MatchStatus.PAID.value:
+                    display_status = "PAID"
+                elif status == MatchStatus.IN_OUR_FAVOUR.value:
+                    display_status = "AGREED*"
+                else:
+                    display_status = status.upper()
+
+                lines.append(f"{ref:<20} {your_amt:>12}  {our_amt:>12}  {display_status:<20}")
+
+            lines.append("-" * 70)
+            lines.append(f"  {len(matched_summary)} item(s) agreed")
+            lines.append("")
+
+        # Queries section
+        if queries:
+            lines.append("ITEMS REQUIRING CLARIFICATION")
+            lines.append("=" * 80)
+            lines.append("")
+
+            for i, q in enumerate(queries, 1):
+                q_type = q.get("query_type", "")
+                ref = q.get("statement_ref") or "unknown"
+
+                if q_type == QueryType.REQUEST_COPY.value:
+                    lines.append(f"{i}. {ref} - {self._format_currency(q.get('statement_amount') or 0)}")
+                    lines.append(f"   REASON: This invoice does not appear on our purchase ledger.")
+                    lines.append(f"   ACTION: Please send a copy of this invoice so we can investigate.")
+                elif q_type == QueryType.AMOUNT_DISCREPANCY.value:
+                    lines.append(
+                        f"{i}. {ref} - Your amount: {self._format_currency(q.get('statement_amount') or 0)}, "
+                        f"Our amount: {self._format_currency(q.get('opera_amount') or 0)}"
+                    )
+                    lines.append(f"   REASON: Amount difference of {self._format_currency(abs(q.get('difference', 0)))}")
+                    lines.append(f"   ACTION: Please confirm the correct amount or provide supporting documentation.")
+                elif q_type == QueryType.REQUEST_CREDIT_NOTE.value:
+                    lines.append(f"{i}. {ref} - {self._format_currency(q.get('statement_amount') or 0)}")
+                    lines.append(f"   REASON: We do not have this credit note on our records.")
+                    lines.append(f"   ACTION: Please resend the credit note so we can apply it.")
+                elif q_type == QueryType.MANUAL_REVIEW.value:
+                    lines.append(
+                        f"{i}. {ref} - Your amount: {self._format_currency(q.get('statement_amount') or 0)}, "
+                        f"Our amount: {self._format_currency(q.get('opera_amount') or 0)}"
+                    )
+                    lines.append(
+                        f"   REASON: Large discrepancy of {self._format_currency(abs(q.get('difference', 0)))} "
+                        f"flagged for review."
+                    )
+                    lines.append(f"   ACTION: This will be reviewed by our accounts team. We will revert shortly.")
+                else:
+                    lines.append(f"{i}. {ref}")
+                    if q.get("query_text"):
+                        lines.append(f"   {q['query_text']}")
+
+                lines.append("")
+
+        # Payment notifications
+        if payment_notifications:
+            lines.append("PAYMENTS NOT ON YOUR STATEMENT")
+            lines.append("=" * 50)
+            lines.append("We have made the following payment(s) that may not yet appear on your records:")
+            lines.append("")
+            for pn in payment_notifications:
+                if pn.get("payment_details"):
+                    lines.append(f"  - {pn['payment_details']}")
+                elif pn.get("opera_ref"):
+                    amt = self._format_currency(pn.get("opera_amount") or 0)
+                    lines.append(f"  - {amt} on {pn.get('opera_date', 'unknown date')} (Ref: {pn['opera_ref']})")
+            lines.append("")
+            lines.append("Please confirm receipt and apply to our account.")
+            lines.append("")
+
+        # Payment forecast
+        if payment_forecast:
+            lines.append("PAYMENT FORECAST")
+            lines.append("=" * 80)
+            lines.append("")
+            lines.append("The following invoices are scheduled for payment:")
+            lines.append("")
+            lines.append(f"{'Invoice Ref':<20} {'Amount':>12}  {'Due Date':<15} {'Days Until Due':>15}")
+            lines.append("-" * 65)
+
+            total_forecast = 0.0
+            overdue_total = 0.0
+
+            for item in payment_forecast:
+                ref = (item.get("invoice_ref") or "-")[:20]
+                amount = item.get("amount", 0)
+                due_date = item.get("due_date", "-")
+                days = item.get("days_until_due", 0)
+
+                total_forecast += amount
+
+                if days < 0:
+                    overdue_total += amount
+                    days_display = f"{abs(days)} days overdue"
+                elif days == 0:
+                    days_display = "Due today"
+                else:
+                    days_display = f"In {days} days"
+
+                lines.append(f"{ref:<20} {self._format_currency(amount):>12}  {due_date:<15} {days_display:>15}")
+
+            lines.append("-" * 65)
+            lines.append(f"{'TOTAL':<20} {self._format_currency(total_forecast):>12}")
+
+            if overdue_total > 0:
+                lines.append(f"{'  Of which overdue':<20} {self._format_currency(overdue_total):>12}")
+
+            lines.append("")
+
+            # Next payment run info
+            next_run = self._get_next_payment_run_date()
+            lines.append(f"Our payment runs are processed weekly on Fridays.")
+            lines.append(f"Next payment run: {next_run}")
+            lines.append("")
+
+        # Footer
+        if queries:
+            lines.append("Please respond to the queries above at your earliest convenience.")
+            lines.append("")
+
+        lines.append("Regards,")
+        lines.append(f"Accounts Department, {company_name}")
+
+        return "\n".join(lines)
 
     def _generate_response(
         self,
@@ -651,7 +1310,7 @@ class SupplierStatementReconciler:
 
     def _format_currency(self, amount: float) -> str:
         """Format amount as currency."""
-        return f"£{amount:,.2f}"
+        return f"\u00a3{amount:,.2f}"
 
     def _calculate_suggested_payment_date(self, due_date_str: Optional[str]) -> str:
         """

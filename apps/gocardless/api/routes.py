@@ -24,31 +24,53 @@ router = APIRouter()
 
 
 # ============================================================
-# Runtime access to api.main globals
+# Per-request globals — populated by _sync_from_main()
 # ============================================================
-# The extracted endpoint code uses bare names like sql_connector,
-# email_storage, email_sync_manager, etc. These are mutable globals
-# in api.main that change per-request.
-#
-# Python module __getattr__ proxies lookups to api.main at runtime,
-# ensuring each function call sees the CURRENT value.
+# Called from _ensure_company_context() in api/main.py after swapping
+# company resources. Single-threaded async (one uvicorn worker) is safe.
+sql_connector = None
+email_storage = None
+email_sync_manager = None
+config = None
+current_company = None
+customer_linker = None
+friendly_db_error = None
+_bank_lock_key = None
+_get_active_company_id = None
+_o3_get_str = None
+_o3_get_num = None
+_o3_get_int = None
+_complete_mandate_setup = None
+_complete_mandate_setup_opera3 = None
 
-_MAIN_GLOBALS = {
+_SYNC_NAMES = (
     'sql_connector', 'email_storage', 'email_sync_manager',
-    'customer_linker', 'current_company', 'config',
+    'config', 'current_company', 'customer_linker',
     'friendly_db_error', '_bank_lock_key', '_get_active_company_id',
-}
+    '_o3_get_str', '_o3_get_num', '_o3_get_int',
+    '_complete_mandate_setup', '_complete_mandate_setup_opera3',
+)
 
-
-def __getattr__(name):
-    if name in _MAIN_GLOBALS:
-        import api.main as _m
-        return getattr(_m, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+def _sync_from_main():
+    """Propagate per-request globals from api.main into this module."""
+    import api.main as m
+    g = globals()
+    for name in _SYNC_NAMES:
+        g[name] = getattr(m, name, None)
 
 
 # GoCardless settings helpers also need these imports from company_data
+from fastapi.responses import HTMLResponse
 from sql_rag.company_data import get_company_db_path, get_current_db_path
+from sql_rag.gocardless_payments import get_payments_db
+
+# Subscription frequency mapping (Opera repeat doc frequency code → GoCardless interval)
+FREQUENCY_MAP = {
+    'W': ('weekly', 1),
+    'M': ('monthly', 1),
+    'Q': ('monthly', 3),
+    'A': ('yearly', 1),
+}
 
 
 # GoCardless Settings Storage (per-company, with root fallback)
@@ -1527,7 +1549,7 @@ async def update_subscription_tags(request: Request):
             freq_code = (row['ih_ignore'] or '').strip()
             current_analsys = (row['ih_analsys'] or '').strip()
 
-            freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual'}
+            freq_labels = {'W': 'Weekly', 'F': 'Fortnightly', 'M': 'Monthly', 'B': 'Bi-monthly', 'Q': 'Quarterly', 'H': 'Half-yearly', 'A': 'Annual'}
 
             if current_analsys == sub_tag:
                 already_tagged += 1
@@ -5217,7 +5239,7 @@ async def opera3_get_repeat_documents(
             amount_pence = int(round(line_nett_pence + line_vat_pence))
 
             interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
-            freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual', 'D': f'Every {days_between} days'}
+            freq_labels = {'W': 'Weekly', 'F': 'Fortnightly', 'M': 'Monthly', 'B': 'Bi-monthly', 'Q': 'Quarterly', 'H': 'Half-yearly', 'A': 'Annual', 'D': f'Every {days_between} days'}
             frequency = freq_labels.get(freq_code, freq_code)
 
             mandate = mandate_lookup.get(account)
@@ -5350,7 +5372,7 @@ async def opera3_list_subscriptions(
                 total = ex_vat + vat
                 freq_code = _o3_get_str(r, 'ih_ignore') or 'M'
                 interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
-                freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual'}
+                freq_labels = {'W': 'Weekly', 'F': 'Fortnightly', 'M': 'Monthly', 'B': 'Bi-monthly', 'Q': 'Quarterly', 'H': 'Half-yearly', 'A': 'Annual'}
                 opera_docs[doc] = {
                     'ex_vat': ex_vat, 'vat': vat, 'total_inc_vat': total,
                     'amount_pence': int(round(line_nett_pence + line_vat_pence)),
@@ -8084,8 +8106,12 @@ async def get_gocardless_repeat_documents(
 
                 interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
 
-                # Frequency label
-                freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual', 'D': f'Every {days_between} days'}
+                # Frequency label — all Opera repeat invoice frequency codes
+                freq_labels = {
+                    'W': 'Weekly', 'F': 'Fortnightly', 'M': 'Monthly',
+                    'B': 'Bi-monthly', 'Q': 'Quarterly', 'H': 'Half-yearly',
+                    'A': 'Annual', 'D': f'Every {days_between} days',
+                }
                 frequency = freq_labels.get(freq_code, freq_code)
 
                 mandate = mandate_lookup.get(account)
@@ -8325,7 +8351,7 @@ async def list_gocardless_subscriptions(
                     total = ex_vat + vat
                     freq_code = (row['ih_ignore'] or 'M').strip()
                     interval_unit, interval_count = FREQUENCY_MAP.get(freq_code, ('monthly', 1))
-                    freq_labels = {'W': 'Weekly', 'M': 'Monthly', 'Q': 'Quarterly', 'A': 'Annual'}
+                    freq_labels = {'W': 'Weekly', 'F': 'Fortnightly', 'M': 'Monthly', 'B': 'Bi-monthly', 'Q': 'Quarterly', 'H': 'Half-yearly', 'A': 'Annual'}
                     opera_docs[doc] = {
                         'doc_ref': doc,
                         'ex_vat': ex_vat,

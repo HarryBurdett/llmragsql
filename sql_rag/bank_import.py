@@ -517,7 +517,8 @@ class BankStatementImport:
                  use_aliases: bool = True,
                  use_extended_fields: bool = True,
                  use_enhanced_matching: bool = True,
-                 use_fingerprinting: bool = True):
+                 use_fingerprinting: bool = True,
+                 sql_connector=None):
         """
         Initialize bank statement importer
 
@@ -538,7 +539,7 @@ class BankStatementImport:
         self.use_enhanced_matching = use_enhanced_matching and ENHANCED_MATCHING_AVAILABLE
         self.use_fingerprinting = use_fingerprinting and DUPLICATES_AVAILABLE
 
-        self.sql_connector = SQLConnector()
+        self.sql_connector = sql_connector if sql_connector is not None else SQLConnector()
         self.opera_import = OperaSQLImport(self.sql_connector)
 
         # Initialize matcher (enhanced or basic)

@@ -165,6 +165,14 @@ interface Invoice {
   trans_type_code?: number;
   is_subscription?: boolean;
   source_doc?: string;
+  customer_ref?: string;
+  payment_requested?: boolean;
+  payment_request_info?: {
+    status?: string;
+    created_at?: string;
+    amount?: number;
+    charge_date?: string;
+  };
 }
 
 interface CustomerGroup {
@@ -586,6 +594,7 @@ function GoCardlessRequestsInner() {
 
   // ============ Subscription state & queries ============
   const [showCreateSubModal, setShowCreateSubModal] = useState(false);
+  const [repeatDocFreqFilter, setRepeatDocFreqFilter] = useState<string>('all');
 
   // Subscriptions list query
   const { data: subscriptionsData, isLoading: loadingSubscriptions, refetch: refetchSubscriptions } = useQuery({
@@ -2176,6 +2185,31 @@ function GoCardlessRequestsInner() {
               Customers need an active mandate to create subscriptions.
             </p>
 
+            {/* Frequency type filter */}
+            {repeatDocsData && repeatDocsData.documents.length > 0 && (() => {
+              const freqCounts = repeatDocsData.documents.reduce<Record<string, { label: string; count: number }>>((acc, d) => {
+                const code = d.frequency_code || '?';
+                if (!acc[code]) acc[code] = { label: d.frequency || code, count: 0 };
+                acc[code].count++;
+                return acc;
+              }, {});
+              return (
+                <div className="flex items-center gap-2 mb-3">
+                  <label className="text-sm text-gray-600">Type:</label>
+                  <select
+                    value={repeatDocFreqFilter}
+                    onChange={e => setRepeatDocFreqFilter(e.target.value)}
+                    className="border border-gray-300 rounded-md px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="all">All ({repeatDocsData.documents.length})</option>
+                    {Object.entries(freqCounts).sort(([,a],[,b]) => b.count - a.count).map(([code, { label, count }]) => (
+                      <option key={code} value={code}>{code} — {label} ({count})</option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })()}
+
             {repeatDocsData && (
               <div className="flex gap-2 text-xs mb-3">
                 <span className="px-2.5 py-1 text-gray-600">{repeatDocsData.count} repeat documents</span>
@@ -2195,7 +2229,9 @@ function GoCardlessRequestsInner() {
               </div>
             ) : (
               <div className="space-y-2">
-                {repeatDocsData?.documents.map(doc => (
+                {repeatDocsData?.documents.filter(doc =>
+                  repeatDocFreqFilter === 'all' || doc.frequency_code === repeatDocFreqFilter
+                ).map(doc => (
                   <div
                     key={doc.doc_ref}
                     className={`border rounded-lg p-3 ${
@@ -2486,7 +2522,7 @@ function GoCardlessRequestsInner() {
                     Suggested Match{linkSuggestions.length > 1 ? 'es' : ''}
                   </label>
                   <div className="space-y-1">
-                    {linkSuggestions.map((s, i) => (
+                    {linkSuggestions.map((s) => (
                       <button
                         key={s.account}
                         onClick={() => {

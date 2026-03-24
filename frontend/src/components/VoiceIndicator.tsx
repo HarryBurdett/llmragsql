@@ -92,7 +92,7 @@ export function VoiceIndicator() {
   const { isListening, interimTranscript, matchedCommand } = useVoice();
   const [hasAudio, setHasAudio] = useState(false);
   const [noAudioTimeout, setNoAudioTimeout] = useState(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Show "no audio" warning after 4s of silence
   useEffect(() => {

@@ -3745,22 +3745,25 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                     )}
 
                     {/* Batch import results */}
-                    {batchImportProgress && !isBatchImporting && (
-                      <div className={`border rounded-lg p-3 ${batchImportProgress.errors.length > 0 ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+                    {batchImportProgress && !isBatchImporting && (() => {
+                      const bp = batchImportProgress!;
+                      return (
+                      <div className={`border rounded-lg p-3 ${bp.errors.length > 0 ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
                         <div className="flex items-center justify-between">
-                          <p className={`text-sm font-medium ${batchImportProgress.errors.length > 0 ? 'text-red-800' : 'text-green-800'}`}>
-                            Import complete: {batchImportProgress.completed - batchImportProgress.errors.length} succeeded
-                            {batchImportProgress.errors.length > 0 && `, ${batchImportProgress.errors.length} failed`}
+                          <p className={`text-sm font-medium ${bp.errors.length > 0 ? 'text-red-800' : 'text-green-800'}`}>
+                            Import complete: {bp.completed - bp.errors.length} succeeded
+                            {bp.errors.length > 0 && `, ${bp.errors.length} failed`}
                           </p>
                           <button onClick={() => setBatchImportProgress(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">&times;</button>
                         </div>
-                        {batchImportProgress.errors.length > 0 && (
+                        {bp.errors.length > 0 && (
                           <ul className="text-xs text-red-700 mt-1 space-y-0.5">
-                            {batchImportProgress.errors.map((err, i) => <li key={i}>{err}</li>)}
+                            {bp.errors.map((err, i) => <li key={i}>{err}</li>)}
                           </ul>
                         )}
                       </div>
-                    )}
+                      );
+                    })()}
 
                     {/* Matched Receipts (green) */}
                     {renderCategoryTable('Receipts', receipts, 'border-green-200', 'bg-green-50', 'text-green-900')}

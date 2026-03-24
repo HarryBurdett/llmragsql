@@ -6,8 +6,8 @@ import {
   CreditCard, BookOpen, Users, Building2, Scale, Truck,
   FileText, MessageSquare, Shield, LayoutDashboard, Receipt,
   Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList,
-  Cog, Activity, Boxes, LogOut, KeyRound, Send, RotateCcw, Monitor, CalendarDays,
-  Home, User, Wrench
+  Cog, Activity, LogOut, KeyRound, Send, RotateCcw, Monitor, CalendarDays,
+  Home, User
 } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
 import { Opera3AgentStatus } from './Opera3AgentStatus';
@@ -64,16 +64,22 @@ const cashbookMenu: TopLevelMenu = {
     {
       items: [
         { path: '/cashbook/bank-hub', label: 'Bank Statements', icon: Landmark, description: 'Import & reconcile bank statements', color: 'blue' },
-        { path: '/cashbook/gocardless', label: 'GoCardless Import', icon: CreditCard, description: 'Import direct debit payments', color: 'emerald' },
-        { path: '/cashbook/gocardless-requests', label: 'Payment Requests', icon: Send, description: 'Create & manage DD requests', color: 'purple' },
+        { path: '/cashbook/options', label: 'Bank Rec Settings', icon: Settings, description: 'Configure bank reconciliation', color: 'slate' },
+        { path: '/cashbook/routines-cleardown', label: 'Routines Cleardown', icon: RotateCcw, description: 'Reset routine flags', color: 'slate' },
       ],
     },
+  ],
+};
+
+const gocardlessMenu: TopLevelMenu = {
+  label: 'GoCardless',
+  icon: CreditCard,
+  sections: [
     {
-      heading: 'Settings',
       items: [
-        { path: '/cashbook/options', label: 'Bank Rec Settings', icon: Settings, description: 'Configure bank reconciliation', color: 'slate' },
-        { path: '/cashbook/gocardless-settings', label: 'GoCardless Settings', icon: CreditCard, description: 'API keys & connection', color: 'slate' },
-        { path: '/cashbook/routines-cleardown', label: 'Routines Cleardown', icon: RotateCcw, description: 'Reset routine flags', color: 'slate' },
+        { path: '/cashbook/gocardless', label: 'Import', icon: CreditCard, description: 'Import direct debit payments', color: 'emerald' },
+        { path: '/cashbook/gocardless-requests', label: 'Payment Requests', icon: Send, description: 'Create & manage DD requests', color: 'purple' },
+        { path: '/cashbook/gocardless-settings', label: 'Settings', icon: Settings, description: 'API keys & connection', color: 'slate' },
       ],
     },
   ],
@@ -109,62 +115,10 @@ const suppliersMenu: TopLevelMenu = {
   ],
 };
 
-const payrollMenu: TopLevelMenu = {
-  label: 'Payroll',
-  icon: Briefcase,
+const utilitiesMenu: TopLevelMenu = {
+  label: 'Utilities',
+  icon: Scale,
   sections: [
-    {
-      items: [
-        { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText, description: 'Generate pension submissions', color: 'indigo' },
-        { path: '/payroll/settings', label: 'Parameters', icon: Settings, description: 'Payroll configuration', color: 'slate' },
-      ],
-    },
-  ],
-};
-
-const modulesMenu: TopLevelMenu = {
-  label: 'Modules',
-  icon: Boxes,
-  sections: [
-    {
-      items: [
-        { path: '/stock', label: 'Stock', icon: Package, description: 'Stock control & movements', color: 'emerald' },
-        { path: '/sop', label: 'Sales Orders', icon: ShoppingCart, description: 'Sales order processing', color: 'blue' },
-        { path: '/pop', label: 'Purchase Orders', icon: ClipboardList, description: 'Purchase order processing', color: 'amber' },
-        { path: '/bom', label: 'Works Orders', icon: Cog, description: 'Bill of materials & works', color: 'purple' },
-      ],
-    },
-  ],
-};
-
-const getAdminMenu = (isAdmin: boolean, hasPayroll: boolean, hasDevelopment: boolean): TopLevelMenu => ({
-  label: 'Admin',
-  icon: Settings,
-  sections: [
-    {
-      items: [
-        { path: '/admin/company', label: 'Date & Company', icon: CalendarDays, description: 'Switch company & period', color: 'blue' },
-        { path: '/admin/system-dashboard', label: 'System Dashboard', icon: Activity, description: 'System health & status', color: 'emerald' },
-        { path: '/admin/projects', label: 'Projects', icon: FolderKanban, description: 'Project management', color: 'purple' },
-        ...(hasPayroll ? [
-          { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText, description: 'Generate pension submissions', color: 'indigo' },
-          { path: '/payroll/settings', label: 'Payroll Parameters', icon: Briefcase, description: 'Payroll configuration', color: 'slate' },
-        ] : []),
-        ...(hasDevelopment ? [
-          { path: '/stock', label: 'Stock', icon: Package, description: 'Stock control & movements', color: 'emerald' },
-          { path: '/sop', label: 'Sales Orders', icon: ShoppingCart, description: 'Sales order processing', color: 'blue' },
-          { path: '/pop', label: 'Purchase Orders', icon: ClipboardList, description: 'Purchase order processing', color: 'amber' },
-          { path: '/bom', label: 'Works Orders', icon: Cog, description: 'Bill of materials & works', color: 'purple' },
-        ] : []),
-        { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock, description: 'Active database locks', color: 'rose' },
-        { path: '/admin/installations', label: 'Installations', icon: Monitor, description: 'Connected systems', color: 'indigo' },
-        { path: '/settings', label: 'Settings', icon: Settings, description: 'Application settings', color: 'slate' },
-        ...(isAdmin ? [
-          { path: '/admin/users', label: 'Users', icon: Users, description: 'Manage user accounts', color: 'amber' },
-          { path: '/admin/licenses', label: 'Licenses', icon: KeyRound, description: 'License management', color: 'orange' },
-        ] : []),
-      ],
-    },
     {
       heading: 'Balance Check',
       items: [
@@ -176,10 +130,36 @@ const getAdminMenu = (isAdmin: boolean, hasPayroll: boolean, hasDevelopment: boo
         { path: '/reconcile/vat', label: 'VAT', icon: Receipt, description: 'VAT return reconciliation', color: 'rose' },
       ],
     },
+  ],
+};
+
+const getAdminMenu = (isAdmin: boolean): TopLevelMenu => ({
+  label: 'Admin',
+  icon: Settings,
+  sections: [
     {
-      heading: 'Utilities',
       items: [
-        { path: '/utilities/user-activity', label: 'User Activity', icon: Activity, description: 'Audit trail & usage', color: 'cyan' },
+        { path: '/admin/company', label: 'Date & Company', icon: CalendarDays, description: 'Switch company & period', color: 'blue' },
+        { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock, description: 'Active database locks', color: 'rose' },
+        { path: '/admin/installations', label: 'Installations', icon: Monitor, description: 'Connected systems', color: 'indigo' },
+        { path: '/settings', label: 'Settings', icon: Settings, description: 'Application settings', color: 'slate' },
+        ...(isAdmin ? [
+          { path: '/admin/users', label: 'Users', icon: Users, description: 'Manage user accounts', color: 'amber' },
+          { path: '/admin/licenses', label: 'Licenses', icon: KeyRound, description: 'License management', color: 'orange' },
+        ] : []),
+      ],
+    },
+    {
+      heading: 'Apps Archive',
+      items: [
+        { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText, description: 'Generate pension submissions', color: 'indigo' },
+        { path: '/payroll/settings', label: 'Payroll Parameters', icon: Briefcase, description: 'Payroll configuration', color: 'slate' },
+        { path: '/stock', label: 'Stock', icon: Package, description: 'Stock control & movements', color: 'emerald' },
+        { path: '/sop', label: 'Sales Orders', icon: ShoppingCart, description: 'Sales order processing', color: 'blue' },
+        { path: '/pop', label: 'Purchase Orders', icon: ClipboardList, description: 'Purchase order processing', color: 'amber' },
+        { path: '/bom', label: 'Works Orders', icon: Cog, description: 'Bill of materials & works', color: 'purple' },
+        { path: '/admin/system-dashboard', label: 'System Dashboard', icon: Activity, description: 'System health & status', color: 'emerald' },
+        { path: '/admin/projects', label: 'Ideas Archive', icon: FolderKanban, description: 'Project ideas & proposals', color: 'purple' },
       ],
     },
   ],
@@ -337,28 +317,29 @@ function ClassicDropdown({ menu, pathname, onClose, totalItems }: { menu: TopLev
 // ============ GRAPHICAL (tile) DROPDOWN ============
 
 function GraphicalDropdown({ menu, pathname, onClose, totalItems }: { menu: TopLevelMenu; pathname: string; onClose: () => void; totalItems: number }) {
-  // Use 3 columns for many items, 2 for fewer
-  const cols = totalItems > 6 ? 3 : totalItems > 3 ? 2 : 1;
+  // Compact mode for large menus (Admin has 20+ items)
+  const compact = totalItems > 12;
+  const cols = compact ? 4 : totalItems > 6 ? 3 : totalItems > 3 ? 2 : 1;
 
   return (
     <div
-      className="absolute top-full left-0 mt-1.5 bg-white rounded-2xl shadow-2xl border border-gray-200/60 ring-1 ring-black/5 overflow-hidden z-50"
+      className="absolute top-full left-0 mt-1.5 bg-white rounded-2xl shadow-2xl border border-gray-200/60 ring-1 ring-black/5 overflow-hidden z-50 max-h-[80vh] overflow-y-auto"
       style={{
         animation: 'menuIn 180ms ease-out',
-        minWidth: cols === 3 ? '580px' : cols === 2 ? '400px' : '220px',
+        minWidth: cols >= 4 ? '620px' : cols === 3 ? '580px' : cols === 2 ? '400px' : '220px',
       }}
     >
       {menu.sections.map((section, si) => (
         <div key={si} className={si > 0 ? 'border-t border-gray-100' : ''}>
           {section.heading && (
-            <div className="px-5 pt-3 pb-1">
+            <div className={compact ? 'px-4 pt-2 pb-0.5' : 'px-5 pt-3 pb-1'}>
               <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">
                 {section.heading}
               </span>
             </div>
           )}
           <div
-            className="p-3 gap-2"
+            className={compact ? 'p-2 gap-1.5' : 'p-3 gap-2'}
             style={{
               display: 'grid',
               gridTemplateColumns: `repeat(${Math.min(cols, section.items.length)}, 1fr)`,
@@ -375,18 +356,18 @@ function GraphicalDropdown({ menu, pathname, onClose, totalItems }: { menu: TopL
                   to={item.path}
                   onClick={onClose}
                   className={`
-                    group flex flex-col items-center text-center p-4 rounded-xl border transition-all duration-150
+                    group flex flex-col items-center text-center ${compact ? 'p-2 rounded-lg' : 'p-4 rounded-xl'} border transition-all duration-150
                     ${itemActive
                       ? `${c.bg} ${c.border} ring-2 ring-blue-200 shadow-sm`
                       : `bg-white border-gray-100 ${c.hoverBorder} hover:shadow-md hover:scale-[1.02]`
                     }
                   `}
                 >
-                  <div className={`p-2.5 rounded-xl ${c.iconBg} mb-2.5 transition-transform group-hover:scale-110`}>
-                    <ItemIcon className={`h-5 w-5 ${c.icon}`} />
+                  <div className={`${compact ? 'p-1.5 rounded-lg mb-1' : 'p-2.5 rounded-xl mb-2.5'} ${c.iconBg} transition-transform group-hover:scale-110`}>
+                    <ItemIcon className={`${compact ? 'h-4 w-4' : 'h-5 w-5'} ${c.icon}`} />
                   </div>
-                  <div className="text-[13px] font-semibold text-gray-800 leading-tight">{item.label}</div>
-                  {item.description && (
+                  <div className={`${compact ? 'text-[11px]' : 'text-[13px]'} font-semibold text-gray-800 leading-tight`}>{item.label}</div>
+                  {!compact && item.description && (
                     <div className="text-[11px] text-gray-400 mt-1 leading-snug">{item.description}</div>
                   )}
                 </Link>
@@ -495,11 +476,11 @@ export function Layout({ children }: LayoutProps) {
   // Build menus based on permissions
   const menus: TopLevelMenu[] = [];
   if (hasPermission('cashbook')) menus.push(cashbookMenu);
+  if (hasPermission('cashbook')) menus.push(gocardlessMenu);
   if (hasPermission('ap_automation')) menus.push(suppliersMenu);
+  menus.push(utilitiesMenu);
   if (hasPermission('administration')) menus.push(getAdminMenu(
     user?.is_admin || false,
-    hasPermission('payroll'),
-    hasPermission('development'),
   ));
 
   // User initials for avatar

@@ -13,6 +13,7 @@ export interface User {
   default_company: string | null;
   ui_mode: 'classic' | 'launcher';
   voice_enabled: boolean;
+  default_system: string | null;
 }
 
 export interface License {

@@ -426,9 +426,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // =====================
   type StatementSource = 'file' | 'email' | 'pdf' | 'folder';
   const [statementSource, setStatementSource] = useState<StatementSource>('email');
-  const [emailScanLoading, setEmailScanLoading] = useState(false);
-  const [emailScanDaysBack, setEmailScanDaysBack] = useState(30);
-  const [emailStatements, setEmailStatements] = useState<Array<{
+  const [, setEmailScanLoading] = useState(false);
+  const [emailScanDaysBack] = useState(30);
+  const [, setEmailStatements] = useState<Array<{
     email_id: number;
     message_id: string;
     subject: string;
@@ -448,9 +448,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     import_sequence?: number;
     statement_date?: string;
   }>>([]);
-  const [emailScanMessage, setEmailScanMessage] = useState<string | null>(null);
-  const [emailScanHasRun, setEmailScanHasRun] = useState(false);
-  const [duplicatesArchived, setDuplicatesArchived] = useState(0);
+  const [, setEmailScanMessage] = useState<string | null>(null);
+  const [, setEmailScanHasRun] = useState(false);
+  const [, setDuplicatesArchived] = useState(0);
   const [selectedEmailStatement, setSelectedEmailStatement] = useState<{
     emailId: number;
     attachmentId: string;
@@ -461,6 +461,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // FOLDER SCANNING STATE
   // =====================
   const [folderScanLoading, setFolderScanLoading] = useState(false);
+  const [analysing, setAnalysing] = useState(false);
   const [folderStatements, setFolderStatements] = useState<Array<{
     filename: string;
     full_path: string;
@@ -481,7 +482,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const [folderScanMessage, setFolderScanMessage] = useState<string | null>(null);
   const [folderScanHasRun, setFolderScanHasRun] = useState(false);
   const [folderEnabled, setFolderEnabled] = useState(false);
-  const [folderSettingsLoaded, setFolderSettingsLoaded] = useState(false);
+  const [, setFolderSettingsLoaded] = useState(false);
 
   // Load folder settings on mount to know if unified folder source should be available
   useEffect(() => {
@@ -557,7 +558,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     localStorage.getItem('bankImport_pdfDirectory') || ''
   );
   const [_pdfFileName, _setPdfFileName] = useState(''); // Reserved for future use
-  const [pdfFilesList, setPdfFilesList] = useState<Array<{
+  const [, setPdfFilesList] = useState<Array<{
     filename: string;
     modified: string;
     size_display: string;
@@ -565,12 +566,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     statement_date?: string;
     import_sequence?: number;
   }> | null>(null);
-  const [pdfFilesLoading, setPdfFilesLoading] = useState(false);
+  const [, setPdfFilesLoading] = useState(false);
   const [selectedPdfFile, setSelectedPdfFile] = useState<{
     filename: string;
     fullPath: string;
   } | null>(null);
-  const [folderSourcePath, setFolderSourcePath] = useState<string | null>(null);
+  const [, setFolderSourcePath] = useState<string | null>(null);
 
   // =====================
   // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
@@ -2313,7 +2314,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   };
 
   // Open PDF in a new browser tab from base64 data (preserves current page state)
-  const openPdfInNewTab = (base64Data: string, filename: string) => {
+  const openPdfInNewTab = (base64Data: string, _filename: string) => {
     try {
       const byteChars = atob(base64Data);
       const byteNumbers = new Array(byteChars.length);
@@ -2377,29 +2378,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       }
     } catch (error) {
       setRawFilePreview([`Error: ${error instanceof Error ? error.message : 'Failed to read file'}`]);
-      setShowRawPreview(true);
-    }
-  };
-
-  // Preview raw email attachment contents (first 50 lines) or PDF in new tab
-  const handleEmailAttachmentRawPreview = async (emailId: number, attachmentId: string) => {
-    try {
-      const response = await authFetch(`${API_BASE}/bank-import/raw-preview-email?email_id=${emailId}&attachment_id=${encodeURIComponent(attachmentId)}&lines=50`);
-      const data = await response.json();
-      if (data.success) {
-        // If it's a PDF, open in new tab to preserve page state
-        if (data.is_pdf && data.pdf_data) {
-          openPdfInNewTab(data.pdf_data, data.filename || 'document.pdf');
-        } else {
-          setRawFilePreview(data.lines);
-          setShowRawPreview(true);
-        }
-      } else {
-        setRawFilePreview([`Error: ${data.error || 'Failed to read attachment'}`]);
-        setShowRawPreview(true);
-      }
-    } catch (error) {
-      setRawFilePreview([`Error: ${error instanceof Error ? error.message : 'Failed to read attachment'}`]);
       setShowRawPreview(true);
     }
   };
@@ -2693,7 +2671,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   const hasNothingToImport = !!(importReadiness && importReadiness.totalReady === 0);
   const hasPeriodViolations = !!(importReadiness?.hasPeriodViolations);
   const hasUnhandledRepeatEntries = !!(importReadiness?.hasUnhandledRepeatEntries);
-  const importDisabled = isImporting || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || hasNothingToImport || hasPeriodViolations || hasUnhandledRepeatEntries;
 
   // Check if ALL statement transactions have been imported (not just "an import succeeded")
   // True when: import succeeded AND nothing left to select (no unposted rows remain)
@@ -2754,6 +2731,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const unhandled = itemsToCheck.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
     return unhandled.length === 0;
   })();
+
+  // Import button disabled — but NOT when all items are already in Opera or handled (allow reconcile)
+  const importDisabled = isImporting || dataSource === 'opera3' || noBankSelected || noPreview || hasIncomplete || (hasNothingToImport && !allAlreadyInOpera && !allItemsHandled) || hasPeriodViolations || hasUnhandledRepeatEntries;
 
   // Count of duplicate transactions for display
   const duplicateTransactionCount = (() => {
@@ -3362,19 +3342,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     } finally {
       setIsPreviewing(false);
     }
-  };
-
-  // View PDF file from filesystem in new tab (preserves analysis state)
-  const handlePdfFileView = (filename: string) => {
-    if (!pdfDirectory || !filename) return;
-
-    const fullPath = pdfDirectory.endsWith('/') || pdfDirectory.endsWith('\\')
-      ? pdfDirectory + filename
-      : pdfDirectory + '/' + filename;
-
-    // Open PDF directly in new tab using the file view API
-    const viewUrl = `${API_BASE}/file/view?path=${encodeURIComponent(fullPath)}`;
-    window.open(viewUrl, '_blank');
   };
 
   // Preview bank statement from PDF file (similar to email preview)
@@ -5286,7 +5253,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   });
                 }
               }}
-              disabled={!canSave}
               className={`px-4 py-2 text-sm text-white rounded-md ${
                 canSave
                   ? 'bg-blue-600 hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2'

@@ -186,6 +186,62 @@ class SupplierStatementDB:
             )
         """)
 
+        # Supplier onboarding status
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS supplier_onboarding (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_code TEXT NOT NULL UNIQUE,
+                detected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                bank_verified BOOLEAN DEFAULT 0,
+                bank_verified_by TEXT,
+                bank_verified_at DATETIME,
+                terms_confirmed BOOLEAN DEFAULT 0,
+                senders_configured BOOLEAN DEFAULT 0,
+                category TEXT DEFAULT 'standard',
+                priority INTEGER DEFAULT 5,
+                notes TEXT,
+                completed_at DATETIME
+            )
+        """)
+
+        # Contact extensions (automation-specific roles beyond Opera zcontacts)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS supplier_contacts_ext (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_code TEXT NOT NULL,
+                zcontact_id TEXT,
+                name TEXT,
+                role TEXT,
+                email TEXT,
+                phone TEXT,
+                is_statement_contact BOOLEAN DEFAULT 0,
+                is_payment_contact BOOLEAN DEFAULT 0,
+                is_query_contact BOOLEAN DEFAULT 0,
+                preferred_contact_method TEXT DEFAULT 'email',
+                notes TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Remittance advice log
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS supplier_remittance_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                supplier_code TEXT NOT NULL,
+                payment_date DATE,
+                payment_ref TEXT,
+                payment_method TEXT,
+                total_amount DECIMAL(15,2),
+                invoice_count INTEGER DEFAULT 0,
+                invoices_json TEXT,
+                sent_to TEXT,
+                sent_at DATETIME,
+                sent_by TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Indexes for performance
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_statements_supplier
@@ -220,6 +276,19 @@ class SupplierStatementDB:
             ON supplier_change_audit(verified)
         """)
 
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_onboarding_supplier
+            ON supplier_onboarding(supplier_code)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_contacts_ext_supplier
+            ON supplier_contacts_ext(supplier_code)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_remittance_supplier
+            ON supplier_remittance_log(supplier_code)
+        """)
+
         # Insert default configuration if not exists
         default_config = [
             # Immediate response settings
@@ -243,6 +312,15 @@ class SupplierStatementDB:
             # Notifications
             ('security_alert_recipients', '', 'Emails for bank detail change alerts (comma-separated)'),
             ('response_cc_email', '', 'CC email address for all sent responses'),
+
+            # Remittance advice
+            ('remittance_auto_send', 'false', 'Send remittance advice automatically after payment'),
+            ('remittance_format', 'email', 'Remittance format: email or pdf'),
+            ('remittance_cc', '', 'CC internal address on remittance'),
+
+            # Onboarding
+            ('onboarding_auto_detect', 'true', 'Auto-detect new suppliers from Opera'),
+            ('onboarding_require_bank_verify', 'true', 'Require bank detail phone verification for new suppliers'),
         ]
         for key, value, description in default_config:
             cursor.execute("""
@@ -580,6 +658,162 @@ class SupplierStatementDB:
         conn.close()
 
         return result
+
+    # Onboarding operations
+    def get_onboarding_status(self, supplier_code: str) -> Optional[Dict[str, Any]]:
+        """Get onboarding status for a supplier."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM supplier_onboarding WHERE supplier_code = ?", (supplier_code,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def create_onboarding(self, supplier_code: str, category: str = 'standard', priority: int = 5) -> int:
+        """Create onboarding record for a new supplier."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO supplier_onboarding (supplier_code, category, priority)
+            VALUES (?, ?, ?)
+        """, (supplier_code, category, priority))
+        row_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return row_id
+
+    def update_onboarding(self, supplier_code: str, **kwargs):
+        """Update onboarding fields for a supplier."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        updates = []
+        params = []
+        for key, value in kwargs.items():
+            updates.append(f'{key} = ?')
+            params.append(value)
+        if not updates:
+            conn.close()
+            return
+        params.append(supplier_code)
+        cursor.execute(f"""
+            UPDATE supplier_onboarding SET {', '.join(updates)} WHERE supplier_code = ?
+        """, params)
+        conn.commit()
+        conn.close()
+
+    def get_pending_onboarding(self) -> List[Dict[str, Any]]:
+        """Get all suppliers with incomplete onboarding."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM supplier_onboarding
+            WHERE completed_at IS NULL
+            ORDER BY priority DESC, detected_at ASC
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    # Contact extension operations
+    def get_contacts(self, supplier_code: str) -> List[Dict[str, Any]]:
+        """Get all contact extensions for a supplier."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM supplier_contacts_ext
+            WHERE supplier_code = ?
+            ORDER BY is_statement_contact DESC, is_payment_contact DESC, name
+        """, (supplier_code,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def upsert_contact(self, supplier_code: str, contact_id: Optional[int] = None, **kwargs) -> int:
+        """Create or update a contact extension."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if contact_id:
+            updates = ['updated_at = CURRENT_TIMESTAMP']
+            params = []
+            for key, value in kwargs.items():
+                updates.append(f'{key} = ?')
+                params.append(value)
+            params.append(contact_id)
+            cursor.execute(f"""
+                UPDATE supplier_contacts_ext SET {', '.join(updates)} WHERE id = ?
+            """, params)
+            result_id = contact_id
+        else:
+            cols = ['supplier_code'] + list(kwargs.keys())
+            placeholders = ', '.join(['?'] * len(cols))
+            values = [supplier_code] + list(kwargs.values())
+            cursor.execute(f"""
+                INSERT INTO supplier_contacts_ext ({', '.join(cols)}) VALUES ({placeholders})
+            """, values)
+            result_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return result_id
+
+    def delete_contact(self, contact_id: int):
+        """Delete a contact extension."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM supplier_contacts_ext WHERE id = ?", (contact_id,))
+        conn.commit()
+        conn.close()
+
+    def get_statement_contact(self, supplier_code: str) -> Optional[Dict[str, Any]]:
+        """Get the designated statement contact for a supplier."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM supplier_contacts_ext
+            WHERE supplier_code = ? AND is_statement_contact = 1
+            LIMIT 1
+        """, (supplier_code,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    # Remittance log operations
+    def log_remittance(self, supplier_code: str, payment_date: str, payment_ref: str,
+                       payment_method: str, total_amount: float, invoice_count: int,
+                       invoices_json: str, sent_to: str, sent_by: Optional[str] = None) -> int:
+        """Log a sent remittance advice."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO supplier_remittance_log
+            (supplier_code, payment_date, payment_ref, payment_method, total_amount,
+             invoice_count, invoices_json, sent_to, sent_at, sent_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        """, (supplier_code, payment_date, payment_ref, payment_method, total_amount,
+              invoice_count, invoices_json, sent_to, sent_by))
+        result_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return result_id
+
+    def get_remittance_history(self, supplier_code: Optional[str] = None,
+                               limit: int = 50) -> List[Dict[str, Any]]:
+        """Get remittance advice history."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if supplier_code:
+            cursor.execute("""
+                SELECT * FROM supplier_remittance_log
+                WHERE supplier_code = ?
+                ORDER BY sent_at DESC LIMIT ?
+            """, (supplier_code, limit))
+        else:
+            cursor.execute("""
+                SELECT * FROM supplier_remittance_log
+                ORDER BY sent_at DESC LIMIT ?
+            """, (limit,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
 
     # Communication log
     def log_communication(
