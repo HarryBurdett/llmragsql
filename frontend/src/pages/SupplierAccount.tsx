@@ -245,6 +245,7 @@ export function SupplierAccount() {
               onChange={(e) => handleSearchInput(e.target.value)}
               onKeyDown={handleKeyPress}
               onFocus={() => searchResults.length > 0 && setShowSearch(true)}
+              onBlur={() => setTimeout(() => setShowSearch(false), 200)}
               className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
             />
             {/* Search Results Dropdown */}
@@ -261,13 +262,22 @@ export function SupplierAccount() {
                   </div>
                 ) : (
                   searchResults.map((s) => (
-                    <button
+                    <div
                       key={s.account}
+                      role="button"
+                      tabIndex={0}
                       onMouseDown={(e) => {
                         e.preventDefault();
+                        e.stopPropagation();
                         selectSupplier(s.account);
                       }}
-                      className="w-full px-3 py-2 text-left hover:bg-gray-50 border-b border-gray-100 last:border-0"
+                      onClick={() => selectSupplier(s.account)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          selectSupplier(s.account);
+                        }
+                      }}
+                      className="w-full px-3 py-2 text-left hover:bg-blue-50 hover:text-blue-900 border-b border-gray-100 last:border-0 cursor-pointer transition-colors"
                     >
                       <div className="flex justify-between items-start">
                         <div>
@@ -285,7 +295,7 @@ export function SupplierAccount() {
                           {formatCurrency(s.balance)}
                         </span>
                       </div>
-                    </button>
+                    </div>
                   ))
                 )}
               </div>
