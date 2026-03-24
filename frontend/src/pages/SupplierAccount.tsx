@@ -172,13 +172,26 @@ function SupplierAccountSearch({
             onKeyDown={(e) => {
               if (e.key === 'ArrowDown') {
                 e.preventDefault();
-                setHighlightIndex(prev => Math.min(prev + 1, results.length - 1));
+                if (results.length === 0 && search.length >= 2) {
+                  // Force search if not yet triggered
+                  setDebouncedSearch(search);
+                } else if (results.length > 0) {
+                  setHighlightIndex(prev => prev < results.length - 1 ? prev + 1 : prev);
+                }
               } else if (e.key === 'ArrowUp') {
                 e.preventDefault();
-                setHighlightIndex(prev => Math.max(prev - 1, 0));
-              } else if (e.key === 'Enter' && results.length > 0) {
+                setHighlightIndex(prev => prev > 0 ? prev - 1 : 0);
+              } else if (e.key === 'Enter') {
                 e.preventDefault();
-                handleSelect(results[highlightIndex]);
+                if (results.length > 0) {
+                  const idx = Math.min(highlightIndex, results.length - 1);
+                  handleSelect(results[idx]);
+                } else if (search.trim()) {
+                  // Direct account code entry
+                  onChange(search.trim().toUpperCase(), '');
+                  setSearch('');
+                  setDebouncedSearch('');
+                }
               } else if (e.key === 'Escape') {
                 e.preventDefault();
                 setSearch('');
