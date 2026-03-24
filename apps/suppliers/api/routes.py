@@ -2441,6 +2441,46 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
     return "\n".join(response_lines)
 
 
+@router.get("/api/supplier-statements/queue")
+async def get_supplier_statement_queue():
+    """Get statements in the active queue (received or processing status)."""
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "statements": []}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                ss.id, ss.supplier_code, ss.statement_date, ss.received_date, ss.status,
+                ss.sender_email, ss.opening_balance, ss.closing_balance, ss.currency,
+                ss.error_message,
+                COUNT(sl.id) as line_count,
+                SUM(CASE WHEN sl.match_status = 'matched' THEN 1 ELSE 0 END) as matched_count,
+                SUM(CASE WHEN sl.match_status = 'query' THEN 1 ELSE 0 END) as query_count
+            FROM supplier_statements ss
+            LEFT JOIN statement_lines sl ON sl.statement_id = ss.id
+            WHERE ss.status IN ('received', 'processing')
+            GROUP BY ss.id
+            ORDER BY ss.received_date DESC
+        """)
+
+        statements = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        return {"success": True, "statements": statements}
+
+    except Exception as e:
+        logger.error(f"Error fetching statement queue: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/api/supplier-statements/{statement_id}")
 async def get_supplier_statement_detail(statement_id: int):
     """Get detailed information about a specific statement."""

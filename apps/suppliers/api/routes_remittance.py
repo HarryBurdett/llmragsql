@@ -260,18 +260,33 @@ async def get_recent_payments(
             # Get allocated invoices from palloc
             invoices = []
             if payflag > 0:
-                alloc_df = sql_connector.execute_query(f"""
-                    SELECT
-                        RTRIM(pl_ref1) AS ref,
-                        pl_date AS alloc_date,
-                        pl_val AS alloc_amount,
-                        pl_type
-                    FROM palloc WITH (NOLOCK)
-                    WHERE RTRIM(pl_account) = '{acct}'
-                      AND pl_payflag = {payflag}
-                      AND pl_type = 'I'
-                    ORDER BY pl_date
-                """)
+                try:
+                    alloc_df = sql_connector.execute_query(f"""
+                        SELECT
+                            RTRIM(pl_ref1) AS ref,
+                            pl_date AS alloc_date,
+                            pl_val AS alloc_amount,
+                            pl_type
+                        FROM palloc WITH (NOLOCK)
+                        WHERE RTRIM(pl_account) = '{acct}'
+                          AND pl_payflag = {payflag}
+                          AND pl_type = 'I'
+                        ORDER BY pl_date
+                    """)
+                except Exception:
+                    # Retry with al_ prefix column names (alternate Opera schema)
+                    alloc_df = sql_connector.execute_query(f"""
+                        SELECT
+                            RTRIM(al_ref1) AS ref,
+                            al_date AS alloc_date,
+                            al_val AS alloc_amount,
+                            al_type
+                        FROM palloc WITH (NOLOCK)
+                        WHERE RTRIM(al_account) = '{acct}'
+                          AND al_payflag = {payflag}
+                          AND al_type = 'I'
+                        ORDER BY al_date
+                    """)
 
                 if alloc_df is not None and len(alloc_df) > 0:
                     for _, alloc_row in alloc_df.iterrows():
@@ -369,18 +384,33 @@ async def generate_remittance(
         # Get allocated invoices
         invoices = []
         if payflag > 0:
-            alloc_df = sql_connector.execute_query(f"""
-                SELECT
-                    RTRIM(pl_ref1) AS ref,
-                    pl_date AS alloc_date,
-                    pl_val AS alloc_amount,
-                    pl_type
-                FROM palloc WITH (NOLOCK)
-                WHERE RTRIM(pl_account) = '{account}'
-                  AND pl_payflag = {payflag}
-                  AND pl_type = 'I'
-                ORDER BY pl_date
-            """)
+            try:
+                alloc_df = sql_connector.execute_query(f"""
+                    SELECT
+                        RTRIM(pl_ref1) AS ref,
+                        pl_date AS alloc_date,
+                        pl_val AS alloc_amount,
+                        pl_type
+                    FROM palloc WITH (NOLOCK)
+                    WHERE RTRIM(pl_account) = '{account}'
+                      AND pl_payflag = {payflag}
+                      AND pl_type = 'I'
+                    ORDER BY pl_date
+                """)
+            except Exception:
+                # Retry with al_ prefix column names (alternate Opera schema)
+                alloc_df = sql_connector.execute_query(f"""
+                    SELECT
+                        RTRIM(al_ref1) AS ref,
+                        al_date AS alloc_date,
+                        al_val AS alloc_amount,
+                        al_type
+                    FROM palloc WITH (NOLOCK)
+                    WHERE RTRIM(al_account) = '{account}'
+                      AND al_payflag = {payflag}
+                      AND al_type = 'I'
+                    ORDER BY al_date
+                """)
 
             if alloc_df is not None and len(alloc_df) > 0:
                 for _, alloc_row in alloc_df.iterrows():
@@ -499,17 +529,31 @@ async def send_remittance(account: str, body: SendRemittanceRequest):
         # Get allocated invoices for the log
         invoices = []
         if payflag > 0:
-            alloc_df = sql_connector.execute_query(f"""
-                SELECT
-                    RTRIM(pl_ref1) AS ref,
-                    pl_date AS alloc_date,
-                    pl_val AS alloc_amount
-                FROM palloc WITH (NOLOCK)
-                WHERE RTRIM(pl_account) = '{account}'
-                  AND pl_payflag = {payflag}
-                  AND pl_type = 'I'
-                ORDER BY pl_date
-            """)
+            try:
+                alloc_df = sql_connector.execute_query(f"""
+                    SELECT
+                        RTRIM(pl_ref1) AS ref,
+                        pl_date AS alloc_date,
+                        pl_val AS alloc_amount
+                    FROM palloc WITH (NOLOCK)
+                    WHERE RTRIM(pl_account) = '{account}'
+                      AND pl_payflag = {payflag}
+                      AND pl_type = 'I'
+                    ORDER BY pl_date
+                """)
+            except Exception:
+                # Retry with al_ prefix column names (alternate Opera schema)
+                alloc_df = sql_connector.execute_query(f"""
+                    SELECT
+                        RTRIM(al_ref1) AS ref,
+                        al_date AS alloc_date,
+                        al_val AS alloc_amount
+                    FROM palloc WITH (NOLOCK)
+                    WHERE RTRIM(al_account) = '{account}'
+                      AND al_payflag = {payflag}
+                      AND al_type = 'I'
+                    ORDER BY al_date
+                """)
 
             if alloc_df is not None and len(alloc_df) > 0:
                 for _, alloc_row in alloc_df.iterrows():

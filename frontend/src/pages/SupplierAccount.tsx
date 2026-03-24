@@ -7,7 +7,7 @@ import {
   Search,
   ArrowLeft,
 } from 'lucide-react';
-import axios from 'axios';
+import { authFetch } from '../api/client';
 import { PageHeader, LoadingState, EmptyState, Alert } from '../components/ui';
 
 interface SupplierDetails {
@@ -111,10 +111,13 @@ export function SupplierAccount() {
   // Load first supplier by default if no account specified
   useEffect(() => {
     if (!accountCode) {
-      axios.get('/api/supplier/account/first').then((response) => {
-        if (response.data.success && response.data.account) {
-          setActiveAccount(response.data.account);
-          setSearchQuery(response.data.account);
+      authFetch('/api/supplier/account/first').then((response) => {
+        if (!response.ok) return;
+        return response.json();
+      }).then((data) => {
+        if (data?.success && data.account) {
+          setActiveAccount(data.account);
+          setSearchQuery(data.account);
         }
       }).catch(() => {});
     }
@@ -124,8 +127,9 @@ export function SupplierAccount() {
   const accountQuery = useQuery<SupplierAccountResponse>({
     queryKey: ['supplierAccount', activeAccount],
     queryFn: async () => {
-      const response = await axios.get(`/api/supplier/account/${activeAccount}`);
-      return response.data;
+      const response = await authFetch(`/api/supplier/account/${activeAccount}`);
+      if (!response.ok) throw new Error(`Failed to load supplier: ${response.statusText}`);
+      return response.json();
     },
     enabled: !!activeAccount,
     staleTime: 5 * 60 * 1000,
@@ -136,8 +140,9 @@ export function SupplierAccount() {
   const searchResultsQuery = useQuery<SearchResponse>({
     queryKey: ['supplierSearch', debouncedSearch],
     queryFn: async () => {
-      const response = await axios.get<SearchResponse>(`/api/creditors/search?query=${encodeURIComponent(debouncedSearch)}`);
-      return response.data;
+      const response = await authFetch(`/api/creditors/search?query=${encodeURIComponent(debouncedSearch)}`);
+      if (!response.ok) throw new Error(`Search failed: ${response.statusText}`);
+      return response.json() as Promise<SearchResponse>;
     },
     enabled: debouncedSearch.length >= 2,
     staleTime: 30000,

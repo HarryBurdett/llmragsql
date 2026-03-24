@@ -550,8 +550,8 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
   const plotHeight = chartHeight - padding.top - padding.bottom;
 
   // Compute totals per period to find max
-  const totals = data.map(d => d.current + d.days30 + d.days60 + d.days90 + d.days120);
-  const maxTotal = Math.max(...totals, 1);
+  const totals = data.map(d => (d.current || 0) + (d.days30 || 0) + (d.days60 || 0) + (d.days90 || 0) + (d.days120 || 0));
+  const maxTotal = totals.length > 0 ? Math.max(...totals, 1) : 1;
 
   const barWidth = Math.min(60, plotWidth / data.length - 8);
   const barGap = (plotWidth - barWidth * data.length) / (data.length + 1);
@@ -578,7 +578,7 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
         {/* Y-axis grid lines and labels */}
         {Array.from({ length: yTicks + 1 }).map((_, i) => {
           const value = yStep * i;
-          const y = padding.top + plotHeight - (value / maxTotal) * plotHeight;
+          const y = padding.top + plotHeight - ((value / maxTotal) * plotHeight || 0);
           return (
             <g key={`y-${i}`}>
               <line
@@ -610,9 +610,9 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
           return (
             <g key={point.period}>
               {buckets.map(bucket => {
-                const val = point[bucket.key] as number;
-                const barH = (val / maxTotal) * plotHeight;
-                const y = padding.top + plotHeight - cumY - barH;
+                const val = (point[bucket.key] as number) || 0;
+                const barH = (val / maxTotal) * plotHeight || 0;
+                const y = (padding.top + plotHeight - cumY - barH) || 0;
                 cumY += barH;
 
                 if (val === 0) return null;
@@ -620,9 +620,9 @@ function TrendChart({ data }: { data: TrendPoint[] }) {
                 return (
                   <rect
                     key={bucket.key}
-                    x={x}
+                    x={x || 0}
                     y={y}
-                    width={barWidth}
+                    width={barWidth || 0}
                     height={Math.max(barH, 0)}
                     fill={bucket.color}
                     rx={2}
