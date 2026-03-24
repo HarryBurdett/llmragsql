@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
@@ -103,6 +103,19 @@ export function SupplierAccount() {
   const [viewFilter, setViewFilter] = useState<'outstanding' | 'all'>('outstanding');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on click outside
+  useEffect(() => {
+    if (!showSearch) return;
+    const handler = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setShowSearch(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showSearch]);
 
   // Debounce search query - only search after 300ms of no typing
   useEffect(() => {
@@ -236,7 +249,7 @@ export function SupplierAccount() {
           <ArrowLeft className="h-5 w-5 text-gray-600" />
         </button>
         <div className="flex items-center gap-2">
-          <div className="relative">
+          <div className="relative" ref={searchContainerRef}>
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <input
               type="text"
@@ -245,7 +258,6 @@ export function SupplierAccount() {
               onChange={(e) => handleSearchInput(e.target.value)}
               onKeyDown={handleKeyPress}
               onFocus={() => searchResults.length > 0 && setShowSearch(true)}
-              onBlur={() => setTimeout(() => setShowSearch(false), 200)}
               className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
             />
             {/* Search Results Dropdown */}
@@ -264,20 +276,8 @@ export function SupplierAccount() {
                   searchResults.map((s) => (
                     <div
                       key={s.account}
-                      role="button"
-                      tabIndex={0}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        selectSupplier(s.account);
-                      }}
                       onClick={() => selectSupplier(s.account)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          selectSupplier(s.account);
-                        }
-                      }}
-                      className="w-full px-3 py-2 text-left hover:bg-blue-50 hover:text-blue-900 border-b border-gray-100 last:border-0 cursor-pointer transition-colors"
+                      className="w-full px-3 py-2 text-left hover:bg-blue-100 border-b border-gray-100 last:border-0 cursor-pointer select-none"
                     >
                       <div className="flex justify-between items-start">
                         <div>
