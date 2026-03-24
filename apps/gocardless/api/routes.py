@@ -6384,6 +6384,44 @@ async def link_gocardless_mandate(
         return {"success": False, "error": str(e)}
 
 
+@router.post("/api/gocardless/mandates/{mandate_id}/cancel")
+async def cancel_gocardless_mandate(mandate_id: str):
+    """
+    Cancel a mandate in GoCardless and update local record.
+    This is irreversible — the customer will need to set up a new mandate.
+    """
+    try:
+        gc_settings = _load_gocardless_settings()
+        from sql_rag.gocardless_api import create_client_from_settings
+        client = create_client_from_settings(gc_settings)
+        if not client:
+            return {"success": False, "error": "GoCardless not configured"}
+
+        # Cancel on GoCardless
+        try:
+            result = client.mandates.cancel(mandate_id)
+            gc_status = result.status if hasattr(result, 'status') else 'cancelled'
+        except Exception as gc_err:
+            err_msg = str(gc_err)
+            if 'already' in err_msg.lower() and 'cancel' in err_msg.lower():
+                gc_status = 'cancelled'
+            else:
+                return {"success": False, "error": f"GoCardless API error: {err_msg}"}
+
+        # Update local record
+        payments_db = get_payments_db()
+        payments_db.update_mandate_status(mandate_id, gc_status)
+
+        return {
+            "success": True,
+            "message": f"Mandate {mandate_id} cancelled",
+            "status": gc_status
+        }
+    except Exception as e:
+        logger.error(f"Error cancelling mandate: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @router.delete("/api/gocardless/mandates/{mandate_id}")
 async def unlink_gocardless_mandate(mandate_id: str):
     """

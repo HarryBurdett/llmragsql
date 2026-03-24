@@ -1799,6 +1799,30 @@ function GoCardlessRequestsInner() {
                                   <Link className="w-3 h-3" />
                                   {isLinked ? 'Linked' : 'Link'}
                                 </button>
+                                {mandate.mandate_status === 'active' && (
+                                  <button
+                                    onClick={() => {
+                                      if (window.confirm(
+                                        `CANCEL MANDATE\n${'='.repeat(30)}\n\nThis will permanently cancel the Direct Debit mandate for:\n${mandate.opera_name || mandate.gocardless_name || mandate.mandate_id}\n\nThe customer will no longer be able to make payments via this mandate.\nA new mandate will need to be set up if required.\n\nAre you sure you want to cancel?`
+                                      )) {
+                                        authFetch(gcUrl(`/mandates/${mandate.mandate_id}/cancel`), { method: 'POST' })
+                                          .then(r => r.json())
+                                          .then(d => {
+                                            if (d.success) {
+                                              refetchMandates();
+                                            } else {
+                                              alert(`Failed to cancel: ${d.error}`);
+                                            }
+                                          })
+                                          .catch(err => alert(`Error: ${err.message}`));
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 ml-1"
+                                  >
+                                    <X className="w-3 h-3" />
+                                    Cancel
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           );
