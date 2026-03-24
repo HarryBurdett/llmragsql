@@ -134,6 +134,11 @@ function SupplierAccountSearch({
     gcTime: 60000,
   });
 
+  const [highlightIndex, setHighlightIndex] = useState(0);
+
+  // Reset highlight when results change
+  useEffect(() => { setHighlightIndex(0); }, [results]);
+
   const handleSelect = (s: {account: string; name: string}) => {
     onChange(s.account, s.name);
     setSelectedName(s.name);
@@ -165,9 +170,15 @@ function SupplierAccountSearch({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && results.length > 0) {
+              if (e.key === 'ArrowDown') {
                 e.preventDefault();
-                handleSelect(results[0]);
+                setHighlightIndex(prev => Math.min(prev + 1, results.length - 1));
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setHighlightIndex(prev => Math.max(prev - 1, 0));
+              } else if (e.key === 'Enter' && results.length > 0) {
+                e.preventDefault();
+                handleSelect(results[highlightIndex]);
               } else if (e.key === 'Escape') {
                 e.preventDefault();
                 setSearch('');
@@ -182,12 +193,15 @@ function SupplierAccountSearch({
       )}
       {results.length > 0 && !value && (
         <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-          {results.map((s) => (
+          {results.map((s, idx) => (
             <button
               key={s.account}
               type="button"
-              className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-b-0 hover:bg-blue-50"
+              className={`w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-b-0 ${
+                idx === highlightIndex ? 'bg-blue-100 text-blue-900' : 'hover:bg-blue-50'
+              }`}
               onClick={() => handleSelect(s)}
+              onMouseEnter={() => setHighlightIndex(idx)}
             >
               <div className="font-medium">{s.name}</div>
               <div className="text-sm text-gray-500">{s.account} • {s.balance.toLocaleString('en-GB', {minimumFractionDigits: 2})}</div>
@@ -209,6 +223,14 @@ export function SupplierAccount() {
   const [viewFilter, setViewFilter] = useState<'outstanding' | 'all'>('outstanding');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+
+  // Sync activeAccount when URL changes (e.g., after navigate)
+  useEffect(() => {
+    if (accountCode && accountCode !== activeAccount) {
+      setActiveAccount(accountCode);
+    }
+  }, [accountCode]);
+
   // Load first supplier by default if no account specified
   useEffect(() => {
     if (!accountCode) {
