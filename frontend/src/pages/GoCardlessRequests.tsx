@@ -1738,7 +1738,8 @@ function GoCardlessRequestsInner() {
                           <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">GoCardless Name</th>
                           <th className="px-3 py-2 text-left text-xs font-medium text-green-800 uppercase">Mandate ID</th>
                           <th className="px-3 py-2 text-center text-xs font-medium text-green-800 uppercase">Status</th>
-                          <th className="px-3 py-2 text-center text-xs font-medium text-green-800 uppercase">Action</th>
+                          <th className="px-3 py-2 text-center text-xs font-medium text-green-800 uppercase">Link</th>
+                          <th className="px-3 py-2 text-center text-xs font-medium text-green-800 uppercase">Delete</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-green-100 bg-white">
@@ -1799,11 +1800,13 @@ function GoCardlessRequestsInner() {
                                   <Link className="w-3 h-3" />
                                   {isLinked ? 'Linked' : 'Link'}
                                 </button>
-                                {mandate.mandate_status === 'active' && (
+                              </td>
+                              <td className="px-3 py-2 text-center">
+                                {mandate.mandate_status === 'active' ? (
                                   <button
                                     onClick={() => {
                                       if (window.confirm(
-                                        `CANCEL MANDATE\n${'='.repeat(30)}\n\nThis will permanently cancel the Direct Debit mandate for:\n${mandate.opera_name || mandate.gocardless_name || mandate.mandate_id}\n\nThe customer will no longer be able to make payments via this mandate.\nA new mandate will need to be set up if required.\n\nAre you sure you want to cancel?`
+                                        `DELETE MANDATE\n${'='.repeat(30)}\n\nThis will permanently cancel the Direct Debit mandate for:\n${mandate.opera_name || mandate.gocardless_name || mandate.mandate_id}\n\nThe customer will no longer be able to make payments via this mandate.\nA new mandate will need to be set up if required.\n\nAre you sure?`
                                       )) {
                                         authFetch(gcUrl(`/mandates/${mandate.mandate_id}/cancel`), { method: 'POST' })
                                           .then(r => r.json())
@@ -1817,11 +1820,13 @@ function GoCardlessRequestsInner() {
                                           .catch(err => alert(`Error: ${err.message}`));
                                       }
                                     }}
-                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 ml-1"
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200"
                                   >
-                                    <X className="w-3 h-3" />
-                                    Cancel
+                                    <Ban className="w-3 h-3" />
+                                    Delete
                                   </button>
+                                ) : (
+                                  <span className="text-xs text-gray-400">{mandate.mandate_status}</span>
                                 )}
                               </td>
                             </tr>
