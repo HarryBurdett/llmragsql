@@ -154,6 +154,14 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 
 ## Development Guidelines
 
+### Automation First (MANDATORY)
+**CRITICAL**: This system automates the accounts function. It is NOT "just another piece of software". Every feature must reduce manual effort, not create it.
+- **The system does the work** — presents decisions, not forms. If a user has to type data the system could derive, the design has failed.
+- **Minimal user input** — only ask when absolutely necessary (approvals, exceptions, one-time setup).
+- **Separate workflow from setup** — every module must clearly divide daily automated workflow from one-time configuration. Menus must reflect this: workflow items prominent, setup items secondary.
+- **Applies to ALL modules** — Cashbook, GoCardless, Suppliers, everything.
+- **If it needs explaining, it's too complex** — intuitive by default.
+
 ### Knowledge Base Must Be Updated (MANDATORY)
 **CRITICAL**: When any Opera-related knowledge is learned, corrected, or changed — whether posting rules, table structures, field conventions, matching logic, or integration patterns — the knowledge base at `apps/core/docs/opera_knowledge_base.md` MUST be updated in the same commit. This is the single source of truth for Opera integration knowledge. Stale or missing knowledge causes repeated bugs.
 
