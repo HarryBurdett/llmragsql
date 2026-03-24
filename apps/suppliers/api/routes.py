@@ -3567,10 +3567,7 @@ async def get_supplier_account_view(
                 pn_currbal AS current_balance,
                 ISNULL(pn_ordrbal, 0) AS order_balance,
                 pn_trnover AS turnover,
-                ISNULL(pn_crlim, 0) AS credit_limit,
-                ISNULL(pn_avgday, 0) AS avg_creditor_days,
-                pn_fcreate AS first_created,
-                pn_fmodify AS last_modified
+                ISNULL(pn_crlim, 0) AS credit_limit
             FROM pname WITH (NOLOCK)
             WHERE pn_account = '{account}'
         """
