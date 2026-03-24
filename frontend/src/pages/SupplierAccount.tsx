@@ -95,38 +95,30 @@ export function SupplierAccount() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const accountCode = searchParams.get('account') || '';
-  const [searchQuery, setSearchQuery] = useState(accountCode);
+  const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeAccount, setActiveAccount] = useState(accountCode);
   const [activeTab, setActiveTab] = useState<TabType>('general');
-  const [showSearch, setShowSearch] = useState(false);
   const [viewFilter, setViewFilter] = useState<'outstanding' | 'all'>('outstanding');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const searchContainerRef = useRef<HTMLDivElement>(null);
+  const searchWrapperRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown on click outside
+  // Close dropdown on click outside — same pattern as GoCardless CustomerAccountSearch
   useEffect(() => {
-    if (!showSearch) return;
-    const handler = (e: MouseEvent) => {
-      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
-        setShowSearch(false);
+    function handleClickOutside(event: MouseEvent) {
+      if (searchWrapperRef.current && !searchWrapperRef.current.contains(event.target as Node)) {
+        setDebouncedSearch('');
       }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [showSearch]);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
-  // Debounce search query - only search after 300ms of no typing
+  // Debounce search
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (searchQuery.length >= 2) {
-        setDebouncedSearch(searchQuery);
-        setShowSearch(true);
-      } else {
-        setDebouncedSearch('');
-        setShowSearch(false);
-      }
+      setDebouncedSearch(searchQuery);
     }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
@@ -178,34 +170,20 @@ export function SupplierAccount() {
   const searchResults = searchResultsQuery.data?.suppliers || [];
   const isSearching = searchResultsQuery.isLoading;
 
-  // Handle search input - just update state, debounce handles the rest
-  const handleSearchInput = (value: string) => {
-    setSearchQuery(value);
+  // Go button handler
+  const handleGoClick = () => {
+    if (searchResults.length > 0) {
+      selectSupplier(searchResults[0].account);
+    } else if (searchQuery.trim()) {
+      selectSupplier(searchQuery.trim().toUpperCase());
+    }
   };
 
   const selectSupplier = (account: string) => {
     setActiveAccount(account);
     setSearchQuery('');
     setDebouncedSearch('');
-    setShowSearch(false);
     navigate(`/supplier/account?account=${account}`);
-  };
-
-  const handleSearch = () => {
-    if (searchQuery.trim()) {
-      setActiveAccount(searchQuery.trim().toUpperCase());
-      setShowSearch(false);
-      navigate(`/supplier/account?account=${searchQuery.trim().toUpperCase()}`);
-    }
-  };
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSearch();
-    }
-    if (e.key === 'Escape') {
-      setShowSearch(false);
-    }
   };
 
   const formatDate = (dateStr: string | null): string => {
@@ -249,60 +227,58 @@ export function SupplierAccount() {
           <ArrowLeft className="h-5 w-5 text-gray-600" />
         </button>
         <div className="flex items-center gap-2">
-          <div className="relative" ref={searchContainerRef}>
+          <div className="relative" ref={searchWrapperRef}>
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <input
               type="text"
               placeholder="Search supplier..."
               value={searchQuery}
-              onChange={(e) => handleSearchInput(e.target.value)}
-              onKeyDown={handleKeyPress}
-              onFocus={() => searchResults.length > 0 && setShowSearch(true)}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (searchResults.length > 0) {
+                    selectSupplier(searchResults[0].account);
+                  } else if (searchQuery.trim()) {
+                    selectSupplier(searchQuery.trim().toUpperCase());
+                  }
+                } else if (e.key === 'Escape') {
+                  setSearchQuery('');
+                  setDebouncedSearch('');
+                }
+              }}
               className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
             />
-            {/* Search Results Dropdown */}
-            {showSearch && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-64 overflow-y-auto">
-                {isSearching ? (
-                  <div className="p-3 text-center text-gray-500 text-sm">
-                    <RefreshCw className="h-4 w-4 animate-spin inline mr-2" />
-                    Searching...
-                  </div>
-                ) : searchResults.length === 0 ? (
-                  <div className="p-3 text-center text-gray-500 text-sm">
-                    No suppliers found
-                  </div>
-                ) : (
-                  searchResults.map((s) => (
-                    <div
-                      key={s.account}
-                      onClick={() => selectSupplier(s.account)}
-                      className="w-full px-3 py-2 text-left hover:bg-blue-100 border-b border-gray-100 last:border-0 cursor-pointer select-none"
-                    >
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <div>
-                            <span className="font-medium text-gray-900">{s.account}</span>
-                            <span className="text-gray-700 ml-2">{s.supplier_name}</span>
-                          </div>
-                          {(s.address1 || s.address2 || s.postcode) && (
-                            <div className="text-xs text-gray-500 mt-0.5">
-                              {[s.address1, s.address2, s.postcode].filter(Boolean).join(', ')}
-                            </div>
-                          )}
-                        </div>
-                        <span className={`text-sm font-mono ${(s.balance || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                          {formatCurrency(s.balance)}
-                        </span>
+            {isSearching && (
+              <RefreshCw className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 animate-spin" />
+            )}
+            {/* Search Results Dropdown — same pattern as GoCardless CustomerAccountSearch */}
+            {searchResults.length > 0 && debouncedSearch.length >= 2 && (
+              <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+                {searchResults.map((s) => (
+                  <button
+                    key={s.account}
+                    type="button"
+                    className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-b-0 hover:bg-blue-50"
+                    onClick={() => selectSupplier(s.account)}
+                  >
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="font-medium">{s.account} — {s.supplier_name}</div>
+                        {(s.address1 || s.postcode) && (
+                          <div className="text-xs text-gray-500">{[s.address1, s.postcode].filter(Boolean).join(', ')}</div>
+                        )}
                       </div>
+                      <span className={`text-sm font-mono ${(s.balance || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+                        {formatCurrency(s.balance)}
+                      </span>
                     </div>
-                  ))
-                )}
+                  </button>
+                ))}
               </div>
             )}
           </div>
           <button
-            onClick={handleSearch}
+            onClick={handleGoClick}
             className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
             Go
