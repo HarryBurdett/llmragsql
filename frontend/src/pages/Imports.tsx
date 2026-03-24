@@ -2729,11 +2729,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       ? [...receipts, ...payments, ...refunds].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
       : needsImport;
     const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
-    const result = needsImportExcludingUnmatched.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
-    if (bankRecOnly) {
-      console.log('allAlreadyInOpera:', result, 'needsExcl:', needsImportExcludingUnmatched.length, 'dupCount:', duplicateCount, 'alreadyPosted:', bankPreview.already_posted?.length);
+    // In bankRecOnly mode: if there are already-posted items, allow reconciliation
+    // regardless of what else is on the statement (user handles rest manually in Opera)
+    if (bankRecOnly && (bankPreview.already_posted?.length || 0) > 0) {
+      return true;
     }
-    return result;
+    return needsImportExcludingUnmatched.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
   })();
 
   // All items are accounted for (imported, in Opera, or ignored) — user can proceed to reconcile
