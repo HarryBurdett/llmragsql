@@ -105,7 +105,11 @@ async def aged_creditors_summary():
                 p.pt_trdate,
                 p.pt_dueday,
                 RTRIM(p.pt_trtype) AS pt_trtype,
-                RTRIM(p.pt_paid) AS pt_paid
+                RTRIM(p.pt_paid) AS pt_paid,
+                RTRIM(ISNULL(p.pt_fcurr, '')) AS pt_fcurr,
+                ISNULL(p.pt_fcrate, 0) AS pt_fcrate,
+                ISNULL(p.pt_fcbal, 0) AS pt_fcbal,
+                ISNULL(p.pt_fcdec, 0) AS pt_fcdec
             FROM ptran p WITH (NOLOCK)
             INNER JOIN pname n WITH (NOLOCK) ON n.pn_account = p.pt_account
             WHERE p.pt_trbal <> 0
@@ -158,6 +162,15 @@ async def aged_creditors_summary():
             else:
                 bucket = "days_90"
 
+            # Foreign currency
+            fc_curr = str(row.get("pt_fcurr", "")).strip()
+            fc_rate = float(row.get("pt_fcrate", 0) or 0)
+            fc_bal = float(row.get("pt_fcbal", 0) or 0)
+            fc_dec = int(float(row.get("pt_fcdec", 0) or 0))
+            # Convert foreign currency from minor units
+            if fc_dec > 0 and fc_bal != 0:
+                fc_bal = fc_bal / (10 ** fc_dec)
+
             if account not in supplier_data:
                 supplier_data[account] = {
                     "account": account,
@@ -168,9 +181,14 @@ async def aged_creditors_summary():
                     "current": 0.0,
                     "balance": currbal,
                     "unallocated": 0.0,
+                    "currency": fc_curr if fc_curr else "GBP",
+                    "fc_rate": fc_rate if fc_curr else 0,
+                    "fc_balance": 0.0,
                 }
 
             supplier_data[account][bucket] += balance
+            if fc_curr:
+                supplier_data[account]["fc_balance"] += fc_bal
 
         # Calculate unallocated per supplier and build summary
         suppliers = []
