@@ -91,10 +91,27 @@ async def aged_creditors_summary():
         raise HTTPException(status_code=503, detail="Database connection not available")
 
     try:
-        # Calculate aging from ptran at report time (same as Opera).
-        # Opera ages by due date (pt_dueday) with 30-day periods from pparm.pp_percday.
-        # If no due date, falls back to transaction date.
         today = date.today()
+
+        # Read aging period configuration from pparm
+        period_label = "30 Days"
+        period_mode = "days"  # "days" or "months"
+        period_days = 30
+        try:
+            pparm_df = sql_connector.execute_query(
+                "SELECT pp_period, pp_percday FROM pparm WITH (NOLOCK)"
+            )
+            if pparm_df is not None and not pparm_df.empty:
+                pp_period = str(pparm_df.iloc[0].get("pp_period", "")).strip()
+                pp_percday = float(pparm_df.iloc[0].get("pp_percday", 0) or 0)
+                if pp_period:
+                    period_label = pp_period
+                    if "month" in pp_period.lower():
+                        period_mode = "months"
+                    elif pp_percday > 0:
+                        period_days = int(pp_percday)
+        except Exception:
+            pass
 
         query = """
             SELECT
@@ -148,19 +165,31 @@ async def aged_creditors_summary():
             if age_date is None:
                 age_date = today
 
-            # All outstanding transactions aged by date into 30-day buckets
-            # Reference date includes the pparm offset (pp_sugdays)
-            days_old = (aging_ref_date - age_date).days
-            if days_old < 0:
-                days_old = 0
-            if days_old < 30:
-                bucket = "current"
-            elif days_old < 60:
-                bucket = "days_30"
-            elif days_old < 90:
-                bucket = "days_60"
+            # Age transactions based on pparm period setting
+            if period_mode == "months":
+                # Calendar month aging
+                months_old = (today.year - age_date.year) * 12 + (today.month - age_date.month)
+                if months_old <= 0:
+                    bucket = "current"
+                elif months_old == 1:
+                    bucket = "days_30"
+                elif months_old == 2:
+                    bucket = "days_60"
+                else:
+                    bucket = "days_90"
             else:
-                bucket = "days_90"
+                # Fixed-day aging (e.g., 30 days)
+                days_old = (today - age_date).days
+                if days_old < 0:
+                    days_old = 0
+                if days_old < period_days:
+                    bucket = "current"
+                elif days_old < period_days * 2:
+                    bucket = "days_30"
+                elif days_old < period_days * 3:
+                    bucket = "days_60"
+                else:
+                    bucket = "days_90"
 
             # Foreign currency
             fc_curr = str(row.get("pt_fcurr", "")).strip()
@@ -213,10 +242,19 @@ async def aged_creditors_summary():
         # Sort by absolute total descending
         suppliers.sort(key=lambda s: abs(s["balance"]), reverse=True)
 
+        # Build column labels from pparm
+        if period_mode == "months":
+            col_labels = {"days_90": "3 Months+", "days_60": "2 Months", "days_30": "1 Month", "current": "Current"}
+        else:
+            col_labels = {"days_90": f"{period_days * 3}+ Days", "days_60": f"{period_days * 2} Days", "days_30": f"{period_days} Days", "current": "Current"}
+
         return {
             "success": True,
             "summary": summary,
             "suppliers": suppliers,
+            "period_mode": period_mode,
+            "period_label": period_label,
+            "column_labels": col_labels,
         }
 
     except Exception as e:

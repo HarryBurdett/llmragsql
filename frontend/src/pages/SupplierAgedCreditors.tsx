@@ -25,6 +25,9 @@ interface SupplierAging {
   days90: number;
   days120: number;
   total: number;
+  currency?: string;
+  fc_rate?: number;
+  fc_balance?: number;
 }
 
 interface AgedCreditorsResponse {
@@ -38,6 +41,14 @@ interface AgedCreditorsResponse {
     total: number;
   };
   suppliers: SupplierAging[];
+  period_mode?: string;
+  period_label?: string;
+  column_labels?: {
+    days_90: string;
+    days_60: string;
+    days_30: string;
+    current: string;
+  };
   error?: string;
 }
 
@@ -256,21 +267,21 @@ export default function SupplierAgedCreditors() {
       {data && !isLoading && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <SummaryCard
-            label="90 Days"
+            label={data.column_labels?.days_90 || '90+ Days'}
             amount={data.summary.days90}
             colorClass="text-red-700"
             bgClass="bg-red-50"
             borderClass="border-red-200"
           />
           <SummaryCard
-            label="60 Days"
+            label={data.column_labels?.days_60 || '60 Days'}
             amount={data.summary.days60}
             colorClass="text-amber-700"
             bgClass="bg-amber-50"
             borderClass="border-amber-200"
           />
           <SummaryCard
-            label="30 Days"
+            label={data.column_labels?.days_30 || '30 Days'}
             amount={data.summary.days30}
             colorClass="text-amber-700"
             bgClass="bg-amber-50"
@@ -331,10 +342,10 @@ export default function SupplierAgedCreditors() {
                   {([
                     ['account', 'Account'],
                     ['name', 'Supplier Name'],
-                    ['days90', '90 Days'],
-                    ['days60', '60 Days'],
-                    ['days30', '30 Days'],
-                    ['current', 'Current'],
+                    ['days90', data?.column_labels?.days_90 || '90+ Days'],
+                    ['days60', data?.column_labels?.days_60 || '60 Days'],
+                    ['days30', data?.column_labels?.days_30 || '30 Days'],
+                    ['current', data?.column_labels?.current || 'Current'],
                     ['total', 'Balance'],
                   ] as [SortField, string][]).map(([field, label]) => (
                     <th
@@ -499,6 +510,18 @@ function SupplierRow({
           {formatCurrency(supplier.total)}
         </td>
       </tr>
+
+      {/* Foreign currency sub-row */}
+      {supplier.currency && supplier.currency !== 'GBP' && supplier.fc_balance !== 0 && (
+        <tr className="bg-blue-50/50 border-b border-gray-100">
+          <td className="px-4 py-1" />
+          <td className="px-4 py-1 text-xs font-mono text-blue-700">{supplier.currency}</td>
+          <td className="px-4 py-1" colSpan={4} />
+          <td className="px-4 py-1 text-right text-xs font-mono text-blue-700">
+            {new Intl.NumberFormat('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(supplier.fc_balance ?? 0)}
+          </td>
+        </tr>
+      )}
 
       {/* Expanded detail row */}
       {isExpanded && (
