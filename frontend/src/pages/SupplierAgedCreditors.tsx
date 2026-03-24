@@ -254,20 +254,13 @@ export default function SupplierAgedCreditors() {
 
       {/* Summary Cards */}
       {data && !isLoading && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
           <SummaryCard
-            label="Current"
-            amount={data.summary.current}
-            colorClass="text-emerald-700"
-            bgClass="bg-emerald-50"
-            borderClass="border-emerald-200"
-          />
-          <SummaryCard
-            label="30 Days"
-            amount={data.summary.days30}
-            colorClass="text-amber-700"
-            bgClass="bg-amber-50"
-            borderClass="border-amber-200"
+            label="90 Days"
+            amount={data.summary.days90}
+            colorClass="text-red-700"
+            bgClass="bg-red-50"
+            borderClass="border-red-200"
           />
           <SummaryCard
             label="60 Days"
@@ -277,21 +270,21 @@ export default function SupplierAgedCreditors() {
             borderClass="border-amber-200"
           />
           <SummaryCard
-            label="90 Days"
-            amount={data.summary.days90}
-            colorClass="text-red-700"
-            bgClass="bg-red-50"
-            borderClass="border-red-200"
+            label="30 Days"
+            amount={data.summary.days30}
+            colorClass="text-amber-700"
+            bgClass="bg-amber-50"
+            borderClass="border-amber-200"
           />
           <SummaryCard
-            label="120+ Days"
-            amount={data.summary.days120}
-            colorClass="text-red-700"
-            bgClass="bg-red-50"
-            borderClass="border-red-200"
+            label="Current"
+            amount={data.summary.current}
+            colorClass="text-emerald-700"
+            bgClass="bg-emerald-50"
+            borderClass="border-emerald-200"
           />
           <SummaryCard
-            label="Total"
+            label="Balance"
             amount={data.summary.total}
             colorClass="text-gray-900"
             bgClass="bg-gray-50"
@@ -338,12 +331,11 @@ export default function SupplierAgedCreditors() {
                   {([
                     ['account', 'Account'],
                     ['name', 'Supplier Name'],
-                    ['current', 'Current'],
-                    ['days30', '30 Days'],
-                    ['days60', '60 Days'],
                     ['days90', '90 Days'],
-                    ['days120', '120+ Days'],
-                    ['total', 'Total'],
+                    ['days60', '60 Days'],
+                    ['days30', '30 Days'],
+                    ['current', 'Current'],
+                    ['total', 'Balance'],
                   ] as [SortField, string][]).map(([field, label]) => (
                     <th
                       key={field}
@@ -397,11 +389,10 @@ export default function SupplierAgedCreditors() {
                 <tfoot>
                   <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold text-sm">
                     <td className="px-4 py-3" colSpan={3}>Totals</td>
-                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.current)}</td>
-                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days30)}</td>
-                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days60)}</td>
                     <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days90)}</td>
-                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days120)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days60)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.days30)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(data.summary.current)}</td>
                     <td className="px-4 py-3 text-right font-bold">{formatCurrency(data.summary.total)}</td>
                   </tr>
                 </tfoot>
@@ -492,20 +483,17 @@ function SupplierRow({
         </td>
         <td className="px-4 py-3 font-mono text-gray-600">{supplier.account}</td>
         <td className="px-4 py-3 font-medium text-gray-900">{supplier.name}</td>
-        <td className={`px-4 py-3 text-right ${ageBucketColor(supplier.current, 'current')}`}>
-          {formatCurrency(supplier.current)}
-        </td>
-        <td className={`px-4 py-3 text-right ${ageBucketColor(supplier.days30, '30')}`}>
-          {formatCurrency(supplier.days30)}
+        <td className={`px-4 py-3 text-right ${ageBucketColor(supplier.days90, '90')}`}>
+          {formatCurrency(supplier.days90)}
         </td>
         <td className={`px-4 py-3 text-right ${ageBucketColor(supplier.days60, '60')}`}>
           {formatCurrency(supplier.days60)}
         </td>
-        <td className={`px-4 py-3 text-right ${ageBucketColor(supplier.days90, '90')}`}>
-          {formatCurrency(supplier.days90)}
+        <td className={`px-4 py-3 text-right ${ageBucketColor(supplier.days30, '30')}`}>
+          {formatCurrency(supplier.days30)}
         </td>
-        <td className={`px-4 py-3 text-right ${ageBucketColor(supplier.days120, '120')}`}>
-          {formatCurrency(supplier.days120)}
+        <td className={`px-4 py-3 text-right ${ageBucketColor(supplier.current, 'current')}`}>
+          {formatCurrency(supplier.current)}
         </td>
         <td className="px-4 py-3 text-right font-semibold text-gray-900">
           {formatCurrency(supplier.total)}
