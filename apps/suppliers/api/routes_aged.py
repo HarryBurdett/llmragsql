@@ -91,21 +91,26 @@ async def aged_creditors_summary():
         raise HTTPException(status_code=503, detail="Database connection not available")
 
     try:
-        # Use Opera's phist table — the authoritative source for aged balances
+        # Calculate aging from ptran at report time (same as Opera).
+        # Opera ages by due date (pt_dueday) with 30-day periods from pparm.pp_percday.
+        # If no due date, falls back to transaction date.
+        today = date.today()
+
         query = """
             SELECT
-                RTRIM(pn.pn_account) AS account,
-                RTRIM(pn.pn_name) AS name,
-                pn.pn_currbal AS balance,
-                ISNULL(ph.pi_current, 0) AS pi_current,
-                ISNULL(ph.pi_period1, 0) AS pi_period1,
-                ISNULL(ph.pi_period2, 0) AS pi_period2,
-                ISNULL(ph.pi_period3, 0) AS pi_period3,
-                ISNULL(ph.pi_period4, 0) + ISNULL(ph.pi_period5, 0) AS pi_period45
-            FROM pname pn WITH (NOLOCK)
-            LEFT JOIN phist ph WITH (NOLOCK) ON pn.pn_account = ph.pi_account AND ph.pi_age = 1
-            WHERE pn.pn_currbal <> 0
-            ORDER BY pn.pn_account
+                RTRIM(p.pt_account) AS account,
+                RTRIM(n.pn_name) AS name,
+                n.pn_currbal,
+                p.pt_trbal,
+                p.pt_trdate,
+                p.pt_dueday,
+                RTRIM(p.pt_trtype) AS pt_trtype,
+                RTRIM(p.pt_paid) AS pt_paid
+            FROM ptran p WITH (NOLOCK)
+            INNER JOIN pname n WITH (NOLOCK) ON n.pn_account = p.pt_account
+            WHERE p.pt_trbal <> 0
+              AND n.pn_currbal <> 0
+            ORDER BY p.pt_account
         """
 
         df = sql_connector.execute_query(query)
@@ -117,38 +122,71 @@ async def aged_creditors_summary():
                 "suppliers": [],
             }
 
-        suppliers = []
+        # Aging reference date = today (no offset — pp_sugdays is for Suggested Payments, not aging)
+        aging_ref_date = today
+
+        # Aggregate per supplier using due-date aging
+        supplier_data: Dict[str, Dict[str, Any]] = {}
         summary = _empty_buckets()
 
         for _, row in df.iterrows():
             account = str(row.get("account", "")).strip()
             name = str(row.get("name", "")).strip()
-            current = float(row.get("pi_current", 0) or 0)
-            d30 = float(row.get("pi_period1", 0) or 0)
-            d60 = float(row.get("pi_period2", 0) or 0)
-            d90 = float(row.get("pi_period3", 0) or 0)
-            d120 = float(row.get("pi_period45", 0) or 0)
-            balance = float(row.get("balance", 0) or 0)
-            aging_sum = current + d30 + d60 + d90 + d120
-            unallocated = round(balance - aging_sum, 2)
+            balance = float(row.get("pt_trbal", 0) or 0)
+            currbal = float(row.get("pn_currbal", 0) or 0)
 
-            suppliers.append({
-                "account": account,
-                "name": name,
-                "days_90": round(d90, 2),
-                "days_60": round(d60, 2),
-                "days_30": round(d30, 2),
-                "current": round(current, 2),
-                "balance": round(balance, 2),
-                "unallocated": unallocated,
-            })
+            import pandas as pd
+            trtype = str(row.get("pt_trtype", "")).strip()
+            tr_raw = row.get("pt_trdate")
+            age_date = None
+            if tr_raw is not None and not (isinstance(tr_raw, float) and pd.isna(tr_raw)) and not (hasattr(pd, 'NaT') and tr_raw is pd.NaT):
+                age_date = _parse_date_value(tr_raw)
+            if age_date is None:
+                age_date = today
 
-            summary["days_90"] += d90
-            summary["days_60"] += d60
-            summary["days_30"] += d30
-            summary["current"] += current
-            summary["total"] += balance
-            summary["unallocated"] = summary.get("unallocated", 0) + unallocated
+            # All outstanding transactions aged by date into 30-day buckets
+            # Reference date includes the pparm offset (pp_sugdays)
+            days_old = (aging_ref_date - age_date).days
+            if days_old < 0:
+                days_old = 0
+            if days_old < 30:
+                bucket = "current"
+            elif days_old < 60:
+                bucket = "days_30"
+            elif days_old < 90:
+                bucket = "days_60"
+            else:
+                bucket = "days_90"
+
+            if account not in supplier_data:
+                supplier_data[account] = {
+                    "account": account,
+                    "name": name,
+                    "days_90": 0.0,
+                    "days_60": 0.0,
+                    "days_30": 0.0,
+                    "current": 0.0,
+                    "balance": currbal,
+                    "unallocated": 0.0,
+                }
+
+            supplier_data[account][bucket] += balance
+
+        # Calculate unallocated per supplier and build summary
+        suppliers = []
+        for s in supplier_data.values():
+            aging_sum = s["days_90"] + s["days_60"] + s["days_30"] + s["current"]
+            s["unallocated"] = round(s["balance"] - aging_sum, 2)
+            for k in ("days_90", "days_60", "days_30", "current", "balance"):
+                s[k] = round(s[k], 2)
+
+            suppliers.append(s)
+            summary["days_90"] += s["days_90"]
+            summary["days_60"] += s["days_60"]
+            summary["days_30"] += s["days_30"]
+            summary["current"] += s["current"]
+            summary["total"] += s["balance"]
+            summary["unallocated"] += s["unallocated"]
 
         # Round summary
         for k in summary:
