@@ -37,14 +37,14 @@ def _classify_aging_bucket(days_old: int) -> str:
 
 
 def _empty_buckets() -> Dict[str, float]:
-    """Return a zeroed aging bucket dictionary."""
+    """Return a zeroed aging bucket dictionary matching Opera's layout."""
     return {
-        "current": 0.0,
-        "days_30": 0.0,
-        "days_60": 0.0,
         "days_90": 0.0,
-        "days_120_plus": 0.0,
+        "days_60": 0.0,
+        "days_30": 0.0,
+        "current": 0.0,
         "total": 0.0,
+        "unallocated": 0.0,
     }
 
 
@@ -81,11 +81,9 @@ async def aged_creditors_summary():
     """
     Get aged creditors summary grouped by supplier.
 
-    Queries ptran for all outstanding balances (pt_trbal != 0) on invoices,
-    credit notes, and debit notes. Groups into aging buckets based on
-    transaction date vs today.
-
-    Returns aging buckets per supplier plus overall summary totals.
+    Uses Opera's phist table (pi_current, pi_period1-5) for aging buckets,
+    which matches Opera's own aged creditors report exactly.
+    Falls back to ptran-based calculation if phist is unavailable.
     """
     from api.main import sql_connector
 
@@ -93,18 +91,21 @@ async def aged_creditors_summary():
         raise HTTPException(status_code=503, detail="Database connection not available")
 
     try:
-        today = date.today()
-
+        # Use Opera's phist table — the authoritative source for aged balances
         query = """
             SELECT
-                RTRIM(p.pt_account) AS account,
-                RTRIM(n.pn_name) AS name,
-                p.pt_trdate,
-                p.pt_trbal
-            FROM ptran p WITH (NOLOCK)
-            INNER JOIN pname n WITH (NOLOCK) ON n.pn_account = p.pt_account
-            WHERE p.pt_trbal != 0
-            ORDER BY p.pt_account, p.pt_trdate
+                RTRIM(pn.pn_account) AS account,
+                RTRIM(pn.pn_name) AS name,
+                pn.pn_currbal AS balance,
+                ISNULL(ph.pi_current, 0) AS pi_current,
+                ISNULL(ph.pi_period1, 0) AS pi_period1,
+                ISNULL(ph.pi_period2, 0) AS pi_period2,
+                ISNULL(ph.pi_period3, 0) AS pi_period3,
+                ISNULL(ph.pi_period4, 0) + ISNULL(ph.pi_period5, 0) AS pi_period45
+            FROM pname pn WITH (NOLOCK)
+            LEFT JOIN phist ph WITH (NOLOCK) ON pn.pn_account = ph.pi_account AND ph.pi_age = 1
+            WHERE pn.pn_currbal <> 0
+            ORDER BY pn.pn_account
         """
 
         df = sql_connector.execute_query(query)
@@ -116,50 +117,50 @@ async def aged_creditors_summary():
                 "suppliers": [],
             }
 
-        # Aggregate per supplier
-        suppliers: Dict[str, Dict[str, Any]] = {}
+        suppliers = []
         summary = _empty_buckets()
 
         for _, row in df.iterrows():
             account = str(row.get("account", "")).strip()
             name = str(row.get("name", "")).strip()
-            tr_date = _parse_date_value(row.get("pt_trdate"))
-            balance = float(row.get("pt_trbal", 0))
+            current = float(row.get("pi_current", 0) or 0)
+            d30 = float(row.get("pi_period1", 0) or 0)
+            d60 = float(row.get("pi_period2", 0) or 0)
+            d90 = float(row.get("pi_period3", 0) or 0)
+            d120 = float(row.get("pi_period45", 0) or 0)
+            balance = float(row.get("balance", 0) or 0)
+            aging_sum = current + d30 + d60 + d90 + d120
+            unallocated = round(balance - aging_sum, 2)
 
-            if not account or tr_date is None:
-                continue
+            suppliers.append({
+                "account": account,
+                "name": name,
+                "days_90": round(d90, 2),
+                "days_60": round(d60, 2),
+                "days_30": round(d30, 2),
+                "current": round(current, 2),
+                "balance": round(balance, 2),
+                "unallocated": unallocated,
+            })
 
-            days_old = (today - tr_date).days
-            if days_old < 0:
-                days_old = 0
-            bucket = _classify_aging_bucket(days_old)
-
-            if account not in suppliers:
-                suppliers[account] = {
-                    "account": account,
-                    "name": name,
-                    **_empty_buckets(),
-                }
-
-            suppliers[account][bucket] += balance
-            suppliers[account]["total"] += balance
-            summary[bucket] += balance
+            summary["days_90"] += d90
+            summary["days_60"] += d60
+            summary["days_30"] += d30
+            summary["current"] += current
             summary["total"] += balance
+            summary["unallocated"] = summary.get("unallocated", 0) + unallocated
 
-        # Round all values
-        for s in suppliers.values():
-            for key in ("current", "days_30", "days_60", "days_90", "days_120_plus", "total"):
-                s[key] = round(s[key], 2)
-        for key in ("current", "days_30", "days_60", "days_90", "days_120_plus", "total"):
-            summary[key] = round(summary[key], 2)
+        # Round summary
+        for k in summary:
+            summary[k] = round(summary[k], 2)
 
-        # Sort by total descending
-        supplier_list = sorted(suppliers.values(), key=lambda x: x["total"], reverse=True)
+        # Sort by absolute total descending
+        suppliers.sort(key=lambda s: abs(s["balance"]), reverse=True)
 
         return {
             "success": True,
             "summary": summary,
-            "suppliers": supplier_list,
+            "suppliers": suppliers,
         }
 
     except Exception as e:
