@@ -117,7 +117,7 @@ export function SupplierAccount() {
       }).then((data) => {
         if (data?.success && data.account) {
           setActiveAccount(data.account);
-          setSearchQuery(data.account);
+          // Don't set searchQuery — leave the search box empty for user input
         }
       }).catch(() => {});
     }
@@ -159,7 +159,8 @@ export function SupplierAccount() {
 
   const selectSupplier = (account: string) => {
     setActiveAccount(account);
-    setSearchQuery(account);
+    setSearchQuery('');
+    setDebouncedSearch('');
     setShowSearch(false);
     navigate(`/supplier/account?account=${account}`);
   };
@@ -229,7 +230,7 @@ export function SupplierAccount() {
               placeholder="Search supplier..."
               value={searchQuery}
               onChange={(e) => handleSearchInput(e.target.value)}
-              onKeyPress={handleKeyPress}
+              onKeyDown={handleKeyPress}
               onFocus={() => searchResults.length > 0 && setShowSearch(true)}
               className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
             />
