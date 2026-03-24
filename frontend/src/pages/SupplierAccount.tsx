@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
@@ -76,53 +76,18 @@ interface SupplierAccountResponse {
 
 type TabType = 'general' | 'memo' | 'view';
 
-interface SupplierSearchResult {
-  account: string;
-  supplier_name: string;
-  balance: number;
-  address1?: string;
-  address2?: string;
-  address3?: string;
-  postcode?: string;
-}
-
-interface SearchResponse {
-  success: boolean;
-  suppliers: SupplierSearchResult[];
-}
+// Search uses native HTML datalist with allSuppliers — no custom dropdown needed
 
 export function SupplierAccount() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const accountCode = searchParams.get('account') || '';
   const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [activeAccount, setActiveAccount] = useState(accountCode);
   const [activeTab, setActiveTab] = useState<TabType>('general');
   const [viewFilter, setViewFilter] = useState<'outstanding' | 'all'>('outstanding');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const searchWrapperRef = useRef<HTMLDivElement>(null);
-
-  // Close dropdown on click outside — same pattern as GoCardless CustomerAccountSearch
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (searchWrapperRef.current && !searchWrapperRef.current.contains(event.target as Node)) {
-        setDebouncedSearch('');
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  // Debounce search
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearch(searchQuery);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
-
   // Load first supplier by default if no account specified
   useEffect(() => {
     if (!accountCode) {
@@ -137,6 +102,23 @@ export function SupplierAccount() {
       }).catch(() => {});
     }
   }, [accountCode]);
+
+  // Load all suppliers for searchable datalist
+  const { data: allSuppliersData } = useQuery<{success: boolean; suppliers: Array<{account: string; name: string; balance: number}>}>({
+    queryKey: ['allSuppliersLookup'],
+    queryFn: async () => {
+      const response = await authFetch('/api/creditors/search?query=&limit=500');
+      if (!response.ok) throw new Error('Failed to load suppliers');
+      const data = await response.json();
+      return { success: true, suppliers: (data.suppliers || []).map((s: Record<string, unknown>) => ({
+        account: s.account || s.pn_account || '',
+        name: s.supplier_name || s.name || '',
+        balance: Number(s.balance || s.pn_currbal || 0),
+      }))};
+    },
+    staleTime: 10 * 60 * 1000,
+  });
+  const allSuppliers = (allSuppliersData?.suppliers || []).sort((a, b) => a.account.localeCompare(b.account));
 
   // Supplier account details - cached for 5 minutes
   const accountQuery = useQuery<SupplierAccountResponse>({
@@ -154,35 +136,11 @@ export function SupplierAccount() {
     gcTime: 10 * 60 * 1000,
   });
 
-  // Search suppliers - uses debounced query, cached for 30s
-  const searchResultsQuery = useQuery<SearchResponse>({
-    queryKey: ['supplierSearch', debouncedSearch],
-    queryFn: async () => {
-      const response = await authFetch(`/api/creditors/search?query=${encodeURIComponent(debouncedSearch)}`);
-      if (!response.ok) throw new Error(`Search failed: ${response.statusText}`);
-      return response.json() as Promise<SearchResponse>;
-    },
-    enabled: debouncedSearch.length >= 2,
-    staleTime: 30000,
-    gcTime: 60000,
-  });
-
-  const searchResults = searchResultsQuery.data?.suppliers || [];
-  const isSearching = searchResultsQuery.isLoading;
-
-  // Go button handler
-  const handleGoClick = () => {
-    if (searchResults.length > 0) {
-      selectSupplier(searchResults[0].account);
-    } else if (searchQuery.trim()) {
-      selectSupplier(searchQuery.trim().toUpperCase());
-    }
-  };
+  // (Search handled by datalist + allSuppliers query above)
 
   const selectSupplier = (account: string) => {
     setActiveAccount(account);
     setSearchQuery('');
-    setDebouncedSearch('');
     navigate(`/supplier/account?account=${account}`);
   };
 
@@ -227,62 +185,42 @@ export function SupplierAccount() {
           <ArrowLeft className="h-5 w-5 text-gray-600" />
         </button>
         <div className="flex items-center gap-2">
-          <div className="relative" ref={searchWrapperRef}>
+          <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <input
               type="text"
+              list="supplier-list"
               placeholder="Search supplier..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                // Check if the value matches a supplier account code from the datalist
+                const match = allSuppliers.find(s =>
+                  e.target.value === s.account ||
+                  e.target.value === `${s.account} — ${s.name}`
+                );
+                if (match) selectSupplier(match.account);
+              }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  if (searchResults.length > 0) {
-                    selectSupplier(searchResults[0].account);
-                  } else if (searchQuery.trim()) {
-                    selectSupplier(searchQuery.trim().toUpperCase());
-                  }
-                } else if (e.key === 'Escape') {
-                  setSearchQuery('');
-                  setDebouncedSearch('');
+                if (e.key === 'Enter' && searchQuery.trim()) {
+                  const match = allSuppliers.find(s =>
+                    s.account.toUpperCase() === searchQuery.trim().toUpperCase() ||
+                    s.name.toLowerCase().includes(searchQuery.trim().toLowerCase())
+                  );
+                  if (match) selectSupplier(match.account);
+                  else selectSupplier(searchQuery.trim().toUpperCase());
                 }
               }}
-              className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
+              className="pl-9 pr-4 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 w-80"
             />
-            {isSearching && (
-              <RefreshCw className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 animate-spin" />
-            )}
-            {/* Search Results Dropdown — same pattern as GoCardless CustomerAccountSearch */}
-            {searchResults.length > 0 && debouncedSearch.length >= 2 && (
-              <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto">
-                {searchResults.map((s) => (
-                  <button
-                    key={s.account}
-                    type="button"
-                    className="w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-b-0 hover:bg-blue-50"
-                    onClick={() => selectSupplier(s.account)}
-                  >
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <div className="font-medium">{s.account} — {s.supplier_name}</div>
-                        {(s.address1 || s.postcode) && (
-                          <div className="text-xs text-gray-500">{[s.address1, s.postcode].filter(Boolean).join(', ')}</div>
-                        )}
-                      </div>
-                      <span className={`text-sm font-mono ${(s.balance || 0) > 0 ? 'text-red-600' : 'text-emerald-600'}`}>
-                        {formatCurrency(s.balance)}
-                      </span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
+            <datalist id="supplier-list">
+              {allSuppliers.map((s) => (
+                <option key={s.account} value={s.account}>
+                  {s.name} ({formatCurrency(s.balance)})
+                </option>
+              ))}
+            </datalist>
           </div>
-          <button
-            onClick={handleGoClick}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Go
-          </button>
           <button
             onClick={() => accountQuery.refetch()}
             disabled={accountQuery.isFetching}

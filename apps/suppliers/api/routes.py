@@ -3454,7 +3454,7 @@ async def get_supplier_statement(account: str, from_date: str = None, to_date: s
 
 
 @router.get("/api/creditors/search")
-async def search_suppliers(query: str):
+async def search_suppliers(query: str, limit: int = Query(20, ge=1, le=1000)):
     """
     Search for suppliers by any field - account, name, address, contact, email, phone.
     """
@@ -3465,7 +3465,7 @@ async def search_suppliers(query: str):
 
     try:
         results = sql_connector.execute_query(f"""
-            SELECT TOP 20
+            SELECT TOP {limit}
                 RTRIM(pn_account) AS account,
                 RTRIM(pn_name) AS supplier_name,
                 pn_currbal AS balance,
@@ -3478,7 +3478,7 @@ async def search_suppliers(query: str):
                 RTRIM(pn_contact) AS contact,
                 RTRIM(pn_email) AS email
             FROM pname WITH (NOLOCK)
-            WHERE UPPER(pn_account) LIKE UPPER('%{query}%')
+            WHERE ('{query}' = '' OR UPPER(pn_account) LIKE UPPER('%{query}%')
                OR UPPER(pn_name) LIKE UPPER('%{query}%')
                OR UPPER(pn_addr1) LIKE UPPER('%{query}%')
                OR UPPER(pn_addr2) LIKE UPPER('%{query}%')
@@ -3487,8 +3487,8 @@ async def search_suppliers(query: str):
                OR UPPER(pn_pstcode) LIKE UPPER('%{query}%')
                OR UPPER(pn_contact) LIKE UPPER('%{query}%')
                OR UPPER(pn_email) LIKE UPPER('%{query}%')
-               OR UPPER(pn_teleno) LIKE UPPER('%{query}%')
-            ORDER BY pn_name
+               OR UPPER(pn_teleno) LIKE UPPER('%{query}%'))
+            ORDER BY pn_account
         """)
 
         if hasattr(results, 'to_dict'):
