@@ -104,7 +104,6 @@ async def aged_creditors_summary():
             FROM ptran p WITH (NOLOCK)
             INNER JOIN pname n WITH (NOLOCK) ON n.pn_account = p.pt_account
             WHERE p.pt_trbal != 0
-              AND p.pt_trtype IN ('I', 'C', 'D')
             ORDER BY p.pt_account, p.pt_trdate
         """
 
@@ -217,7 +216,7 @@ async def aged_creditors_trend(
                 p.pt_trbal,
                 p.pt_trtype
             FROM ptran p WITH (NOLOCK)
-            WHERE p.pt_trtype IN ('I', 'C', 'D')
+            WHERE p.pt_trbal != 0
               AND p.pt_trdate >= '{earliest.strftime('%Y-%m-%d')}'
         """
 
@@ -311,7 +310,6 @@ async def aged_creditors_detail(account: str):
             FROM ptran p WITH (NOLOCK)
             WHERE p.pt_account = '{account}'
               AND p.pt_trbal != 0
-              AND p.pt_trtype IN ('I', 'C', 'D')
             ORDER BY p.pt_trdate
         """
 
@@ -436,7 +434,7 @@ async def opera3_aged_creditors_summary(
 
         for rec in ptran_records:
             trtype = _o3_get_str(rec, "pt_trtype")
-            if trtype not in ("I", "C", "D"):
+            if balance == 0:
                 continue
 
             balance = _o3_get_num(rec, "pt_trbal")
@@ -531,7 +529,7 @@ async def opera3_aged_creditors_trend(
         filtered_records: List[Dict[str, Any]] = []
         for rec in ptran_records:
             trtype = _o3_get_str(rec, "pt_trtype")
-            if trtype not in ("I", "C", "D"):
+            if balance == 0:
                 continue
 
             balance = _o3_get_num(rec, "pt_trbal")
@@ -636,7 +634,7 @@ async def opera3_aged_creditors_detail(
                 continue
 
             trtype = _o3_get_str(rec, "pt_trtype")
-            if trtype not in ("I", "C", "D"):
+            if balance == 0:
                 continue
 
             balance = _o3_get_num(rec, "pt_trbal")
