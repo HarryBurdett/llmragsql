@@ -2729,9 +2729,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       ? [...receipts, ...payments, ...refunds].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
       : needsImport;
     const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
-    // In bankRecOnly mode: if there are already-posted items, allow reconciliation
-    // regardless of what else is on the statement (user handles rest manually in Opera)
-    if (bankRecOnly && (bankPreview.already_posted?.length || 0) > 0) {
+    // In bankRecOnly mode: allow reconciliation when nothing needs importing
+    // (matched receipts/payments are all duplicates or empty) AND there are already-posted items
+    if (bankRecOnly && needsImportExcludingUnmatched.length === 0 && (bankPreview.already_posted?.length || 0) > 0) {
       return true;
     }
     return needsImportExcludingUnmatched.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
