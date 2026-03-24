@@ -3632,8 +3632,13 @@ async def get_supplier_account_view(
         else:
             transactions = transactions_result or []
 
-        # Convert FC values from minor units
+        # Clean NaN/Infinity values and convert FC from minor units
+        import math
         for txn in transactions:
+            for key in list(txn.keys()):
+                val = txn[key]
+                if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                    txn[key] = None
             fc_dec = int(float(txn.get('fc_dec', 0) or 0))
             if fc_dec > 0:
                 for fc_field in ('fc_debit', 'fc_credit', 'fc_balance'):
