@@ -231,20 +231,7 @@ export function SupplierAccount() {
     }
   }, [accountCode]);
 
-  // Load first supplier by default if no account specified
-  useEffect(() => {
-    if (!accountCode) {
-      authFetch('/api/supplier/account/first').then((response) => {
-        if (!response.ok) return;
-        return response.json();
-      }).then((data) => {
-        if (data?.success && data.account) {
-          setActiveAccount(data.account);
-          // Don't set searchQuery — leave the search box empty for user input
-        }
-      }).catch(() => {});
-    }
-  }, [accountCode]);
+  // No auto-load — page starts empty, user searches for a supplier
 
   // (Supplier search handled by SupplierAccountSearch component)
 
