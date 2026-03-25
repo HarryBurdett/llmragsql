@@ -2441,6 +2441,225 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
     return "\n".join(response_lines)
 
 
+@router.post("/api/supplier-statements/process-email/{email_id}")
+async def process_supplier_statement_email(email_id: int):
+    """
+    Full automated pipeline: extract → save → reconcile → acknowledge → generate response.
+    This is the main automation entry point.
+    """
+    from api.main import sql_connector, email_storage
+    from sql_rag.supplier_statement_db import get_supplier_statement_db
+    from sql_rag.supplier_statement_extract import SupplierStatementExtractor
+    from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
+
+    try:
+        db = get_supplier_statement_db()
+
+        # Step 1: Get email
+        if not email_storage:
+            return {"success": False, "error": "Email storage not available"}
+        email_data = email_storage.get_email_by_id(email_id)
+        if not email_data:
+            return {"success": False, "error": f"Email {email_id} not found"}
+
+        from_addr = email_data.get('from_address', '')
+        subject = email_data.get('subject', '')
+
+        # Step 2: Extract using same method as extract-from-email endpoint
+        from api.main import email_sync_manager, config as app_config
+        if not email_sync_manager:
+            return {"success": False, "error": "Email sync manager not available"}
+
+        api_key = app_config.get('gemini', 'api_key', fallback='') if app_config else ''
+        if not api_key:
+            return {"success": False, "error": "Gemini API key not configured"}
+
+        gemini_model = app_config.get('gemini', 'model', fallback='gemini-2.0-flash') if app_config else 'gemini-2.0-flash'
+        extractor = SupplierStatementExtractor(api_key=api_key, model=gemini_model)
+
+        attachments = email_data.get('attachments', [])
+        pdf_attachments = [a for a in attachments if a.get('content_type') == 'application/pdf'
+                          or (a.get('filename', '').lower().endswith('.pdf'))]
+
+        info = None
+        lines = []
+
+        if pdf_attachments:
+            target = pdf_attachments[0]
+            provider_id = email_data.get('provider_id')
+            message_id = email_data.get('message_id')
+
+            if provider_id not in email_sync_manager.providers:
+                return {"success": False, "error": "Email provider not connected"}
+
+            provider = email_sync_manager.providers[provider_id]
+            folder_id = 'INBOX'
+            folder_id_db = email_data.get('folder_id')
+            if folder_id_db:
+                with email_storage._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT folder_id FROM email_folders WHERE id = ?", (folder_id_db,))
+                    row = cursor.fetchone()
+                    if row:
+                        folder_id = row['folder_id']
+
+            result = await provider.download_attachment(message_id, str(target['attachment_id']), folder_id)
+            if not result:
+                return {"success": False, "error": "Failed to download PDF attachment"}
+
+            # download_attachment returns (content_bytes, filename, content_type)
+            pdf_bytes = result[0] if isinstance(result, tuple) else result.get('content', b'')
+
+            info, lines = extractor.extract_from_pdf_bytes(pdf_bytes)
+        else:
+            body_text = email_data.get('body_text', '')
+            if body_text:
+                info, lines = extractor.extract_from_text(body_text)
+            else:
+                return {"success": False, "error": "No PDF attachment or text content found"}
+
+        if not info:
+            return {"success": False, "error": "Failed to extract statement data"}
+
+        # Step 3: Create statement record
+        statement_id = db.create_statement(
+            supplier_code=info.account_reference or 'UNKNOWN',
+            sender_email=from_addr,
+            statement_date=info.statement_date,
+            opening_balance=info.opening_balance,
+            closing_balance=info.closing_balance,
+        )
+
+        # Save extracted lines
+        line_records = []
+        for line in (lines or []):
+            line_records.append({
+                'date': line.date if hasattr(line, 'date') else line.get('date'),
+                'reference': line.reference if hasattr(line, 'reference') else line.get('reference'),
+                'description': line.description if hasattr(line, 'description') else line.get('description'),
+                'debit': line.debit if hasattr(line, 'debit') else line.get('debit'),
+                'credit': line.credit if hasattr(line, 'credit') else line.get('credit'),
+                'balance': line.balance if hasattr(line, 'balance') else line.get('balance'),
+                'doc_type': line.doc_type if hasattr(line, 'doc_type') else line.get('doc_type'),
+            })
+        if line_records:
+            db.add_statement_lines(statement_id, line_records)
+
+        # Step 4: Reconcile against Opera
+        reconciler = SupplierStatementReconciler(sql_connector) if sql_connector else None
+        recon_result = None
+        supplier_code = None
+        supplier_name = info.supplier_name or ''
+
+        if reconciler:
+            # Find supplier in Opera
+            supplier = reconciler.find_supplier(info.supplier_name, info.account_reference)
+            if supplier:
+                supplier_code = supplier.get('account', supplier.get('pn_account', ''))
+                supplier_name = supplier.get('name', supplier.get('pn_name', supplier_name))
+                # Update statement with correct supplier code
+                db.update_statement_status(statement_id, 'processing', supplier_code=supplier_code)
+                # Reconcile
+                stmt_info_dict = {
+                    'supplier_name': info.supplier_name,
+                    'account_reference': supplier_code,
+                    'statement_date': info.statement_date,
+                    'closing_balance': info.closing_balance,
+                }
+                stmt_lines_dicts = []
+                for line in (lines or []):
+                    stmt_lines_dicts.append({
+                        'date': line.date if hasattr(line, 'date') else line.get('date'),
+                        'reference': line.reference if hasattr(line, 'reference') else line.get('reference'),
+                        'description': line.description if hasattr(line, 'description') else line.get('description'),
+                        'debit': line.debit if hasattr(line, 'debit') else line.get('debit'),
+                        'credit': line.credit if hasattr(line, 'credit') else line.get('credit'),
+                        'balance': line.balance if hasattr(line, 'balance') else line.get('balance'),
+                    })
+                recon_result = reconciler.reconcile(stmt_info_dict, stmt_lines_dicts)
+
+        # Step 5: Update status
+        if recon_result:
+            db.update_statement_status(statement_id, 'reconciled')
+        else:
+            db.update_statement_status(statement_id, 'received')
+
+        # Step 6: Send acknowledgment email
+        ack_sent = False
+        contact_email = from_addr
+        try:
+            ack_subject = f"Statement Received - {supplier_name} - {info.statement_date or 'today'}"
+            ack_body = f"""<html><body>
+<p>Dear Accounts,</p>
+<p>Thank you for sending your statement dated {info.statement_date or 'today'}.</p>
+<p>We have received it and are currently processing. You will receive a detailed reconciliation response shortly.</p>
+<p>Regards,<br>Accounts Department</p>
+</body></html>"""
+
+            from api.main import email_storage as es
+            if es and hasattr(es, 'get_provider_config'):
+                import smtplib
+                from email.mime.text import MIMEText
+                from email.mime.multipart import MIMEMultipart
+                providers = es.get_all_providers() if hasattr(es, 'get_all_providers') else []
+                for prov in providers:
+                    pconfig = prov.get('config', {})
+                    if pconfig.get('smtp_server') or pconfig.get('server'):
+                        smtp_server = pconfig.get('smtp_server', pconfig.get('server', ''))
+                        smtp_port = int(pconfig.get('smtp_port', 587))
+                        smtp_user = pconfig.get('smtp_username', pconfig.get('username', ''))
+                        smtp_pass = pconfig.get('smtp_password', pconfig.get('password', ''))
+
+                        msg = MIMEMultipart('alternative')
+                        msg['Subject'] = ack_subject
+                        msg['From'] = 'intsys@wimbledoncloud.net'
+                        msg['To'] = contact_email
+                        msg.attach(MIMEText(ack_body, 'html'))
+
+                        with smtplib.SMTP(smtp_server, smtp_port) as server:
+                            server.starttls()
+                            server.login(smtp_user, smtp_pass)
+                            server.send_message(msg)
+                        ack_sent = True
+                        break
+
+            if ack_sent:
+                db.update_statement_status(statement_id, 'acknowledged')
+                db.log_communication(supplier_code or 'UNKNOWN', 'outbound', 'acknowledgment',
+                    email_subject=ack_subject, email_body=ack_body, statement_id=statement_id)
+        except Exception as ack_err:
+            logger.warning(f"Could not send acknowledgment: {ack_err}")
+
+        # Step 7: Generate reconciliation response
+        response_text = None
+        if recon_result and hasattr(recon_result, 'response_text'):
+            response_text = recon_result.response_text
+        elif recon_result and isinstance(recon_result, dict):
+            response_text = recon_result.get('response_text')
+
+        return {
+            "success": True,
+            "statement_id": statement_id,
+            "supplier_code": supplier_code,
+            "supplier_name": supplier_name,
+            "statement_date": info.statement_date,
+            "closing_balance": info.closing_balance,
+            "lines_extracted": len(lines or []),
+            "acknowledgment_sent": ack_sent,
+            "acknowledgment_to": contact_email if ack_sent else None,
+            "reconciliation": {
+                "matched": recon_result.get('matched_count', 0) if isinstance(recon_result, dict) else 0,
+                "queries": recon_result.get('query_count', 0) if isinstance(recon_result, dict) else 0,
+                "variance": recon_result.get('variance', 0) if isinstance(recon_result, dict) else None,
+            } if recon_result else None,
+            "status": "acknowledged" if ack_sent else "reconciled" if recon_result else "received",
+        }
+
+    except Exception as e:
+        logger.error(f"Error processing supplier statement email {email_id}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/api/supplier-statements/queue")
 async def get_supplier_statement_queue():
     """Get statements in the active queue (received or processing status)."""
