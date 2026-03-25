@@ -687,7 +687,91 @@ CREATE TABLE supplier_contacts_ext (
 
 ---
 
-## 18. Future: Sentinel Integration
+## 18. Contact Attributes
+
+### Purpose
+Control which contacts can communicate with us and what they're authorised to do.
+
+### Attribute Fields (zc_attr1 to zc_attr6)
+Opera provides 6 attribute fields per contact (4 chars each). We define their meaning:
+
+| Attribute | Usage | Values |
+|-----------|-------|--------|
+| `zc_attr1` | Communication role | STMT (statements), PYMT (payments), QURY (queries), GNRL (general) |
+| `zc_attr2` | Security clearance | STD (standard), ELVT (elevated), DIR (director) |
+| `zc_attr3` | Verified status | VRFD (verified), PEND (pending), NONE |
+| `zc_attr4` | Contact preference | EMAL (email), PHON (phone), POST (postal), PORT (portal) |
+| `zc_attr5` | Available | (reserved) |
+| `zc_attr6` | Available | (reserved) |
+
+### Security Extension Fields (Local)
+Stored in `supplier_contacts_ext`, not Opera:
+- `verified_sender` — email address confirmed as legitimate
+- `verified_by` — who performed verification
+- `verified_date` — when verified
+- `authorised_bank_changes` — can request payment method changes
+- `security_clearance` — standard / elevated / director
+- `verification_phone` — callback number for sensitive requests
+- `last_verified` — last confirmation this person is still at the company
+
+---
+
+## 19. Supplier Portal
+
+### Purpose
+Self-service portal for suppliers to manage their own information. Reduces manual data entry and puts verification burden on the supplier.
+
+### Incentive
+No completed registration = no payment setup. Suppliers are motivated to provide accurate, up-to-date information.
+
+### Portal Features
+1. **Contact Management** — suppliers add/update their own contacts
+2. **Bank Details** — submit bank detail changes (triggers verification workflow, not auto-applied)
+3. **Certifications** — upload insurance, certificates, compliance documents
+4. **Query Response** — respond to reconciliation queries directly
+5. **Statement Upload** — upload statements directly instead of email
+6. **Payment Status** — view payment forecasts and remittance history
+
+### Security
+- Unique portal link per supplier (token-based, time-limited)
+- All changes queued for internal approval before applying to Opera
+- Bank detail changes ALWAYS require phone verification
+- Audit trail of all portal activity
+
+---
+
+## 20. Supplier Questionnaire (Onboarding)
+
+### Purpose
+Structured onboarding form sent to new suppliers. Captures all required information in one step.
+
+### Questionnaire Sections
+1. **Company Details** — registered name, trading name, company number, VAT number
+2. **Contacts** — primary contact, accounts contact, director/authorised signatory
+3. **Bank Details** — bank name, sort code, account number, IBAN (for FC)
+4. **Payment Terms** — agreed terms, preferred payment method
+5. **Certifications** — insurance details, accreditations, compliance
+6. **Tax Status** — CIS, domestic reverse charge, VAT status
+
+### Workflow
+1. System generates questionnaire link for new supplier
+2. Supplier completes online form
+3. Submission triggers verification workflow:
+   - Bank details → phone verification required
+   - Contacts → auto-approved (but logged)
+   - Certifications → document review required
+4. Once verified, data flows into Opera (`pname`, `zcontacts`) and local system
+5. Supplier marked as onboarded, payment setup enabled
+
+### Delivery
+- Email with secure link
+- Form accessible without login (token-based)
+- Auto-save progress (supplier can complete over multiple sessions)
+- Confirmation email on submission
+
+---
+
+## 21. Future: Sentinel Integration
 
 When Sentinel AI voice assistant is implemented, it will have access to:
 
@@ -753,6 +837,26 @@ When Sentinel AI voice assistant is implemented, it will have access to:
 - [ ] Settings page
 - [ ] Aged Creditors view
 
+### Phase 7: Contact Attributes & Security
+- [x] Contact read/write to Opera zcontacts
+- [x] Security extension fields (verified, clearance, bank auth)
+- [ ] Contact attribute mapping (zc_attr1-6)
+- [ ] Contact-based communication routing
+
+### Phase 8: Supplier Portal
+- [ ] Token-based portal access
+- [ ] Self-service contact management
+- [ ] Bank detail submission (with verification queue)
+- [ ] Query response via portal
+- [ ] Statement upload via portal
+
+### Phase 9: Supplier Questionnaire
+- [ ] Questionnaire template design
+- [ ] Online form (token-based, no login)
+- [ ] Auto-save progress
+- [ ] Submission → verification workflow
+- [ ] Data flow to Opera on approval
+
 ### Future: Sentinel
 - [ ] Voice AI integration
 - [ ] API extensions for real-time queries
@@ -765,6 +869,7 @@ When Sentinel AI voice assistant is implemented, it will have access to:
 |---------|------|--------|---------|
 | 0.1 | 2026-02-08 | Claude | Initial specification |
 | 0.2 | 2026-03-24 | Claude | Added aged creditors, remittance advice, supplier onboarding, contact management |
+| 0.3 | 2026-03-25 | Claude | Added contact attributes, supplier portal, questionnaire, security fields, menu restructure |
 
 ---
 
