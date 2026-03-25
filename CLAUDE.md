@@ -163,7 +163,12 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 - **If it needs explaining, it's too complex** — intuitive by default.
 
 ### Knowledge Base Must Be Updated (MANDATORY)
-**CRITICAL**: When any Opera-related knowledge is learned, corrected, or changed — whether posting rules, table structures, field conventions, matching logic, or integration patterns — the knowledge base at `apps/core/docs/opera_knowledge_base.md` MUST be updated in the same commit. This is the single source of truth for Opera integration knowledge. Stale or missing knowledge causes repeated bugs.
+**CRITICAL**: When any Opera-related knowledge is learned, corrected, or changed — whether posting rules, table structures, field conventions, matching logic, or integration patterns — TWO knowledge bases must be updated:
+
+1. **LOCAL**: `apps/core/docs/opera_knowledge_base.md` — updated in the same commit
+2. **CENTRAL**: `~/opera-knowledge-ref/packages/opera-knowledge/` — the shared knowledge base used by all developers. Update the appropriate file (schema/, business-rules/, query-patterns/, etc.), commit and push.
+
+The central repo is cloned from `https://github.com/jonathangintsys/aisam.git`. Always `git pull` before updating to avoid conflicts.
 
 ### No Quick Fixes (MANDATORY)
 **CRITICAL**: This is a finance system. Every fix must be robust, permanent, and production-grade:
