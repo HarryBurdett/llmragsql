@@ -1,0 +1,1493 @@
+<!DOCTYPE html>
+<!-- Marketing Demo: GoCardless Direct Debit Collection - 2026-03-25 -->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collect Outstanding Balances by Direct Debit</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #064e3b 0%, #022c22 100%);
+            min-height: 100vh;
+            color: #fff;
+        }
+        .demo-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #34d399, #6ee7b7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header p {
+            color: #94a3b8;
+            font-size: 1.1rem;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: #1e3a2f;
+            border-radius: 2px;
+            margin-bottom: 40px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #10b981, #34d399);
+            width: 0%;
+            transition: width 0.5s ease;
+        }
+        .slides-container {
+            position: relative;
+            min-height: 650px;
+        }
+        .slide {
+            display: none;
+            animation: fadeIn 0.5s ease;
+        }
+        .slide.active {
+            display: block;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .slide-content {
+            background: rgba(6, 78, 59, 0.3);
+            border-radius: 16px;
+            padding: 40px;
+            border: 1px solid rgba(52, 211, 153, 0.15);
+            backdrop-filter: blur(10px);
+        }
+        .step-number {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #059669, #10b981);
+            border-radius: 50%;
+            text-align: center;
+            line-height: 40px;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+        .slide h2 {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            color: #f1f5f9;
+        }
+        .slide p {
+            color: #94a3b8;
+            line-height: 1.7;
+            margin-bottom: 20px;
+        }
+        .mock-ui {
+            background: rgba(2, 44, 34, 0.6);
+            border-radius: 12px;
+            padding: 24px;
+            margin: 24px 0;
+            border: 1px solid rgba(52, 211, 153, 0.12);
+        }
+        .mock-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(52, 211, 153, 0.12);
+        }
+        .mock-icon {
+            width: 32px;
+            height: 32px;
+            background: #059669;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mock-title {
+            font-weight: 600;
+            color: #f1f5f9;
+        }
+        .mock-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+        .mock-table th {
+            text-align: left;
+            padding: 12px;
+            background: rgba(6, 78, 59, 0.4);
+            color: #94a3b8;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .mock-table td {
+            padding: 12px;
+            border-top: 1px solid rgba(52, 211, 153, 0.08);
+            color: #f1f5f9;
+            font-size: 0.9rem;
+        }
+        .mock-table tr:hover {
+            background: rgba(6, 78, 59, 0.3);
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .badge-green { background: #065f46; color: #34d399; }
+        .badge-blue { background: #1e3a5f; color: #60a5fa; }
+        .badge-yellow { background: #713f12; color: #fbbf24; }
+        .badge-red { background: #7f1d1d; color: #f87171; }
+        .badge-emerald { background: #064e3b; color: #6ee7b7; }
+        .badge-amber { background: #713f12; color: #fbbf24; }
+        .badge-grey { background: #374151; color: #9ca3af; }
+        .amount-positive { color: #34d399; }
+        .amount-negative { color: #f87171; }
+        .highlight-box {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.1), rgba(52, 211, 153, 0.05));
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+        .highlight-box h4 {
+            color: #34d399;
+            margin-bottom: 8px;
+        }
+        .info-box {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(59, 130, 246, 0.03));
+            border: 1px solid rgba(59, 130, 246, 0.2);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+        .info-box h4 {
+            color: #60a5fa;
+            margin-bottom: 8px;
+        }
+        .success-box {
+            background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(74, 222, 128, 0.05));
+            border: 1px solid rgba(34, 197, 94, 0.25);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+        .success-box h4 {
+            color: #4ade80;
+            margin-bottom: 8px;
+        }
+        .problem-box {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.06), rgba(239, 68, 68, 0.02));
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 16px 0;
+        }
+        .problem-box h4 {
+            color: #f87171;
+            margin-bottom: 8px;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            margin-top: 40px;
+        }
+        .btn {
+            padding: 12px 24px;
+            border-radius: 8px;
+            border: none;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #059669, #10b981);
+            color: white;
+        }
+        .btn-secondary {
+            background: rgba(52, 211, 153, 0.1);
+            color: #f1f5f9;
+            border: 1px solid rgba(52, 211, 153, 0.2);
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        .auto-play-indicator {
+            text-align: center;
+            color: #64748b;
+            font-size: 0.85rem;
+            margin-top: 16px;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-top: 20px;
+        }
+        .feature-grid-4 {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-top: 20px;
+        }
+        .feature-card {
+            background: rgba(6, 78, 59, 0.4);
+            border: 1px solid rgba(52, 211, 153, 0.12);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+        .feature-card h4 {
+            color: #34d399;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        .feature-card p {
+            color: #94a3b8;
+            font-size: 0.8rem;
+            margin: 0;
+        }
+        .feature-card .card-icon {
+            font-size: 1.8rem;
+            margin-bottom: 10px;
+        }
+        .workflow-step {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 16px;
+            background: rgba(6, 78, 59, 0.4);
+            border-radius: 8px;
+            margin-bottom: 12px;
+            border: 1px solid rgba(52, 211, 153, 0.12);
+        }
+        .workflow-number {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, #059669, #10b981);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+        .workflow-content h4 {
+            color: #f1f5f9;
+            margin-bottom: 4px;
+        }
+        .workflow-content p {
+            color: #94a3b8;
+            font-size: 0.85rem;
+            margin: 0;
+        }
+        .action-btn {
+            background: linear-gradient(135deg, #059669, #10b981);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+        .payment-flow {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 20px;
+            background: rgba(6, 78, 59, 0.4);
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .flow-box {
+            background: rgba(2, 44, 34, 0.6);
+            border-radius: 8px;
+            padding: 16px 20px;
+            text-align: center;
+            flex: 1;
+        }
+        .flow-arrow {
+            color: #34d399;
+            font-size: 24px;
+            flex-shrink: 0;
+        }
+        .stat-card {
+            background: rgba(2, 44, 34, 0.6);
+            border: 1px solid rgba(52, 211, 153, 0.12);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .stat-label {
+            color: #64748b;
+            font-size: 0.85rem;
+        }
+        .pain-point {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 16px;
+            background: rgba(239, 68, 68, 0.04);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 3px solid rgba(239, 68, 68, 0.4);
+        }
+        .pain-point .icon {
+            color: #f87171;
+            font-size: 1.1rem;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .pain-point p {
+            margin: 0;
+            color: #cbd5e1;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+        .solution-point {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 16px;
+            background: rgba(16, 185, 129, 0.06);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border-left: 3px solid rgba(16, 185, 129, 0.5);
+        }
+        .solution-point .icon {
+            color: #34d399;
+            font-size: 1.1rem;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .solution-point p {
+            margin: 0;
+            color: #cbd5e1;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+        .checkbox-mock {
+            width: 18px;
+            height: 18px;
+            border: 2px solid #64748b;
+            border-radius: 4px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .checkbox-mock.checked {
+            background: #10b981;
+            border-color: #10b981;
+        }
+        .checkbox-mock.checked::after {
+            content: "\2713";
+            color: white;
+            font-size: 12px;
+        }
+        .comparison-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .comparison-box {
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .comparison-before {
+            background: rgba(239, 68, 68, 0.05);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+        .comparison-after {
+            background: rgba(34, 197, 94, 0.05);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+        }
+        .comparison-before h4 { color: #f87171; margin-bottom: 12px; }
+        .comparison-after h4 { color: #4ade80; margin-bottom: 12px; }
+        .comparison-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 0.9rem;
+        }
+        .comparison-item:last-child { border-bottom: none; }
+        .comparison-item .label { color: #94a3b8; }
+        .comparison-item .value { color: #f1f5f9; font-weight: 600; }
+        .fee-line {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(52, 211, 153, 0.08);
+        }
+        .fee-line:last-child { border-bottom: none; }
+        .fee-line .label { color: #94a3b8; font-size: 0.9rem; }
+        .fee-line .value { color: #f1f5f9; font-weight: 500; font-size: 0.9rem; }
+        .sub-card {
+            background: rgba(6, 78, 59, 0.4);
+            border: 1px solid rgba(52, 211, 153, 0.12);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        .sub-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .sub-header .name { color: #f1f5f9; font-weight: 600; }
+        .sub-header .amount { color: #34d399; font-weight: 700; font-size: 1.1rem; }
+        .sub-detail { color: #94a3b8; font-size: 0.85rem; }
+        .speaker-icon {
+            width: 20px;
+            height: 20px;
+            margin-left: 8px;
+            opacity: 0.7;
+            cursor: pointer;
+        }
+        .duration-selector {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            margin-top: 12px;
+        }
+        .duration-btn {
+            padding: 6px 12px;
+            background: rgba(52, 211, 153, 0.1);
+            border: 1px solid rgba(52, 211, 153, 0.15);
+            border-radius: 4px;
+            color: #94a3b8;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+        .duration-btn.active {
+            background: #059669;
+            border-color: #059669;
+            color: white;
+        }
+        .reconcile-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            background: rgba(6, 78, 59, 0.3);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            border: 1px solid rgba(52, 211, 153, 0.08);
+        }
+        .reconcile-row .left { color: #94a3b8; font-size: 0.9rem; }
+        .reconcile-row .right { color: #34d399; font-weight: 600; font-size: 0.9rem; }
+        .reconcile-row.matched { border-left: 3px solid #34d399; }
+        .security-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            padding: 14px;
+            background: rgba(6, 78, 59, 0.3);
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border: 1px solid rgba(52, 211, 153, 0.1);
+        }
+        .security-icon {
+            width: 36px;
+            height: 36px;
+            background: linear-gradient(135deg, #059669, #10b981);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 1.1rem;
+        }
+        .security-content h4 { color: #f1f5f9; margin-bottom: 4px; font-size: 0.95rem; }
+        .security-content p { color: #94a3b8; font-size: 0.85rem; margin: 0; }
+        @media (max-width: 768px) {
+            .feature-grid, .feature-grid-4 { grid-template-columns: 1fr; }
+            .comparison-grid { grid-template-columns: 1fr; }
+            .payment-flow { flex-direction: column; }
+            .flow-arrow { transform: rotate(90deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="demo-container">
+        <div class="header">
+            <h1>Direct Debit Collection for Opera</h1>
+            <p>Automated payment collection, posting, and reconciliation</p>
+        </div>
+
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress"></div>
+        </div>
+
+        <div class="slides-container">
+
+            <!-- Slide 1: Title -->
+            <div class="slide active" data-slide="1">
+                <div class="slide-content" style="text-align: center; padding: 60px 40px;">
+                    <div style="display: inline-block; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.25); padding: 8px 20px; border-radius: 50px; font-size: 0.85rem; color: #34d399; font-weight: 500; margin-bottom: 32px;">
+                        GoCardless + Pegasus Opera
+                    </div>
+
+                    <h2 style="font-size: 2.8rem; margin-bottom: 20px; line-height: 1.2;">
+                        Collect Outstanding Balances<br>by <span style="background: linear-gradient(135deg, #10b981, #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Direct Debit</span>
+                    </h2>
+
+                    <p style="font-size: 1.2rem; max-width: 800px; margin: 0 auto 40px; color: #94a3b8;">
+                        Automated payment collection integrated with Opera.<br>
+                        Stop chasing. Start collecting.
+                    </p>
+
+                    <div class="feature-grid-4">
+                        <div class="feature-card">
+                            <div class="card-icon">&#128176;</div>
+                            <h4>You Collect</h4>
+                            <p>Take payment directly from customer bank accounts on the due date</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="card-icon">&#9889;</div>
+                            <h4>Auto-Posted</h4>
+                            <p>Sales receipts posted to Opera cashbook automatically</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="card-icon">&#128206;</div>
+                            <h4>Auto-Allocated</h4>
+                            <p>Payments allocated to the correct invoices instantly</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="card-icon">&#9989;</div>
+                            <h4>Auto-Reconciled</h4>
+                            <p>Bank statement reconciliation handled for you</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 2: The Problem -->
+            <div class="slide" data-slide="2">
+                <div class="slide-content">
+                    <div class="step-number" style="background: linear-gradient(135deg, #dc2626, #ef4444);">!</div>
+                    <h2>The Problem Every Finance Team Knows</h2>
+                    <p>Getting money in the door and keeping your books straight shouldn't consume half your week. But for most businesses using Opera, this is the reality.</p>
+
+                    <div class="pain-point">
+                        <div class="icon">&#10060;</div>
+                        <p><strong>Chasing customers for payment wastes time.</strong> Reminder letters, follow-up emails, phone calls that go to voicemail. You know the invoice is due. They know the invoice is due. Yet here you are, chasing.</p>
+                    </div>
+                    <div class="pain-point">
+                        <div class="icon">&#10060;</div>
+                        <p><strong>Manual bank reconciliation of receipts.</strong> Money arrives in the bank. You open Opera. You try to match each receipt to each customer. Some descriptions are cryptic. Some are truncated. Some you just cannot identify.</p>
+                    </div>
+                    <div class="pain-point">
+                        <div class="icon">&#10060;</div>
+                        <p><strong>Posting individual receipts to the cashbook takes hours.</strong> Every payment means finding the customer, entering the amount, selecting the correct bank account, posting the receipt. Repeat 50 times.</p>
+                    </div>
+                    <div class="pain-point">
+                        <div class="icon">&#10060;</div>
+                        <p><strong>Allocating payments to invoices is tedious.</strong> Even after posting, you still need to allocate each receipt to the correct invoice. For customers with multiple outstanding invoices, this is painfully slow.</p>
+                    </div>
+                    <div class="pain-point">
+                        <div class="icon">&#10060;</div>
+                        <p><strong>Credit control calls that go unanswered.</strong> Your team spends hours on the phone chasing overdue balances. The customers who don't pay on time are the same ones who never pick up.</p>
+                    </div>
+                    <div class="pain-point">
+                        <div class="icon">&#10060;</div>
+                        <p><strong>Your credit control team could be doing something more valuable.</strong> Business owners and finance managers are tied up chasing money instead of focusing on growth, strategy, and customer relationships. Time spent on debt collection is time not spent on growing the business.</p>
+                    </div>
+
+                    <div class="problem-box" style="margin-top: 20px;">
+                        <h4>The Real Cost</h4>
+                        <p style="color: #cbd5e1; margin: 0;">A finance team processing 50 customer receipts per month can easily spend 8-10 hours on the cycle of chasing, receiving, posting, allocating, and reconciling. That is more than a full working day every month spent on tasks that should be automatic. Time your team could spend on higher-value work &mdash; growing the business, improving margins, building customer relationships.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 3: The Solution -->
+            <div class="slide" data-slide="3">
+                <div class="slide-content">
+                    <div class="step-number">&#10003;</div>
+                    <h2>The Solution: Direct Debit Collection</h2>
+                    <p>GoCardless lets you collect payment directly from your customers' bank accounts by Direct Debit. Combined with automatic Opera posting, the entire receipts cycle is eliminated.</p>
+
+                    <div class="solution-point">
+                        <div class="icon">&#10004;</div>
+                        <p><strong>You collect &mdash; you don't chase.</strong> Direct Debit means you initiate the payment. No waiting, no reminders, no follow-ups. You decide when to collect, and the money moves.</p>
+                    </div>
+                    <div class="solution-point">
+                        <div class="icon">&#10004;</div>
+                        <p><strong>Automatic posting to Opera cashbook.</strong> When the payout arrives, every customer receipt is posted to your Opera cashbook automatically. No manual data entry.</p>
+                    </div>
+                    <div class="solution-point">
+                        <div class="icon">&#10004;</div>
+                        <p><strong>Automatic allocation to invoices.</strong> Each payment is matched and allocated to the correct outstanding invoices. No hunting through transaction lists.</p>
+                    </div>
+                    <div class="solution-point">
+                        <div class="icon">&#10004;</div>
+                        <p><strong>Automatic bank reconciliation.</strong> The payout amount on your bank statement matches exactly to the Opera posting. Tick it off and move on.</p>
+                    </div>
+                    <div class="solution-point">
+                        <div class="icon">&#10004;</div>
+                        <p><strong>One click to request payment for outstanding invoices.</strong> Select the invoices, click collect. GoCardless handles the rest.</p>
+                    </div>
+
+                    <div class="highlight-box" style="margin-top: 20px;">
+                        <h4>Seamless Opera Integration &mdash; Not a Separate System</h4>
+                        <p style="color: #94a3b8; margin: 0;">This is not bolt-on software that exports files for you to import. GoCardless collection reads your outstanding invoices directly from Opera, posts receipts directly into Opera's cashbook, allocates payments to invoices inside Opera, and updates the nominal ledger in Opera. The user never leaves their familiar Opera environment. It is Opera &mdash; enhanced.</p>
+                    </div>
+
+                    <div class="success-box" style="margin-top: 16px;">
+                        <h4>The Shift</h4>
+                        <p style="color: #cbd5e1; margin: 0;">You move from reactive (waiting for customers to pay, then processing the result) to proactive (collecting payment on your terms, with Opera updated automatically). Cash flow improves. Workload drops. Books are always accurate.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 4: How It Works -->
+            <div class="slide" data-slide="4">
+                <div class="slide-content">
+                    <h2>How It Works</h2>
+                    <p>Four simple steps from outstanding invoice to cash in the bank and posted in Opera.</p>
+
+                    <div class="workflow-step">
+                        <div class="workflow-number">1</div>
+                        <div class="workflow-content">
+                            <h4>Customer Signs a Direct Debit Mandate</h4>
+                            <p>Send an email link. The customer authorises the mandate online in under 2 minutes. This is a one-time setup &mdash; once signed, you can collect against it indefinitely.</p>
+                        </div>
+                    </div>
+
+                    <div class="workflow-step">
+                        <div class="workflow-number">2</div>
+                        <div class="workflow-content">
+                            <h4>You Select Outstanding Invoices to Collect</h4>
+                            <p>Review what's due and select which invoices to collect. Multiple invoices per customer are combined into a single collection. One click to request payment.</p>
+                        </div>
+                    </div>
+
+                    <div class="workflow-step">
+                        <div class="workflow-number">3</div>
+                        <div class="workflow-content">
+                            <h4>GoCardless Collects the Money</h4>
+                            <p>GoCardless debits the customer's bank account via Direct Debit. The customer sees your company name on their bank statement. Funds are batched and paid out to your bank.</p>
+                        </div>
+                    </div>
+
+                    <div class="workflow-step">
+                        <div class="workflow-number">4</div>
+                        <div class="workflow-content">
+                            <h4>Everything Posts to Opera Automatically</h4>
+                            <p>Sales receipts, invoice allocations, fee postings, VAT tracking, cashbook entries, nominal ledger &mdash; all updated automatically when you import the payout. One click.</p>
+                        </div>
+                    </div>
+
+                    <div class="payment-flow" style="margin-top: 24px;">
+                        <div class="flow-box" style="border: 1px solid rgba(52, 211, 153, 0.15);">
+                            <div style="color: #34d399; font-size: 24px; margin-bottom: 8px;">&#128196;</div>
+                            <div style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Outstanding Invoices</div>
+                            <div style="color: #64748b; font-size: 0.8rem;">Select what's due</div>
+                        </div>
+                        <div class="flow-arrow">&#8594;</div>
+                        <div class="flow-box" style="border: 1px solid rgba(52, 211, 153, 0.15);">
+                            <div style="color: #34d399; font-size: 24px; margin-bottom: 8px;">&#128179;</div>
+                            <div style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Direct Debit</div>
+                            <div style="color: #64748b; font-size: 0.8rem;">GoCardless collects</div>
+                        </div>
+                        <div class="flow-arrow">&#8594;</div>
+                        <div class="flow-box" style="border: 1px solid rgba(52, 211, 153, 0.15);">
+                            <div style="color: #34d399; font-size: 24px; margin-bottom: 8px;">&#127974;</div>
+                            <div style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Your Bank</div>
+                            <div style="color: #64748b; font-size: 0.8rem;">Payout received</div>
+                        </div>
+                        <div class="flow-arrow">&#8594;</div>
+                        <div class="flow-box" style="border: 2px solid #10b981;">
+                            <div style="color: #34d399; font-size: 24px; margin-bottom: 8px;">&#9889;</div>
+                            <div style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Opera Updated</div>
+                            <div style="color: #64748b; font-size: 0.8rem;">Automatically</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 5: Payment Requests -->
+            <div class="slide" data-slide="5">
+                <div class="slide-content">
+                    <div class="step-number">&#163;</div>
+                    <h2>Payment Requests</h2>
+                    <p>Select which invoices to collect. One click to request payment from every customer with a signed mandate. No phone calls, no emails, no waiting.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M19 14V6c0-1.1-.9-2-2-2H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zm-9-1c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm13-6v11c0 1.1-.9 2-2 2H4v-2h17V7h2z"/></svg>
+                            </div>
+                            <div class="mock-title">Request Payments &mdash; Invoices Due</div>
+                            <button class="action-btn" style="margin-left: auto;">Collect Selected</button>
+                        </div>
+
+                        <table class="mock-table">
+                            <thead>
+                                <tr>
+                                    <th></th>
+                                    <th>Customer</th>
+                                    <th>Invoice</th>
+                                    <th>Due Date</th>
+                                    <th>Amount</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><div class="checkbox-mock checked"></div></td>
+                                    <td>Harrison &amp; Co Ltd</td>
+                                    <td>INV-2026-0312</td>
+                                    <td>25 Mar 2026</td>
+                                    <td class="amount-positive">&pound;1,850.00</td>
+                                    <td><span class="badge badge-green">Mandate Active</span></td>
+                                </tr>
+                                <tr>
+                                    <td><div class="checkbox-mock checked"></div></td>
+                                    <td>Harrison &amp; Co Ltd</td>
+                                    <td>INV-2026-0298</td>
+                                    <td>20 Mar 2026</td>
+                                    <td class="amount-positive">&pound;640.00</td>
+                                    <td><span class="badge badge-green">Mandate Active</span></td>
+                                </tr>
+                                <tr>
+                                    <td><div class="checkbox-mock checked"></div></td>
+                                    <td>Beacon Services plc</td>
+                                    <td>INV-2026-0305</td>
+                                    <td>28 Mar 2026</td>
+                                    <td class="amount-positive">&pound;3,200.00</td>
+                                    <td><span class="badge badge-green">Mandate Active</span></td>
+                                </tr>
+                                <tr>
+                                    <td><div class="checkbox-mock checked"></div></td>
+                                    <td>Whitfield Trading</td>
+                                    <td>INV-2026-0288</td>
+                                    <td>18 Mar 2026</td>
+                                    <td class="amount-positive">&pound;975.50</td>
+                                    <td><span class="badge badge-green">Mandate Active</span></td>
+                                </tr>
+                                <tr>
+                                    <td><div class="checkbox-mock"></div></td>
+                                    <td>J Palmer &amp; Sons</td>
+                                    <td>INV-2026-0310</td>
+                                    <td>30 Mar 2026</td>
+                                    <td>&pound;2,100.00</td>
+                                    <td><span class="badge badge-grey">No Mandate</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Multiple Invoices, Single Collection</h4>
+                        <p style="color: #94a3b8; margin: 0;">Harrison &amp; Co has two invoices due. They are combined into a single Direct Debit collection of &pound;2,490.00. The customer sees one debit on their bank statement with your company name and a clear reference. Both invoices are allocated individually in Opera.</p>
+                    </div>
+
+                    <div class="info-box">
+                        <h4>Real-Time Tracking</h4>
+                        <p style="color: #94a3b8; margin: 0;">Track collection status from request through to payout: Pending &rarr; Submitted &rarr; Confirmed &rarr; Paid Out. Know exactly where every payment stands without phoning the bank.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 6: Automatic Import & Posting -->
+            <div class="slide" data-slide="6">
+                <div class="slide-content">
+                    <div class="step-number">&#9889;</div>
+                    <h2>Automatic Import &amp; Posting</h2>
+                    <p>The payout arrives in your bank. One click imports every payment into Opera. Not one receipt at a time &mdash; the entire payout in a single operation.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+                            </div>
+                            <div class="mock-title">Payout Import &mdash; PO00128790</div>
+                            <span class="badge badge-green" style="margin-left: auto;">Ready to Import</span>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px; background: rgba(6, 78, 59, 0.3); border-radius: 8px; margin-bottom: 16px;">
+                            <div>
+                                <div style="color: #64748b; font-size: 0.8rem;">Payout Date</div>
+                                <div style="color: #f1f5f9; font-weight: 600;">27 Mar 2026</div>
+                            </div>
+                            <div>
+                                <div style="color: #64748b; font-size: 0.8rem;">Payments</div>
+                                <div style="color: #f1f5f9; font-weight: 600;">14 customers</div>
+                            </div>
+                            <div>
+                                <div style="color: #64748b; font-size: 0.8rem;">Gross</div>
+                                <div style="color: #f1f5f9; font-weight: 600;">&pound;18,420.00</div>
+                            </div>
+                            <div>
+                                <div style="color: #64748b; font-size: 0.8rem;">Fees</div>
+                                <div class="amount-negative" style="font-weight: 600;">-&pound;73.68</div>
+                            </div>
+                            <div>
+                                <div style="color: #64748b; font-size: 0.8rem;">Net Payout</div>
+                                <div style="color: #34d399; font-size: 1.3rem; font-weight: 700;">&pound;18,346.32</div>
+                            </div>
+                        </div>
+
+                        <table class="mock-table">
+                            <thead>
+                                <tr>
+                                    <th>Customer</th>
+                                    <th>Reference</th>
+                                    <th>Amount</th>
+                                    <th>Invoices</th>
+                                    <th>Match</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>Harrison &amp; Co Ltd</td>
+                                    <td>INV-2026-0312, INV-2026-0298</td>
+                                    <td class="amount-positive">&pound;2,490.00</td>
+                                    <td>2 invoices</td>
+                                    <td><span class="badge badge-green">Auto-matched</span></td>
+                                </tr>
+                                <tr>
+                                    <td>Beacon Services plc</td>
+                                    <td>INV-2026-0305</td>
+                                    <td class="amount-positive">&pound;3,200.00</td>
+                                    <td>1 invoice</td>
+                                    <td><span class="badge badge-green">Auto-matched</span></td>
+                                </tr>
+                                <tr>
+                                    <td>Whitfield Trading</td>
+                                    <td>INV-2026-0288</td>
+                                    <td class="amount-positive">&pound;975.50</td>
+                                    <td>1 invoice</td>
+                                    <td><span class="badge badge-green">Auto-matched</span></td>
+                                </tr>
+                                <tr>
+                                    <td>Cavendish Group</td>
+                                    <td>INV-2026-0301</td>
+                                    <td class="amount-positive">&pound;4,500.00</td>
+                                    <td>1 invoice</td>
+                                    <td><span class="badge badge-green">Auto-matched</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div style="text-align: center; padding: 12px; color: #64748b; font-size: 0.85rem;">...10 more payments, all auto-matched</div>
+                    </div>
+
+                    <div class="success-box">
+                        <h4>What Happens When You Click Import</h4>
+                        <p style="color: #94a3b8; margin: 0;">14 sales receipts posted to the cashbook. All payments allocated to their invoices. Customer balances updated. Nominal ledger entries created. Bank balance updated. Fee entries posted. VAT on fees recorded. All in under 10 seconds.</p>
+                    </div>
+
+                    <div class="highlight-box" style="margin-top: 16px;">
+                        <h4>Zero Manual Data Entry</h4>
+                        <p style="color: #94a3b8; margin: 0;">No typing customer names. No entering amounts. No selecting bank accounts. No posting individual receipts. No allocating to invoices one by one. The automation handles every step &mdash; posting, allocation, fee splitting, VAT tracking, and nominal entries. One click replaces what used to be hours of repetitive data entry.</p>
+                    </div>
+
+                    <div class="info-box" style="margin-top: 16px;">
+                        <h4>Seamless Opera Integration</h4>
+                        <p style="color: #94a3b8; margin: 0;">Every posting follows Opera's own rules precisely. Journal numbers from Opera's sequence. Correct period posting. Complete double-entry. Transfer files created. The records are indistinguishable from entries made through Opera itself. Your auditors will see standard Opera transactions with full traceability back to the GoCardless payout.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 7: Fees Are Handled -->
+            <div class="slide" data-slide="7">
+                <div class="slide-content">
+                    <div class="step-number">&#163;</div>
+                    <h2>Fees Are Handled Automatically</h2>
+                    <p>GoCardless deducts fees from each payout before it reaches your bank. Without automation, you either ignore the fees (wrong bank balance in Opera), manually calculate them (tedious), or miss the VAT reclaim (costs you money). None of that applies here.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
+                            </div>
+                            <div class="mock-title">Fee Breakdown &mdash; Payout PO00128790</div>
+                        </div>
+
+                        <div style="padding: 16px; background: rgba(6, 78, 59, 0.3); border-radius: 8px;">
+                            <div class="fee-line">
+                                <span class="label">Gross customer payments collected</span>
+                                <span class="value">&pound;18,420.00</span>
+                            </div>
+                            <div class="fee-line">
+                                <span class="label">GoCardless transaction fees (14 payments &times; variable)</span>
+                                <span class="value" style="color: #f87171;">-&pound;61.40</span>
+                            </div>
+                            <div class="fee-line">
+                                <span class="label">VAT on fees (20%)</span>
+                                <span class="value" style="color: #f87171;">-&pound;12.28</span>
+                            </div>
+                            <div class="fee-line" style="border-top: 2px solid rgba(52, 211, 153, 0.2); margin-top: 8px; padding-top: 12px;">
+                                <span class="label" style="font-weight: 600; color: #f1f5f9;">Net payout to your bank</span>
+                                <span class="value" style="color: #34d399; font-size: 1.1rem;">&pound;18,346.32</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="feature-grid" style="margin-top: 20px;">
+                        <div class="feature-card">
+                            <h4>Net Fees Separated</h4>
+                            <p>Fee amount (ex. VAT) posted to your chosen expense nominal code</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>VAT Reclaimed</h4>
+                            <p>VAT on fees tracked correctly for your VAT return &mdash; reclaimable input tax</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>No Manual Calculation</h4>
+                            <p>The system reads per-transaction fees from GoCardless and splits net/VAT automatically</p>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box" style="margin-top: 20px;">
+                        <h4>VAT You Might Be Missing</h4>
+                        <p style="color: #94a3b8; margin: 0;">GoCardless fees are subject to VAT, and that VAT is reclaimable as input tax. Many businesses overlook this because the fee deduction is buried in the payout detail. At &pound;20,000/month in collections, you could be losing around &pound;100/month &mdash; over &pound;1,200/year &mdash; in unclaimed VAT.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 8: Subscriptions -->
+            <div class="slide" data-slide="8">
+                <div class="slide-content">
+                    <div class="step-number">&#128260;</div>
+                    <h2>Subscriptions &mdash; Recurring Collections</h2>
+                    <p>For customers on regular billing cycles, link GoCardless subscriptions to Opera repeat invoices. Collections happen automatically on schedule with zero manual intervention.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">
+                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M12 6v3l4-4-4-4v3c-4.42 0-8 3.58-8 8 0 1.57.46 3.03 1.24 4.26L6.7 14.8c-.45-.83-.7-1.79-.7-2.8 0-3.31 2.69-6 6-6zm6.76 1.74L17.3 9.2c.44.84.7 1.79.7 2.8 0 3.31-2.69 6-6 6v-3l-4 4 4 4v-3c4.42 0 8-3.58 8-8 0-1.57-.46-3.03-1.24-4.26z"/></svg>
+                            </div>
+                            <div class="mock-title">Active Subscriptions</div>
+                        </div>
+
+                        <div class="sub-card">
+                            <div class="sub-header">
+                                <span class="name">Harrison &amp; Co Ltd</span>
+                                <span class="amount">&pound;850.00/month</span>
+                            </div>
+                            <div class="sub-detail">SUB tag: Monthly Retainer &bull; Next collection: 1 Apr 2026 &bull; Mandate: MD000A1234</div>
+                            <div style="margin-top: 8px;">
+                                <span class="badge badge-green">Active</span>
+                                <span class="badge badge-emerald" style="margin-left: 4px;">Synced from Opera</span>
+                            </div>
+                        </div>
+
+                        <div class="sub-card">
+                            <div class="sub-header">
+                                <span class="name">Beacon Services plc</span>
+                                <span class="amount">&pound;1,600.00/quarter</span>
+                            </div>
+                            <div class="sub-detail">SUB tag: Quarterly Licence &bull; Next collection: 1 Apr 2026 &bull; Mandate: MD000B5678</div>
+                            <div style="margin-top: 8px;">
+                                <span class="badge badge-green">Active</span>
+                                <span class="badge badge-emerald" style="margin-left: 4px;">Synced from Opera</span>
+                            </div>
+                        </div>
+
+                        <div class="sub-card">
+                            <div class="sub-header">
+                                <span class="name">Cavendish Group</span>
+                                <span class="amount">&pound;2,250.00/month</span>
+                            </div>
+                            <div class="sub-detail">SUB tag: Managed Services &bull; Next collection: 1 Apr 2026 &bull; Mandate: MD000C9012</div>
+                            <div style="margin-top: 8px;">
+                                <span class="badge badge-green">Active</span>
+                                <span class="badge badge-emerald" style="margin-left: 4px;">Synced from Opera</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box">
+                        <h4>Set It and Forget It</h4>
+                        <p style="color: #94a3b8; margin: 0;">If the amount changes in Opera &mdash; say a price increase or contract renewal &mdash; the subscription amount syncs automatically. No need to update GoCardless separately. Monthly collections, quarterly collections, any schedule. Once configured, these payments collect themselves.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 9: Bank Reconciliation -->
+            <div class="slide" data-slide="9">
+                <div class="slide-content">
+                    <div class="step-number">&#9745;</div>
+                    <h2>Bank Reconciliation &mdash; Solved</h2>
+                    <p>This is where GoCardless automation really pays off at month end. Without it, your bank statement shows one line from "GOCARDLESS LTD" for thousands of pounds &mdash; but Opera has dozens of individual receipts. Reconciling those is a nightmare. With automation, it just works.</p>
+
+                    <div class="comparison-grid">
+                        <div class="comparison-box comparison-before">
+                            <h4>Without Automation</h4>
+                            <div class="comparison-item">
+                                <span class="label">Bank statement</span>
+                                <span class="value">1 line: &pound;18,346.32</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Opera cashbook</span>
+                                <span class="value" style="color: #f87171;">14 separate entries</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Reconciliation</span>
+                                <span class="value" style="color: #f87171;">Manual, painful</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Time at month end</span>
+                                <span class="value" style="color: #f87171;">30-60 minutes per payout</span>
+                            </div>
+                        </div>
+
+                        <div class="comparison-box comparison-after">
+                            <h4>With Automation</h4>
+                            <div class="comparison-item">
+                                <span class="label">Bank statement</span>
+                                <span class="value">1 line: &pound;18,346.32</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Opera cashbook</span>
+                                <span class="value" style="color: #4ade80;">1 transfer: &pound;18,346.32</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Reconciliation</span>
+                                <span class="value" style="color: #4ade80;">Automatic match</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Time at month end</span>
+                                <span class="value" style="color: #4ade80;">Seconds</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="info-box" style="margin-top: 20px;">
+                        <h4>How? The Control Bank</h4>
+                        <p style="color: #94a3b8; margin: 0;">All the detail &mdash; individual customer receipts, fee postings, VAT &mdash; is posted to a GoCardless clearing account in Opera. A single net transfer then moves the payout total to your real bank account. One Opera entry matches one bank statement line. The clearing account always nets to zero. All the detail is preserved for audit, but your bank reconciliation is clean.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 10: The Numbers (ROI) -->
+            <div class="slide" data-slide="10">
+                <div class="slide-content">
+                    <h2>The Numbers</h2>
+                    <p>Time saved. Cash flow improved. Errors eliminated. Here is what the switch looks like for a typical business with 50 customers on Direct Debit.</p>
+
+                    <div class="comparison-grid">
+                        <div class="comparison-box comparison-before">
+                            <h4>Manual Process</h4>
+                            <div class="comparison-item">
+                                <span class="label">Posting receipts</span>
+                                <span class="value" style="color: #f87171;">1-2 hours per run</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Allocating invoices</span>
+                                <span class="value" style="color: #f87171;">30-60 minutes</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Reconciling</span>
+                                <span class="value" style="color: #f87171;">30-60 minutes</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Credit control calls</span>
+                                <span class="value" style="color: #f87171;">2-3 hours/week</span>
+                            </div>
+                            <div class="comparison-item" style="border-top: 2px solid rgba(239,68,68,0.3); margin-top: 8px; padding-top: 12px;">
+                                <span class="label" style="color: #f1f5f9; font-weight: 600;">Total per month</span>
+                                <span class="value" style="color: #f87171;">12-16 hours</span>
+                            </div>
+                        </div>
+
+                        <div class="comparison-box comparison-after">
+                            <h4>Automated Process</h4>
+                            <div class="comparison-item">
+                                <span class="label">Review and import</span>
+                                <span class="value" style="color: #4ade80;">5 minutes</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Allocation</span>
+                                <span class="value" style="color: #4ade80;">Automatic</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Reconciliation</span>
+                                <span class="value" style="color: #4ade80;">Automatic</span>
+                            </div>
+                            <div class="comparison-item">
+                                <span class="label">Credit control calls</span>
+                                <span class="value" style="color: #4ade80;">Minimal &mdash; you collect</span>
+                            </div>
+                            <div class="comparison-item" style="border-top: 2px solid rgba(34,197,94,0.3); margin-top: 8px; padding-top: 12px;">
+                                <span class="label" style="color: #f1f5f9; font-weight: 600;">Total per month</span>
+                                <span class="value" style="color: #4ade80;">Under 30 minutes</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="feature-grid-4" style="margin-top: 24px;">
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #34d399;">600+</div>
+                            <div class="stat-label">Receipts posted automatically per year</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #f87171;">80%</div>
+                            <div class="stat-label">Reduction in credit control calls</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #fbbf24;">150+</div>
+                            <div class="stat-label">Hours saved per year</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #60a5fa;">100%</div>
+                            <div class="stat-label">Fee VAT reclaimed</div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box" style="margin-top: 20px;">
+                        <h4>Cash Flow Impact &mdash; Debts Collected Early</h4>
+                        <p style="color: #94a3b8; margin: 0;">Direct Debit means you collect on the date you choose &mdash; not when the customer remembers. Money comes in before it becomes overdue, not weeks or months after. Average debtor days drop significantly. Fewer bad debts. More working capital. Better cashflow means a more profitable business &mdash; and the confidence to invest, hire, and grow.</p>
+                    </div>
+
+                    <div class="success-box" style="margin-top: 16px;">
+                        <h4>The Savings Far Outweigh the Fees</h4>
+                        <p style="color: #cbd5e1; margin: 0;">GoCardless charges a small per-transaction fee (typically 1-2% or a few pence per collection). Compare that to: the cost of a credit controller spending hours chasing payments, the write-offs from bad debts that never get paid, the cashflow cost of money arriving 30-60 days late, and the missed VAT reclaims on fees. The return on investment is not marginal &mdash; it is overwhelming. Most businesses recoup the Direct Debit fees many times over through time savings, improved collection rates, and eliminated bad debt alone.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 11: Security & Control -->
+            <div class="slide" data-slide="11">
+                <div class="slide-content">
+                    <h2>Security &amp; Control</h2>
+                    <p>Direct Debit is one of the most regulated payment methods in the UK. Your customers are protected by the Direct Debit Guarantee, and you maintain full control over every collection.</p>
+
+                    <div class="security-item">
+                        <div class="security-icon">&#128274;</div>
+                        <div class="security-content">
+                            <h4>Mandate Management</h4>
+                            <p>View all active Direct Debit mandates. See when each was signed, which bank account it's linked to, and its current status. Cancel mandates instantly when a customer leaves or an account closes.</p>
+                        </div>
+                    </div>
+
+                    <div class="security-item">
+                        <div class="security-icon">&#128203;</div>
+                        <div class="security-content">
+                            <h4>Full Audit Trail in Opera</h4>
+                            <p>Every transaction posted carries the GoCardless payment reference and payout ID. Your auditors can trace any receipt back to the original Direct Debit collection. Complete double-entry with nominal ledger entries, VAT records, and allocation detail.</p>
+                        </div>
+                    </div>
+
+                    <div class="security-item">
+                        <div class="security-icon">&#127974;</div>
+                        <div class="security-content">
+                            <h4>Customer Bank Statement Clarity</h4>
+                            <p>Your company name appears on the customer's bank statement, with a configurable reference. They see exactly who collected and why. No confusion, no queries, no support calls asking "what was this payment for?"</p>
+                        </div>
+                    </div>
+
+                    <div class="security-item">
+                        <div class="security-icon">&#128737;</div>
+                        <div class="security-content">
+                            <h4>Direct Debit Guarantee</h4>
+                            <p>Customers are protected by the UK Direct Debit Guarantee. If a payment is taken in error, they get an immediate full refund from their bank. This protection builds trust and makes customers more willing to sign mandates.</p>
+                        </div>
+                    </div>
+
+                    <div class="security-item">
+                        <div class="security-icon">&#9888;</div>
+                        <div class="security-content">
+                            <h4>Duplicate Prevention</h4>
+                            <p>Every payout is tracked by its unique GoCardless ID. Once imported, it cannot be imported again &mdash; even if a different user tries or the same payout is fetched again. No risk of double-posting.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 12: Summary / CTA -->
+            <div class="slide" data-slide="12">
+                <div class="slide-content" style="text-align: center; padding: 50px 40px;">
+                    <div style="display: inline-block; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.25); padding: 8px 20px; border-radius: 50px; font-size: 0.85rem; color: #34d399; font-weight: 500; margin-bottom: 28px;">
+                        GoCardless + Pegasus Opera
+                    </div>
+
+                    <h2 style="font-size: 2.6rem; margin-bottom: 16px; line-height: 1.2;">
+                        Stop Chasing.<br><span style="background: linear-gradient(135deg, #10b981, #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Start Collecting.</span>
+                    </h2>
+
+                    <p style="font-size: 1.15rem; max-width: 700px; margin: 0 auto 36px; color: #94a3b8;">
+                        Direct Debit + automation = faster cash, less work, accurate books.<br>
+                        <span style="color: #6ee7b7;">Focus on growing your business, not chasing money.</span>
+                    </p>
+
+                    <div class="feature-grid-4" style="margin-bottom: 24px;">
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #34d399;">&#128176;</div>
+                            <div class="stat-label" style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Collect, Don't Chase</div>
+                            <div class="stat-label">You initiate payment on your terms</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #34d399;">&#9889;</div>
+                            <div class="stat-label" style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Fully Automated</div>
+                            <div class="stat-label">Posted, allocated, reconciled</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #34d399;">&#128200;</div>
+                            <div class="stat-label" style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Better Cash Flow</div>
+                            <div class="stat-label">Debts collected early, fewer bad debts</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" style="color: #34d399;">&#128218;</div>
+                            <div class="stat-label" style="color: #f1f5f9; font-weight: 600; margin-bottom: 4px;">Seamless Opera</div>
+                            <div class="stat-label">Not a bolt-on &mdash; it IS Opera</div>
+                        </div>
+                    </div>
+
+                    <div style="max-width: 700px; margin: 0 auto 24px; padding: 16px 24px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.2); border-radius: 8px; text-align: left;">
+                        <p style="color: #cbd5e1; margin: 0; font-size: 0.95rem;"><strong style="color: #34d399;">Free up your team.</strong> Credit controllers stop chasing and start adding value. Business owners focus on growth, not debt collection. The savings in time, bad debts, and cashflow far outweigh the small cost of Direct Debit fees.</p>
+                    </div>
+
+                    <div style="display: flex; gap: 16px; justify-content: center; margin-bottom: 24px;">
+                        <button class="btn btn-primary" style="padding: 16px 32px; font-size: 1.1rem;">Schedule a Demo</button>
+                        <button class="btn btn-secondary" style="padding: 16px 32px; font-size: 1.1rem;">Learn More</button>
+                    </div>
+
+                    <div style="margin-top: 36px; color: #64748b; font-size: 0.9rem;">
+                        Works with <strong style="color: #34d399;">Pegasus Opera SQL SE</strong> and <strong style="color: #34d399;">Opera 3</strong>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-secondary" id="prevBtn" onclick="prevSlide()">Previous</button>
+            <button class="btn btn-primary" id="nextBtn" onclick="nextSlide()">Next</button>
+            <button class="btn btn-secondary" id="playPauseBtn" onclick="toggleAutoPlay()">Pause</button>
+        </div>
+
+        <div class="auto-play-indicator">
+            <span id="slideIndicator">Slide 1 of 12</span> &bull; Auto-advancing in <span id="countdown">20</span>s
+            <svg class="speaker-icon" id="speakerIcon" onclick="toggleVoice()" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+            </svg>
+        </div>
+
+        <div class="duration-selector">
+            <button class="duration-btn" onclick="setDuration(5)">5s</button>
+            <button class="duration-btn" onclick="setDuration(10)">10s</button>
+            <button class="duration-btn" onclick="setDuration(15)">15s</button>
+            <button class="duration-btn active" onclick="setDuration(20)">20s</button>
+            <button class="duration-btn" onclick="setDuration(30)">30s</button>
+        </div>
+    </div>
+
+    <script>
+        let currentSlide = 1;
+        const totalSlides = 12;
+        let autoPlayInterval;
+        let countdownInterval;
+        let countdown = 20;
+        let slideDuration = 20;
+        let isPlaying = true;
+        let voiceEnabled = true;
+
+        const slideNarrations = {
+            1: {
+                title: "Collect Outstanding Balances by Direct Debit",
+                description: "Automated payment collection integrated with Opera. Stop chasing customers for payment. With GoCardless Direct Debit, you collect the money on your terms. Sales receipts are posted to Opera automatically. Payments are allocated to invoices. Bank reconciliation is handled for you. One click, fully automated."
+            },
+            2: {
+                title: "The Problem Every Finance Team Knows",
+                description: "Getting money in the door and keeping your books straight shouldn't consume half your week. Chasing customers who won't pay. Manually posting every receipt into Opera. Allocating each payment to the right invoice. Then at month end, trying to reconcile it all. A typical team spends 8 to 10 hours a month on this cycle. That's more than a full working day, every month, on tasks that should be automatic. And your credit control team could be doing something far more valuable - growing the business, improving margins, building customer relationships. Instead, they are tied up chasing money."
+            },
+            3: {
+                title: "The Solution: Direct Debit Collection",
+                description: "GoCardless lets you collect payment directly from your customers' bank accounts. You collect, you don't chase. Combined with automatic Opera posting, the entire receipts cycle is eliminated. Cashbook entries, invoice allocations, fee postings, bank reconciliation - all automatic. And this is not a separate system bolted on to Opera. It reads invoices from Opera, posts receipts into Opera, allocates inside Opera, and updates the nominal ledger in Opera. The user never leaves their familiar environment. You move from reactive to proactive. Cash flow improves. Workload drops. Books are always accurate."
+            },
+            4: {
+                title: "How It Works - Four Simple Steps",
+                description: "First, the customer signs a Direct Debit mandate via an email link. This is a one-time setup. Second, you select which outstanding invoices to collect. Multiple invoices per customer are combined into a single collection. Third, GoCardless collects the money from the customer's bank account. Fourth, everything posts to Opera automatically. Sales receipts, allocations, fees, nominal entries - all in one click."
+            },
+            5: {
+                title: "Payment Requests",
+                description: "Select which invoices are due for collection. One click to request payment from every customer with a signed mandate. Multiple invoices from the same customer are combined into a single collection. The customer sees your company name and a clear reference on their bank statement. Track every collection from request through to payout in real time."
+            },
+            6: {
+                title: "Automatic Import and Posting",
+                description: "When the payout arrives in your bank, one click imports every payment into Opera. Not one receipt at a time - the entire payout in a single operation. 14 sales receipts posted. All payments allocated to their invoices. Customer balances updated. Fee entries posted. VAT on fees recorded. All in under 10 seconds. Zero manual data entry - no typing customer names, no entering amounts, no posting individual receipts. And every posting follows Opera's own rules precisely, with journal numbers from Opera's sequence and complete double-entry. The records are indistinguishable from entries made through Opera itself."
+            },
+            7: {
+                title: "Fees Are Handled Automatically",
+                description: "GoCardless deducts fees from each payout. The system automatically separates the net fee from the VAT, posts to your expense nominal, and records the VAT for reclaim on your next return. Many businesses miss this VAT reclaim entirely. At 20,000 pounds a month in collections, that could be over 1,200 pounds a year in unclaimed input tax."
+            },
+            8: {
+                title: "Subscriptions - Recurring Collections",
+                description: "For customers on regular billing, link GoCardless subscriptions to Opera repeat invoices. Collections happen automatically on schedule. If the amount changes in Opera, the subscription syncs automatically. Monthly, quarterly, any frequency. Once configured, these payments collect themselves with zero manual intervention."
+            },
+            9: {
+                title: "Bank Reconciliation - Solved",
+                description: "Without automation, your bank statement shows one line from GoCardless for thousands of pounds, but Opera has dozens of individual receipts. Reconciling those at month end is a nightmare. With the control bank, all the detail posts to a clearing account, and a single net transfer hits your real bank. One Opera entry, one bank statement line, perfect match. What used to take an hour now takes seconds."
+            },
+            10: {
+                title: "The Numbers",
+                description: "50 customers on Direct Debit means over 600 receipts processed automatically per year. Credit control calls reduced by 80 percent because you collect before it's overdue. Over 150 hours saved per year across posting, allocating, and reconciling. 100 percent of fee VAT reclaimed. Cash flow improves because you collect on the date you choose, not when the customer remembers. Money comes in before it becomes overdue - fewer bad debts, more working capital, a more profitable business. And the savings far outweigh the fee cost. Compare the small Direct Debit fee to the cost of a credit controller chasing, the write-offs from bad debts, and the cashflow cost of money arriving 30 to 60 days late. The return on investment is overwhelming."
+            },
+            11: {
+                title: "Security and Control",
+                description: "Direct Debit is one of the most regulated payment methods in the UK. Full mandate management lets you see and control every active Direct Debit. Complete audit trail in Opera - every transaction carries the GoCardless reference. Your company name appears on the customer's bank statement. Customers are protected by the Direct Debit Guarantee. And built-in duplicate prevention means no risk of double-posting."
+            },
+            12: {
+                title: "Stop Chasing. Start Collecting.",
+                description: "Direct Debit plus automation equals faster cash, less work, and accurate books. Collect on your terms. Posted, allocated, and reconciled automatically. Better cash flow with debts collected early - fewer bad debts, more working capital. Seamless Opera integration - not a bolt-on, but part of Opera itself. Free up your credit control team to focus on growing the business, not chasing money. The savings in time, bad debts, and cashflow far outweigh the small cost of Direct Debit fees. Works with both Pegasus Opera SQL SE and Opera 3."
+            }
+        };
+
+        function showSlide(n) {
+            const slides = document.querySelectorAll('.slide');
+            slides.forEach(slide => slide.classList.remove('active'));
+
+            if (n > totalSlides) currentSlide = 1;
+            if (n < 1) currentSlide = totalSlides;
+
+            slides[currentSlide - 1].classList.add('active');
+
+            const progress = (currentSlide / totalSlides) * 100;
+            document.getElementById('progress').style.width = progress + '%';
+            document.getElementById('slideIndicator').textContent = `Slide ${currentSlide} of ${totalSlides}`;
+
+            resetCountdown();
+
+            if (voiceEnabled && slideNarrations[currentSlide]) {
+                speakSlide(currentSlide);
+            }
+        }
+
+        function nextSlide() {
+            currentSlide++;
+            showSlide(currentSlide);
+        }
+
+        function prevSlide() {
+            currentSlide--;
+            showSlide(currentSlide);
+        }
+
+        function resetCountdown() {
+            countdown = slideDuration;
+            document.getElementById('countdown').textContent = countdown;
+        }
+
+        function startAutoPlay() {
+            autoPlayInterval = setInterval(() => {
+                if (isPlaying) {
+                    nextSlide();
+                }
+            }, slideDuration * 1000);
+
+            countdownInterval = setInterval(() => {
+                if (isPlaying) {
+                    countdown--;
+                    document.getElementById('countdown').textContent = countdown;
+                    if (countdown <= 0) {
+                        resetCountdown();
+                    }
+                }
+            }, 1000);
+        }
+
+        function toggleAutoPlay() {
+            isPlaying = !isPlaying;
+            document.getElementById('playPauseBtn').textContent = isPlaying ? 'Pause' : 'Play';
+            if (!isPlaying) {
+                window.speechSynthesis.cancel();
+            }
+        }
+
+        function setDuration(seconds) {
+            slideDuration = seconds;
+            document.querySelectorAll('.duration-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            resetCountdown();
+
+            clearInterval(autoPlayInterval);
+            clearInterval(countdownInterval);
+            startAutoPlay();
+        }
+
+        function speakSlide(slideNum) {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+
+                const narration = slideNarrations[slideNum];
+                if (narration) {
+                    setTimeout(() => {
+                        const titleUtterance = new SpeechSynthesisUtterance(narration.title);
+                        titleUtterance.rate = 0.9;
+                        titleUtterance.pitch = 1;
+
+                        titleUtterance.onend = () => {
+                            if (voiceEnabled) {
+                                setTimeout(() => {
+                                    if (voiceEnabled) {
+                                        const descUtterance = new SpeechSynthesisUtterance(narration.description);
+                                        descUtterance.rate = 0.9;
+                                        descUtterance.pitch = 1;
+                                        window.speechSynthesis.speak(descUtterance);
+                                    }
+                                }, 800);
+                            }
+                        };
+
+                        window.speechSynthesis.speak(titleUtterance);
+                    }, 500);
+                }
+            }
+        }
+
+        function toggleVoice() {
+            voiceEnabled = !voiceEnabled;
+            const icon = document.getElementById('speakerIcon');
+            icon.style.opacity = voiceEnabled ? '0.7' : '0.3';
+
+            if (!voiceEnabled) {
+                window.speechSynthesis.cancel();
+            } else if (slideNarrations[currentSlide]) {
+                speakSlide(currentSlide);
+            }
+        }
+
+        // Keyboard navigation
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                prevSlide();
+            } else if (e.key === 'p') {
+                toggleAutoPlay();
+            }
+        });
+
+        // Initialize
+        showSlide(1);
+        startAutoPlay();
+    </script>
+</body>
+</html>
