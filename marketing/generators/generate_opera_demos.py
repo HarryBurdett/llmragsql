@@ -26,7 +26,7 @@ from pathlib import Path
 
 # Get the directory where this script is located
 SCRIPT_DIR = Path(__file__).parent
-PROJECT_ROOT = SCRIPT_DIR.parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
 # Logo paths
 OPERA_SE_LOGO_PATH = PROJECT_ROOT / 'frontend' / 'public' / 'opera-se-logo.png'
@@ -244,7 +244,7 @@ def generate_all_demos(demos_dir: Path = None) -> list:
         List of paths to generated demo files
     """
     if demos_dir is None:
-        demos_dir = SCRIPT_DIR
+        demos_dir = SCRIPT_DIR.parent / 'demos'
 
     # Load logos
     opera_se_base64 = load_logo_base64(OPERA_SE_LOGO_PATH)
@@ -273,6 +273,13 @@ def generate_all_demos(demos_dir: Path = None) -> list:
             'outputs': [
                 ('supplier-statement-opera-se-demo.html', opera_se_base64, 'Opera SQL SE'),
                 ('supplier-statement-opera3-demo.html', opera3_base64, 'Opera 3'),
+            ]
+        },
+        {
+            'source': 'supplier-automation-complete-demo.html',
+            'outputs': [
+                ('supplier-automation-opera-se-demo.html', opera_se_base64, 'Opera SQL SE'),
+                ('supplier-automation-opera3-demo.html', opera3_base64, 'Opera 3'),
             ]
         },
     ]
