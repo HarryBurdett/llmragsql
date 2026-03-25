@@ -1,0 +1,100 @@
+[database]
+type = mssql
+server = 172.17.172.99
+port = 1433
+database = Opera3SECompany00I
+use_windows_auth = False
+username = n8n
+password = [REDACTED]
+pool_size = 5
+max_overflow = 10
+pool_timeout = 30
+pool_recycle = 3600
+connection_timeout = 30
+command_timeout = 60
+ssl = true
+ssl_ca = 
+ssl_cert = 
+ssl_key = 
+trust_server_certificate = true
+
+[models]
+embedding_model = all-MiniLM-L6-v2
+llm_api_url = http://172.17.173.140:11434/api
+llm_model = minimax-m2.5:cloud
+provider = local
+
+[openai]
+api_key = [REDACTED]
+model = gpt-4o
+request_delay = 0.5
+
+[anthropic]
+api_key = [REDACTED]
+model = claude-sonnet-4-20250514
+request_delay = 0.5
+
+[gemini]
+api_key = [REDACTED]
+model = gemini-2.0-flash
+request_delay = 0.5
+
+[groq]
+api_key = [REDACTED]
+model = llama-3.1-70b-versatile
+request_delay = 0.1
+
+[system]
+vector_db_collection = sql_data
+chroma_persist_dir = ./chroma_db
+output_path = ./output
+log_level = INFO
+max_token_limit = 10000
+temperature = 0.1
+rag_auto_populate = true
+rag_data_structures_path = /Users/maccb/Downloads/DataStructures2.28.txt
+
+[ui]
+web_port = 8501
+theme = light
+
+[email]
+sync_enabled = true
+sync_interval_minutes = 15
+retention_days = 90
+auto_categorize = true
+auto_link_customers = true
+
+[email_microsoft]
+enabled = false
+tenant_id = 
+client_id = 
+client_secret = 
+user_email = 
+monitored_folders = INBOX
+
+[email_gmail]
+enabled = false
+credentials_file = ./gmail_credentials.json
+token_file = ./gmail_token.json
+user_email = 
+monitored_labels = INBOX
+
+[email_imap]
+enabled = false
+server = 
+port = 993
+username = 
+password = [REDACTED]
+use_ssl = true
+monitored_folders = INBOX
+
+[recurring_entries]
+mode = process
+
+[opera]
+version = sql_se
+opera3_server_path = 
+opera3_base_path = C:\Apps\O3 Server VFP
+opera3_company_code = 
+

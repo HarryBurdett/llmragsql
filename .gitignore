@@ -78,3 +78,4 @@ package-lock.json
 pension_snapshot*.json
 gocardless_settings.json
 gocardless_settings.json
+config.ini.local-backup
