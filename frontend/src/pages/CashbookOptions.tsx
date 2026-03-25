@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Save, RefreshCw, CheckCircle, BookOpen, FolderOpen } from 'lucide-react';
+import { Save, RefreshCw, CheckCircle, BookOpen, FolderOpen, HelpCircle } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
+import { HelpPanel } from '../components/HelpPanel';
+import { useHelp } from '../hooks/useHelp';
 
 // Recurring Entries Settings
 function RecurringEntriesSettings() {
@@ -172,10 +174,35 @@ function StatementFolderSettings() {
 }
 
 export default function CashbookOptions() {
+  const { showHelp, setShowHelp } = useHelp();
+
   return (
     <div>
-      <PageHeader icon={BookOpen} title="Bank Rec Settings" />
-      <div className="space-y-6">
+      <PageHeader icon={BookOpen} title="Bank Rec Settings">
+        <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+      </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Bank Account Settings', content: 'Configure which bank accounts to reconcile and the folder paths where statement files are stored.' },
+          { title: 'Import Settings', content: 'PDF extraction settings, duplicate detection rules, and pattern learning configuration for automatic matching.' },
+          { title: 'Email Scanning', content: 'IMAP mailbox monitoring for bank statements. Configure which email folders to scan for incoming statement PDFs.' },
+          { title: 'Archive Settings', content: 'Where processed statements are archived after successful import, and how long archived files are retained.' },
+        ]}
+      />
+
+      <div className="space-y-6 mt-6">
         <StatementFolderSettings />
         <RecurringEntriesSettings />
       </div>

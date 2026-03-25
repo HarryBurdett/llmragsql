@@ -10,9 +10,12 @@ import {
   ArrowUp,
   ArrowDown,
   TrendingUp,
+  HelpCircle,
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert, LoadingState } from '../components/ui';
+import { HelpPanel } from '../components/HelpPanel';
+import { useHelp } from '../hooks/useHelp';
 
 // --- Types ---
 
@@ -111,6 +114,7 @@ const formatCompactCurrency = (value: number): string => {
 // --- Main Component ---
 
 export default function SupplierAgedCreditors() {
+  const { showHelp, setShowHelp } = useHelp();
   const [searchTerm, setSearchTerm] = useState('');
   const [sortField, setSortField] = useState<SortField>('total');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -241,6 +245,16 @@ export default function SupplierAgedCreditors() {
         }
       >
         <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+        <button
           onClick={() => {
             agedQuery.refetch();
             trendQuery.refetch();
@@ -252,6 +266,17 @@ export default function SupplierAgedCreditors() {
           Refresh
         </button>
       </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Aged Creditors', content: 'Matches Opera\'s aged creditors report exactly. Shows outstanding balances broken down by aging bucket for each supplier.' },
+          { title: 'Aging Period', content: 'Aging buckets are determined by Opera\'s pparm settings (30-day intervals or calendar monthly periods).' },
+          { title: 'Foreign Currency', content: 'Suppliers with foreign currency balances show a second row beneath with the balance in the foreign currency.' },
+          { title: 'Click to expand', content: 'Click any supplier row to expand it and see individual outstanding invoices with their dates, amounts, and aging.' },
+        ]}
+      />
 
       {/* Loading */}
       {isLoading && <LoadingState message="Loading aged creditors..." />}

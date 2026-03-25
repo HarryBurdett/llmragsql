@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Settings, RefreshCw, Save, Clock, Mail, AlertTriangle,
-  Calendar, Banknote, Users, FileText
+  Calendar, Banknote, Users, FileText, HelpCircle
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert } from '../components/ui';
+import { HelpPanel } from '../components/HelpPanel';
+import { useHelp } from '../hooks/useHelp';
 import type { LucideIcon } from 'lucide-react';
 
 interface SettingConfig {
@@ -193,6 +195,7 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
 ];
 
 export default function SupplierSettings() {
+  const { showHelp, setShowHelp } = useHelp();
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [hasChanges, setHasChanges] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -254,6 +257,16 @@ export default function SupplierSettings() {
     <div className="space-y-6">
       <PageHeader icon={Settings} title="Supplier Settings" subtitle="Configure supplier statement automation behaviour">
         <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+        <button
           onClick={() => refetch()}
           className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
@@ -273,6 +286,18 @@ export default function SupplierSettings() {
           {saving ? 'Saving...' : 'Save Changes'}
         </button>
       </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Timing', content: 'Acknowledgment delay (0 = immediate), processing SLA target, query response deadline, and follow-up reminder interval.' },
+          { title: 'Thresholds', content: 'Large discrepancy amount that triggers manual review. Approval required above a set amount. Old statement days threshold for flagging stale statements.' },
+          { title: 'Notifications', content: 'Security alert recipients receive emails when supplier bank details change. CC on responses sends a copy of every outgoing response for audit.' },
+          { title: 'Remittance', content: 'Auto-send remittance advice after payment. Configure format (email or PDF) and CC address for copies.' },
+          { title: 'Onboarding', content: 'Auto-detect new suppliers from incoming emails. Require bank detail verification before processing the first payment to a new supplier.' },
+        ]}
+      />
 
       {error && (
         <Alert variant="error" title="Error" onDismiss={() => setError(null)}>

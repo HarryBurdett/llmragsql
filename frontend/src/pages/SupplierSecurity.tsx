@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Shield, AlertTriangle, CheckCircle, RefreshCw, Clock,
-  Building, Mail, Flag, Phone
+  Building, Mail, Flag, Phone, HelpCircle
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, StatusBadge, Alert } from '../components/ui';
+import { HelpPanel } from '../components/HelpPanel';
+import { useHelp } from '../hooks/useHelp';
 
 type TabType = 'pending' | 'verified' | 'all';
 
@@ -52,6 +54,7 @@ function formatDate(dateStr: string | null): string {
 }
 
 export default function SupplierSecurity() {
+  const { showHelp, setShowHelp } = useHelp();
   const [activeTab, setActiveTab] = useState<TabType>('pending');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -138,6 +141,16 @@ export default function SupplierSecurity() {
     <div className="space-y-6">
       <PageHeader icon={Shield} title="Security Alerts" subtitle="Monitor supplier changes and verify suspicious activity">
         <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+        <button
           onClick={() => refetchAlerts()}
           className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
@@ -145,6 +158,16 @@ export default function SupplierSecurity() {
           Refresh
         </button>
       </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Security Alerts', content: 'Triggered automatically when supplier bank details change in Opera. Each change must be verified before payments resume.' },
+          { title: 'Verification', content: 'Tick the phone confirmation checkbox after calling the supplier to confirm the change, then click Verify to mark the alert as safe.' },
+          { title: 'Email Flags', content: 'Emails flagged because they mention bank details or payment instructions. These may indicate a potential fraud attempt and should be reviewed carefully.' },
+        ]}
+      />
 
       {error && (
         <Alert variant="error" title="Error" onDismiss={() => setError(null)}>

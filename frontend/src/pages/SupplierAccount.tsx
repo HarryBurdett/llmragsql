@@ -12,9 +12,12 @@ import {
   Trash2,
   CheckCircle,
   XCircle,
+  HelpCircle,
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, LoadingState, EmptyState, Alert } from '../components/ui';
+import { HelpPanel } from '../components/HelpPanel';
+import { useHelp } from '../hooks/useHelp';
 
 interface SupplierDetails {
   account: string;
@@ -739,6 +742,7 @@ function ContactsTab({ account }: { account: string }) {
 }
 
 export function SupplierAccount() {
+  const { showHelp, setShowHelp } = useHelp();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const accountCode = searchParams.get('account') || '';
@@ -828,6 +832,16 @@ export function SupplierAccount() {
         >
           <ArrowLeft className="h-5 w-5 text-gray-600" />
         </button>
+        <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
         <div className="flex items-center gap-2">
           <SupplierAccountSearch
             value={activeAccount}
@@ -846,6 +860,17 @@ export function SupplierAccount() {
           </button>
         </div>
       </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Account Lookup', content: 'Search for any supplier by name or account code using the search box in the header.' },
+          { title: 'General Tab', content: 'Supplier details from Opera including name, address, current balance, credit limit, and key dates.' },
+          { title: 'View Tab', content: 'Transaction list with filter options (All or Outstanding only) and date range. Shows invoices, credit notes, and payments.' },
+          { title: 'Contacts Tab', content: 'Manage supplier contacts. Contacts are synced with Opera zcontacts table.' },
+        ]}
+      />
 
       {/* No Account Selected */}
       {!activeAccount && (

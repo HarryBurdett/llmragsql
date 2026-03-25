@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   MessageSquare, Clock, AlertTriangle, CheckCircle, RefreshCw,
-  Send, Building, Calendar
+  Send, Building, Calendar, HelpCircle
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, StatusBadge, Alert } from '../components/ui';
+import { HelpPanel } from '../components/HelpPanel';
+import { useHelp } from '../hooks/useHelp';
 
 type TabType = 'open' | 'overdue' | 'resolved';
 
@@ -37,6 +39,7 @@ function formatDate(dateStr: string | null): string {
 }
 
 export default function SupplierQueries() {
+  const { showHelp, setShowHelp } = useHelp();
   const [activeTab, setActiveTab] = useState<TabType>('open');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -97,6 +100,16 @@ export default function SupplierQueries() {
     <div className="space-y-6">
       <PageHeader icon={MessageSquare} title="Supplier Queries" subtitle="Track and manage outstanding supplier queries">
         <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+        <button
           onClick={() => refetch()}
           className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
@@ -104,6 +117,16 @@ export default function SupplierQueries() {
           Refresh
         </button>
       </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Open Queries', content: 'Items where a question has been sent to the supplier (e.g. missing invoice copy, amount mismatch). Waiting for their response.' },
+          { title: 'Overdue', content: 'Queries that are past the response deadline configured in Supplier Settings. These may need a follow-up reminder.' },
+          { title: 'Resolved', content: 'Queries that have been answered by the supplier and closed. Use the Resolve button to close a query once the answer is received.' },
+        ]}
+      />
 
       {error && (
         <Alert variant="error" title="Error" onDismiss={() => setError(null)}>

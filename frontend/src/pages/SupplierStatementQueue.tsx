@@ -2,10 +2,12 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   FileText, RefreshCw, Clock, CheckCircle, Send, Eye, Play,
-  Inbox
+  Inbox, HelpCircle
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, StatusBadge, Alert } from '../components/ui';
+import { HelpPanel } from '../components/HelpPanel';
+import { useHelp } from '../hooks/useHelp';
 
 type TabType = 'all' | 'received' | 'processing' | 'reconciled' | 'approved' | 'sent';
 
@@ -58,6 +60,7 @@ function formatMatchRate(rate: number | null): string {
 }
 
 export default function SupplierStatementQueue() {
+  const { showHelp, setShowHelp } = useHelp();
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -121,6 +124,16 @@ export default function SupplierStatementQueue() {
     <div className="space-y-6">
       <PageHeader icon={FileText} title="Statement Queue" subtitle="Process and reconcile supplier statements">
         <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+        <button
           onClick={() => refetch()}
           className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
@@ -128,6 +141,16 @@ export default function SupplierStatementQueue() {
           Refresh
         </button>
       </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Statement Queue', content: 'Incoming supplier statements are automatically extracted from email and queued here for processing.' },
+          { title: 'Status', content: 'Received = new and unprocessed. Processing = currently being reconciled. Reconciled = ready for review. Approved = response has been sent to the supplier.' },
+          { title: 'Processing', content: 'Click Process to extract line items and reconcile against Opera. The system matches each item automatically and flags any discrepancies.' },
+        ]}
+      />
 
       {error && (
         <Alert variant="error" title="Error" onDismiss={() => setError(null)}>

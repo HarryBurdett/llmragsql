@@ -2,11 +2,13 @@ import { useQuery } from '@tanstack/react-query';
 import {
   Truck, FileText, AlertTriangle, ShieldAlert, Clock,
   CheckCircle, XCircle, TrendingUp, MessageSquare,
-  Mail, Send, RefreshCw,
+  Mail, Send, RefreshCw, HelpCircle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { authFetch, friendlyError } from '../api/client';
 import { PageHeader, Card, LoadingState, Alert } from '../components/ui';
+import { HelpPanel } from '../components/HelpPanel';
+import { useHelp } from '../hooks/useHelp';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -200,6 +202,8 @@ function AlertItem({ alert }: { alert: DashboardAlert }) {
 // ─── Main Component ──────────────────────────────────────────
 
 export default function SupplierDashboard() {
+  const { showHelp, setShowHelp } = useHelp();
+
   const {
     data: dashboard,
     isLoading: dashLoading,
@@ -232,6 +236,16 @@ export default function SupplierDashboard() {
         subtitle="Automation overview and aged creditor analysis"
       >
         <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+        <button
           onClick={() => refetchDash()}
           className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
         >
@@ -239,6 +253,18 @@ export default function SupplierDashboard() {
           Refresh
         </button>
       </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Dashboard', content: 'Overview of supplier statement automation status. KPIs update automatically every 60 seconds.' },
+          { title: 'Statements This Month', content: 'Count of supplier statements received and processed during the current calendar month.' },
+          { title: 'Pending Approvals', content: 'Reconciliation responses waiting for your review before being sent to the supplier.' },
+          { title: 'Open Queries', content: 'Items queried with suppliers that are awaiting their response.' },
+          { title: 'Aged Creditors', content: 'Outstanding balances by age bucket. Matches the Opera aged creditors report exactly.' },
+        ]}
+      />
 
       {/* Errors */}
       {dashError && (
