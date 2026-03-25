@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   Building,
@@ -7,6 +7,11 @@ import {
   Search,
   ArrowLeft,
   X,
+  Plus,
+  Pencil,
+  Trash2,
+  CheckCircle,
+  XCircle,
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, LoadingState, EmptyState, Alert } from '../components/ui';
@@ -75,7 +80,60 @@ interface SupplierAccountResponse {
   error?: string;
 }
 
-type TabType = 'general' | 'memo' | 'view';
+type TabType = 'general' | 'memo' | 'view' | 'contacts';
+
+interface SupplierContact {
+  id: number;
+  account: string;
+  name: string;
+  title: string | null;
+  role: string | null;
+  department: string | null;
+  email: string | null;
+  phone: string | null;
+  mobile: string | null;
+  fax: string | null;
+  statement_contact: boolean;
+  payment_contact: boolean;
+  query_contact: boolean;
+  verified: boolean;
+  security_clearance: string;
+  verification_phone: string | null;
+}
+
+interface ContactFormData {
+  name: string;
+  title: string;
+  role: string;
+  department: string;
+  email: string;
+  phone: string;
+  mobile: string;
+  fax: string;
+  statement_contact: boolean;
+  payment_contact: boolean;
+  query_contact: boolean;
+  verified: boolean;
+  security_clearance: string;
+  verification_phone: string;
+}
+
+const emptyContactForm: ContactFormData = {
+  name: '',
+  title: '',
+  role: '',
+  department: '',
+  email: '',
+  phone: '',
+  mobile: '',
+  fax: '',
+  statement_contact: false,
+  payment_contact: false,
+  query_contact: false,
+  verified: false,
+  security_clearance: 'standard',
+  verification_phone: '',
+};
 
 // Searchable supplier dropdown — exact same pattern as GoCardless CustomerAccountSearch
 async function fetchSupplierSearch(search: string): Promise<Array<{account: string; name: string; balance: number}>> {
@@ -226,6 +284,460 @@ function SupplierAccountSearch({
   );
 }
 
+function ContactForm({
+  form,
+  setForm,
+  onSave,
+  onCancel,
+  saving,
+  title,
+}: {
+  form: ContactFormData;
+  setForm: (f: ContactFormData) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  title: string;
+}) {
+  return (
+    <div className="border border-blue-200 bg-blue-50 rounded-lg p-4 mb-4">
+      <h4 className="text-sm font-semibold text-gray-800 mb-3">{title}</h4>
+      <div className="grid grid-cols-4 gap-3 mb-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Name *</label>
+          <input
+            type="text"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Title</label>
+          <input
+            type="text"
+            value={form.title}
+            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Role</label>
+          <input
+            type="text"
+            value={form.role}
+            onChange={(e) => setForm({ ...form, role: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Department</label>
+          <input
+            type="text"
+            value={form.department}
+            onChange={(e) => setForm({ ...form, department: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-4 gap-3 mb-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+          <input
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
+          <input
+            type="text"
+            value={form.phone}
+            onChange={(e) => setForm({ ...form, phone: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Mobile</label>
+          <input
+            type="text"
+            value={form.mobile}
+            onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Fax</label>
+          <input
+            type="text"
+            value={form.fax}
+            onChange={(e) => setForm({ ...form, fax: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+      </div>
+      <div className="flex items-center gap-6 mb-3">
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={form.statement_contact}
+            onChange={(e) => setForm({ ...form, statement_contact: e.target.checked })}
+            className="rounded border-gray-300"
+          />
+          Statement Contact
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={form.payment_contact}
+            onChange={(e) => setForm({ ...form, payment_contact: e.target.checked })}
+            className="rounded border-gray-300"
+          />
+          Payment Contact
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={form.query_contact}
+            onChange={(e) => setForm({ ...form, query_contact: e.target.checked })}
+            className="rounded border-gray-300"
+          />
+          Query Contact
+        </label>
+      </div>
+      <div className="border-t border-blue-200 pt-3 mt-3">
+        <h5 className="text-xs font-semibold text-gray-700 mb-2">Security</h5>
+        <div className="grid grid-cols-3 gap-3">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.verified}
+              onChange={(e) => setForm({ ...form, verified: e.target.checked })}
+              className="rounded border-gray-300"
+            />
+            Verified Sender
+          </label>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Security Clearance</label>
+            <select
+              value={form.security_clearance}
+              onChange={(e) => setForm({ ...form, security_clearance: e.target.value })}
+              className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="standard">Standard</option>
+              <option value="elevated">Elevated</option>
+              <option value="director">Director</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Verification Phone</label>
+            <input
+              type="text"
+              value={form.verification_phone}
+              onChange={(e) => setForm({ ...form, verification_phone: e.target.value })}
+              className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 mt-3">
+        <button
+          onClick={onCancel}
+          className="px-4 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-50 text-sm font-medium text-gray-700"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onSave}
+          disabled={saving || !form.name.trim()}
+          className="px-4 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium disabled:opacity-50"
+        >
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ContactsTab({ account }: { account: string }) {
+  const queryClient = useQueryClient();
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [addForm, setAddForm] = useState<ContactFormData>({ ...emptyContactForm });
+  const [editForm, setEditForm] = useState<ContactFormData>({ ...emptyContactForm });
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const contactsQuery = useQuery<SupplierContact[]>({
+    queryKey: ['supplier-contacts', account],
+    queryFn: async () => {
+      const res = await authFetch(`/api/supplier-contacts/${account}`);
+      if (!res.ok) throw new Error('Failed to load contacts');
+      const data = await res.json();
+      return data.contacts || [];
+    },
+    enabled: !!account,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const addMutation = useMutation({
+    mutationFn: async (data: ContactFormData) => {
+      const res = await authFetch(`/api/supplier-contacts/${account}/opera`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Failed to add contact');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supplier-contacts', account] });
+      setShowAddForm(false);
+      setAddForm({ ...emptyContactForm });
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const editMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: ContactFormData }) => {
+      const res = await authFetch(`/api/supplier-contacts/${account}/opera/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Failed to update contact');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supplier-contacts', account] });
+      setEditingId(null);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await authFetch(`/api/supplier-contacts/${account}/opera/${id}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Failed to delete contact');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supplier-contacts', account] });
+      setDeleteConfirmId(null);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const startEdit = (contact: SupplierContact) => {
+    setEditingId(contact.id);
+    setEditForm({
+      name: contact.name || '',
+      title: contact.title || '',
+      role: contact.role || '',
+      department: contact.department || '',
+      email: contact.email || '',
+      phone: contact.phone || '',
+      mobile: contact.mobile || '',
+      fax: contact.fax || '',
+      statement_contact: contact.statement_contact,
+      payment_contact: contact.payment_contact,
+      query_contact: contact.query_contact,
+      verified: contact.verified,
+      security_clearance: contact.security_clearance || 'standard',
+      verification_phone: contact.verification_phone || '',
+    });
+    setShowAddForm(false);
+  };
+
+  const contacts = contactsQuery.data || [];
+
+  return (
+    <div className="p-4">
+      {/* Error Display */}
+      {error && (
+        <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+          <span className="text-red-500 mt-0.5">!</span>
+          <div className="flex-1">
+            <p className="text-sm text-red-800">{error}</p>
+          </div>
+          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 text-lg leading-none">&times;</button>
+        </div>
+      )}
+
+      {/* Add Contact Button */}
+      {!showAddForm && editingId === null && (
+        <div className="mb-3">
+          <button
+            onClick={() => { setShowAddForm(true); setAddForm({ ...emptyContactForm }); }}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+          >
+            <Plus className="h-4 w-4" />
+            Add Contact
+          </button>
+        </div>
+      )}
+
+      {/* Add Contact Form */}
+      {showAddForm && (
+        <ContactForm
+          form={addForm}
+          setForm={setAddForm}
+          onSave={() => addMutation.mutate(addForm)}
+          onCancel={() => { setShowAddForm(false); setError(null); }}
+          saving={addMutation.isPending}
+          title="Add New Contact"
+        />
+      )}
+
+      {/* Loading */}
+      {contactsQuery.isLoading && (
+        <div className="py-8 text-center text-gray-500 text-sm">Loading contacts...</div>
+      )}
+
+      {/* Contacts Table */}
+      {!contactsQuery.isLoading && (
+        <div className="border border-gray-300 rounded overflow-hidden">
+          <div className="max-h-[400px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100 sticky top-0">
+                <tr>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Name</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Title</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Role</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Email</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Phone</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Mobile</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Stmt</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Pay</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Query</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Verified</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {contacts.length === 0 ? (
+                  <tr>
+                    <td colSpan={11} className="py-8 text-center text-gray-400">
+                      No contacts recorded for this supplier
+                    </td>
+                  </tr>
+                ) : (
+                  contacts.map((contact, idx) => (
+                    <tr key={contact.id}>
+                      {/* Inline Edit Row */}
+                      {editingId === contact.id ? (
+                        <td colSpan={11} className="p-0">
+                          <ContactForm
+                            form={editForm}
+                            setForm={setEditForm}
+                            onSave={() => editMutation.mutate({ id: contact.id, data: editForm })}
+                            onCancel={() => { setEditingId(null); setError(null); }}
+                            saving={editMutation.isPending}
+                            title={`Edit Contact: ${contact.name}`}
+                          />
+                        </td>
+                      ) : (
+                        <>
+                          <td className={`py-1.5 px-3 text-gray-700 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.name}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.title || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.role || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.email || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.phone || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.mobile || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            <input type="checkbox" checked={contact.statement_contact} readOnly className="rounded border-gray-300" />
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            <input type="checkbox" checked={contact.payment_contact} readOnly className="rounded border-gray-300" />
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            <input type="checkbox" checked={contact.query_contact} readOnly className="rounded border-gray-300" />
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.verified ? (
+                              <CheckCircle className="h-4 w-4 text-green-500 inline" />
+                            ) : (
+                              <XCircle className="h-4 w-4 text-red-400 inline" />
+                            )}
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => startEdit(contact)}
+                                className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                                title="Edit"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              {deleteConfirmId === contact.id ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => deleteMutation.mutate(contact.id)}
+                                    disabled={deleteMutation.isPending}
+                                    className="px-2 py-0.5 bg-red-600 text-white rounded text-xs hover:bg-red-700 disabled:opacity-50"
+                                  >
+                                    {deleteMutation.isPending ? '...' : 'Yes'}
+                                  </button>
+                                  <button
+                                    onClick={() => setDeleteConfirmId(null)}
+                                    className="px-2 py-0.5 bg-gray-200 text-gray-700 rounded text-xs hover:bg-gray-300"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setDeleteConfirmId(contact.id)}
+                                  className="p-1 text-red-500 hover:bg-red-50 rounded"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function SupplierAccount() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -358,7 +870,7 @@ export function SupplierAccount() {
           {/* Tabs */}
           <div className="bg-gray-200 border-b border-gray-300 px-2 pt-2">
             <div className="flex gap-1">
-              {(['general', 'memo', 'view'] as TabType[]).map((tab) => (
+              {(['general', 'memo', 'view', 'contacts'] as TabType[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -771,6 +1283,11 @@ export function SupplierAccount() {
                   </div>
                 )}
               </div>
+            )}
+
+            {/* Contacts Tab */}
+            {activeTab === 'contacts' && (
+              <ContactsTab account={activeAccount} />
             )}
           </div>
 

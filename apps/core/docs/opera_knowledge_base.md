@@ -1854,3 +1854,44 @@ Opera repeat invoices (`ih_docstat = 'U'`) use `ih_ignore` for frequency:
 ## nextid Table (SQL SE Only)
 
 Every INSERT into an Opera SQL SE table MUST include the `id` column obtained from the `nextid` table. This is a SQL SE-specific requirement not present in Opera 3 FoxPro.
+
+---
+
+## zcontacts Table (Contacts)
+
+Opera contact records linked to supplier/customer accounts.
+
+### Column Names (VERIFIED — not `zc_name`, `zc_role`, `zc_dept`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | int | Primary key (from nextid) |
+| `zc_module` | char(1) | 'P' = Purchase, 'S' = Sales |
+| `zc_account` | char(8) | Linked supplier/customer account |
+| `zc_contact` | char(30) | Contact display name (NOT `zc_name`) |
+| `zc_title` | char(10) | Mr/Mrs/Ms etc. |
+| `zc_fornam` | char(30) | First name |
+| `zc_surname` | char(30) | Last name |
+| `zc_pos` | char(30) | Position/role (NOT `zc_role`) |
+| `zc_email` | char(60) | Email address |
+| `zc_phone` | char(20) | Phone number |
+| `zc_mobile` | char(20) | Mobile number |
+| `zc_fax` | char(20) | Fax number |
+| `zc_allwph` | bit | Allow phone contact |
+| `zc_allwfax` | bit | Allow fax contact |
+| `zc_allwmob` | bit | Allow mobile contact |
+| `zc_allwmal` | bit | Allow email contact |
+| `zc_attr1` to `zc_attr6` | char(4) | Attribute codes |
+| `zc_dob` | datetime | Date of birth |
+| `zc_optcont` | decimal | Contact opt-in preference |
+| `datecreated` | datetime | Record creation date |
+| `datemodified` | datetime | Last modified date |
+| `state` | smallint | Record state (1 = active) |
+
+### CRITICAL: Column Name Corrections
+
+| Wrong (guessed) | Correct (verified) | Notes |
+|---|---|---|
+| `zc_name` | `zc_contact` | Main display name field |
+| `zc_role` | `zc_pos` | Position/job title |
+| `zc_dept` | Does NOT exist | No department field in zcontacts |
