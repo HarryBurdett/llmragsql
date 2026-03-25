@@ -387,6 +387,8 @@ export interface OperaConfig {
   opera3_server_path?: string;
   opera3_base_path?: string;
   opera3_company_code?: string;
+  opera3_share_user?: string;
+  opera3_share_password?: string;
 }
 
 export interface SystemProfile {

@@ -23,6 +23,8 @@ interface SystemFormState {
   opera3ServerPath: string;
   opera3BasePath: string;
   opera3CompanyCode: string;
+  opera3ShareUser: string;
+  opera3SharePassword: string;
 }
 
 function systemToForm(sys: SystemProfile): SystemFormState {
@@ -38,6 +40,8 @@ function systemToForm(sys: SystemProfile): SystemFormState {
     operaVersion: (sys.opera?.version as 'sql_se' | 'opera3') || 'sql_se',
     opera3ServerPath: sys.opera?.opera3_server_path || '',
     opera3BasePath: sys.opera?.opera3_base_path || '',
+    opera3ShareUser: sys.opera?.opera3_share_user || '',
+    opera3SharePassword: sys.opera?.opera3_share_password || '',
     opera3CompanyCode: sys.opera?.opera3_company_code || '',
   };
 }
@@ -65,6 +69,8 @@ function formToSystemData(form: SystemFormState) {
       opera3_server_path: form.opera3ServerPath,
       opera3_base_path: form.opera3BasePath,
       opera3_company_code: form.opera3CompanyCode,
+      opera3_share_user: form.opera3ShareUser,
+      opera3_share_password: form.opera3SharePassword,
     },
   };
 }
@@ -284,6 +290,8 @@ export function Installations() {
       opera3_server_path: form.opera3ServerPath,
       opera3_base_path: form.opera3BasePath,
       opera3_company_code: form.opera3CompanyCode,
+      opera3_share_user: form.opera3ShareUser,
+      opera3_share_password: form.opera3SharePassword,
     });
   };
 
@@ -532,6 +540,28 @@ export function Installations() {
                             onChange={(e) => updateForm({ opera3ServerPath: e.target.value })}
                           />
                           <p className="text-xs text-gray-500 mt-1">UNC or network path to the Opera 3 server</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="label">Share Username</label>
+                            <input
+                              type="text"
+                              className="input"
+                              placeholder="domain\\username"
+                              value={form.opera3ShareUser || ''}
+                              onChange={(e) => updateForm({ opera3ShareUser: e.target.value })}
+                            />
+                          </div>
+                          <div>
+                            <label className="label">Share Password</label>
+                            <input
+                              type="password"
+                              className="input"
+                              placeholder="Password"
+                              value={form.opera3SharePassword || ''}
+                              onChange={(e) => updateForm({ opera3SharePassword: e.target.value })}
+                            />
+                          </div>
                         </div>
                         <div>
                           <label className="label">Local Data Path</label>

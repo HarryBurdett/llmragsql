@@ -869,13 +869,65 @@ class DatabaseConfig(BaseModel):
     ssl_key: Optional[str] = None
     port: Optional[int] = None  # Default 1433 for MSSQL, 5432 for PostgreSQL, 3306 for MySQL
 
+def _mount_opera3_share(server_path: str, username: str, password: str) -> str:
+    """Mount an SMB share for Opera 3 FoxPro access. Returns the local mount path or error."""
+    import subprocess, platform, re, urllib.parse
+
+    # Parse UNC path: \\server\share\subfolder → server, share, subfolder
+    clean = server_path.replace('\\', '/')
+    parts = [p for p in clean.split('/') if p]
+    if len(parts) < 2:
+        return f"Invalid server path: {server_path}"
+    server = parts[0]
+    share = parts[1]
+    subfolder = '/'.join(parts[2:]) if len(parts) > 2 else ''
+
+    mount_point = f"/tmp/opera3_{share.replace(' ', '_')}"
+
+    # Check if already mounted
+    if os.path.exists(mount_point) and os.listdir(mount_point):
+        data_path = f"{mount_point}/{subfolder}" if subfolder else mount_point
+        if os.path.isdir(data_path):
+            return f"Already mounted at {data_path}"
+
+    os.makedirs(mount_point, exist_ok=True)
+
+    if platform.system() == 'Darwin':
+        # macOS: mount_smbfs
+        encoded_user = urllib.parse.quote(username, safe='')
+        encoded_pass = urllib.parse.quote(password, safe='')
+        encoded_share = urllib.parse.quote(share, safe='')
+        smb_url = f"//{encoded_user}:{encoded_pass}@{server}/{encoded_share}"
+        result = subprocess.run(
+            ['mount_smbfs', smb_url, mount_point],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            return f"Mount failed: {result.stderr.strip()}"
+    else:
+        # Linux: mount -t cifs
+        result = subprocess.run(
+            ['mount', '-t', 'cifs', f'//{server}/{share}', mount_point,
+             '-o', f'username={username},password={password},ro'],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode != 0:
+            return f"Mount failed: {result.stderr.strip()}"
+
+    data_path = f"{mount_point}/{subfolder}" if subfolder else mount_point
+    logger.info(f"Mounted Opera 3 share at {data_path}")
+    return f"Mounted at {data_path}"
+
+
 class OperaConfig(BaseModel):
     """Opera system configuration"""
     version: str = "sql_se"  # "sql_se" or "opera3"
     # Opera 3 specific settings
-    opera3_server_path: Optional[str] = None  # UNC or network path to Opera 3 server, e.g., "\\\\SERVER\\O3 Server VFP"
-    opera3_base_path: Optional[str] = None  # e.g., "C:\\Apps\\O3 Server VFP"
+    opera3_server_path: Optional[str] = None  # UNC or network path to Opera 3 server
+    opera3_base_path: Optional[str] = None  # Local path on the server
     opera3_company_code: Optional[str] = None  # Company code from seqco.dbf
+    opera3_share_user: Optional[str] = None  # Windows share username
+    opera3_share_password: Optional[str] = None  # Windows share password
 
 class Opera3Company(BaseModel):
     """Opera 3 company information"""
@@ -2063,13 +2115,32 @@ async def update_opera_config(opera_config: OperaConfig):
         config["opera"]["opera3_base_path"] = opera_config.opera3_base_path
     if opera_config.opera3_company_code:
         config["opera"]["opera3_company_code"] = opera_config.opera3_company_code
+    if opera_config.opera3_share_user is not None:
+        config["opera"]["opera3_share_user"] = opera_config.opera3_share_user
+    if opera_config.opera3_share_password is not None:
+        config["opera"]["opera3_share_password"] = opera_config.opera3_share_password
 
     save_config(config)
+
+    # Auto-mount SMB share if Opera 3 with server path and credentials
+    mount_message = ""
+    if (opera_config.version == "opera3"
+        and opera_config.opera3_server_path
+        and opera_config.opera3_share_user
+        and opera_config.opera3_share_password):
+        try:
+            mount_message = _mount_opera3_share(
+                opera_config.opera3_server_path,
+                opera_config.opera3_share_user,
+                opera_config.opera3_share_password
+            )
+        except Exception as e:
+            mount_message = f"Share mount failed: {e}"
 
     # Sync the active system profile with the updated config
     _sync_active_system_config()
 
-    return {"success": True, "message": "Opera configuration updated"}
+    return {"success": True, "message": f"Opera configuration updated. {mount_message}".strip()}
 
 @app.get("/api/config/opera/companies")
 async def get_opera3_companies():
