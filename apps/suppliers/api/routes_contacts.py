@@ -991,3 +991,87 @@ async def delete_opera_contact(account: str, contact_id: int):
             exc_info=True
         )
         return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Opera 3 Write Endpoints (FoxPro)
+# ============================================================
+
+@router.post("/api/opera3/supplier-contacts/{account}/opera")
+async def opera3_create_contact(account: str, body: OperaContactCreateRequest, data_path: str = Query(...)):
+    """Create a contact in Opera 3 zcontacts (FoxPro)."""
+    try:
+        from sql_rag.opera3_write_provider import get_opera3_writer
+        writer = get_opera3_writer(data_path)
+        record = {
+            'zc_module': 'P',
+            'zc_account': account,
+            'zc_contact': body.name or '',
+            'zc_title': body.title or '',
+            'zc_fornam': body.name.split()[0] if body.name and ' ' in body.name else (body.name or ''),
+            'zc_surname': ' '.join(body.name.split()[1:]) if body.name and ' ' in body.name else '',
+            'zc_pos': body.role or '',
+            'zc_email': body.email or '',
+            'zc_phone': body.phone or '',
+            'zc_mobile': body.mobile or '',
+            'zc_fax': body.fax or '',
+        }
+        result = writer.append_record('zcontacts', record)
+        if result.get('success'):
+            # Store security extensions locally
+            _ensure_security_columns(SupplierStatementDB())
+            if any([body.verified_sender, body.security_clearance, body.verification_phone]):
+                db = SupplierStatementDB()
+                _upsert_security_extensions(db, account, str(result.get('id', '')), body)
+            return {"success": True, "contact": record, "message": "Contact created in Opera 3"}
+        return {"success": False, "error": result.get('error', 'Write failed')}
+    except Exception as e:
+        logger.error(f"Error creating Opera 3 contact for {account}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/api/opera3/supplier-contacts/{account}/opera/{contact_id}")
+async def opera3_update_contact(account: str, contact_id: int, body: OperaContactUpdateRequest, data_path: str = Query(...)):
+    """Update a contact in Opera 3 zcontacts (FoxPro)."""
+    try:
+        from sql_rag.opera3_write_provider import get_opera3_writer
+        writer = get_opera3_writer(data_path)
+        updates = {}
+        if body.name is not None: updates['zc_contact'] = body.name
+        if body.title is not None: updates['zc_title'] = body.title
+        if body.role is not None: updates['zc_pos'] = body.role
+        if body.email is not None: updates['zc_email'] = body.email
+        if body.phone is not None: updates['zc_phone'] = body.phone
+        if body.mobile is not None: updates['zc_mobile'] = body.mobile
+        if body.fax is not None: updates['zc_fax'] = body.fax
+        if not updates:
+            return {"success": True, "message": "No changes"}
+        result = writer.update_record('zcontacts', contact_id, updates)
+        if result.get('success'):
+            _ensure_security_columns(SupplierStatementDB())
+            if any([body.verified_sender, body.security_clearance, body.verification_phone]):
+                db = SupplierStatementDB()
+                _upsert_security_extensions(db, account, str(contact_id), body)
+            return {"success": True, "message": "Contact updated in Opera 3"}
+        return {"success": False, "error": result.get('error', 'Write failed')}
+    except Exception as e:
+        logger.error(f"Error updating Opera 3 contact {contact_id}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.delete("/api/opera3/supplier-contacts/{account}/opera/{contact_id}")
+async def opera3_delete_contact(account: str, contact_id: int, data_path: str = Query(...)):
+    """Delete a contact from Opera 3 zcontacts (FoxPro)."""
+    try:
+        from sql_rag.opera3_write_provider import get_opera3_writer
+        writer = get_opera3_writer(data_path)
+        result = writer.delete_record('zcontacts', contact_id)
+        if result.get('success'):
+            # Clean up local extensions
+            db = SupplierStatementDB()
+            db.delete_contact_by_zcontact_id(str(contact_id))
+            return {"success": True, "message": "Contact deleted from Opera 3"}
+        return {"success": False, "error": result.get('error', 'Delete failed')}
+    except Exception as e:
+        logger.error(f"Error deleting Opera 3 contact {contact_id}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
