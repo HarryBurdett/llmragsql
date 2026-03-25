@@ -519,60 +519,100 @@
                     <h2>What Each App Owns</h2>
                     <p>Everything inside the app directory is self-contained and migrates as a single unit.</p>
 
-                    <div class="app-grid">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px;">
                         <div class="app-card">
-                            <h4><span class="badge badge-blue">App</span> bank_reconcile</h4>
-                            <ul>
-                                <li>Bank statement import &amp; reconciliation</li>
-                                <li>Pattern learning (bank_patterns.db)</li>
-                                <li>Alias database (bank_aliases.db)</li>
-                                <li>PDF extraction cache</li>
-                            </ul>
+                            <h4 style="color: #60a5fa; margin-bottom: 10px;">Standard App Structure</h4>
+                            <pre style="background: #0f172a; padding: 16px; border-radius: 8px; font-size: 13px; line-height: 1.6; color: #94a3b8; overflow-x: auto;">apps/{app_name}/
+├── api/
+│   ├── routes.py          <span style="color:#60a5fa">→ FastAPI router</span>
+│   └── routes_*.py        <span style="color:#60a5fa">→ Additional routes</span>
+├── logic/                 <span style="color:#60a5fa">→ Business logic</span>
+├── docs/
+│   ├── spec.md            <span style="color:#60a5fa">→ Specification</span>
+│   └── manual.md          <span style="color:#60a5fa">→ User manual</span>
+└── frontend/              <span style="color:#60a5fa">→ React pages</span>
+
+data/{company}/{app_name}/
+├── *.db                   <span style="color:#60a5fa">→ SQLite databases</span>
+└── *.json                 <span style="color:#60a5fa">→ Config files</span></pre>
                         </div>
                         <div class="app-card">
-                            <h4><span class="badge badge-blue">App</span> gocardless</h4>
-                            <ul>
-                                <li>GoCardless payment import</li>
-                                <li>Customer linking &amp; matching</li>
-                                <li>Settings (API token, bank code)</li>
-                                <li>Payment requests &amp; allocation</li>
-                            </ul>
+                            <h4 style="color: #60a5fa; margin-bottom: 10px;">Core System Structure</h4>
+                            <pre style="background: #0f172a; padding: 16px; border-radius: 8px; font-size: 13px; line-height: 1.6; color: #94a3b8; overflow-x: auto;">apps/core/
+├── api/
+│   └── middleware.py      <span style="color:#a78bfa">→ Auth &amp; company context</span>
+├── docs/
+│   ├── opera_knowledge_base.md
+│   └── migration-guide.md
+├── logic/                 <span style="color:#a78bfa">→ Shared utilities</span>
+└── state.py               <span style="color:#a78bfa">→ Per-request globals</span>
+
+data/{company}/core/
+├── auth.db                <span style="color:#a78bfa">→ Sessions</span>
+├── email_data.db          <span style="color:#a78bfa">→ Email storage</span>
+├── company_settings.json  <span style="color:#a78bfa">→ Company config</span>
+└── chroma_db/             <span style="color:#a78bfa">→ Vector DB</span></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Slide 3b: Each App's Folder Structure -->
+            <div class="slide" data-title="App Folder Details">
+                <div class="slide-content">
+                    <div class="step-number" style="background: linear-gradient(135deg, #60a5fa, #93c5fd);">ii-b</div>
+                    <h2>Each App in Detail</h2>
+                    <div class="app-grid" style="grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div class="app-card">
+                            <h4><span class="badge badge-blue">bank_reconcile</span></h4>
+                            <pre style="background: #0f172a; padding: 10px; border-radius: 6px; font-size: 11px; line-height: 1.5; color: #94a3b8;">apps/bank_reconcile/api/
+  routes.py           <span style="color:#60a5fa">117 endpoints</span>
+data/{co}/bank_reconcile/
+  bank_aliases.db     <span style="color:#60a5fa">Payee → account mapping</span>
+  bank_patterns.db    <span style="color:#60a5fa">Learned patterns</span>
+  import_locks.db     <span style="color:#60a5fa">Concurrent import locks</span>
+  pdf_extraction_cache.db</pre>
                         </div>
                         <div class="app-card">
-                            <h4><span class="badge badge-blue">App</span> suppliers</h4>
-                            <ul>
-                                <li>Supplier statement reconciliation</li>
-                                <li>Statement automation settings</li>
-                                <li>Variance reporting</li>
-                            </ul>
+                            <h4><span class="badge badge-blue">gocardless</span></h4>
+                            <pre style="background: #0f172a; padding: 10px; border-radius: 6px; font-size: 11px; line-height: 1.5; color: #94a3b8;">apps/gocardless/api/
+  routes.py           <span style="color:#60a5fa">120 endpoints</span>
+data/{co}/gocardless/
+  gocardless_payments.db  <span style="color:#60a5fa">Mandates, requests</span>
+  gocardless_settings.json <span style="color:#60a5fa">API token, config</span></pre>
                         </div>
                         <div class="app-card">
-                            <h4><span class="badge badge-blue">App</span> balance_check</h4>
-                            <ul>
-                                <li>Control account reconciliation</li>
-                                <li>Debtors / Creditors / Cashbook check</li>
-                            </ul>
+                            <h4><span class="badge badge-blue">suppliers</span></h4>
+                            <pre style="background: #0f172a; padding: 10px; border-radius: 6px; font-size: 11px; line-height: 1.5; color: #94a3b8;">apps/suppliers/api/
+  routes.py           <span style="color:#60a5fa">42 endpoints</span>
+  routes_contacts.py  <span style="color:#60a5fa">Opera zcontacts R/W</span>
+  routes_aged.py      <span style="color:#60a5fa">Aged creditors</span>
+  routes_remittance.py
+  routes_onboarding.py
+data/{co}/suppliers/
+  supplier_statements.db  <span style="color:#60a5fa">All automation state</span></pre>
                         </div>
                         <div class="app-card">
-                            <h4><span class="badge badge-blue">App</span> dashboards</h4>
-                            <ul>
-                                <li>KPI panels &amp; revenue charts</li>
-                                <li>Financial overview</li>
-                            </ul>
+                            <h4><span class="badge badge-blue">balance_check</span></h4>
+                            <pre style="background: #0f172a; padding: 10px; border-radius: 6px; font-size: 11px; line-height: 1.5; color: #94a3b8;">apps/balance_check/api/
+  routes.py           <span style="color:#60a5fa">14 endpoints</span>
+<span style="color:#475569">(no app-specific data — reads Opera only)</span></pre>
                         </div>
                         <div class="app-card">
-                            <h4><span class="badge badge-blue">App</span> lock_monitor</h4>
-                            <ul>
-                                <li>SQL Server lock monitoring</li>
-                                <li>Monitor settings</li>
-                            </ul>
+                            <h4><span class="badge badge-blue">dashboards</span></h4>
+                            <pre style="background: #0f172a; padding: 10px; border-radius: 6px; font-size: 11px; line-height: 1.5; color: #94a3b8;">apps/dashboards/api/
+  routes.py           <span style="color:#60a5fa">33 endpoints</span>
+<span style="color:#475569">(no app-specific data — reads Opera only)</span></pre>
                         </div>
                         <div class="app-card">
-                            <h4><span class="badge badge-blue">App</span> pension_export</h4>
-                            <ul>
-                                <li>Payroll pension export</li>
-                                <li>Export folder configuration</li>
-                            </ul>
+                            <h4><span class="badge badge-blue">lock_monitor</span> + <span class="badge badge-blue">pension_export</span></h4>
+                            <pre style="background: #0f172a; padding: 10px; border-radius: 6px; font-size: 11px; line-height: 1.5; color: #94a3b8;">apps/lock_monitor/api/
+  routes.py           <span style="color:#60a5fa">25 endpoints</span>
+data/{co}/lock_monitor/
+  lock_monitor.db
+
+apps/pension_export/api/
+  routes.py           <span style="color:#60a5fa">15 endpoints</span></pre>
                         </div>
                     </div>
                 </div>
