@@ -79,3 +79,4 @@ pension_snapshot*.json
 gocardless_settings.json
 gocardless_settings.json
 config.ini.local-backup
+systems.json.sql-se-backup

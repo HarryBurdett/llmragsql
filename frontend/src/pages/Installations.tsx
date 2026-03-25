@@ -2,10 +2,10 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Monitor, Plus, Pencil, Trash2, Star, CheckCircle, AlertCircle, X,
-  Server, Save, ChevronDown, ChevronRight, Database, RefreshCw, TestTube
+  Server, Save, ChevronDown, ChevronRight, Database, TestTube
 } from 'lucide-react';
 import apiClient from '../api/client';
-import type { SystemProfile, DatabaseConfig, OperaConfig, Opera3Company } from '../api/client';
+import type { SystemProfile, DatabaseConfig, OperaConfig } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
 
 interface SystemFormState {
@@ -133,12 +133,7 @@ export function Installations() {
     mutationFn: (data: OperaConfig) => apiClient.testOperaConnection(data),
   });
 
-  // Opera 3 companies query
-  const { data: opera3Companies, refetch: refetchOpera3Companies } = useQuery({
-    queryKey: ['opera3Companies', form?.opera3BasePath],
-    queryFn: () => apiClient.getOpera3Companies(),
-    enabled: form?.operaVersion === 'opera3' && !!form?.opera3BasePath,
-  });
+  // Opera 3 companies detected automatically from data path at login
 
   const handleAdd = async () => {
     if (!newSystemName.trim()) return;
@@ -548,30 +543,7 @@ export function Installations() {
                             onChange={(e) => updateForm({ opera3BasePath: e.target.value })}
                           />
                         </div>
-                        <div>
-                          <label className="label">Company</label>
-                          <div className="flex gap-2">
-                            <select
-                              className="select flex-1"
-                              value={form.opera3CompanyCode}
-                              onChange={(e) => updateForm({ opera3CompanyCode: e.target.value })}
-                            >
-                              <option value="">Select a company...</option>
-                              {opera3Companies?.data?.companies?.map((company: Opera3Company) => (
-                                <option key={company.code} value={company.code}>
-                                  {company.code} - {company.name}
-                                </option>
-                              ))}
-                            </select>
-                            <button
-                              onClick={() => refetchOpera3Companies()}
-                              className="btn btn-secondary flex items-center"
-                              title="Refresh company list"
-                            >
-                              <RefreshCw className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </div>
+                        <p className="text-xs text-gray-500">Companies are detected automatically from the data path and available at login.</p>
                       </div>
                     )}
 
