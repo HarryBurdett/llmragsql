@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Settings, X, Wifi, Tag } from 'lucide-react';
+import { Settings, X, Wifi, Tag, HelpCircle } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader } from '../components/ui';
 
@@ -405,9 +405,94 @@ export function GoCardlessSettings() {
     }
   };
 
+  // Help panel state
+  const [showHelp, setShowHelp] = useState(false);
+
+  // F1 key handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F1') {
+        e.preventDefault();
+        setShowHelp(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <div className="space-y-6">
-      <PageHeader icon={Settings} title="GoCardless Settings" subtitle="Configure GoCardless API and import settings" />
+      <PageHeader icon={Settings} title="GoCardless Settings" subtitle="Configure GoCardless API and import settings">
+        <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+      </PageHeader>
+
+      {/* Help Panel */}
+      {showHelp && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-5 text-sm text-blue-900 space-y-4">
+          <div className="flex items-start justify-between">
+            <h3 className="font-semibold text-base flex items-center gap-2">
+              <HelpCircle className="h-5 w-5 text-blue-600" />
+              GoCardless Settings Guide
+            </h3>
+            <button onClick={() => setShowHelp(false)} className="text-blue-400 hover:text-blue-600">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <h4 className="font-semibold">Access Token</h4>
+              <p className="text-blue-800">Your GoCardless API key. Obtain from the GoCardless dashboard under Developers &gt; API Keys. Sandbox tokens start with "sandbox_", live tokens don't. The system auto-detects which environment to use.</p>
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Default Batch Type / GoCardless Control Bank</h4>
+              <p className="text-blue-800">The Opera cashbook type and bank account where GoCardless receipts are posted. This should be the bank account that receives GoCardless payouts (check your bank statements).</p>
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Transfer Type</h4>
+              <p className="text-blue-800">The Opera cashbook transfer type used when posting GoCardless bank transfers. Usually the same type used for inter-bank transfers in Opera.</p>
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Statement Reference</h4>
+              <p className="text-blue-800">Appears on the customer's bank statement when a Direct Debit is collected. Max 10 characters. Typically your company name or trading name. If blank, GoCardless uses its own default.</p>
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Fees Nominal Account / VAT Code / Payment Type</h4>
+              <p className="text-blue-800">GoCardless deducts fees from each payout. These settings control where the fee expense is posted in Opera's nominal ledger, the VAT treatment, and the payment method code.</p>
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Subscription Tag</h4>
+              <p className="text-blue-800">The Opera analysis code (on repeat invoices) that identifies documents for GoCardless subscription processing. Default is "SUB". Only repeat invoices with this tag will appear in the subscription management screen.</p>
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Frequency Filter</h4>
+              <p className="text-blue-800">When creating subscriptions, filter repeat invoices by their frequency type (Monthly, Quarterly, etc.). "All" shows everything.</p>
+            </div>
+
+            <div>
+              <h4 className="font-semibold">Partner Integration</h4>
+              <p className="text-blue-800">For GoCardless partners managing multiple merchants. Enter your partner credentials to enable merchant onboarding and multi-merchant management. Most users don't need this section.</p>
+            </div>
+          </div>
+
+          <p className="text-xs text-blue-600 border-t border-blue-200 pt-3">Press F1 to toggle this help panel</p>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
         <div className="p-6 space-y-6">
