@@ -57,6 +57,8 @@ const tileColors: Record<string, { bg: string; iconBg: string; icon: string; bor
 // ============ FLAT MENU DEFINITIONS ============
 // All items are max 1 level deep — no nested fly-outs
 
+// ============ WORKFLOW MENUS (daily use) ============
+
 const cashbookMenu: TopLevelMenu = {
   label: 'Cashbook',
   icon: BookOpen,
@@ -64,8 +66,6 @@ const cashbookMenu: TopLevelMenu = {
     {
       items: [
         { path: '/cashbook/bank-hub', label: 'Bank Statements', icon: Landmark, description: 'Import & reconcile bank statements', color: 'blue' },
-        { path: '/cashbook/options', label: 'Bank Rec Settings', icon: Settings, description: 'Configure bank reconciliation', color: 'slate' },
-        { path: '/cashbook/routines-cleardown', label: 'Routines Cleardown', icon: RotateCcw, description: 'Reset routine flags', color: 'slate' },
       ],
     },
   ],
@@ -79,7 +79,6 @@ const gocardlessMenu: TopLevelMenu = {
       items: [
         { path: '/cashbook/gocardless', label: 'Import', icon: CreditCard, description: 'Import direct debit payments', color: 'emerald' },
         { path: '/cashbook/gocardless-requests', label: 'Payment Requests', icon: Send, description: 'Create & manage DD requests', color: 'purple' },
-        { path: '/cashbook/gocardless-settings', label: 'Settings', icon: Settings, description: 'API keys & connection', color: 'slate' },
       ],
     },
   ],
@@ -91,25 +90,18 @@ const suppliersMenu: TopLevelMenu = {
   sections: [
     {
       items: [
-        { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Supplier overview & KPIs', color: 'amber' },
+        { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Automation overview & alerts', color: 'amber' },
+        { path: '/supplier/statements/queue', label: 'Statements', icon: FileText, description: 'Incoming statements to process', color: 'blue' },
+        { path: '/supplier/statements/reconciliations', label: 'Reconciliations', icon: Scale, description: 'Review & approve responses', color: 'purple' },
+        { path: '/supplier/queries/open', label: 'Queries', icon: MessageSquare, description: 'Outstanding supplier queries', color: 'rose' },
+        { path: '/supplier/security/alerts', label: 'Security', icon: Shield, description: 'Bank detail change alerts', color: 'rose' },
+      ],
+    },
+    {
+      heading: 'Reference',
+      items: [
         { path: '/supplier/account', label: 'Account Lookup', icon: Receipt, description: 'Search supplier accounts', color: 'orange' },
-        { path: '/supplier/directory', label: 'Directory', icon: Building2, description: 'Browse all suppliers', color: 'teal' },
-      ],
-    },
-    {
-      heading: 'Statements',
-      items: [
-        { path: '/supplier/statements/queue', label: 'Statement Queue', icon: FileText, description: 'Pending statement imports', color: 'blue' },
-        { path: '/supplier/statements/reconciliations', label: 'Reconciliations', icon: Scale, description: 'Statement vs ledger check', color: 'purple' },
-        { path: '/supplier/queries/open', label: 'Open Queries', icon: MessageSquare, description: 'Unresolved supplier queries', color: 'rose' },
-      ],
-    },
-    {
-      heading: 'More',
-      items: [
-        { path: '/supplier/communications', label: 'Communications', icon: MessageSquare, description: 'Email & message history', color: 'indigo' },
-        { path: '/supplier/security/alerts', label: 'Security Alerts', icon: Shield, description: 'Fraud & change alerts', color: 'rose' },
-        { path: '/supplier/settings', label: 'Settings', icon: Settings, description: 'Supplier module config', color: 'slate' },
+        { path: '/supplier/aged-creditors', label: 'Aged Creditors', icon: Building2, description: 'Outstanding balances by age', color: 'teal' },
       ],
     },
   ],
@@ -140,13 +132,22 @@ const getAdminMenu = (isAdmin: boolean): TopLevelMenu => ({
     {
       items: [
         { path: '/admin/company', label: 'Date & Company', icon: CalendarDays, description: 'Switch company & period', color: 'blue' },
-        { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock, description: 'Active database locks', color: 'rose' },
         { path: '/admin/installations', label: 'Installations', icon: Monitor, description: 'Connected systems', color: 'indigo' },
-        { path: '/settings', label: 'Settings', icon: Settings, description: 'Application settings', color: 'slate' },
         ...(isAdmin ? [
           { path: '/admin/users', label: 'Users', icon: Users, description: 'Manage user accounts', color: 'amber' },
           { path: '/admin/licenses', label: 'Licenses', icon: KeyRound, description: 'License management', color: 'orange' },
         ] : []),
+      ],
+    },
+    {
+      heading: 'Module Setup',
+      items: [
+        { path: '/cashbook/options', label: 'Bank Rec Settings', icon: Settings, description: 'Configure bank reconciliation', color: 'slate' },
+        { path: '/cashbook/routines-cleardown', label: 'Routines Cleardown', icon: RotateCcw, description: 'Reset routine flags', color: 'slate' },
+        { path: '/cashbook/gocardless-settings', label: 'GoCardless Settings', icon: CreditCard, description: 'API keys & connection', color: 'slate' },
+        { path: '/supplier/settings', label: 'Supplier Settings', icon: Truck, description: 'Automation parameters', color: 'slate' },
+        { path: '/settings', label: 'Application Settings', icon: Settings, description: 'Global configuration', color: 'slate' },
+        { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock, description: 'Active database locks', color: 'rose' },
       ],
     },
     {
