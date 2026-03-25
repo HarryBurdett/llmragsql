@@ -182,13 +182,14 @@ class SupplierStatementReconciler:
                     "contact": row.get("pn_contact", "").strip() if row.get("pn_contact") else None
                 }
 
-        # Try by name match
-        clean_name = supplier_name.replace("'", "''")
+        # Try by name match (case-insensitive, trimmed)
+        clean_name = supplier_name.replace("'", "''").strip()
+        first_word = clean_name.split()[0] if clean_name else ''
         query = f"""
             SELECT pn_account, pn_name, pn_currbal, pn_email, pn_teleno, pn_contact
             FROM pname WITH (NOLOCK)
-            WHERE pn_name LIKE '%{clean_name}%'
-               OR pn_name LIKE '%{clean_name.split()[0]}%'
+            WHERE UPPER(RTRIM(pn_name)) LIKE UPPER('%{clean_name}%')
+               OR UPPER(RTRIM(pn_name)) LIKE UPPER('%{first_word}%')
         """
         result = self.sql.execute_query(query)
         if result is not None and len(result) > 0:
