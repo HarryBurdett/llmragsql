@@ -223,7 +223,7 @@ async def reconcile_bank(bank_code: str):
         # Get the running balance from nbank - stored in PENCE
         # This represents the CURRENT closing balance
         nbank_bal_sql = f"""
-            SELECT nk_curbal FROM nbank WHERE nk_acnt = '{bank_code}'
+            SELECT nk_curbal FROM nbank WITH (NOLOCK) WHERE nk_acnt = '{bank_code}'
         """
         nbank_result = sql_connector.execute_query(nbank_bal_sql)
         if hasattr(nbank_result, 'to_dict'):
@@ -4675,7 +4675,7 @@ async def scan_folder_for_bank_statements(
                 result = conn.execute(text("""
                     SELECT RTRIM(nk_sort) as sort_code, RTRIM(nk_number) as account_number,
                            nk_recbal, RTRIM(nk_desc) as bank_desc
-                    FROM nbank WHERE RTRIM(nk_code) = :bank_code
+                    FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_code) = :bank_code
                 """), {"bank_code": bank_code.strip()})
                 row = result.fetchone()
                 if row:
@@ -4884,7 +4884,7 @@ async def fetch_email_statements_to_folder(
                 with sql_connector.engine.connect() as conn:
                     result = conn.execute(sa_text("""
                         SELECT RTRIM(nk_desc) as bank_desc
-                        FROM nbank WHERE RTRIM(nk_code) = :bank_code
+                        FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_code) = :bank_code
                     """), {"bank_code": bank_code.strip()})
                     row = result.fetchone()
                     if row:
@@ -8881,7 +8881,7 @@ async def get_statement_review(import_id: int):
                 from sqlalchemy import text as sa_text
                 param_dict = {f'p{i}': v for i, v in enumerate(posted_entries)}
                 placeholders = ','.join([f':p{i}' for i in range(len(posted_entries))])
-                query = f"SELECT ae_entry FROM aentry WHERE ae_entry IN ({placeholders}) AND ISNULL(ae_reclnum, 0) > 0"
+                query = f"SELECT ae_entry FROM aentry WITH (NOLOCK) WHERE ae_entry IN ({placeholders}) AND ISNULL(ae_reclnum, 0) > 0"
                 with sql_connector.engine.connect() as conn:
                     result = conn.execute(sa_text(query), param_dict)
                     reconciled_entries = {row[0].strip() if isinstance(row[0], str) else str(row[0]) for row in result}

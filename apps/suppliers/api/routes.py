@@ -3315,7 +3315,7 @@ async def creditors_dashboard():
         # Total creditors balance
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(pn_currbal) AS total
-               FROM pname WHERE pn_currbal <> 0"""
+               FROM pname WITH (NOLOCK) WHERE pn_currbal <> 0"""
         )
         if hasattr(result, 'to_dict'):
             result = result.to_dict('records')
@@ -3329,7 +3329,7 @@ async def creditors_dashboard():
         # Overdue invoices (past due date)
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(pt_trbal) AS total
-               FROM ptran WHERE pt_trtype = 'I' AND pt_trbal > 0 AND pt_dueday < GETDATE()"""
+               FROM ptran WITH (NOLOCK) WHERE pt_trtype = 'I' AND pt_trbal > 0 AND pt_dueday < GETDATE()"""
         )
         if hasattr(result, 'to_dict'):
             result = result.to_dict('records')
@@ -3343,7 +3343,7 @@ async def creditors_dashboard():
         # Due within 7 days
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(pt_trbal) AS total
-               FROM ptran WHERE pt_trtype = 'I' AND pt_trbal > 0
+               FROM ptran WITH (NOLOCK) WHERE pt_trtype = 'I' AND pt_trbal > 0
                AND pt_dueday >= GETDATE() AND pt_dueday < DATEADD(day, 7, GETDATE())"""
         )
         if hasattr(result, 'to_dict'):
@@ -3358,7 +3358,7 @@ async def creditors_dashboard():
         # Due within 30 days
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(pt_trbal) AS total
-               FROM ptran WHERE pt_trtype = 'I' AND pt_trbal > 0
+               FROM ptran WITH (NOLOCK) WHERE pt_trtype = 'I' AND pt_trbal > 0
                AND pt_dueday >= GETDATE() AND pt_dueday < DATEADD(day, 30, GETDATE())"""
         )
         if hasattr(result, 'to_dict'):
@@ -3373,7 +3373,7 @@ async def creditors_dashboard():
         # Recent payments made (last 7 days)
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(ABS(pt_trvalue)) AS total
-               FROM ptran WHERE pt_trtype = 'P' AND pt_trdate >= DATEADD(day, -7, GETDATE())"""
+               FROM ptran WITH (NOLOCK) WHERE pt_trtype = 'P' AND pt_trdate >= DATEADD(day, -7, GETDATE())"""
         )
         if hasattr(result, 'to_dict'):
             result = result.to_dict('records')
@@ -3432,7 +3432,7 @@ async def creditors_report():
                 ISNULL(ph.pi_period3, 0) + ISNULL(ph.pi_period4, 0) + ISNULL(ph.pi_period5, 0) AS month_3_plus,
                 pn.pn_teleno AS phone,
                 pn.pn_contact AS contact
-            FROM pname pn
+            FROM pname pn WITH (NOLOCK)
             LEFT JOIN phist ph ON pn.pn_account = ph.pi_account AND ph.pi_age = 1
             WHERE pn.pn_currbal <> 0
             ORDER BY pn.pn_account

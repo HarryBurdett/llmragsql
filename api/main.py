@@ -3800,14 +3800,14 @@ CREDIT_CONTROL_QUERIES = [
         "sql": """SELECT st.st_account AS account, sn.sn_name AS customer,
                   st.st_trref AS receipt_ref, st.st_trdate AS receipt_date,
                   ABS(st.st_trbal) AS unallocated_amount, sn.sn_teleno AS phone
-                  FROM stran st
-                  JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran WITH (NOLOCK) st
+                  JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_trtype = 'R' AND st.st_trbal < 0
                   ORDER BY ABS(st.st_trbal) DESC""",
         "description": "Unallocated cash/payments on customer accounts",
         "param_sql": """SELECT st.st_trref AS receipt_ref, st.st_trdate AS receipt_date,
                        ABS(st.st_trbal) AS unallocated_amount
-                       FROM stran st WHERE st.st_account = '{account}'
+                       FROM stran WITH (NOLOCK) st WHERE st.st_account = '{account}'
                        AND st.st_trtype = 'R' AND st.st_trbal < 0"""
     },
     {
@@ -3817,14 +3817,14 @@ CREDIT_CONTROL_QUERIES = [
         "sql": """SELECT st.st_account AS account, sn.sn_name AS customer,
                   st.st_trref AS credit_ref, st.st_trdate AS credit_date,
                   ABS(st.st_trbal) AS credit_amount, st.st_memo AS reason
-                  FROM stran st
-                  JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran WITH (NOLOCK) st
+                  JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_trtype = 'C' AND st.st_trbal < 0
                   ORDER BY st.st_trdate DESC""",
         "description": "Pending/unallocated credit notes",
         "param_sql": """SELECT st.st_trref AS credit_ref, st.st_trdate AS credit_date,
                        ABS(st.st_trbal) AS credit_amount, st.st_memo AS reason
-                       FROM stran st WHERE st.st_account = '{account}'
+                       FROM stran WITH (NOLOCK) st WHERE st.st_account = '{account}'
                        AND st.st_trtype = 'C' AND st.st_trbal < 0"""
     },
     {
@@ -3835,14 +3835,14 @@ CREDIT_CONTROL_QUERIES = [
                   st.st_trref AS invoice, st.st_trdate AS invoice_date,
                   st.st_trbal AS outstanding, st.st_memo AS dispute_reason,
                   sn.sn_teleno AS phone
-                  FROM stran st
-                  JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran WITH (NOLOCK) st
+                  JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_dispute = 1 AND st.st_trbal > 0
                   ORDER BY st.st_trbal DESC""",
         "description": "Invoices flagged as disputed",
         "param_sql": """SELECT st.st_trref AS invoice, st.st_trdate AS invoice_date,
                        st.st_trbal AS outstanding, st.st_memo AS dispute_reason
-                       FROM stran st WHERE st.st_account = '{account}'
+                       FROM stran WITH (NOLOCK) st WHERE st.st_account = '{account}'
                        AND st.st_dispute = 1 AND st.st_trbal > 0"""
     },
     {
@@ -3878,8 +3878,8 @@ CREDIT_CONTROL_QUERIES = [
                   SUM(CASE WHEN DATEDIFF(day, st.st_dueday, GETDATE()) BETWEEN 31 AND 45 THEN st.st_trbal ELSE 0 END) AS days_31_45,
                   SUM(CASE WHEN DATEDIFF(day, st.st_dueday, GETDATE()) > 45 THEN st.st_trbal ELSE 0 END) AS days_45_plus,
                   SUM(st.st_trbal) AS total_overdue
-                  FROM stran st
-                  JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran WITH (NOLOCK) st
+                  JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_trtype = 'I' AND st.st_trbal > 0 AND st.st_dueday < GETDATE()
                   GROUP BY sn.sn_account, sn.sn_name
                   HAVING SUM(st.st_trbal) > 0
@@ -3915,8 +3915,8 @@ CREDIT_CONTROL_QUERIES = [
                        st.st_dispute AS disputed, st.st_memo AS memo,
                        st.st_payday AS promise_date,
                        DATEDIFF(day, st.st_dueday, GETDATE()) AS days_overdue
-                       FROM stran st
-                       JOIN sname sn ON st.st_account = sn.sn_account
+                       FROM stran WITH (NOLOCK) st
+                       JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                        WHERE st.st_trref LIKE '%{invoice}%' AND st.st_trtype = 'I'"""
     },
     {
@@ -3927,7 +3927,7 @@ CREDIT_CONTROL_QUERIES = [
                   st.st_trref AS invoice, st.st_trdate AS invoice_date, st.st_dueday AS due_date,
                   st.st_trbal AS outstanding, DATEDIFF(day, st.st_dueday, GETDATE()) AS days_overdue,
                   st.st_dispute AS disputed, sn.sn_teleno AS phone
-                  FROM stran st JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran st WITH (NOLOCK) JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_trtype = 'I' AND st.st_trbal > 0 AND st.st_dueday < GETDATE()
                   ORDER BY days_overdue DESC""",
         "description": "Overdue invoices ordered by days overdue"
@@ -3961,8 +3961,8 @@ CREDIT_CONTROL_QUERIES = [
         "sql": """SELECT TOP 20 st.st_account AS account, sn.sn_name AS customer,
                   st.st_trref AS receipt_ref, st.st_trdate AS payment_date,
                   ABS(st.st_trvalue) AS amount, sh.si_avgdays AS avg_days_to_pay
-                  FROM stran st
-                  JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran WITH (NOLOCK) st
+                  JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   LEFT JOIN shist sh ON st.st_account = sh.si_account
                   WHERE st.st_trtype = 'R'
                   ORDER BY st.st_trdate DESC""",
@@ -3970,7 +3970,7 @@ CREDIT_CONTROL_QUERIES = [
         "param_sql": """SELECT st.st_trref AS receipt_ref, st.st_trdate AS payment_date,
                        ABS(st.st_trvalue) AS amount,
                        (SELECT TOP 1 si_avgdays FROM shist WHERE si_account = '{account}') AS avg_days_to_pay
-                       FROM stran st WHERE st.st_account = '{account}'
+                       FROM stran WITH (NOLOCK) st WHERE st.st_account = '{account}'
                        AND st.st_trtype = 'R' ORDER BY st.st_trdate DESC"""
     },
     {
@@ -3983,7 +3983,7 @@ CREDIT_CONTROL_QUERIES = [
                   zn.zn_actreq AS action_required, zn.zn_actdate AS action_date,
                   zn.zn_actcomp AS action_complete, zn.zn_priority AS priority
                   FROM znotes zn
-                  JOIN sname sn ON zn.zn_account = sn.sn_account
+                  JOIN sname sn WITH (NOLOCK) ON zn.zn_account = sn.sn_account
                   WHERE zn.zn_module = 'SL'
                   ORDER BY zn.sq_date DESC""",
         "description": "Customer notes and contact history",
@@ -4018,8 +4018,8 @@ CREDIT_CONTROL_QUERIES = [
                   st.st_payday AS promise_date,
                   DATEDIFF(day, st.st_payday, GETDATE()) AS days_since_promise,
                   sn.sn_teleno AS phone, sn.sn_contact AS contact
-                  FROM stran st
-                  JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran WITH (NOLOCK) st
+                  JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_payday IS NOT NULL
                   AND st.st_payday <= GETDATE()
                   AND st.st_trbal > 0
@@ -4035,8 +4035,8 @@ CREDIT_CONTROL_QUERIES = [
                   SUM(st.st_trbal) AS total_outstanding,
                   MIN(st.st_payday) AS oldest_promise,
                   MAX(st.st_payday) AS latest_promise
-                  FROM stran st
-                  JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran WITH (NOLOCK) st
+                  JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_payday IS NOT NULL
                   AND st.st_payday < GETDATE()
                   AND st.st_trbal > 0
@@ -4046,7 +4046,7 @@ CREDIT_CONTROL_QUERIES = [
         "description": "Customers with multiple broken promises",
         "param_sql": """SELECT COUNT(*) AS broken_promise_count,
                        SUM(st_trbal) AS total_outstanding
-                       FROM stran WHERE st_account = '{account}'
+                       FROM stran WITH (NOLOCK) WHERE st_account = '{account}'
                        AND st_payday IS NOT NULL AND st_payday < GETDATE()
                        AND st_trbal > 0"""
     },
@@ -4073,8 +4073,8 @@ CREDIT_CONTROL_QUERIES = [
                   ABS(st.st_trbal) AS unallocated_amount,
                   DATEDIFF(day, st.st_trdate, GETDATE()) AS days_unallocated,
                   sn.sn_teleno AS phone
-                  FROM stran st
-                  JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran WITH (NOLOCK) st
+                  JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_trtype = 'R' AND st.st_trbal < 0
                   AND DATEDIFF(day, st.st_trdate, GETDATE()) > 7
                   ORDER BY DATEDIFF(day, st.st_trdate, GETDATE()) DESC""",
@@ -4110,7 +4110,7 @@ CREDIT_CONTROL_QUERIES = [
         "sql": """SELECT TOP 20 st.st_account AS account, sn.sn_name AS customer,
                   st.st_trdate AS payment_date, st.st_trref AS reference,
                   ABS(st.st_trvalue) AS amount
-                  FROM stran st JOIN sname sn ON st.st_account = sn.sn_account
+                  FROM stran st WITH (NOLOCK) JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                   WHERE st.st_trtype = 'R' ORDER BY st.st_trdate DESC""",
         "description": "Recent payments received"
     },
@@ -4256,7 +4256,7 @@ async def _old_credit_control_dashboard():
         # Overdue invoices
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(st_trbal) AS total
-               FROM stran WHERE st_trtype = 'I' AND st_trbal > 0 AND st_dueday < GETDATE()"""
+               FROM stran WITH (NOLOCK) WHERE st_trtype = 'I' AND st_trbal > 0 AND st_dueday < GETDATE()"""
         )
         if hasattr(result, 'to_dict'):
             result = result.to_dict('records')
@@ -4270,7 +4270,7 @@ async def _old_credit_control_dashboard():
         # Recent payments (last 7 days)
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(ABS(st_trvalue)) AS total
-               FROM stran WHERE st_trtype = 'R' AND st_trdate >= DATEADD(day, -7, GETDATE())"""
+               FROM stran WITH (NOLOCK) WHERE st_trtype = 'R' AND st_trdate >= DATEADD(day, -7, GETDATE())"""
         )
         if hasattr(result, 'to_dict'):
             result = result.to_dict('records')
@@ -4284,7 +4284,7 @@ async def _old_credit_control_dashboard():
         # Promises due today or overdue
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(st_trbal) AS total
-               FROM stran WHERE st_payday IS NOT NULL
+               FROM stran WITH (NOLOCK) WHERE st_payday IS NOT NULL
                AND st_payday <= GETDATE() AND st_trbal > 0"""
         )
         if hasattr(result, 'to_dict'):
@@ -4299,7 +4299,7 @@ async def _old_credit_control_dashboard():
         # Disputed invoices
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(st_trbal) AS total
-               FROM stran WHERE st_dispute = 1 AND st_trbal > 0"""
+               FROM stran WITH (NOLOCK) WHERE st_dispute = 1 AND st_trbal > 0"""
         )
         if hasattr(result, 'to_dict'):
             result = result.to_dict('records')
@@ -4313,7 +4313,7 @@ async def _old_credit_control_dashboard():
         # Unallocated cash
         result = sql_connector.execute_query(
             """SELECT COUNT(*) AS count, SUM(ABS(st_trbal)) AS total
-               FROM stran WHERE st_trtype = 'R' AND st_trbal < 0"""
+               FROM stran WITH (NOLOCK) WHERE st_trtype = 'R' AND st_trbal < 0"""
         )
         if hasattr(result, 'to_dict'):
             result = result.to_dict('records')
@@ -4432,7 +4432,7 @@ async def _old_nominal_trial_balance(year: int = 2026):
                     WHEN ISNULL(SUM(t.nt_value), 0) < 0 THEN ABS(ISNULL(SUM(t.nt_value), 0))
                     ELSE 0
                 END AS credit
-            FROM ntran t
+            FROM ntran WITH (NOLOCK) t
             LEFT JOIN nacnt n ON RTRIM(t.nt_acnt) = RTRIM(n.na_acnt)
             WHERE t.nt_year = {year}
             GROUP BY t.nt_acnt, n.na_desc, t.nt_type, t.nt_subt
@@ -4507,7 +4507,7 @@ async def _old_nominal_statutory_accounts(year: int = 2026):
                 RTRIM(t.nt_acnt) AS account_code,
                 RTRIM(n.na_desc) AS description,
                 ISNULL(SUM(t.nt_value), 0) AS value
-            FROM ntran t
+            FROM ntran WITH (NOLOCK) t
             LEFT JOIN nacnt n ON RTRIM(t.nt_acnt) = RTRIM(n.na_acnt)
             WHERE t.nt_year = {year}
             GROUP BY t.nt_type, t.nt_subt, t.nt_acnt, n.na_desc
@@ -4689,8 +4689,8 @@ async def _old_credit_control_query(request: CreditControlQueryRequest):
                          st.st_dispute AS disputed, st.st_memo AS memo,
                          st.st_payday AS promise_date,
                          DATEDIFF(day, st.st_dueday, GETDATE()) AS days_overdue
-                         FROM stran st
-                         JOIN sname sn ON st.st_account = sn.sn_account
+                         FROM stran WITH (NOLOCK) st
+                         JOIN sname sn WITH (NOLOCK) ON st.st_account = sn.sn_account
                          WHERE st.st_trref LIKE '%{invoice}%' AND st.st_trtype = 'I'"""
             else:
                 return {"success": False, "error": "Could not extract invoice number from question"}
@@ -6394,7 +6394,7 @@ async def _old_get_revenue_composition(year: int = 2026):
                 nt_year,
                 COALESCE(NULLIF(RTRIM(na.na_subt), ''), 'Other') as category,
                 SUM(-nt_value) as revenue
-            FROM ntran nt
+            FROM ntran WITH (NOLOCK) nt
             LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt) AND na.na_year = nt.nt_year
             WHERE RTRIM(nt.nt_type) IN ('E', '30')
             AND nt.nt_year IN ({year}, {year - 1})
@@ -6455,8 +6455,8 @@ async def _old_get_top_customers(year: int = 2026, limit: int = 20):
                 SUM(CASE WHEN YEAR(t.st_trdate) = {year} THEN t.st_trvalue ELSE 0 END) as current_year,
                 SUM(CASE WHEN YEAR(t.st_trdate) = {year - 1} THEN t.st_trvalue ELSE 0 END) as previous_year,
                 COUNT(DISTINCT CASE WHEN YEAR(t.st_trdate) = {year} THEN t.st_trref END) as invoice_count
-            FROM stran t
-            INNER JOIN sname s ON RTRIM(t.st_account) = RTRIM(s.sn_account)
+            FROM stran WITH (NOLOCK) t
+            INNER JOIN sname WITH (NOLOCK) s ON RTRIM(t.st_account) = RTRIM(s.sn_account)
             WHERE t.st_trtype = 'I'
             AND YEAR(t.st_trdate) IN ({year}, {year - 1})
             GROUP BY t.st_account, s.sn_name
@@ -7345,7 +7345,7 @@ async def _old_get_revenue_by_category_detailed(year: int = 2026):
                     END
                 ) as category,
                 SUM(-nt.nt_value) as revenue
-            FROM ntran nt
+            FROM ntran WITH (NOLOCK) nt
             LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt) AND na.na_year = nt.nt_year
             WHERE RTRIM(nt.nt_type) IN ('E', '30')
             AND nt.nt_year IN ({year}, {year - 1})
@@ -7530,8 +7530,8 @@ async def _old_get_customer_churn_analysis(year: int = 2026):
                 SUM(CASE WHEN YEAR(t.st_trdate) = {year - 1} THEN t.st_trvalue ELSE 0 END) as prev_year,
                 SUM(CASE WHEN YEAR(t.st_trdate) = {year - 2} THEN t.st_trvalue ELSE 0 END) as two_years_ago,
                 MAX(t.st_trdate) as last_invoice_date
-            FROM stran t
-            INNER JOIN sname s ON RTRIM(t.st_account) = RTRIM(s.sn_account)
+            FROM stran WITH (NOLOCK) t
+            INNER JOIN sname WITH (NOLOCK) s ON RTRIM(t.st_account) = RTRIM(s.sn_account)
             WHERE t.st_trtype = 'I'
             AND YEAR(t.st_trdate) >= {year - 2}
             GROUP BY t.st_account, s.sn_name
@@ -13067,7 +13067,7 @@ async def get_purchase_orders(
                 sq_crdate AS created_date,
                 RTRIM(dc_ref2) AS reference
             FROM dohead
-            LEFT JOIN pname pn ON dc_account = pn.pn_account
+            LEFT JOIN pname WITH (NOLOCK) pn ON dc_account = pn.pn_account
             WHERE {where_clause}
             ORDER BY sq_crdate DESC, dc_ref DESC
             OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY
@@ -13134,7 +13134,7 @@ async def get_purchase_order_detail(po_number: str):
                 RTRIM(dc_narr1) AS narrative_1,
                 RTRIM(dc_narr2) AS narrative_2
             FROM dohead
-            LEFT JOIN pname pn ON dc_account = pn.pn_account
+            LEFT JOIN pname WITH (NOLOCK) pn ON dc_account = pn.pn_account
             WHERE dc_ref = '{po_number.replace(chr(39), chr(39)+chr(39))}'
         """
 
@@ -13318,7 +13318,7 @@ async def get_grn_detail(grn_number: str):
                 RTRIM(ci_dcref) AS po_reference,
                 ci_dcline AS po_line
             FROM cgline
-            LEFT JOIN pname pn ON ci_account = pn.pn_account
+            LEFT JOIN pname WITH (NOLOCK) pn ON ci_account = pn.pn_account
             WHERE ci_chref = '{grn_number.replace(chr(39), chr(39)+chr(39))}'
             ORDER BY ci_line
         """
@@ -13623,7 +13623,7 @@ async def get_po_outstanding(po_number: str):
             SELECT dc_ref, RTRIM(dc_account) AS supplier_account,
                    RTRIM(pn.pn_name) AS supplier_name, dc_cancel
             FROM dohead
-            LEFT JOIN pname pn ON dc_account = pn.pn_account
+            LEFT JOIN pname WITH (NOLOCK) pn ON dc_account = pn.pn_account
             WHERE dc_ref = '{po_number.replace(chr(39), chr(39)+chr(39))}'
         """
 

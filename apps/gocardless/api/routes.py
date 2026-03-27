@@ -7340,7 +7340,7 @@ async def get_collectable_invoices(
                     SELECT 1 FROM ihead WHERE ih_invoice = st_ref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = :sub_tag
                 ) THEN 1 ELSE 0 END AS is_sub
             FROM stran
-            JOIN sname ON st_account = sn_account
+            JOIN sname WITH (NOLOCK) ON st_account = sn_account
             WHERE st_ovalue > 0
               AND st_type IN (1, 2)  -- Invoices and credit notes
         """
@@ -7571,7 +7571,7 @@ async def get_gocardless_due_invoices(
                     SELECT 1 FROM ihead WHERE ih_invoice = st_trref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = :sub_tag
                 ) THEN 1 ELSE 0 END AS is_sub
             FROM stran
-            JOIN sname ON st_account = sn_account
+            JOIN sname WITH (NOLOCK) ON st_account = sn_account
             WHERE st_trbal > 0
               AND st_trtype = 'I'
               AND RTRIM(st_account) IN ({placeholders})

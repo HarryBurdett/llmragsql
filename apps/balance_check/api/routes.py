@@ -853,8 +853,8 @@ async def reconcile_creditors():
                 RTRIM(p.pn_name) AS supplier_name,
                 COUNT(*) AS invoice_count,
                 SUM(pt.pt_trbal) AS outstanding
-            FROM ptran pt
-            JOIN pname p ON pt.pt_account = p.pn_account
+            FROM ptran WITH (NOLOCK) pt
+            JOIN pname WITH (NOLOCK) p ON pt.pt_account = p.pn_account
             WHERE pt.pt_trbal <> 0
             GROUP BY p.pn_account, p.pn_name
             ORDER BY SUM(pt.pt_trbal) DESC
@@ -1619,8 +1619,8 @@ async def reconcile_debtors():
                 RTRIM(s.sn_name) AS customer_name,
                 COUNT(*) AS invoice_count,
                 SUM(st.st_trbal) AS outstanding
-            FROM stran st
-            JOIN sname s ON st.st_account = s.sn_account
+            FROM stran WITH (NOLOCK) st
+            JOIN sname WITH (NOLOCK) s ON st.st_account = s.sn_account
             WHERE st.st_trbal <> 0
             GROUP BY s.sn_account, s.sn_name
             ORDER BY SUM(st.st_trbal) DESC

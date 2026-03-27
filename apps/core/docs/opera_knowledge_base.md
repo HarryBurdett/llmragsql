@@ -228,6 +228,19 @@ AND ABS(ABS(at_value) - {amount_pence}) < 1
 
 **SQL Server Locking Approach (for multi-user environments):**
 
+**CRITICAL RULE: EVERY SELECT from an Opera table MUST include `WITH (NOLOCK)`.**
+Without it, SQL Server takes shared locks that block Opera users from editing records.
+This applies to ALL tables: pname, ptran, stran, ntran, atran, aentry, nbank, nacnt, palloc, salloc, phist, zcontacts, pparm, nparm, nclndd, sprfls, ihead, itran, sname — every Opera table.
+
+```sql
+-- CORRECT: every table has NOLOCK
+SELECT p.pt_trbal FROM ptran p WITH (NOLOCK)
+INNER JOIN pname n WITH (NOLOCK) ON n.pn_account = p.pt_account
+
+-- WRONG: missing NOLOCK — will lock pname for other users
+SELECT pn_name FROM pname WHERE pn_account = 'A001'
+```
+
 1. **Validation/Read Queries** - Use `NOLOCK` hint:
    ```sql
    SELECT * FROM sname WITH (NOLOCK) WHERE sn_account = 'A001'
