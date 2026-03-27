@@ -230,6 +230,33 @@ DEADLOCK_MAX_RETRIES = 3
 DEADLOCK_BACKOFF_DELAYS = [0.1, 0.5, 1.5]  # seconds
 
 
+def check_record_locked(engine, table: str, key_column: str, key_value: str) -> bool:
+    """
+    Check if a record is currently locked by another user BEFORE posting.
+
+    Attempts a brief UPDLOCK on the target row with a very short timeout.
+    Returns True if the record IS locked (cannot proceed), False if available.
+
+    This prevents starting a multi-table transaction that will fail at the
+    sname/pname update step, leaving the user waiting for the lock timeout.
+    """
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SET LOCK_TIMEOUT 500"))  # 0.5 second — quick check
+            conn.execute(text(f"""
+                SELECT 1 FROM {table} WITH (UPDLOCK, ROWLOCK, NOWAIT)
+                WHERE RTRIM({key_column}) = '{key_value}'
+            """))
+            conn.rollback()  # release the lock immediately
+            return False  # Not locked — safe to proceed
+    except Exception as e:
+        error_str = str(e).lower()
+        if 'lock' in error_str or '1222' in str(e) or 'timeout' in error_str or 'nowait' in error_str:
+            logger.warning(f"Record locked: {table}.{key_column}='{key_value}' — another user is editing")
+            return True  # Locked — do NOT proceed
+        return False  # Other error — assume not locked
+
+
 def is_deadlock_error(exc: Exception) -> bool:
     """
     Check if an exception is a SQL Server deadlock (error 1205).
@@ -2072,6 +2099,15 @@ class OperaSQLImport:
             # to prevent conflicts with other users
             # =====================
 
+            # Pre-check: verify customer record is not locked by another user
+            if check_record_locked(self.sql.engine, 'sname', 'sn_account', customer_account):
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Customer account {customer_account} is currently being edited by another user. Please try again in a moment."]
+                )
+
             # Pre-commit balance snapshot for concurrency verification
             pre_bank_balance = self.read_bank_balance_pence(bank_account)
 
@@ -2573,6 +2609,15 @@ class OperaSQLImport:
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
 
+            # Pre-check: verify customer record is not locked
+            if check_record_locked(self.sql.engine, 'sname', 'sn_account', customer_account):
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Customer account {customer_account} is currently being edited by another user. Please try again in a moment."]
+                )
+
             # Pre-commit balance snapshot for concurrency verification
             pre_bank_balance = self.read_bank_balance_pence(bank_account)
 
@@ -3025,6 +3070,15 @@ class OperaSQLImport:
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
+
+            # Pre-check: verify supplier record is not locked by another user
+            if check_record_locked(self.sql.engine, 'pname', 'pn_account', supplier_account):
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Supplier account {supplier_account} is currently being edited by another user. Please try again in a moment."]
+                )
 
             # Pre-commit balance snapshot for concurrency verification
             pre_bank_balance = self.read_bank_balance_pence(bank_account)
@@ -4620,6 +4674,15 @@ class OperaSQLImport:
             # ae_complet should only be 1 if we're posting to nominal ledger
             ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
 
+            # Pre-check: verify supplier record is not locked
+            if check_record_locked(self.sql.engine, 'pname', 'pn_account', supplier_account):
+                return ImportResult(
+                    success=False,
+                    records_processed=1,
+                    records_failed=1,
+                    errors=[f"Supplier account {supplier_account} is currently being edited by another user. Please try again in a moment."]
+                )
+
             # Pre-commit balance snapshot for concurrency verification
             pre_bank_balance = self.read_bank_balance_pence(bank_account)
 
@@ -5932,6 +5995,20 @@ class OperaSQLImport:
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
             date_str = now.strftime('%Y-%m-%d')
             time_str = now.strftime('%H:%M:%S')
+
+            # Pre-check: verify ALL customer records in batch are not locked
+            locked_accounts = []
+            for payment in payments:
+                cust_acct = payment.get('customer_account', '')
+                if cust_acct and check_record_locked(self.sql.engine, 'sname', 'sn_account', cust_acct):
+                    locked_accounts.append(cust_acct)
+            if locked_accounts:
+                return ImportResult(
+                    success=False,
+                    records_processed=len(payments),
+                    records_failed=len(payments),
+                    errors=[f"Cannot import: customer account(s) {', '.join(locked_accounts)} currently being edited by another user. Please try again in a moment."]
+                )
 
             # Pre-commit balance snapshot for concurrency verification
             pre_bank_balance = self.read_bank_balance_pence(bank_account)
