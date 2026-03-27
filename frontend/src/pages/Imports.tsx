@@ -6842,8 +6842,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       <Edit3 className="h-3 w-3" /> Modified
                                     </span>
                                   ) : txn.match_score ? (
-                                    <span className="inline-flex items-center gap-1 text-green-600 text-xs">
-                                      <CheckCircle className="h-3 w-3" /> {txn.match_score}%
+                                    <span className={`inline-flex items-center gap-1 text-xs ${
+                                      txn.match_score >= 80 ? 'text-green-600' :
+                                      txn.match_score >= 60 ? 'text-amber-600' :
+                                      'text-red-600'
+                                    }`}>
+                                      {txn.match_score >= 80 ? <CheckCircle className="h-3 w-3" /> :
+                                       txn.match_score >= 60 ? <AlertCircle className="h-3 w-3" /> :
+                                       <XCircle className="h-3 w-3" />}
+                                      {txn.match_score >= 80 ? 'Confident' : txn.match_score >= 60 ? 'Review' : 'Low'}
                                     </span>
                                   ) : (
                                     <span className="text-green-600 text-xs">Matched</span>
@@ -7354,8 +7361,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       <Edit3 className="h-3 w-3" /> Modified
                                     </span>
                                   ) : txn.match_score ? (
-                                    <span className="inline-flex items-center gap-1 text-green-600 text-xs">
-                                      <CheckCircle className="h-3 w-3" /> {txn.match_score}%
+                                    <span className={`inline-flex items-center gap-1 text-xs ${
+                                      txn.match_score >= 80 ? 'text-green-600' :
+                                      txn.match_score >= 60 ? 'text-amber-600' :
+                                      'text-red-600'
+                                    }`}>
+                                      {txn.match_score >= 80 ? <CheckCircle className="h-3 w-3" /> :
+                                       txn.match_score >= 60 ? <AlertCircle className="h-3 w-3" /> :
+                                       <XCircle className="h-3 w-3" />}
+                                      {txn.match_score >= 80 ? 'Confident' : txn.match_score >= 60 ? 'Review' : 'Low'}
                                     </span>
                                   ) : (
                                     <span className="text-green-600 text-xs">Matched</span>
