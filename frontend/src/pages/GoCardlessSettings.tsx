@@ -171,6 +171,7 @@ export function GoCardlessSettings() {
   // Subscription settings
   const [subscriptionTag, setSubscriptionTag] = useState('SUB');
   const [subscriptionFrequencies, setSubscriptionFrequencies] = useState<string[]>(['W', 'M', 'A']);
+  const [payoutLookbackDays, setPayoutLookbackDays] = useState(30);
 
   // Subscription tag update modal
   const [showTagModal, setShowTagModal] = useState(false);
@@ -274,6 +275,7 @@ export function GoCardlessSettings() {
           if (data.settings.data_source) setDataSource(data.settings.data_source);
           if (data.settings.subscription_tag !== undefined) setSubscriptionTag(data.settings.subscription_tag);
           if (data.settings.subscription_frequencies) setSubscriptionFrequencies(data.settings.subscription_frequencies);
+          if (data.settings.payout_lookback_days !== undefined) setPayoutLookbackDays(Number(data.settings.payout_lookback_days) || 30);
         }
       })
       .catch(err => console.error('Failed to load GoCardless settings:', err));
@@ -333,6 +335,7 @@ export function GoCardlessSettings() {
           data_source: dataSource,
           subscription_tag: subscriptionTag,
           subscription_frequencies: subscriptionFrequencies,
+          payout_lookback_days: payoutLookbackDays,
         })
       });
       const data = await response.json();
@@ -435,6 +438,7 @@ export function GoCardlessSettings() {
           { title: 'Transfer Type', content: 'The Opera cashbook transfer type used when posting GoCardless bank transfers. Usually the same type used for inter-bank transfers in Opera.' },
           { title: 'Statement Reference', content: 'Appears on the customer\'s bank statement when a Direct Debit is collected. Max 10 characters. Typically your company name or trading name. If blank, GoCardless uses its own default.' },
           { title: 'Fees Nominal Account / VAT Code / Payment Type', content: 'GoCardless deducts fees from each payout. These settings control where the fee expense is posted in Opera\'s nominal ledger, the VAT treatment, and the payment method code.' },
+          { title: 'Payout Lookback Days', content: 'How far back to search when fetching payouts from GoCardless. Default 30 days. Lower values mean faster processing. Only payouts within this window appear in the import screen.' },
           { title: 'Subscription Tag', content: 'The Opera analysis code (on repeat invoices) that identifies documents for GoCardless subscription processing. Default is "SUB". Only repeat invoices with this tag will appear in the subscription management screen.' },
           { title: 'Frequency Filter', content: 'When creating subscriptions, filter repeat invoices by their frequency type (Monthly, Quarterly, etc.). "All" shows everything.' },
           { title: 'Partner Integration', content: 'For GoCardless partners managing multiple merchants. Enter your partner credentials to enable merchant onboarding and multi-merchant management. Most users don\'t need this section.' },
@@ -648,6 +652,21 @@ export function GoCardlessSettings() {
           <div className="space-y-4">
             <h3 className="font-medium text-gray-900 border-b pb-2">Subscription Settings</h3>
             <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Payout Lookback Days</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={payoutLookbackDays}
+                    onChange={(e) => setPayoutLookbackDays(Math.max(1, parseInt(e.target.value) || 30))}
+                    min={1}
+                    max={365}
+                    className="w-24 p-2 border border-gray-300 rounded text-sm"
+                  />
+                  <span className="text-sm text-gray-500">days</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">How far back to search for payouts when fetching from GoCardless API. Lower = faster.</p>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Subscription Tag</label>
                 <input

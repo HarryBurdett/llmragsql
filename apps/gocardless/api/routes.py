@@ -1838,15 +1838,20 @@ async def test_gocardless_api():
 async def get_gocardless_api_payouts(
     status: str = Query("paid", description="Payout status filter"),
     limit: int = Query(20, description="Number of payouts to fetch"),
-    days_back: int = Query(30, description="Fetch payouts from last N days")
+    days_back: Optional[int] = Query(None, description="Fetch payouts from last N days (default from settings)")
 ):
     """
     Fetch payouts directly from GoCardless API.
 
     Returns payouts with full payment details, ready for matching and import.
+    Uses payout_lookback_days from settings if days_back not specified.
     """
     settings = _load_gocardless_settings()
     access_token = settings.get("api_access_token")
+
+    # Use setting if not overridden by query param
+    if days_back is None:
+        days_back = int(settings.get("payout_lookback_days", 30))
 
     if not access_token:
         return {"success": False, "error": "No API access token configured. Go to Settings to add your GoCardless API credentials."}
@@ -7128,9 +7133,9 @@ async def opera3_skip_payout(
 async def opera3_get_api_payouts(
     status: str = Query("paid"),
     limit: int = Query(20),
-    days_back: int = Query(30)
+    days_back: Optional[int] = Query(None)
 ):
-    """Fetch payouts from GoCardless API — same logic as SE."""
+    """Fetch payouts from GoCardless API — same logic as SE, uses payout_lookback_days from settings."""
     return await get_gocardless_api_payouts(status=status, limit=limit, days_back=days_back)
 
 
