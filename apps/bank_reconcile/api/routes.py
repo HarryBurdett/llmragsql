@@ -1347,9 +1347,14 @@ async def import_from_statement(
                 "skip_reason": txn.skip_reason
             }
 
-            if txn.action == 'sales_receipt':
+            if txn.action in ('sales_receipt', 'sales_refund'):
                 matched_receipts.append(txn_data)
-            elif txn.action == 'purchase_payment':
+            elif txn.action in ('purchase_payment', 'purchase_refund'):
+                matched_payments.append(txn_data)
+            elif txn.matched_account and txn.is_receipt:
+                # Has a match but action wasn't set — categorise by direction
+                matched_receipts.append(txn_data)
+            elif txn.matched_account and not txn.is_receipt:
                 matched_payments.append(txn_data)
             else:
                 unmatched.append(txn_data)
@@ -13455,9 +13460,14 @@ async def opera3_import_from_statement(
                 "skip_reason": txn.skip_reason
             }
 
-            if txn.action == 'sales_receipt':
+            if txn.action in ('sales_receipt', 'sales_refund'):
                 matched_receipts.append(txn_data)
-            elif txn.action == 'purchase_payment':
+            elif txn.action in ('purchase_payment', 'purchase_refund'):
+                matched_payments.append(txn_data)
+            elif txn.matched_account and txn.is_receipt:
+                # Has a match but action wasn't set — categorise by direction
+                matched_receipts.append(txn_data)
+            elif txn.matched_account and not txn.is_receipt:
                 matched_payments.append(txn_data)
             else:
                 unmatched.append(txn_data)

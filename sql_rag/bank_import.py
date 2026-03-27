@@ -1286,9 +1286,20 @@ class BankStatementImport:
             score_diff = abs(cust_result.score - supp_result.score)
 
             # If scores are very similar (<0.15 difference), it's truly ambiguous
+            # Still set the best guess so it appears under the right heading
             if score_diff < 0.15:
-                txn.action = 'skip'
-                txn.skip_reason = f'Matches both customer ({cust_result.name}) and supplier ({supp_result.name}) - ambiguous'
+                if txn.is_receipt:
+                    txn.matched_account = cust_result.account
+                    txn.matched_name = cust_result.name
+                    txn.match_score = cust_result.score
+                    txn.action = 'sales_receipt'
+                else:
+                    txn.matched_account = supp_result.account
+                    txn.matched_name = supp_result.name
+                    txn.match_score = supp_result.score
+                    txn.action = 'purchase_payment'
+                txn.match_source = 'fuzzy_ambiguous'
+                txn.skip_reason = f'Review: matches both customer ({cust_result.name}) and supplier ({supp_result.name})'
                 return
 
             # If one score is significantly higher, prefer that match based on transaction direction
@@ -1299,8 +1310,13 @@ class BankStatementImport:
                     # Customer is better match for a receipt - use it
                     pass  # Fall through to receipt handling below
                 else:
-                    txn.action = 'skip'
-                    txn.skip_reason = f'Matches both - supplier score ({supp_result.score:.2f}) higher than customer ({cust_result.score:.2f}) for receipt'
+                    # Supplier score higher for a receipt — still categorise as receipt with review flag
+                    txn.matched_account = cust_result.account
+                    txn.matched_name = cust_result.name
+                    txn.match_score = cust_result.score
+                    txn.action = 'sales_receipt'
+                    txn.match_source = 'fuzzy_review'
+                    txn.skip_reason = f'Review: supplier score ({supp_result.score:.2f}) higher than customer ({cust_result.score:.2f})'
                     return
             else:  # Payment
                 if supp_result.score > cust_result.score:
@@ -1314,8 +1330,13 @@ class BankStatementImport:
                         txn.match_score = cust_result.score
                         txn.match_source = 'fuzzy'
                         return
-                    txn.action = 'skip'
-                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment but no unallocated credit note found'
+                    # Customer score higher for a payment, no credit note — still categorise as payment with review
+                    txn.matched_account = supp_result.account
+                    txn.matched_name = supp_result.name
+                    txn.match_score = supp_result.score
+                    txn.action = 'purchase_payment'
+                    txn.match_source = 'fuzzy_review'
+                    txn.skip_reason = f'Review: customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f})'
                     return
 
         # Determine best match based on transaction direction

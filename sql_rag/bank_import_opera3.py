@@ -910,16 +910,30 @@ class BankStatementMatcherOpera3:
             score_diff = abs(cust_result.score - supp_result.score)
 
             if score_diff < 0.15:
-                txn.action = 'skip'
-                txn.skip_reason = f'Matches both customer ({cust_result.name}) and supplier ({supp_result.name}) - ambiguous'
+                if txn.is_receipt:
+                    txn.matched_account = cust_result.account
+                    txn.matched_name = cust_result.name
+                    txn.match_score = cust_result.score
+                    txn.action = 'sales_receipt'
+                else:
+                    txn.matched_account = supp_result.account
+                    txn.matched_name = supp_result.name
+                    txn.match_score = supp_result.score
+                    txn.action = 'purchase_payment'
+                txn.match_source = 'fuzzy_ambiguous'
+                txn.skip_reason = f'Review: matches both customer ({cust_result.name}) and supplier ({supp_result.name})'
                 return
 
             if txn.is_receipt:
                 if cust_result.score > supp_result.score:
                     pass  # Fall through to receipt handling
                 else:
-                    txn.action = 'skip'
-                    txn.skip_reason = f'Matches both - supplier score ({supp_result.score:.2f}) higher than customer ({cust_result.score:.2f}) for receipt'
+                    txn.matched_account = cust_result.account
+                    txn.matched_name = cust_result.name
+                    txn.match_score = cust_result.score
+                    txn.action = 'sales_receipt'
+                    txn.match_source = 'fuzzy_review'
+                    txn.skip_reason = f'Review: supplier score ({supp_result.score:.2f}) higher than customer ({cust_result.score:.2f})'
                     return
             else:
                 if supp_result.score > cust_result.score:
@@ -930,8 +944,12 @@ class BankStatementMatcherOpera3:
                         txn.match_score = cust_result.score
                         txn.match_source = 'fuzzy'
                         return
-                    txn.action = 'skip'
-                    txn.skip_reason = f'Matches both - customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f}) for payment but no unallocated credit note found'
+                    txn.matched_account = supp_result.account
+                    txn.matched_name = supp_result.name
+                    txn.match_score = supp_result.score
+                    txn.action = 'purchase_payment'
+                    txn.match_source = 'fuzzy_review'
+                    txn.skip_reason = f'Review: customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f})'
                     return
 
         # Determine best match based on transaction direction
