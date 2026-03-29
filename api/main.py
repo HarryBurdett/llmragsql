@@ -925,6 +925,9 @@ def _connect_opera3_smb(server_path: str, username: str, password: str) -> str:
         manager.connect()
         set_smb_manager(manager)
 
+        # Auto-generate company configs from seqco.dbf
+        _generate_opera3_company_configs()
+
         local_base = manager.get_local_base()
         logger.info(f"SMB connected, local cache: {local_base}")
         return f"Connected via SMB, local cache: {local_base}"
@@ -932,6 +935,84 @@ def _connect_opera3_smb(server_path: str, username: str, password: str) -> str:
     except Exception as e:
         logger.error(f"SMB connection failed: {e}")
         return f"SMB connection failed: {e}"
+
+
+def _generate_opera3_company_configs():
+    """
+    Read seqco.dbf from the SMB share and create/update companies/*.json
+    for each Opera 3 company. Preserves user-added settings in existing configs.
+    """
+    smb = get_smb_manager()
+    if smb is None or not smb.is_connected():
+        logger.warning("Cannot generate Opera 3 company configs — SMB not connected")
+        return
+
+    try:
+        from sql_rag.opera3_foxpro import Opera3System
+        local_base = str(smb.get_local_base())
+        system = Opera3System(local_base)
+        companies = system.get_companies()
+
+        if not companies:
+            logger.warning("No companies found in seqco.dbf")
+            return
+
+        os.makedirs(COMPANIES_DIR, exist_ok=True)
+
+        for co in companies:
+            code = co.get("code", "").strip()
+            if not code:
+                continue
+
+            company_id = f"o3_{code.lower()}"
+            config_path = os.path.join(COMPANIES_DIR, f"{company_id}.json")
+
+            # Load existing config to preserve user-added settings
+            existing = {}
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, 'r') as f:
+                        existing = json.load(f)
+                except Exception:
+                    pass
+
+            # Build/update config — preserve existing settings, update from seqco
+            company_config = existing.copy()
+            company_config["id"] = company_id
+            company_config["name"] = co.get("name", code)
+            company_config["opera_version"] = "3"
+            company_config["opera3_company_code"] = code.upper()
+            company_config["description"] = f"{code.upper()} - {co.get('name', '')}"
+
+            # Extract relative data path from the full data_path
+            # Opera3System.get_companies() already resolves CO_SUBDIR to a local path
+            # We need the path relative to the SMB local base
+            data_path = co.get("data_path", "")
+            if data_path:
+                try:
+                    from pathlib import Path
+                    rel = str(Path(data_path).relative_to(local_base))
+                    company_config["opera3_data_path"] = rel
+                except ValueError:
+                    company_config["opera3_data_path"] = ""
+            else:
+                company_config["opera3_data_path"] = ""
+
+            # Set defaults for settings if not already present
+            if "settings" not in company_config:
+                company_config["settings"] = {
+                    "currency": "GBP",
+                    "currency_symbol": "\u00a3",
+                    "date_format": "DD/MM/YYYY"
+                }
+
+            with open(config_path, 'w') as f:
+                json.dump(company_config, f, indent=2)
+
+            logger.info(f"Generated company config: {config_path} ({company_config['name']})")
+
+    except Exception as e:
+        logger.error(f"Error generating Opera 3 company configs: {e}")
 
 
 class OperaConfig(BaseModel):
@@ -1139,6 +1220,72 @@ async def login(request: LoginRequest):
         except Exception as e:
             # Log but don't fail - allow login to proceed with local user if Opera unavailable
             logger.warning(f"Could not sync user from Opera: {e}")
+    elif get_smb_manager() is not None:
+        # Opera 3: sync from sequser.dbf via SMB
+        try:
+            from sql_rag.opera3_foxpro import Opera3System
+            smb = get_smb_manager()
+            local_base = str(smb.get_local_base())
+            system = Opera3System(local_base)
+
+            users = system.read_sequser(username=request.username)
+            if users:
+                row = users[0]
+                opera_user = row['user']
+                display_name = row['username'] or opera_user
+                is_manager = row['manager']
+                email = row['email_addr'] or None
+                pref_company_letter = row['prefcomp']
+                cos_string = row['cos']
+
+                # Load companies for mapping
+                companies = load_companies()
+
+                # Map preferred company letter to company ID
+                # Opera 3 uses opera3_company_code field instead of database suffix
+                default_company = None
+                if pref_company_letter:
+                    for co in companies:
+                        if co.get('opera3_company_code', '').upper() == pref_company_letter.upper():
+                            default_company = co.get('id')
+                            break
+
+                # Parse cos field to get company access
+                # cos is a string where each character represents a company the user can access
+                user_company_access = None
+                if cos_string:
+                    user_company_access = []
+                    for char in cos_string:
+                        for co in companies:
+                            if co.get('opera3_company_code', '').upper() == char.upper():
+                                user_company_access.append(co.get('id'))
+                                break
+                    logger.info(f"Opera 3 company access for '{opera_user}' from cos='{cos_string}': {user_company_access}")
+
+                # Read NavGroup permissions
+                opera_permissions = None
+                try:
+                    navgroups = system.read_seqnavgrps(opera_user)
+                    if navgroups:
+                        opera_permissions = UserAuth.map_opera_navgroups_to_permissions(navgroups)
+                        logger.info(f"Opera 3 NavGroups for '{opera_user}': {navgroups} -> SQL RAG: {opera_permissions}")
+                except Exception as navgrp_err:
+                    logger.warning(f"Could not read Opera 3 NavGroups: {navgrp_err}")
+
+                # Sync user from Opera 3 (creates if not exists, updates if exists)
+                user_auth.sync_user_from_opera(
+                    opera_username=opera_user,
+                    display_name=display_name,
+                    email=email,
+                    is_manager=is_manager,
+                    is_active=True,
+                    preferred_company=default_company,
+                    opera_permissions=opera_permissions,
+                    company_access=user_company_access
+                )
+                logger.info(f"Synced user '{opera_user}' from Opera 3 sequser.dbf before login")
+        except Exception as e:
+            logger.warning(f"Could not sync from Opera 3 sequser.dbf: {e} — continuing with local auth")
 
     # Authenticate user
     user = user_auth.authenticate(request.username, request.password)
