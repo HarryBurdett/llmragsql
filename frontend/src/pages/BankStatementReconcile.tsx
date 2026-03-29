@@ -1619,8 +1619,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     } catch (error) {
       console.error('Matching error:', error);
     } finally {
-      // Release lock after delay to prevent StrictMode double-invoke and query-refetch re-triggers
-      setTimeout(() => { matchingLockRef.current = false; }, 3000);
+      // Don't auto-release lock — it stays locked until:
+      // 1. User clicks Refresh button (explicitly releases)
+      // 2. New statement is loaded (importedStatementData changes)
+      // This prevents StrictMode double-invoke and query-refetch from re-triggering
     }
   };
 
@@ -1670,9 +1672,15 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   }, [importedStatementData]);
 
+  // Reset matching lock when statement data changes (new statement loaded)
+  useEffect(() => {
+    matchingLockRef.current = false;
+  }, [importedStatementData?.import_id, importedStatementData?.filename]);
+
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
   // Always run matching if we have statement transactions — balance check is advisory, not blocking
   useEffect(() => {
+    if (matchingLockRef.current) return;
     if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries
         && !matchingResult && !pendingAutoMatch && !isRefreshing) {
       // Check balance alignment (advisory warning only)
@@ -2567,6 +2575,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           <button
             onClick={async () => {
               setIsRefreshing(true);
+              matchingLockRef.current = false; // Release lock for intentional refresh
               try {
                 await runMatchingFromUnreconciled();
               } finally {
