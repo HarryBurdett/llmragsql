@@ -259,6 +259,8 @@ export function Installations() {
           opera3_server_path: form.opera3ServerPath,
           opera3_base_path: form.opera3BasePath,
           opera3_company_code: form.opera3CompanyCode,
+          opera3_share_user: form.opera3ShareUser,
+          opera3_share_password: form.opera3SharePassword,
         });
         setMessage({ type: 'success', text: `"${sys.name}" settings saved` });
         invalidate();

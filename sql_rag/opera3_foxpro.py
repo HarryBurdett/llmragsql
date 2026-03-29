@@ -562,17 +562,49 @@ class Opera3System:
         for record in dbf:
             record_dict = {k: v.strip() if isinstance(v, str) else v for k, v in dict(record).items()}
 
-            # Normalize to standard keys for easier access
+            # Normalize to standard keys — dbfread may return UPPER or lower case keys
+            def _get(key):
+                val = record_dict.get(key) or record_dict.get(key.upper()) or record_dict.get(key.lower())
+                return val.strip() if isinstance(val, str) else (val or "")
+
             company = {
-                "code": record_dict.get("co_code", "").strip() if record_dict.get("co_code") else "",
-                "name": record_dict.get("co_name", "").strip() if record_dict.get("co_name") else "",
-                "subdir": record_dict.get("co_subdir", "").strip() if record_dict.get("co_subdir") else "",
+                "code": _get("co_code"),
+                "name": _get("co_name"),
+                "subdir": _get("co_subdir"),
                 "raw": record_dict  # Keep all original fields
             }
 
             # Build full data path
-            if company["subdir"]:
-                company["data_path"] = str(self.base_path / company["subdir"])
+            # CO_SUBDIR may be a Windows local path or UNC path — extract relative part
+            subdir = company["subdir"]
+            if subdir:
+                # Normalise to forward slashes for parsing
+                norm = subdir.replace("\\", "/").strip("/")
+                # Try to find a relative portion after common root patterns
+                # e.g., "//SERVER/Share/Data" -> "Data", "C:/Apps/O3 Server VFP/DATA/P" -> "DATA/P"
+                smb = get_smb_manager()
+                if smb is not None:
+                    # Extract the path after the share name
+                    share_lower = smb.share.lower().replace("\\", "/")
+                    norm_lower = norm.lower()
+                    idx = norm_lower.find(share_lower)
+                    if idx >= 0:
+                        relative = norm[idx + len(share_lower):].strip("/")
+                        company["data_path"] = str(self.base_path / relative) if relative else str(self.base_path)
+                    else:
+                        # Fallback: use last path component(s) after common roots
+                        # e.g., "C:/Apps/O3 Server VFP/DATA/P" -> try "DATA/P"
+                        parts = norm.split("/")
+                        # Look for "Data" or "DATA" in path and take from there
+                        for i, p in enumerate(parts):
+                            if p.lower() == "data":
+                                relative = "/".join(parts[i:])
+                                company["data_path"] = str(self.base_path / relative)
+                                break
+                        else:
+                            company["data_path"] = str(self.base_path / subdir)
+                else:
+                    company["data_path"] = str(self.base_path / subdir)
             else:
                 company["data_path"] = str(self.base_path / company["code"]) if company["code"] else ""
 
