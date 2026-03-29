@@ -9525,7 +9525,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           onImportComplete(reconcileData);
                         } else {
                           sessionStorage.setItem(currentCompanyId ? `reconcile_statement_data_${currentCompanyId}` : 'reconcile_statement_data', JSON.stringify(reconcileData));
-                          window.location.href = '/cashbook/statement-reconcile';
+                          window.location.href = `/cashbook/statement-reconcile?bank=${encodeURIComponent(selectedBankCode)}`;
                         }
                       } : (isEmailSource ? handleEmailImport : selectedPdfFile ? handlePdfImport : handleBankImport)}
                       disabled={importDisabled || isImporting || (allTransactionsImported && !allAlreadyInOpera && !allItemsHandled)}
@@ -9885,7 +9885,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                 onImportComplete(reconcileData);
                               } else {
                                 sessionStorage.setItem(currentCompanyId ? `reconcile_statement_data_${currentCompanyId}` : 'reconcile_statement_data', JSON.stringify(reconcileData));
-                                window.location.href = '/cashbook/statement-reconcile';
+                                window.location.href = `/cashbook/statement-reconcile?bank=${encodeURIComponent(selectedBankCode)}`;
                               }
                             }}
                             className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex items-center gap-2 shadow-md hover:shadow-lg transition-all"
