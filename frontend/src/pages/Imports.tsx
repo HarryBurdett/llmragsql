@@ -8313,6 +8313,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         <CheckCircle className="h-3 w-3" />
                                         Ignored
                                       </span>
+                                      <button
+                                        className="ml-2 text-xs text-blue-600 hover:text-blue-800 underline"
+                                        onClick={() => {
+                                          setIgnoredTransactions(prev => {
+                                            const s = new Set(prev);
+                                            s.delete(txn.row);
+                                            return s;
+                                          });
+                                          const dateOnly = txn.date.includes('T') ? txn.date.split('T')[0] : txn.date;
+                                          authFetch(`${API_BASE}/reconcile/bank/${encodeURIComponent(selectedBankCode)}/unignore-transaction?transaction_date=${encodeURIComponent(dateOnly)}&amount=${txn.amount}`, { method: 'DELETE' }).catch(() => {});
+                                        }}
+                                      >
+                                        Undo
+                                      </button>
                                     </td>
                                   </tr>
                                 );
