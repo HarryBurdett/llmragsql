@@ -78,11 +78,15 @@ This document captures knowledge about Pegasus Opera SQL SE database structure, 
 - `pn_account` - Supplier account code
 - `pn_name` - Supplier name
 - `pn_balance` - Current balance
+- `pn_dormant` - Boolean. If true, account is dormant — cannot post transactions to it
+- `pn_stop` - Account on stop flag
 
 #### `sname` - Customer Master
 - `sn_account` - Customer account code
 - `sn_name` - Customer name
 - `sn_balance` - Current balance
+- `sn_dormant` - Boolean. If true, account is dormant — cannot post transactions to it
+- `sn_stop` - Account on stop flag
 
 #### `nname` - Nominal Account Master
 - `nn_acnt` - Nominal account code

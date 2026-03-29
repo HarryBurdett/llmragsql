@@ -453,10 +453,13 @@ class BankStatementMatcherOpera3:
         customers: Dict[str, MatchCandidate] = {}
         suppliers: Dict[str, MatchCandidate] = {}
 
-        # Load customers from sname.dbf
+        # Load customers from sname.dbf (exclude dormant accounts)
         try:
             customer_records = self.reader.read_table("sname")
             for record in customer_records:
+                # Skip dormant customers — cannot post to them
+                if record.get("SN_DORMANT") or record.get("sn_dormant"):
+                    continue
                 candidate = create_match_candidate_from_dict(record, is_supplier=False)
                 if candidate.account and candidate.primary_name:
                     customers[candidate.account] = candidate
@@ -466,10 +469,13 @@ class BankStatementMatcherOpera3:
         except Exception as e:
             logger.error(f"Error loading customers: {e}")
 
-        # Load suppliers from pname.dbf
+        # Load suppliers from pname.dbf (exclude dormant accounts)
         try:
             supplier_records = self.reader.read_table("pname")
             for record in supplier_records:
+                # Skip dormant suppliers — cannot post to them
+                if record.get("PN_DORMANT") or record.get("pn_dormant"):
+                    continue
                 candidate = create_match_candidate_from_dict(record, is_supplier=True)
                 if candidate.account and candidate.primary_name:
                     suppliers[candidate.account] = candidate

@@ -135,6 +135,32 @@ def extract_payee_name_full(description: str) -> str:
 
     text = description.replace('\n', ' ').replace('\r', ' ').strip()
 
+    # Strip AI-added classification labels (e.g. "SUPPLIER - Name", "CUSTOMER: Name")
+    # These appear when Gemini adds type annotations to extracted descriptions
+    text = re.sub(
+        r'^(?:SUPPLIER|CUSTOMER|PAYMENT|RECEIPT|TRANSFER|SALARY|WAGES|REFUND)\s*[-–:]\s*',
+        '', text, flags=re.IGNORECASE
+    ).strip()
+
+    # Handle comma-separated bank descriptions (common in NatWest, HSBC, etc.)
+    # Format: "PAYEE NAME, CLASSIFICATION, FP dd/mm/yy nn, REFERENCE"
+    # e.g. "MJM DATA CAPTURE LTD, SUPPLIER, FP 23/03/26 40, 11013128004084000N"
+    # Extract just the payee name (first field), strip classification and reference junk
+    if ',' in text:
+        parts = [p.strip() for p in text.split(',')]
+        # Check if any subsequent part is a classification keyword or payment reference
+        classification_words = {'SUPPLIER', 'CUSTOMER', 'VOLUNTEER', 'SALARY', 'WAGES',
+                                'GP', 'EMPLOYEE', 'STAFF', 'REFUND', 'PENSION'}
+        for i, part in enumerate(parts[1:], 1):
+            upper_part = part.upper().strip()
+            # If we hit a classification word or a payment ref pattern (FP dd/mm, digits),
+            # the payee name is everything before this point
+            if (upper_part in classification_words or
+                re.match(r'^(?:FP|DD|SO|BGC|CHQ|BACS)\s', upper_part) or
+                re.match(r'^\d{8,}', upper_part)):
+                text = ', '.join(parts[:i]).strip()
+                break
+
     # Try to extract name after "to" or "from"
     match = re.match(
         r'(?:(?:dd\s+)?direct\s+debit\s+to|(?:giro\s+)?direct\s+credit\s+from|'
@@ -760,9 +786,10 @@ class BankStatementImport:
                     RTRIM(ISNULL(sn_banksor, '')) as bank_sort,
                     RTRIM(ISNULL(sn_vendor, '')) as vendor_ref
                 FROM sname WITH (NOLOCK)
+                WHERE sn_dormant = 0
             """
         else:
-            customer_query = "SELECT sn_account, RTRIM(sn_name) as name FROM sname WITH (NOLOCK)"
+            customer_query = "SELECT sn_account, RTRIM(sn_name) as name FROM sname WITH (NOLOCK) WHERE sn_dormant = 0"
 
         df = self.sql_connector.execute_query(customer_query)
 
@@ -810,9 +837,10 @@ class BankStatementImport:
                     RTRIM(ISNULL(pn_bankac, '')) as bank_account,
                     RTRIM(ISNULL(pn_banksor, '')) as bank_sort
                 FROM pname WITH (NOLOCK)
+                WHERE pn_dormant = 0
             """
         else:
-            supplier_query = "SELECT pn_account, RTRIM(pn_name) as name FROM pname WITH (NOLOCK)"
+            supplier_query = "SELECT pn_account, RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_dormant = 0"
 
         df = self.sql_connector.execute_query(supplier_query)
 

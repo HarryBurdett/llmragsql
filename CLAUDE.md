@@ -85,6 +85,7 @@ Control account codes vary by installation. They are loaded dynamically from Ope
 - Frontend: `BankStatementReconcile.tsx` (route: `/cashbook/statement-reconcile`)
 - Creates entries in: `aentry`, `atran`, `ptran`, `ntran`, `palloc`
 - Duplicate detection uses `ABS(ABS(at_value) - amount)` pattern, checks date range ± 7 days
+- **Dormant accounts excluded** from matching — `sn_dormant = 0` / `pn_dormant = 0` filter on customer/supplier queries. Cannot post to dormant accounts.
 - Statement descriptions stored in `ae_comment` field on import
 
 **5-Stage Workflow**:
