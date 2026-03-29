@@ -38,6 +38,12 @@ except ImportError:
     DBF_AVAILABLE = False
     logger.warning("dbfread not installed. Install with: pip install dbfread")
 
+try:
+    from sql_rag.smb_access import get_smb_manager
+except ImportError:
+    def get_smb_manager():
+        return None
+
 
 @dataclass
 class TableInfo:
@@ -127,7 +133,13 @@ class Opera3Reader:
             )
 
         if not self.data_path.exists():
-            logger.warning(f"Opera 3 data path does not exist: {data_path}")
+            smb = get_smb_manager()
+            if smb is None:
+                logger.warning(f"Opera 3 data path does not exist: {data_path}")
+            else:
+                # SMB mode — create local directory structure
+                self.data_path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"SMB mode: created local cache directory {data_path}")
 
     def list_tables(self, include_unknown: bool = True) -> List[Dict[str, Any]]:
         """
@@ -178,13 +190,7 @@ class Opera3Reader:
         if table_name in self._table_cache:
             return self._table_cache[table_name]
 
-        dbf_path = self.data_path / f"{table_name}.dbf"
-        if not dbf_path.exists():
-            # Try uppercase
-            dbf_path = self.data_path / f"{table_name.upper()}.DBF"
-
-        if not dbf_path.exists():
-            raise FileNotFoundError(f"Table not found: {table_name}")
+        dbf_path = self._get_dbf_path(table_name)
 
         # Get file modification time
         mtime = datetime.fromtimestamp(dbf_path.stat().st_mtime)
@@ -346,7 +352,7 @@ class Opera3Reader:
         return results
 
     def _get_dbf_path(self, table_name: str) -> Path:
-        """Get the path to a DBF file"""
+        """Get the path to a DBF file, downloading from SMB if needed."""
         # Try lowercase first
         dbf_path = self.data_path / f"{table_name.lower()}.dbf"
         if dbf_path.exists():
@@ -364,6 +370,13 @@ class Opera3Reader:
         for f in self.data_path.glob("*.DBF"):
             if f.stem.lower() == table_name.lower():
                 return f
+
+        # SMB fallback — download from remote if available
+        smb = get_smb_manager()
+        if smb is not None:
+            local_path = smb.resolve_dbf_path(self.data_path, table_name)
+            if local_path is not None:
+                return local_path
 
         raise FileNotFoundError(f"Table not found: {table_name}")
 
@@ -491,6 +504,11 @@ class Opera3System:
         self.system_path = self.base_path / "System"
         self.encoding = encoding
 
+        if not self.system_path.exists():
+            smb = get_smb_manager()
+            if smb is not None:
+                self.system_path.mkdir(parents=True, exist_ok=True)
+
         if not DBF_AVAILABLE:
             raise ImportError(
                 "dbfread package required. Install with: pip install dbfread"
@@ -513,6 +531,23 @@ class Opera3System:
         if not seqco_path.exists():
             # Try uppercase
             seqco_path = self.system_path / "SEQCO.DBF"
+
+        if not seqco_path.exists():
+            # SMB fallback — try downloading
+            smb = get_smb_manager()
+            if smb is not None:
+                try:
+                    rel_dir = self.system_path.relative_to(smb.get_local_base())
+                    for name in ["seqco.dbf", "SEQCO.DBF"]:
+                        rel_path = str(rel_dir / name).replace("\\", "/")
+                        try:
+                            downloaded = smb.download_file(rel_path)
+                            seqco_path = downloaded
+                            break
+                        except (IOError, OSError):
+                            continue
+                except (ValueError, AttributeError):
+                    pass
 
         if not seqco_path.exists():
             raise FileNotFoundError(f"Company file not found: {seqco_path}")
