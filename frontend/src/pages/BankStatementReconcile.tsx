@@ -292,7 +292,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const urlBank = searchParams.get('bank');
 
 
-  const [selectedBank, setSelectedBank] = useState<string>(urlBank || '');
+  const [selectedBank, setSelectedBank] = useState<string>(urlBank || initialReconcileData?.bank_code || '');
   const [selectedEntries, setSelectedEntries] = useState<Set<string>>(new Set());
   const [statementNumber, setStatementNumber] = useState<string>('');
   const [statementDate, setStatementDate] = useState<string>(
@@ -690,8 +690,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       .then(data => {
         if (data.success && data.accounts) {
           setBankAccounts(data.accounts);
-          // Auto-select first bank if none selected
-          if (data.accounts.length > 0 && !selectedBank) {
+          // Auto-select first bank if none selected AND no initial data pending
+          if (data.accounts.length > 0 && !selectedBank && !initialReconcileData && !resumeStatement) {
             setSelectedBank(data.accounts[0].code);
           }
         }
