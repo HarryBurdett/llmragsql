@@ -1130,7 +1130,9 @@ async def login(request: LoginRequest):
         raise HTTPException(status_code=500, detail="Authentication system not initialized")
 
     # First, check if user exists in Opera and sync (Opera is king)
-    if sql_connector:
+    # Determine which sync path to use based on active Opera version
+    opera_version = config.get("opera", "version", fallback="sql_se") if config else "sql_se"
+    if sql_connector and opera_version != "opera3":
         try:
             opera_query = """
                 SELECT [user], username, manager, email_addr, prefcomp, state, cos
