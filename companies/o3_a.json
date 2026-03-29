@@ -1,0 +1,13 @@
+{
+  "id": "o3_a",
+  "name": "Emergency Lighting Products Ltd",
+  "opera_version": "3",
+  "opera3_company_code": "A",
+  "description": "A - Emergency Lighting Products Ltd",
+  "opera3_data_path": "DATA",
+  "settings": {
+    "currency": "GBP",
+    "currency_symbol": "\u00a3",
+    "date_format": "DD/MM/YYYY"
+  }
+}

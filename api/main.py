@@ -2843,7 +2843,7 @@ async def switch_company(request: Request, company_id: str):
     already exist, and records the company_id on the user's session so
     subsequent requests automatically use the correct resources.
     """
-    global current_company, config, vector_db, _default_company_id
+    global current_company, config, vector_db, _default_company_id, sql_connector
 
     # Load the company configuration
     company = load_company(company_id)
@@ -2856,6 +2856,78 @@ async def switch_company(request: Request, company_id: str):
         if current_user and not user_auth.user_has_company_access(current_user['id'], company_id):
             raise HTTPException(status_code=403, detail=f"You don't have access to company '{company.get('name', company_id)}'")
 
+    # ---- Opera 3: set data path, no SQL connector ----
+    opera_version = company.get("opera_version", "SE")
+    if opera_version in ("3", "Opera 3"):
+        smb = get_smb_manager()
+        if smb is None or not smb.is_connected():
+            raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available")
+
+        data_path_rel = company.get("opera3_data_path", "")
+        local_base = smb.get_local_base()
+        if data_path_rel:
+            opera3_data_path = str(Path(local_base) / data_path_rel)
+        else:
+            opera3_data_path = str(local_base)
+
+        # Update process-level defaults
+        _default_company_id = company_id
+        _company_data[company_id] = company
+
+        # Store Opera 3 data path in config (memory only)
+        if config:
+            if not config.has_section("opera"):
+                config.add_section("opera")
+            config["opera"]["opera3_base_path"] = opera3_data_path
+
+        # Null out SQL connector to prevent stale SE queries
+        sql_connector = None
+
+        # Save company to user's session
+        auth_header = request.headers.get('Authorization', '')
+        session_token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+        if session_token and user_auth:
+            user_auth.set_session_company(session_token, company_id)
+
+        # Switch per-company data directory
+        data_dir = get_company_data_dir(company_id)
+        migrate_root_databases(company_id)
+        logger.info(f"Per-company data directory: {data_dir}")
+
+        # Create / reuse per-company email storage
+        if company_id not in _company_email_storages:
+            email_db = get_company_db_path(company_id, "email_data.db")
+            _company_email_storages[company_id] = EmailStorage(str(email_db))
+            logger.info(f"Created email storage for company {company_id}")
+
+        # Set module-level globals
+        _ensure_company_context(company_id)
+
+        # Re-register email providers
+        if email_sync_manager:
+            email_sync_manager.providers.clear()
+            try:
+                await _initialize_email_providers()
+            except Exception as e:
+                logger.warning(f"Could not re-register email providers for {company_id}: {e}")
+
+        # Reinitialize VectorDB
+        try:
+            chroma_dir = str(get_company_chroma_dir(company_id))
+            vector_db = VectorDB(config, persist_dir=chroma_dir)
+        except Exception as e:
+            logger.warning(f"Could not reinitialize VectorDB on company switch: {e}")
+
+        _sync_active_system_config()
+
+        logger.info(f"Switched to Opera 3 company {company_id} ({company['name']}) at {opera3_data_path}")
+        return {
+            "success": True,
+            "message": f"Switched to {company['name']}",
+            "company": company
+        }
+
+    # ---- SE: existing SQL connector logic ----
     # Get the database name for this company
     database_name = company.get("database")
     if not database_name:

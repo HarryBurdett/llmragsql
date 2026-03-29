@@ -1,0 +1,13 @@
+{
+  "id": "o3_z",
+  "name": "Orion Vehicles Leasing",
+  "opera_version": "3",
+  "opera3_company_code": "Z",
+  "description": "Z - Orion Vehicles Leasing",
+  "opera3_data_path": "Data",
+  "settings": {
+    "currency": "GBP",
+    "currency_symbol": "\u00a3",
+    "date_format": "DD/MM/YYYY"
+  }
+}
