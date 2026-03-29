@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { useVoice } from '../context/VoiceContext';
@@ -1508,17 +1508,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   };
 
-  // Abort controller to cancel stale matching API calls (React StrictMode double-invokes effects)
-  const matchingAbortRef = useRef<AbortController | null>(null);
-
   // Run matching using unreconciled entries (builds statement transactions from cashbook)
   const runMatchingFromUnreconciled = async () => {
-    // Cancel any in-flight matching request
-    if (matchingAbortRef.current) {
-      matchingAbortRef.current.abort();
-    }
-    const abortController = new AbortController();
-    matchingAbortRef.current = abortController;
 
     // Advisory balance check - warn but don't block matching
     if (!checkBalanceAlignment()) {
@@ -1585,13 +1576,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ statement_transactions: statementTransactions }),
-          signal: abortController.signal
+          body: JSON.stringify({ statement_transactions: statementTransactions })
         }
       );
-
-      // If this request was aborted (superseded by a newer one), don't update state
-      if (abortController.signal.aborted) return;
 
       const data: MatchingResult = await response.json();
 
@@ -1620,10 +1607,6 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         setMatchingResult(data);
       }
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        // Request was cancelled by a newer matching call — ignore
-        return;
-      }
       console.error('Matching error:', error);
     }
   };
@@ -1690,14 +1673,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       // Run matching — but only update state if this effect hasn't been cleaned up
       const doMatch = async () => {
         try {
-          // Cancel any in-flight matching request
-          if (matchingAbortRef.current) {
-            matchingAbortRef.current.abort();
-          }
-          const abortController = new AbortController();
-          matchingAbortRef.current = abortController;
-
-          let statementTransactions = importedStatementData.statement_transactions.map(st => ({
+          const statementTransactions = importedStatementData.statement_transactions.map(st => ({
             line_number: st.line_number,
             date: st.date,
             amount: st.amount,
@@ -1714,11 +1690,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           const response = await authFetch(matchUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ statement_transactions: statementTransactions }),
-            signal: abortController.signal
+            body: JSON.stringify({ statement_transactions: statementTransactions })
           });
 
-          if (cancelled || abortController.signal.aborted) return;
+          if (cancelled) return;
 
           const data: MatchingResult = await response.json();
 
@@ -1743,7 +1718,6 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             });
           }
         } catch (error) {
-          if (error instanceof DOMException && error.name === 'AbortError') return;
           if (!cancelled) console.error('Auto-matching error:', error);
         }
       };
