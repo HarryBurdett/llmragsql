@@ -27,7 +27,7 @@ Three pieces:
 {
   "id": "o3_z",
   "name": "Orion Vehicles Leasing",
-  "opera_version": "Opera 3",
+  "opera_version": "3",
   "opera3_company_code": "Z",
   "description": "Z - Orion Vehicles Leasing",
   "opera3_data_path": "Data",
@@ -41,7 +41,7 @@ Three pieces:
 
 - `id` = `o3_{lowercase letter}` from `CO_CODE` (prefixed to avoid collision with SE company IDs which use `se_{letter}`)
 - `name` = from `CO_NAME`
-- `opera_version` = `"Opera 3"` (user-facing value — matches what the user expects to see)
+- `opera_version` = `"3"` (internal code value — matches existing codebase convention where SE uses `"SE"` and Opera 3 uses `"3"`. User-facing labels display `"Opera 3"`)
 - `opera3_company_code` = uppercase company code letter (e.g., `Z`) — used for COS/PREFCOMP mapping
 - `opera3_data_path` = relative SMB path extracted from `CO_SUBDIR` (e.g., `Data`, `DATA/P`)
 - No `database` field (SE-only)
@@ -99,7 +99,7 @@ Same data, different field names and access method.
 `POST /api/companies/switch/{company_id}` — the existing endpoint has a hard requirement for a `database` field and will reject Opera 3 companies with a 400 error. An Opera 3 branch is needed:
 
 1. Load company config from `companies/{company_id}.json`
-2. Check `opera_version` — if `"Opera 3"`, take the Opera 3 path:
+2. Check `opera_version` — if `"3"`, take the Opera 3 path:
    - Skip SQL connector creation entirely
    - Resolve the data path: SMB local base + `opera3_data_path` from config
    - Set this as the active data path for `Opera3Reader` and `Opera3FoxProImport`
