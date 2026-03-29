@@ -4495,7 +4495,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl w-full max-w-md mx-4">
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm-xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
           {/* Header */}
           <div className={`px-6 py-4 border-b ${isOutgoing ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
             <div className="flex justify-between items-center">
@@ -4677,7 +4677,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     className="fixed inset-0 z-40"
                     onClick={() => setModalDestBankDropdownOpen(false)}
                   />
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div className="absolute z-[60] w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto" style={{ bottom: '100%', marginBottom: '4px', marginTop: 0 }}>
                     {filteredDestBanks.map((b, idx) => (
                         <button
                           key={b.code}
@@ -8311,7 +8311,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                     <td colSpan={5} className="p-2 text-center">
                                       <span className="inline-flex items-center gap-1 px-2 py-1 bg-gray-200 text-gray-600 rounded text-xs">
                                         <CheckCircle className="h-3 w-3" />
-                                        Ignored (already in Opera)
+                                        Ignored
                                       </span>
                                     </td>
                                   </tr>
