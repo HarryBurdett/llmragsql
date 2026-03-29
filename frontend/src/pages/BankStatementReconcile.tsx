@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { useVoice } from '../context/VoiceContext';
@@ -762,7 +762,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         }
 
         if (data.bank_code && data.statement_transactions?.length > 0) {
-          // Don't clear matching result here — let the auto-match effect handle it
+          // Clear stale matching result before loading new import data
+          setMatchingResult(null);
+          sessionStorage.removeItem(storageKey('matchingResult', data.bank_code));
 
           setImportedStatementData({
             ...data,
@@ -1065,8 +1067,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       console.log(`loadStatementFromDb: response`, { success: data.success, txnCount: data.transactions?.length || 0, count: data.count });
 
       if (data.success && data.transactions?.length > 0) {
-        // Don't clear matching result here — if matching already ran,
-        // we want to keep it. Matching will re-run if needed via the useEffect.
+        // Clear stale matching result before loading new statement data
+        setMatchingResult(null);
+        sessionStorage.removeItem(storageKey('matchingResult', stmt.bank_code));
 
         // Set the statement data as if it came from PDF import
         setImportedStatementData({
@@ -1507,8 +1510,18 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   };
 
+  // Lock to prevent concurrent/duplicate matching calls (React StrictMode double-invokes effects)
+  const matchingLockRef = useRef(false);
+
   // Run matching using unreconciled entries (builds statement transactions from cashbook)
   const runMatchingFromUnreconciled = async () => {
+    // Prevent duplicate calls (React StrictMode, rapid re-renders, etc.)
+    if (matchingLockRef.current) {
+      console.log('Matching already in progress — skipping duplicate call');
+      return;
+    }
+    matchingLockRef.current = true;
+
     // Advisory balance check - warn but don't block matching
     if (!checkBalanceAlignment()) {
       console.warn('Balance mismatch detected - proceeding with matching anyway');
@@ -1605,6 +1618,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       }
     } catch (error) {
       console.error('Matching error:', error);
+    } finally {
+      // Release lock after a short delay to prevent StrictMode double-invoke
+      setTimeout(() => { matchingLockRef.current = false; }, 500);
     }
   };
 
@@ -1654,13 +1670,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   }, [importedStatementData]);
 
-  // Guard: track whether matching is in progress to prevent re-triggering
-  const matchingInProgressRef = useRef(false);
-
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
   // Always run matching if we have statement transactions — balance check is advisory, not blocking
   useEffect(() => {
-    if (matchingInProgressRef.current) return;
     if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries
         && !matchingResult && !pendingAutoMatch && !isRefreshing) {
       // Check balance alignment (advisory warning only)
@@ -1669,10 +1681,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         checkBalanceAlignment();
       }
       console.log('Auto-triggering matching with imported statement data');
-      matchingInProgressRef.current = true;
-      runMatchingFromUnreconciled().finally(() => {
-        matchingInProgressRef.current = false;
-      });
+      runMatchingFromUnreconciled();
     }
   }, [importedStatementData, entriesQuery.data, statusQuery.data]);
 
