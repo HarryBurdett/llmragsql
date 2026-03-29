@@ -696,6 +696,78 @@ class Opera3System:
         reader = Opera3Reader(str(self.system_path), encoding=self.encoding)
         return reader.read_table(table_name)
 
+    def read_sequser(self, username: str = None) -> List[Dict[str, Any]]:
+        """
+        Read user records from System/sequser.dbf.
+
+        Args:
+            username: If provided, return only the matching user (case-insensitive)
+
+        Returns:
+            List of user dicts with normalised keys:
+            {user, username, manager, prefcomp, cos, email_addr, state}
+        """
+        reader = Opera3Reader(str(self.system_path), encoding=self.encoding)
+        results = []
+        try:
+            for record in reader.iter_table("sequser"):
+                user_id = record.get("USER", "").strip()
+                if not user_id:
+                    continue
+                if username and user_id.upper() != username.upper():
+                    continue
+
+                results.append({
+                    "user": user_id,
+                    "username": record.get("USERNAME", "").strip(),
+                    "manager": bool(record.get("MANAGER", False)),
+                    "prefcomp": record.get("PREFCOMP", "").strip(),
+                    "cos": record.get("COS", "").strip(),
+                    "email_addr": record.get("EMAIL_ADDR", "").strip() if record.get("EMAIL_ADDR") else "",
+                    "state": 0,  # Opera 3 sequser has no state field — assume active
+                })
+
+                if username:
+                    break  # Found the user, no need to continue
+
+        except FileNotFoundError:
+            logger.warning("sequser.dbf not found in System folder")
+        except Exception as e:
+            logger.warning(f"Error reading sequser.dbf: {e}")
+
+        return results
+
+    def read_seqnavgrps(self, username: str) -> Dict[str, bool]:
+        """
+        Read NavGroup permissions for a user from System/seqnavgrps.dbf.
+
+        Opera 3 format: one row per navgroup the user has access to.
+        Field COMMANDID = navgroup name (e.g., 'NavGroupFinancials').
+        Presence of a row = enabled.
+
+        Args:
+            username: The Opera user ID to look up
+
+        Returns:
+            Dict mapping navgroup names to True (all present = enabled)
+        """
+        reader = Opera3Reader(str(self.system_path), encoding=self.encoding)
+        navgroups = {}
+        try:
+            for record in reader.iter_table("seqnavgrps"):
+                user_id = record.get("USER", "").strip()
+                if user_id.upper() != username.upper():
+                    continue
+                command_id = record.get("COMMANDID", "").strip()
+                if command_id:
+                    navgroups[command_id] = True
+        except FileNotFoundError:
+            logger.warning("seqnavgrps.dbf not found in System folder")
+        except Exception as e:
+            logger.warning(f"Error reading seqnavgrps.dbf: {e}")
+
+        return navgroups
+
 
 # Singleton instances
 _opera3_reader: Optional[Opera3Reader] = None
