@@ -2698,22 +2698,20 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const refunds = bankPreview.matched_refunds || [];
     const unmatched = bankPreview.unmatched || [];
     const allItems = [...receipts, ...payments, ...refunds, ...unmatched];
-    // In bankRecOnly mode (from Bank Statement Hub), unmatched items don't block
-    // reconciliation — they're statement transactions not yet in Opera that can
-    // be left for a later import or ignored during reconcile
-    const needsImport = allItems.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
-    // In bankRecOnly mode, unmatched items without assignment don't block reconciliation.
-    // But unmatched items WITH an assigned account (e.g., bank transfers) DO need importing.
-    const assignedUnmatched = unmatched.filter(t =>
-      !ignoredTransactions.has(t.row) && !t.is_duplicate && selectedForImport.has(t.row)
+    // Check if any unmatched items have an assigned action (bank transfer, nominal, etc.)
+    // These NEED importing even in bankRecOnly mode
+    const unmatchedWithAction = unmatched.filter(t =>
+      !ignoredTransactions.has(t.row) && !t.is_duplicate && t.action
     );
+    // If there are assigned unmatched items, they need importing — not "all in Opera"
+    if (unmatchedWithAction.length > 0) return false;
+
+    const needsImport = allItems.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
     const needsImportExcludingUnmatched = bankRecOnly
-      ? [...receipts, ...payments, ...refunds, ...assignedUnmatched].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
+      ? [...receipts, ...payments, ...refunds].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
       : needsImport;
     const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
-    // In bankRecOnly mode: always allow reconciliation when there are already-posted items.
-    // The user can import remaining items separately or handle them in Opera.
-    if (bankRecOnly && (bankPreview.already_posted?.length || 0) > 0) {
+    if (bankRecOnly && (bankPreview.already_posted?.length || 0) > 0 && unmatchedWithAction.length === 0) {
       return true;
     }
     return needsImportExcludingUnmatched.length === 0 && (duplicateCount > 0 || (bankPreview.already_posted?.length || 0) > 0);
@@ -2729,13 +2727,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const allItems = [...receipts, ...payments, ...refunds, ...unmatched];
     if (allItems.length === 0 && (bankPreview.already_posted?.length || 0) > 0) return true;
     if (allItems.length === 0) return false;
-    // In bankRecOnly mode, unmatched items without assignment don't block reconciliation.
-    // But assigned unmatched items (e.g., bank transfers) still need importing.
-    const assignedUnmatched2 = unmatched.filter(t =>
-      !ignoredTransactions.has(t.row) && !t.is_duplicate && selectedForImport.has(t.row)
+    // Check if any unmatched items have an assigned action — they still need importing
+    const unmatchedWithAction2 = unmatched.filter(t =>
+      !ignoredTransactions.has(t.row) && !t.is_duplicate && t.action
     );
+    if (unmatchedWithAction2.length > 0) return false;
+
     const itemsToCheck = bankRecOnly
-      ? [...receipts, ...payments, ...refunds, ...assignedUnmatched2]
+      ? [...receipts, ...payments, ...refunds]
       : allItems;
     const unhandled = itemsToCheck.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
     return unhandled.length === 0;
