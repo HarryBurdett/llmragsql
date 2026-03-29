@@ -249,8 +249,9 @@ class SMBFileManager:
         return local
 
     def _download_single_file(self, remote_path: str, local_path: Path):
-        """Download a single file from SMB."""
-        with smbclient.open_file(remote_path, mode='rb') as remote_f:
+        """Download a single file from SMB with shared read access."""
+        with smbclient.open_file(remote_path, mode='rb',
+                                  share_access='r') as remote_f:
             with open(str(local_path), 'wb') as local_f:
                 while True:
                     chunk = remote_f.read(65536)
