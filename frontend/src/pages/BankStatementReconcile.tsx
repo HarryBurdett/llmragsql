@@ -762,9 +762,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         }
 
         if (data.bank_code && data.statement_transactions?.length > 0) {
-          // Clear stale matching result before loading new import data
-          setMatchingResult(null);
-          sessionStorage.removeItem(storageKey('matchingResult', data.bank_code));
+          // Don't clear matching result here — let the auto-match effect handle it
 
           setImportedStatementData({
             ...data,
@@ -1067,9 +1065,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       console.log(`loadStatementFromDb: response`, { success: data.success, txnCount: data.transactions?.length || 0, count: data.count });
 
       if (data.success && data.transactions?.length > 0) {
-        // Clear stale matching result before loading new statement data
-        setMatchingResult(null);
-        sessionStorage.removeItem(storageKey('matchingResult', stmt.bank_code));
+        // Don't clear matching result here — if matching already ran,
+        // we want to keep it. Matching will re-run if needed via the useEffect.
 
         // Set the statement data as if it came from PDF import
         setImportedStatementData({
@@ -1657,18 +1654,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   }, [importedStatementData]);
 
-  // Guard: prevent re-running matching after it has already completed
-  const matchingDoneRef = useRef(false);
-
-  // Reset the guard when statement data changes (new statement loaded)
-  useEffect(() => {
-    matchingDoneRef.current = false;
-  }, [importedStatementData?.import_id, importedStatementData?.filename]);
+  // Guard: track whether matching is in progress to prevent re-triggering
+  const matchingInProgressRef = useRef(false);
 
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
   // Always run matching if we have statement transactions — balance check is advisory, not blocking
   useEffect(() => {
-    if (matchingDoneRef.current) return; // Already matched this statement
+    if (matchingInProgressRef.current) return;
     if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries
         && !matchingResult && !pendingAutoMatch && !isRefreshing) {
       // Check balance alignment (advisory warning only)
@@ -1677,8 +1669,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         checkBalanceAlignment();
       }
       console.log('Auto-triggering matching with imported statement data');
-      matchingDoneRef.current = true;
-      runMatchingFromUnreconciled();
+      matchingInProgressRef.current = true;
+      runMatchingFromUnreconciled().finally(() => {
+        matchingInProgressRef.current = false;
+      });
     }
   }, [importedStatementData, entriesQuery.data, statusQuery.data]);
 
