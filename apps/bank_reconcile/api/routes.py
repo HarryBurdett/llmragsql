@@ -6082,7 +6082,10 @@ async def scan_all_banks_for_statements(
                                     logger.info(f"Scan: disambiguated '{filename}' to {bcode} via account number in metadata")
                                     break
                             if not matched_bank_code:
-                                logger.info(f"Scan: ambiguous bank name match for '{filename}' — {name_matches}, skipping name match")
+                                # Use first candidate temporarily — PDF extraction will correct
+                                # via sort_code+account_number lookup (line ~6156)
+                                matched_bank_code = name_matches[0]
+                                logger.info(f"Scan: ambiguous bank name match for '{filename}' — {name_matches}, using {matched_bank_code} pending PDF extraction")
 
                     if not matched_bank_code and detected_bank_name:
                         matched_bank_code = detected_name_to_bank.get(detected_bank_name.lower())
