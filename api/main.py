@@ -1130,9 +1130,8 @@ async def login(request: LoginRequest):
         raise HTTPException(status_code=500, detail="Authentication system not initialized")
 
     # First, check if user exists in Opera and sync (Opera is king)
-    # Determine which sync path to use based on active Opera version
-    opera_version = config.get("opera", "version", fallback="sql_se") if config else "sql_se"
-    if sql_connector and opera_version != "opera3":
+    # Sync from Opera — try SE (SQL) first, then Opera 3 (SMB) as fallback
+    if sql_connector:
         try:
             opera_query = """
                 SELECT [user], username, manager, email_addr, prefcomp, state, cos
@@ -2843,7 +2842,7 @@ async def switch_company(request: Request, company_id: str):
     already exist, and records the company_id on the user's session so
     subsequent requests automatically use the correct resources.
     """
-    global current_company, config, vector_db, _default_company_id, sql_connector
+    global current_company, config, vector_db, _default_company_id
 
     # Load the company configuration
     company = load_company(company_id)
@@ -2880,8 +2879,8 @@ async def switch_company(request: Request, company_id: str):
                 config.add_section("opera")
             config["opera"]["opera3_base_path"] = opera3_data_path
 
-        # Null out SQL connector to prevent stale SE queries
-        sql_connector = None
+        # Don't null sql_connector — it's needed when user switches back to SE
+        # Opera 3 endpoints check for SMB manager, SE endpoints check for sql_connector
 
         # Save company to user's session
         auth_header = request.headers.get('Authorization', '')
