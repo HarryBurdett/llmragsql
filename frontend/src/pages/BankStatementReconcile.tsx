@@ -1619,8 +1619,8 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     } catch (error) {
       console.error('Matching error:', error);
     } finally {
-      // Release lock after a short delay to prevent StrictMode double-invoke
-      setTimeout(() => { matchingLockRef.current = false; }, 500);
+      // Release lock after delay to prevent StrictMode double-invoke and query-refetch re-triggers
+      setTimeout(() => { matchingLockRef.current = false; }, 3000);
     }
   };
 
