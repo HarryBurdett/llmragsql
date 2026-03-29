@@ -2702,8 +2702,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     // reconciliation — they're statement transactions not yet in Opera that can
     // be left for a later import or ignored during reconcile
     const needsImport = allItems.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
+    // In bankRecOnly mode, unmatched items without assignment don't block reconciliation.
+    // But unmatched items WITH an assigned account (e.g., bank transfers) DO need importing.
+    const assignedUnmatched = unmatched.filter(t =>
+      !ignoredTransactions.has(t.row) && !t.is_duplicate && selectedForImport.has(t.row)
+    );
     const needsImportExcludingUnmatched = bankRecOnly
-      ? [...receipts, ...payments, ...refunds].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
+      ? [...receipts, ...payments, ...refunds, ...assignedUnmatched].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
       : needsImport;
     const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
     // In bankRecOnly mode: always allow reconciliation when there are already-posted items.
