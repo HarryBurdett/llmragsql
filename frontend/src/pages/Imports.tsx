@@ -2729,9 +2729,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     const allItems = [...receipts, ...payments, ...refunds, ...unmatched];
     if (allItems.length === 0 && (bankPreview.already_posted?.length || 0) > 0) return true;
     if (allItems.length === 0) return false;
-    // In bankRecOnly mode, unmatched items don't block reconciliation
+    // In bankRecOnly mode, unmatched items without assignment don't block reconciliation.
+    // But assigned unmatched items (e.g., bank transfers) still need importing.
+    const assignedUnmatched2 = unmatched.filter(t =>
+      !ignoredTransactions.has(t.row) && !t.is_duplicate && selectedForImport.has(t.row)
+    );
     const itemsToCheck = bankRecOnly
-      ? [...receipts, ...payments, ...refunds]
+      ? [...receipts, ...payments, ...refunds, ...assignedUnmatched2]
       : allItems;
     const unhandled = itemsToCheck.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
     return unhandled.length === 0;
