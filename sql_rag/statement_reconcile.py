@@ -109,7 +109,13 @@ class StatementReconciler:
                 self.model_name = configured_model
 
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(self.model_name)
+        # Set generous max_output_tokens to prevent silent truncation on large statements
+        self.model = genai.GenerativeModel(
+            self.model_name,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=32768,
+            )
+        )
         logger.info(f"StatementReconciler initialized with Gemini model: {self.model_name}")
 
     def find_bank_code_from_statement(self, statement_info: StatementInfo) -> Optional[Dict[str, Any]]:
@@ -489,22 +495,28 @@ class StatementReconciler:
             info_data, _ = cached
             return info_data
 
-        prompt = """Look at this bank statement PDF and extract the statement details.
+        prompt = """Extract the statement details from this bank statement PDF.
 
-Look carefully for the opening balance. It may be labelled as:
-- "Balance brought forward" or "Opening balance" (traditional banks)
-- "Money in/out" summary showing start balance (Monzo, Starling)
-- The first line item showing a starting balance before any transactions
-- A summary section at the top showing the account balance at start of period
+Bank statements vary in layout — apply this logic:
 
-If you still cannot find it, look at the VERY FIRST transaction chronologically,
-take its running balance, and reverse the transaction to get the balance before it.
+1. ACCOUNT DETAILS: Find bank name, account number, and sort code wherever they appear (header, sidebar, footer, or any page).
+
+2. DATES: Find the statement date or period dates. May be labelled "Statement period", "From/To", or similar.
+
+3. OPENING BALANCE: Apply in order:
+   a) If labelled ("Balance brought forward", "Opening balance", "Previous balance") — use it
+   b) If there is a summary section showing starting balance — use it
+   c) If neither, find the first transaction's running balance and reverse it: opening = balance - money_in + money_out
+
+4. CLOSING BALANCE: Apply in order:
+   a) If labelled ("Balance carried forward", "Closing balance") — use it
+   b) Otherwise use the running balance on the very last transaction on the last page
 
 Return ONLY this JSON:
 {
     "bank_name": "Bank name",
     "account_number": "Account number",
-    "sort_code": "Sort code (e.g. 12-34-56)",
+    "sort_code": "Sort code",
     "statement_date": "YYYY-MM-DD",
     "period_start": "YYYY-MM-DD",
     "period_end": "YYYY-MM-DD",
@@ -512,7 +524,7 @@ Return ONLY this JSON:
     "closing_balance": 12345.67
 }
 
-IMPORTANT: Return actual values from this document, not examples. Return ONLY valid JSON."""
+IMPORTANT: Return actual values from this document, not examples. Amounts as numbers without currency symbols. Return ONLY valid JSON."""
 
         try:
             file_part = {"mime_type": "application/pdf", "data": pdf_bytes}
@@ -554,53 +566,75 @@ IMPORTANT: Return actual values from this document, not examples. Return ONLY va
             info_data, raw_transactions = cached
             logger.info(f"extract_transactions_from_pdf: info_only={info_data.get('_info_only', False)}, raw_txns={len(raw_transactions)}")
             # Skip info-only cache entries (from lightweight scan extraction)
-            if not info_data.get('_info_only'):
+            if info_data.get('_info_only'):
+                pass  # Re-extract with full transactions
+            elif len(raw_transactions) < 5 and len(pdf_bytes) > 50000:
+                # Suspiciously low count for a large PDF — likely a truncated extraction
+                logger.warning(f"Cache has only {len(raw_transactions)} transactions for {len(pdf_bytes)} byte PDF — invalidating and re-extracting")
+                cache.delete(pdf_hash)
+            else:
                 return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
 
         # Use Gemini to extract transactions
-        extraction_prompt = """Analyze this bank statement PDF and extract ALL transactions and statement details.
+        extraction_prompt = """You are extracting data from a bank statement PDF. Process ALL pages.
 
-CRITICAL INSTRUCTIONS:
-1. Extract the ACTUAL values from this specific PDF document
-2. Do NOT use example/placeholder values like "2024-01-01" or 1000.00
-3. Look carefully at the statement header area for account details and balances
+STEP 1 — IDENTIFY STATEMENT FORMAT:
+Scan the entire document first. Bank statements vary widely:
+- Some have a summary section with balances at the top
+- Some start directly with transactions
+- Some have account details in a header, others in a sidebar or footer
+- Some label opening/closing balances explicitly, others do not
 
-Return a JSON object with this structure:
+STEP 2 — EXTRACT ACCOUNT DETAILS:
+Find these wherever they appear in the document:
+- Bank name (logo, header, or watermark)
+- Account number and sort code
+- Statement date or period dates
+
+STEP 3 — EXTRACT EVERY TRANSACTION:
+Go through every page systematically and extract every transaction row.
+Each transaction has: date, description, amount (in or out), and possibly a running balance.
+Do NOT stop after the first page. Continue until no more transactions remain.
+
+STEP 4 — DETERMINE OPENING AND CLOSING BALANCES:
+Apply this logic in order:
+a) If labelled (e.g. "Balance brought forward", "Opening balance") — use the labelled value
+b) If the first transaction has a running balance — reverse it: opening = balance - money_in + money_out
+c) For closing: if labelled ("Balance carried forward", "Closing balance") — use it. Otherwise use the running balance on the very last transaction.
+
+Return this JSON structure:
 {
     "statement_info": {
-        "bank_name": "The bank name shown on the statement (e.g., NatWest, Barclays, HSBC, Lloyds)",
-        "account_number": "The actual account number from the statement",
-        "sort_code": "The actual sort code (e.g., 12-34-56)",
-        "statement_date": "The date of the statement in YYYY-MM-DD format",
-        "period_start": "The period FROM date in YYYY-MM-DD format (often shown as 'Statement period: DD Mon YYYY to DD Mon YYYY')",
-        "period_end": "The period TO date in YYYY-MM-DD format",
-        "opening_balance": "The OPENING/BROUGHT FORWARD balance as a decimal number (e.g., 12345.67)",
-        "closing_balance": "The CLOSING/CARRIED FORWARD balance as a decimal number"
+        "bank_name": "Bank name",
+        "account_number": "Account number",
+        "sort_code": "Sort code",
+        "statement_date": "YYYY-MM-DD",
+        "period_start": "YYYY-MM-DD",
+        "period_end": "YYYY-MM-DD",
+        "opening_balance": 12345.67,
+        "closing_balance": 12345.67
     },
     "transactions": [
         {
             "date": "YYYY-MM-DD",
-            "description": "Full description text from statement",
-            "money_out": null or amount,
-            "money_in": null or amount,
-            "balance": null or running balance,
-            "type": "DD|STO|Giro|Card|Transfer|Other",
-            "reference": "Any reference number if present"
+            "description": "Full description text",
+            "money_out": null,
+            "money_in": null,
+            "balance": null,
+            "type": "DD|STO|Giro|Card|FP|BGC|Transfer|BACS|CHQ|Other",
+            "reference": null
         }
     ]
 }
 
-IMPORTANT EXTRACTION RULES:
-- opening_balance: Look for "Balance brought forward", "Opening balance", "Previous balance", "Money in/out" summary start balance, or the balance at the very start of the period. For Monzo/fintech: check the summary section showing starting balance
-- closing_balance: Look for "Balance carried forward", "Closing balance", end balance, or the balance at the very end of the period
-- Extract EVERY transaction — do not skip any. Include ALL pages of the statement
-- For UK bank statements, balances are typically in GBP (£) - extract just the number
-- period_start and period_end: Usually shown near the top as "Statement period" or similar
-- Extract EVERY transaction row, including DD (Direct Debit), STO (Standing Order), Giro credits, card payments
-- Use the year from the statement period for transaction dates if only day/month shown
-- money_out = payments/debits (money leaving the account)
-- money_in = receipts/credits (money entering the account)
-- Return ONLY valid JSON, no other text or explanation"""
+RULES:
+- Extract ACTUAL values from this document — never use placeholder values
+- money_out = payments/debits leaving the account, money_in = receipts/credits entering
+- Amounts as numbers without currency symbols (e.g. 1234.56 not £1,234.56)
+- Use the year from the statement period if transaction dates show only day/month
+- Include running balance for each transaction if shown on the statement
+- Return ONLY valid JSON — no other text
+- CRITICAL: Extract EVERY transaction from EVERY page. Do not truncate or summarise."""
 
         # Create the file part for Gemini
         file_part = {
@@ -608,34 +642,70 @@ IMPORTANT EXTRACTION RULES:
             "data": pdf_bytes
         }
 
-        response = self.model.generate_content([file_part, extraction_prompt])
+        # Attempt extraction with truncation detection and retry
+        max_attempts = 2
+        data = None
+        for attempt in range(max_attempts):
+            response = self.model.generate_content([file_part, extraction_prompt])
 
-        # Parse the response
-        response_text = response.text
-
-        # Try to extract JSON from the response
-        json_match = re.search(r'\{[\s\S]*\}', response_text)
-        if not json_match:
-            raise ValueError(f"Could not extract JSON from Gemini response: {response_text[:500]}")
-
-        json_text = json_match.group()
-
-        # Try to parse JSON, with fallback repair attempts
-        try:
-            data = json.loads(json_text)
-        except json.JSONDecodeError as e:
-            # Attempt to repair common JSON issues
-            logger.warning(f"JSON parse error: {e}. Attempting repair...")
-            repaired = self._repair_json(json_text)
+            # Check for truncation via finish_reason
+            finish_reason = None
             try:
-                data = json.loads(repaired)
-                logger.info("JSON repair successful")
-            except json.JSONDecodeError as e2:
-                raise ValueError(f"Could not parse JSON even after repair: {e2}. Original error: {e}")
+                if response.candidates:
+                    finish_reason = response.candidates[0].finish_reason
+                    # finish_reason 1 = STOP (normal), 2 = MAX_TOKENS (truncated)
+                    if finish_reason == 2:
+                        logger.warning(f"Gemini response truncated (MAX_TOKENS) on attempt {attempt+1}")
+            except Exception:
+                pass
+
+            # Parse the response
+            response_text = response.text
+            logger.info(f"Gemini extraction response: {len(response_text)} chars, finish_reason={finish_reason}")
+
+            # Try to extract JSON from the response
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if not json_match:
+                raise ValueError(f"Could not extract JSON from Gemini response: {response_text[:500]}")
+
+            json_text = json_match.group()
+
+            # Try to parse JSON, with fallback repair attempts
+            try:
+                data = json.loads(json_text)
+            except json.JSONDecodeError as e:
+                # Attempt to repair common JSON issues
+                logger.warning(f"JSON parse error: {e}. Attempting repair...")
+                repaired = self._repair_json(json_text)
+                try:
+                    data = json.loads(repaired)
+                    logger.info("JSON repair successful")
+                except json.JSONDecodeError as e2:
+                    raise ValueError(f"Could not parse JSON even after repair: {e2}. Original error: {e}")
+
+            # Check if we got a suspiciously low number of transactions (likely truncated)
+            raw_txns = data.get('transactions', [])
+            if finish_reason == 2 or (len(raw_txns) < 5 and attempt < max_attempts - 1):
+                logger.warning(f"Only {len(raw_txns)} transactions extracted (attempt {attempt+1}) — retrying with explicit instruction")
+                extraction_prompt = f"""The previous extraction attempt only returned {len(raw_txns)} transactions.
+This bank statement has MANY MORE transactions than that across multiple pages.
+
+CRITICAL: You MUST extract EVERY SINGLE transaction from ALL pages of this PDF.
+Go through page by page systematically. Do not stop after the first page.
+A typical business bank statement has 20-100+ transactions.
+
+{extraction_prompt}"""
+                continue
+
+            break
+
+        if data is None:
+            raise ValueError("Failed to extract transactions from PDF after all attempts")
 
         # Parse the raw JSON data
         info_data = data.get('statement_info', {})
         raw_transactions = data.get('transactions', [])
+        logger.info(f"Extracted {len(raw_transactions)} raw transactions from PDF")
 
         # Cache the raw extraction result for future use
         cache.put(pdf_hash, info_data, raw_transactions,

@@ -37,6 +37,12 @@ from datetime import datetime, date, timedelta
 from decimal import Decimal
 from contextlib import contextmanager
 
+try:
+    from sql_rag.smb_access import get_smb_manager
+except ImportError:
+    def get_smb_manager():
+        return None
+
 logger = logging.getLogger(__name__)
 
 # Locking configuration - matches SQL SE approach
@@ -231,9 +237,15 @@ class Opera3FoxProImport:
         self._lock_files: Dict[str, int] = {}  # file descriptors for locks
         self._nacnt_type_cache: Dict[str, tuple] = {}  # Cache for nacnt type/subtype lookups
         self._financial_year_cache = None  # Cache for nparm financial year
+        self._modified_tables: List[str] = []  # table names modified during this session
 
         if not self.data_path.exists():
-            raise FileNotFoundError(f"Opera 3 data path not found: {data_path}")
+            smb = get_smb_manager()
+            if smb is not None:
+                self.data_path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"SMB mode: created local directory {data_path}")
+            else:
+                raise FileNotFoundError(f"Opera 3 data path not found: {data_path}")
 
     @contextmanager
     def _acquire_file_lock(self, filepath: Path, exclusive: bool = True):
@@ -343,6 +355,13 @@ class Opera3FoxProImport:
             if f.stem.lower() == table_name.lower():
                 return f
 
+        # SMB fallback
+        smb = get_smb_manager()
+        if smb is not None:
+            local_path = smb.resolve_dbf_path(self.data_path, table_name)
+            if local_path is not None:
+                return local_path
+
         raise FileNotFoundError(f"Table not found: {table_name}")
 
     def _open_table(self, table_name: str) -> Any:
@@ -354,16 +373,54 @@ class Opera3FoxProImport:
         table = dbf.Table(str(dbf_path), codepage=self.encoding)
         table.open(dbf.READ_WRITE)
         self._table_cache[table_name] = table
+
+        # Track for SMB upload on close
+        if table_name not in self._modified_tables:
+            self._modified_tables.append(table_name)
+
         return table
 
     def _close_all_tables(self):
-        """Close all open tables"""
+        """Close all open tables and upload modified files to SMB if active."""
         for table in self._table_cache.values():
             try:
                 table.close()
             except Exception:
                 pass
+
+        # Upload modified tables back to SMB
+        # Note: fcntl.flock() locking is local-only — it prevents concurrent local
+        # Python processes from colliding but does NOT lock on the SMB server.
+        smb = get_smb_manager()
+        if smb is not None and self._modified_tables:
+            try:
+                # Compute relative dir once (same for all tables)
+                try:
+                    rel_dir = self.data_path.relative_to(smb.get_local_base())
+                except (ValueError, AttributeError):
+                    rel_dir = None  # Not an SMB-managed path
+
+                rel_paths = []
+                if rel_dir is not None:
+                    for table_name in self._modified_tables:
+                        for name_variant in [f"{table_name.lower()}.dbf", f"{table_name.upper()}.DBF"]:
+                            local_file = self.data_path / name_variant
+                            if local_file.exists():
+                                rel_path = str(rel_dir / name_variant).replace("\\", "/")
+                                rel_paths.append(rel_path)
+                                break
+                if rel_paths:
+                    smb.upload_modified_files(rel_paths)
+                    logger.info(f"Uploaded {len(rel_paths)} modified tables to SMB")
+            except Exception as e:
+                logger.error(f"Failed to upload modified tables to SMB: {e}")
+                raise IOError(
+                    f"Transaction saved locally but failed to upload to server: {e}. "
+                    f"Please retry the operation."
+                ) from e
+
         self._table_cache.clear()
+        self._modified_tables.clear()
 
     def _get_next_entry_number(self, cb_type: str = 'P5') -> str:
         """

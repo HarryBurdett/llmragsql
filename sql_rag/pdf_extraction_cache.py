@@ -127,6 +127,28 @@ class PDFExtractionCache:
         except Exception as e:
             logger.warning(f"Cache store error: {e}")
 
+    def delete(self, pdf_hash: str):
+        """Delete a specific cache entry by PDF hash."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM extraction_cache WHERE pdf_hash = ?", (pdf_hash,))
+            logger.info(f"Cache DELETE for pdf_hash={pdf_hash[:12]}...")
+
+    def invalidate_low_count(self, min_transactions: int = 5) -> int:
+        """
+        Remove cache entries with suspiciously low transaction counts.
+        Returns the number of entries removed.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            # Don't remove info-only entries (transaction_count = 0)
+            cursor = conn.execute(
+                "DELETE FROM extraction_cache WHERE transaction_count > 0 AND transaction_count < ?",
+                (min_transactions,)
+            )
+            removed = cursor.rowcount
+            if removed:
+                logger.info(f"Invalidated {removed} cache entries with < {min_transactions} transactions")
+            return removed
+
     def clear(self):
         """Clear all cached entries."""
         with sqlite3.connect(self.db_path) as conn:
