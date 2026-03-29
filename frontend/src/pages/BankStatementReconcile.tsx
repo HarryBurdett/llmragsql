@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { useVoice } from '../context/VoiceContext';
@@ -1657,9 +1657,18 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   }, [importedStatementData]);
 
+  // Guard: prevent re-running matching after it has already completed
+  const matchingDoneRef = useRef(false);
+
+  // Reset the guard when statement data changes (new statement loaded)
+  useEffect(() => {
+    matchingDoneRef.current = false;
+  }, [importedStatementData?.import_id, importedStatementData?.filename]);
+
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
   // Always run matching if we have statement transactions — balance check is advisory, not blocking
   useEffect(() => {
+    if (matchingDoneRef.current) return; // Already matched this statement
     if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries
         && !matchingResult && !pendingAutoMatch && !isRefreshing) {
       // Check balance alignment (advisory warning only)
@@ -1668,6 +1677,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         checkBalanceAlignment();
       }
       console.log('Auto-triggering matching with imported statement data');
+      matchingDoneRef.current = true;
       runMatchingFromUnreconciled();
     }
   }, [importedStatementData, entriesQuery.data, statusQuery.data]);
