@@ -676,6 +676,13 @@ async def lifespan(app: FastAPI):
         _ensure_company_context(_default_company_id)
         logger.info(f"Initial company context set to {_default_company_id}")
 
+    # Clean up stale SMB temp directories
+    try:
+        from sql_rag.smb_access import cleanup_stale_temp_dirs
+        cleanup_stale_temp_dirs()
+    except ImportError:
+        pass
+
     # Auto-connect SMB for Opera 3 if configured
     if config and config.has_section("opera"):
         if (config.get("opera", "version", fallback="") == "opera3"

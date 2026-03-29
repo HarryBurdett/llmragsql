@@ -468,3 +468,18 @@ def set_smb_manager(manager: Optional[SMBFileManager]):
         except Exception:
             pass
     _smb_manager = manager
+
+
+def cleanup_stale_temp_dirs(max_age_hours: int = 24):
+    """Remove stale opera3_smb temp directories older than max_age_hours."""
+    import glob
+    temp_dir = tempfile.gettempdir()
+    cutoff = time.time() - (max_age_hours * 3600)
+
+    for path in glob.glob(os.path.join(temp_dir, "opera3_smb_*")):
+        try:
+            if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                shutil.rmtree(path)
+                logger.info(f"Cleaned stale temp dir: {path}")
+        except Exception as e:
+            logger.debug(f"Could not clean {path}: {e}")
