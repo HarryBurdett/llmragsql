@@ -6026,13 +6026,16 @@ async def scan_all_banks_for_statements(
                             logger.info(f"Cached fast-path: matched '{filename}' to {matched_bank_code} via detected bank name '{detected_bank_name}'")
 
                     # Also try description matching for cached statements without sort/acct
+                    # Only match if unambiguous (single bank matches the name)
                     if not matched_bank_code and detected_bank_name:
                         detected_lower = detected_bank_name.lower()
-                        for bcode, binfo in all_banks.items():
-                            desc_lower = (binfo.get('description') or '').lower()
-                            if detected_lower in desc_lower or desc_lower in detected_lower:
-                                matched_bank_code = bcode
-                                break
+                        name_matches = [
+                            bcode for bcode, binfo in all_banks.items()
+                            if detected_lower in (binfo.get('description') or '').lower()
+                            or (binfo.get('description') or '').lower() in detected_lower
+                        ]
+                        if len(name_matches) == 1:
+                            matched_bank_code = name_matches[0]
 
                     # Don't pre-filter by balance — let the chain sort handle ordering
                     if matched_bank_code:
@@ -6045,26 +6048,44 @@ async def scan_all_banks_for_statements(
                     stmt_entry['status'] = 'ready'
 
                     # Try metadata-based bank matching BEFORE downloading PDF
-                    if detected_bank_name:
+                    # PRIORITY 1: Account number in filename (most specific)
+                    import re as _re
+                    acct_matches = _re.findall(r'\b(\d{8,})\b', filename)
+                    for acct_num in acct_matches:
+                        for bcode, binfo in all_banks.items():
+                            opera_acct = (binfo.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                            if opera_acct and acct_num == opera_acct:
+                                matched_bank_code = bcode
+                                logger.info(f"Scan: matched '{filename}' to {bcode} via account number {acct_num} in filename")
+                                break
+                        if matched_bank_code:
+                            break
+
+                    # PRIORITY 2: Detected bank name (but only if unambiguous)
+                    if not matched_bank_code and detected_bank_name:
                         detected_lower = detected_bank_name.lower()
+                        name_matches = []
                         for bcode, binfo in all_banks.items():
                             desc_lower = (binfo.get('description') or '').lower()
                             if detected_lower in desc_lower or desc_lower in detected_lower:
-                                matched_bank_code = bcode
-                                break
+                                name_matches.append(bcode)
+                        if len(name_matches) == 1:
+                            matched_bank_code = name_matches[0]
+                        elif len(name_matches) > 1:
+                            # Ambiguous — multiple banks match the name (e.g., two NatWest accounts)
+                            # Try account number from filename/subject to disambiguate
+                            all_sources = f"{filename} {email_subject or ''}"
+                            for bcode in name_matches:
+                                opera_acct = (all_banks[bcode].get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                                if opera_acct and opera_acct in all_sources.replace('-', '').replace(' ', ''):
+                                    matched_bank_code = bcode
+                                    logger.info(f"Scan: disambiguated '{filename}' to {bcode} via account number in metadata")
+                                    break
+                            if not matched_bank_code:
+                                logger.info(f"Scan: ambiguous bank name match for '{filename}' — {name_matches}, skipping name match")
+
                     if not matched_bank_code and detected_bank_name:
                         matched_bank_code = detected_name_to_bank.get(detected_bank_name.lower())
-                    if not matched_bank_code:
-                        import re as _re
-                        acct_matches = _re.findall(r'\b(\d{8})\b', filename)
-                        for acct_num in acct_matches:
-                            for bcode, binfo in all_banks.items():
-                                opera_acct = (binfo.get('account_number') or '').replace('-', '').replace(' ', '').strip()
-                                if opera_acct and acct_num == opera_acct:
-                                    matched_bank_code = bcode
-                                    break
-                            if matched_bank_code:
-                                break
                     if not matched_bank_code:
                         match_sources = [(email_from or '').lower(), filename.lower(), (email_subject or '').lower()]
                         for bcode, binfo in all_banks.items():
