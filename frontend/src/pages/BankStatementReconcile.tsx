@@ -1657,11 +1657,19 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
   }, [importedStatementData]);
 
-  // Auto-trigger matching when imported statement data is available (from Imports page redirect)
-  // Uses cleanup function to prevent stale calls from updating state
+  // Track whether auto-matching has already run for this statement
+  const [autoMatchDone, setAutoMatchDone] = useState(false);
+
+  // Reset when new statement loads
+  useEffect(() => {
+    setAutoMatchDone(false);
+  }, [importedStatementData?.import_id, importedStatementData?.filename]);
+
+  // Auto-trigger matching ONCE when imported statement data is available
   useEffect(() => {
     let cancelled = false;
 
+    if (autoMatchDone) return; // Already ran for this statement
     if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries
         && !matchingResult && !pendingAutoMatch && !isRefreshing) {
       // Check balance alignment (advisory warning only)
@@ -1706,6 +1714,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             if (cancelled) return;
 
             setMatchingResult(data);
+            setAutoMatchDone(true);
             setSelectedAutoMatches(prev => {
               const newSet = new Set(prev);
               (data.auto_matched || []).forEach((match: any) => newSet.add(match.entry_number));
