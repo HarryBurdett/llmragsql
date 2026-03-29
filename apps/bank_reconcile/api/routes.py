@@ -6589,6 +6589,47 @@ async def scan_all_banks_for_statements(
                     # No matched bank — skip silently
                     logger.info(f"Skipping local PDF {filename}: no matching Opera bank in current company")
 
+        # --- Step 4a: Cross-check statement bank assignments by sort code/account number ---
+        # Statements may be in wrong bank folder from previous scans (e.g. two NatWest banks)
+        # If a statement has sort_code+account_number that maps to a different bank, move it
+        if base_path and base_path.exists():
+            for code, bank in list(all_banks.items()):
+                corrected = []
+                for stmt in bank.get('statements', []):
+                    stmt_sort = (stmt.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
+                    stmt_acct = (stmt.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                    if stmt_sort and stmt_acct:
+                        correct_code = bank_lookup.get((stmt_sort, stmt_acct))
+                        if correct_code and correct_code != code:
+                            # Statement is in the wrong bank — move it
+                            logger.info(f"Cross-check: moving {stmt.get('filename')} from {code} to {correct_code} (acct {stmt_acct})")
+                            # Move file if it's a local PDF
+                            if stmt.get('full_path'):
+                                try:
+                                    src = Path(stmt['full_path'])
+                                    if src.exists():
+                                        dest_info = all_banks[correct_code]
+                                        dest_subfolder = _get_bank_subfolder_name(correct_code, dest_info.get('description', ''))
+                                        dest_folder = base_path / dest_subfolder
+                                        dest_folder.mkdir(parents=True, exist_ok=True)
+                                        dest = dest_folder / src.name
+                                        if not dest.exists():
+                                            import shutil
+                                            shutil.move(str(src), str(dest))
+                                            stmt['full_path'] = str(dest)
+                                            stmt['folder'] = dest_subfolder
+                                            logger.info(f"Moved {src.name} to {dest_folder}")
+                                except Exception as mv_err:
+                                    logger.warning(f"Could not move file: {mv_err}")
+                            # Reassign to correct bank
+                            stmt['matched_bank_code'] = correct_code
+                            stmt['matched_bank_description'] = all_banks[correct_code]['description']
+                            all_banks[correct_code]['statements'].append(stmt)
+                            corrected.append(stmt)
+                # Remove corrected statements from wrong bank
+                for stmt in corrected:
+                    bank['statements'].remove(stmt)
+
         # --- Step 4b: Correct balances using reconciled balance and chain validation ---
         for code, bank in all_banks.items():
             rec_bal = bank.get('reconciled_balance')
