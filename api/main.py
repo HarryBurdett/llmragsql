@@ -61,6 +61,13 @@ from sql_rag.company_data import (
     get_current_db_path
 )
 
+# SMB access for Opera 3 FoxPro
+try:
+    from sql_rag.smb_access import SMBFileManager, get_smb_manager, set_smb_manager
+    SMB_AVAILABLE = True
+except ImportError:
+    SMB_AVAILABLE = False
+
 # Opera integration rules API
 from api.opera_rules_api import router as opera_rules_router
 
@@ -669,6 +676,26 @@ async def lifespan(app: FastAPI):
         _ensure_company_context(_default_company_id)
         logger.info(f"Initial company context set to {_default_company_id}")
 
+    # Auto-connect SMB for Opera 3 if configured
+    if config and config.has_section("opera"):
+        if (config.get("opera", "version", fallback="") == "opera3"
+            and config.get("opera", "opera3_server_path", fallback="")
+            and config.get("opera", "opera3_share_user", fallback="")
+            and config.get("opera", "opera3_share_password", fallback="")):
+            try:
+                msg = _connect_opera3_smb(
+                    config.get("opera", "opera3_server_path"),
+                    config.get("opera", "opera3_share_user"),
+                    config.get("opera", "opera3_share_password")
+                )
+                logger.info(f"Startup SMB: {msg}")
+                # Set base_path in memory only (temp dir is ephemeral)
+                smb = get_smb_manager()
+                if smb and smb.get_local_base():
+                    config["opera"]["opera3_base_path"] = str(smb.get_local_base())
+            except Exception as e:
+                logger.warning(f"Startup SMB connection failed: {e}")
+
     yield
 
     # Shutdown
@@ -869,54 +896,35 @@ class DatabaseConfig(BaseModel):
     ssl_key: Optional[str] = None
     port: Optional[int] = None  # Default 1433 for MSSQL, 5432 for PostgreSQL, 3306 for MySQL
 
-def _mount_opera3_share(server_path: str, username: str, password: str) -> str:
-    """Mount an SMB share for Opera 3 FoxPro access. Returns the local mount path or error."""
-    import subprocess, platform, re, urllib.parse
+def _connect_opera3_smb(server_path: str, username: str, password: str) -> str:
+    """
+    Connect to an Opera 3 SMB share using smbprotocol.
+    Creates an SMBFileManager singleton and returns the local temp base path.
 
-    # Parse UNC path: \\server\share\subfolder → server, share, subfolder
-    clean = server_path.replace('\\', '/')
-    parts = [p for p in clean.split('/') if p]
-    if len(parts) < 2:
-        return f"Invalid server path: {server_path}"
-    server = parts[0]
-    share = parts[1]
-    subfolder = '/'.join(parts[2:]) if len(parts) > 2 else ''
+    Returns:
+        Status message with local path on success, or error message
+    """
+    if not SMB_AVAILABLE:
+        return "smbprotocol not installed. Install with: pip install smbprotocol"
 
-    mount_point = f"/tmp/opera3_{share.replace(' ', '_')}"
+    try:
+        # Disconnect existing manager if any
+        existing = get_smb_manager()
+        if existing is not None:
+            set_smb_manager(None)
 
-    # Check if already mounted
-    if os.path.exists(mount_point) and os.listdir(mount_point):
-        data_path = f"{mount_point}/{subfolder}" if subfolder else mount_point
-        if os.path.isdir(data_path):
-            return f"Already mounted at {data_path}"
+        # Create new manager from UNC path
+        manager = SMBFileManager.from_unc_path(server_path, username, password)
+        manager.connect()
+        set_smb_manager(manager)
 
-    os.makedirs(mount_point, exist_ok=True)
+        local_base = manager.get_local_base()
+        logger.info(f"SMB connected, local cache: {local_base}")
+        return f"Connected via SMB, local cache: {local_base}"
 
-    if platform.system() == 'Darwin':
-        # macOS: mount_smbfs
-        encoded_user = urllib.parse.quote(username, safe='')
-        encoded_pass = urllib.parse.quote(password, safe='')
-        encoded_share = urllib.parse.quote(share, safe='')
-        smb_url = f"//{encoded_user}:{encoded_pass}@{server}/{encoded_share}"
-        result = subprocess.run(
-            ['mount_smbfs', smb_url, mount_point],
-            capture_output=True, text=True, timeout=15
-        )
-        if result.returncode != 0:
-            return f"Mount failed: {result.stderr.strip()}"
-    else:
-        # Linux: mount -t cifs
-        result = subprocess.run(
-            ['mount', '-t', 'cifs', f'//{server}/{share}', mount_point,
-             '-o', f'username={username},password={password},ro'],
-            capture_output=True, text=True, timeout=15
-        )
-        if result.returncode != 0:
-            return f"Mount failed: {result.stderr.strip()}"
-
-    data_path = f"{mount_point}/{subfolder}" if subfolder else mount_point
-    logger.info(f"Mounted Opera 3 share at {data_path}")
-    return f"Mounted at {data_path}"
+    except Exception as e:
+        logger.error(f"SMB connection failed: {e}")
+        return f"SMB connection failed: {e}"
 
 
 class OperaConfig(BaseModel):
@@ -2122,25 +2130,30 @@ async def update_opera_config(opera_config: OperaConfig):
 
     save_config(config)
 
-    # Auto-mount SMB share if Opera 3 with server path and credentials
-    mount_message = ""
+    # Auto-connect SMB if Opera 3 with server path and credentials
+    smb_message = ""
     if (opera_config.version == "opera3"
         and opera_config.opera3_server_path
         and opera_config.opera3_share_user
         and opera_config.opera3_share_password):
         try:
-            mount_message = _mount_opera3_share(
+            smb_message = _connect_opera3_smb(
                 opera_config.opera3_server_path,
                 opera_config.opera3_share_user,
                 opera_config.opera3_share_password
             )
+            # Set opera3_base_path in memory only (not persisted to disk)
+            # — the temp dir is ephemeral and will be recreated on each startup
+            smb = get_smb_manager()
+            if smb is not None and smb.get_local_base():
+                config["opera"]["opera3_base_path"] = str(smb.get_local_base())
         except Exception as e:
-            mount_message = f"Share mount failed: {e}"
+            smb_message = f"SMB connection failed: {e}"
 
     # Sync the active system profile with the updated config
     _sync_active_system_config()
 
-    return {"success": True, "message": f"Opera configuration updated. {mount_message}".strip()}
+    return {"success": True, "message": f"Opera configuration updated. {smb_message}".strip()}
 
 @app.get("/api/config/opera/companies")
 async def get_opera3_companies():
@@ -2188,12 +2201,31 @@ async def test_opera_connection(opera_config: OperaConfig):
             return {"success": False, "error": "SQL connector not initialized"}
     else:
         # Test Opera 3 connection
-        if not opera_config.opera3_base_path:
-            return {"success": False, "error": "Opera 3 base path not provided"}
+        # Try SMB connection first if credentials provided
+        if (opera_config.opera3_server_path
+            and opera_config.opera3_share_user
+            and opera_config.opera3_share_password):
+            try:
+                smb_msg = _connect_opera3_smb(
+                    opera_config.opera3_server_path,
+                    opera_config.opera3_share_user,
+                    opera_config.opera3_share_password
+                )
+                smb = get_smb_manager()
+                if smb is not None and smb.is_connected():
+                    test_base_path = str(smb.get_local_base())
+                else:
+                    return {"success": False, "error": smb_msg}
+            except Exception as e:
+                return {"success": False, "error": f"SMB connection failed: {e}"}
+        elif opera_config.opera3_base_path:
+            test_base_path = opera_config.opera3_base_path
+        else:
+            return {"success": False, "error": "Opera 3 base path or server path not provided"}
 
         try:
             from sql_rag.opera3_foxpro import Opera3System, Opera3Reader
-            system = Opera3System(opera_config.opera3_base_path)
+            system = Opera3System(test_base_path)
 
             # Test getting companies
             companies = system.get_companies()
