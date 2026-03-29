@@ -762,9 +762,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         }
 
         if (data.bank_code && data.statement_transactions?.length > 0) {
-          // Clear stale matching result before loading new import data
-          setMatchingResult(null);
-          sessionStorage.removeItem(storageKey('matchingResult', data.bank_code));
+          // Don't clear matchingResult here — the auto-match effect will
+          // only run when matchingResult is null, so existing results are preserved.
+          // Matching re-runs automatically when importedStatementData changes.
 
           setImportedStatementData({
             ...data,
@@ -1067,9 +1067,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       console.log(`loadStatementFromDb: response`, { success: data.success, txnCount: data.transactions?.length || 0, count: data.count });
 
       if (data.success && data.transactions?.length > 0) {
-        // Clear stale matching result before loading new statement data
-        setMatchingResult(null);
-        sessionStorage.removeItem(storageKey('matchingResult', stmt.bank_code));
+        // Don't clear matchingResult here — preserved until new matching runs.
 
         // Set the statement data as if it came from PDF import
         setImportedStatementData({
@@ -1677,8 +1675,10 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   }, [importedStatementData]);
 
   // Auto-trigger matching when imported statement data is available (from Imports page redirect)
-  // Always run matching if we have statement transactions — balance check is advisory, not blocking
+  // Uses cleanup function to prevent stale calls from updating state
   useEffect(() => {
+    let cancelled = false;
+
     if (importedStatementData?.statement_transactions?.length && entriesQuery.data?.entries
         && !matchingResult && !pendingAutoMatch && !isRefreshing) {
       // Check balance alignment (advisory warning only)
@@ -1686,10 +1686,73 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       if (stmtInfo?.opening_balance != null) {
         checkBalanceAlignment();
       }
-      console.log('Auto-triggering matching with imported statement data');
-      runMatchingFromUnreconciled();
+
+      // Run matching — but only update state if this effect hasn't been cleaned up
+      const doMatch = async () => {
+        try {
+          // Cancel any in-flight matching request
+          if (matchingAbortRef.current) {
+            matchingAbortRef.current.abort();
+          }
+          const abortController = new AbortController();
+          matchingAbortRef.current = abortController;
+
+          let statementTransactions = importedStatementData.statement_transactions.map(st => ({
+            line_number: st.line_number,
+            date: st.date,
+            amount: st.amount,
+            reference: st.reference || '',
+            description: st.description || ''
+          }));
+
+          if (statementTransactions.length === 0) return;
+
+          const matchUrl = activeImportId
+            ? `/api/bank-reconciliation/match-statement?bank_code=${selectedBank}&import_id=${activeImportId}`
+            : `/api/bank-reconciliation/match-statement?bank_code=${selectedBank}`;
+
+          const response = await authFetch(matchUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ statement_transactions: statementTransactions }),
+            signal: abortController.signal
+          });
+
+          if (cancelled || abortController.signal.aborted) return;
+
+          const data: MatchingResult = await response.json();
+
+          if (cancelled) return;
+
+          if (data.success) {
+            if (data.unmatched_statement && data.unmatched_statement.length > 0) {
+              data.unmatched_statement = await autoMatchUnmatchedLines(data.unmatched_statement);
+            }
+            if (cancelled) return;
+
+            setMatchingResult(data);
+            setSelectedAutoMatches(prev => {
+              const newSet = new Set(prev);
+              (data.auto_matched || []).forEach((match: any) => newSet.add(match.entry_number));
+              return newSet;
+            });
+            setSelectedSuggestedMatches(prev => {
+              const newSet = new Set(prev);
+              (data.suggested_matched || []).forEach((match: any) => newSet.add(match.entry_number));
+              return newSet;
+            });
+          }
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'AbortError') return;
+          if (!cancelled) console.error('Auto-matching error:', error);
+        }
+      };
+
+      doMatch();
     }
-  }, [importedStatementData, entriesQuery.data, statusQuery.data]);
+
+    return () => { cancelled = true; };
+  }, [importedStatementData, entriesQuery.data]);
 
   // Auto-trigger statement processing when user clicks Reconcile on an imported statement
   useEffect(() => {
