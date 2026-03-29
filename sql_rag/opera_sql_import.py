@@ -8190,13 +8190,23 @@ class OperaSQLImport:
                                 date_diff = abs((stmt_date - entry_date).days)
                                 if date_diff <= date_tolerance_days:
                                     match_entry = entry
-                                    # Confidence based on date proximity
-                                    if date_diff == 0:
-                                        match_confidence = 90
+
+                                    # Confidence based on date proximity + description match
+                                    entry_comment = str(entry.get('ae_comment', '')).strip().lower()
+                                    stmt_desc_lower = stmt_desc.lower().strip()
+                                    # If the Opera comment contains the statement description (or vice versa),
+                                    # this is almost certainly the same transaction (e.g., imported from this statement)
+                                    desc_match = (stmt_desc_lower and entry_comment and
+                                                  (stmt_desc_lower[:20] in entry_comment or entry_comment[:20] in stmt_desc_lower))
+
+                                    if date_diff == 0 and desc_match:
+                                        match_confidence = 100  # Same date + description match = certain
+                                    elif date_diff == 0:
+                                        match_confidence = 95   # Same date + same amount = auto
                                     elif date_diff <= 1:
-                                        match_confidence = 85
+                                        match_confidence = 90
                                     else:
-                                        match_confidence = 75
+                                        match_confidence = 80
                                     matched = True
                                     break
 
