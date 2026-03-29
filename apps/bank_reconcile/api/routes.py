@@ -11518,12 +11518,26 @@ async def opera3_preview_bank_import_from_pdf(
             opera_acct_norm = opera_acct.replace('-', '').replace(' ', '')
             if stmt_sort and stmt_acct and opera_sort_norm and opera_acct_norm:
                 if stmt_sort != opera_sort_norm or stmt_acct != opera_acct_norm:
+                    # Try to find the correct bank by sort code + account number
+                    correct_bank_code = None
+                    try:
+                        for rec in nbank_records:
+                            rec_sort = str(rec.get('NK_SORT', rec.get('nk_sort', ''))).strip().replace('-', '').replace(' ', '')
+                            rec_acct = str(rec.get('NK_NUMBER', rec.get('nk_number', ''))).strip().replace('-', '').replace(' ', '')
+                            rec_code = str(rec.get('NB_ACNT', rec.get('nb_acnt', rec.get('nk_acnt', '')))).strip()
+                            if rec_sort == stmt_sort and rec_acct == stmt_acct:
+                                correct_bank_code = rec_code
+                                break
+                    except Exception:
+                        pass
+
                     return {
                         "success": False,
                         "source": "opera3",
                         "bank_mismatch": True,
                         "detected_bank": f"{stmt_sort} / {stmt_acct}",
                         "selected_bank": f"{opera_sort_norm} / {opera_acct_norm} ({bank_code})",
+                        "correct_bank_code": correct_bank_code,
                         "error": "Bank account mismatch"
                     }
 
