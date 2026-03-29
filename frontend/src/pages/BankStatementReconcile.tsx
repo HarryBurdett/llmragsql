@@ -1236,6 +1236,25 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       );
       const data: ProcessStatementResponse = await response.json();
 
+      // Auto-switch bank if statement is for a different bank account
+      if ((data as any).bank_mismatch && !(data as any).correct_bank_code) {
+        setProcessingError(`Bank account mismatch: statement is for ${(data as any).detected_bank} but no matching bank found in Opera. Please select the correct bank manually.`);
+        setIsProcessing(false);
+        return;
+      }
+      if ((data as any).bank_mismatch && (data as any).correct_bank_code) {
+        const correctBank = (data as any).correct_bank_code;
+        setSelectedBank(correctBank);
+        // Re-process with correct bank — use direct fetch with same processing logic
+        const retryResponse = await authFetch(
+          `/api/reconcile/process-statement?file_path=${encodeURIComponent(statementPath)}&bank_code=${encodeURIComponent(correctBank)}`,
+          { method: 'POST' }
+        );
+        const retryData: ProcessStatementResponse = await retryResponse.json();
+        // Replace data and fall through to normal processing
+        Object.assign(data, retryData);
+      }
+
       if (data.success) {
         // Check for sequence validation status
         if (data.status === 'skipped') {

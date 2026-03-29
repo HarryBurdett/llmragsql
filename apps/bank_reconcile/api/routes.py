@@ -2945,11 +2945,26 @@ async def preview_bank_import_from_pdf(
 
         if stmt_sort and stmt_acct and opera_sort and opera_acct:
             if stmt_sort != opera_sort or stmt_acct != opera_acct:
+                # Try to find the correct bank by sort code + account number
+                correct_bank_code = None
+                try:
+                    match_df = sql_connector.execute_query(f"""
+                        SELECT RTRIM(nk_acnt) as code, RTRIM(nk_desc) as description
+                        FROM nbank WITH (NOLOCK)
+                        WHERE REPLACE(REPLACE(RTRIM(ISNULL(nk_sort,'')), '-', ''), ' ', '') = '{stmt_sort}'
+                          AND REPLACE(REPLACE(RTRIM(ISNULL(nk_number,'')), '-', ''), ' ', '') = '{stmt_acct}'
+                    """)
+                    if not match_df.empty:
+                        correct_bank_code = match_df.iloc[0]['code'].strip()
+                except Exception:
+                    pass
+
                 return {
                     "success": False,
                     "bank_mismatch": True,
                     "detected_bank": f"{stmt_sort} / {stmt_acct}",
                     "selected_bank": f"{opera_sort} / {opera_acct} ({bank_code})",
+                    "correct_bank_code": correct_bank_code,
                     "error": "Bank account mismatch"
                 }
 
@@ -4680,7 +4695,7 @@ async def scan_folder_for_bank_statements(
                 result = conn.execute(text("""
                     SELECT RTRIM(nk_sort) as sort_code, RTRIM(nk_number) as account_number,
                            nk_recbal, RTRIM(nk_desc) as bank_desc
-                    FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_code) = :bank_code
+                    FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_acnt) = :bank_code
                 """), {"bank_code": bank_code.strip()})
                 row = result.fetchone()
                 if row:
@@ -4758,8 +4773,25 @@ async def scan_folder_for_bank_statements(
                     pdf_hash = scan_cache.hash_pdf(content_bytes)
                     cached = scan_cache.get(pdf_hash)
 
+                    info_data = None
                     if cached:
                         info_data, _ = cached
+                        logger.info(f"Scan cache HIT for {filename}")
+                    else:
+                        # Cache miss — run lightweight extraction to get balances/bank info
+                        # This uses Gemini but only asks for header info, not transactions
+                        logger.info(f"Scan cache MISS for {filename} — running lightweight extraction")
+                        try:
+                            from sql_rag.statement_reconcile import StatementReconciler
+                            reconciler = StatementReconciler(
+                                sql_connector,
+                                gemini_api_key=_load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
+                            )
+                            info_data = reconciler.extract_statement_info_only(str(file_path))
+                        except Exception as ex:
+                            logger.warning(f"Lightweight extraction failed for {filename}: {ex}")
+
+                    if info_data:
                         stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
                         stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
                         stmt_entry['period_start'] = info_data.get('period_start')
@@ -4889,7 +4921,7 @@ async def fetch_email_statements_to_folder(
                 with sql_connector.engine.connect() as conn:
                     result = conn.execute(sa_text("""
                         SELECT RTRIM(nk_desc) as bank_desc
-                        FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_code) = :bank_code
+                        FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_acnt) = :bank_code
                     """), {"bank_code": bank_code.strip()})
                     row = result.fetchone()
                     if row:
@@ -5422,8 +5454,32 @@ async def scan_emails_for_bank_statements(
                                                         except:
                                                             pass
                                         else:
-                                            # Cache miss — skip Gemini during scan, will extract when user selects
-                                            logger.info(f"Scan cache MISS for {att['filename']} — balances will be extracted when selected")
+                                            # Cache miss — run lightweight extraction to get balances
+                                            logger.info(f"Scan cache MISS for {att['filename']} — running lightweight extraction")
+                                            try:
+                                                import tempfile
+                                                from sql_rag.statement_reconcile import StatementReconciler
+                                                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                                                    tmp.write(content_bytes)
+                                                    tmp_path = tmp.name
+                                                try:
+                                                    _api_key = _load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
+                                                    reconciler = StatementReconciler(sql_connector, gemini_api_key=_api_key)
+                                                    info_data = reconciler.extract_statement_info_only(tmp_path)
+                                                    if info_data:
+                                                        att['period_start'] = info_data.get('period_start')
+                                                        att['period_end'] = info_data.get('period_end')
+                                                        att['bank_name'] = info_data.get('bank_name')
+                                                        att['account_number'] = info_data.get('account_number')
+                                                        att['sort_code'] = info_data.get('sort_code')
+                                                        att['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
+                                                        if info_data.get('opening_balance') is not None:
+                                                            statement_opening_balance = float(info_data['opening_balance'])
+                                                            att['opening_balance'] = statement_opening_balance
+                                                finally:
+                                                    os.unlink(tmp_path)
+                                            except Exception as ex:
+                                                logger.warning(f"Lightweight extraction failed for {att['filename']}: {ex}")
                             except Exception as e:
                                 logger.warning(f"Could not validate PDF statement info: {e}")
                                 pass
@@ -10859,14 +10915,40 @@ async def opera3_scan_emails_for_bank_statements(
                                                     except:
                                                         pass
                                         else:
-                                            # Cache miss — skip Gemini during scan, will extract when user selects
-                                            logger.info(f"Opera 3 scan cache MISS for {att['filename']} — skipping extraction during scan")
+                                            # Cache miss — run lightweight extraction to get balances
+                                            logger.info(f"Opera 3 scan cache MISS for {att['filename']} — running lightweight extraction")
+                                            try:
+                                                import tempfile
+                                                from sql_rag.statement_reconcile import StatementReconciler
+                                                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                                                    tmp.write(content_bytes)
+                                                    tmp_path = tmp.name
+                                                try:
+                                                    _api_key = _load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
+                                                    reconciler = StatementReconciler(sql_connector, gemini_api_key=_api_key)
+                                                    info_data = reconciler.extract_statement_info_only(tmp_path)
+                                                    if info_data:
+                                                        att['period_start'] = info_data.get('period_start')
+                                                        att['period_end'] = info_data.get('period_end')
+                                                        att['bank_name'] = info_data.get('bank_name')
+                                                        att['account_number'] = info_data.get('account_number')
+                                                        att['sort_code'] = info_data.get('sort_code')
+                                                        att['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
+                                                        if info_data.get('opening_balance') is not None:
+                                                            statement_opening_balance = float(info_data['opening_balance'])
+                                                            att['opening_balance'] = statement_opening_balance
+                                                finally:
+                                                    os.unlink(tmp_path)
+                                            except Exception as ex:
+                                                logger.warning(f"Opera 3 lightweight extraction failed for {att['filename']}: {ex}")
                             except Exception as e:
                                 logger.warning(f"Opera 3: Could not validate statement balance: {e}")
                                 pass
 
                 # Only add valid statements
                 if is_valid_statement:
+                    # Get closing balance and bank info from first attachment
+                    first_att = statement_attachments[0] if statement_attachments else {}
                     statements_found.append({
                         'email_id': email_id,
                         'message_id': email.get('message_id'),
@@ -10879,7 +10961,12 @@ async def opera3_scan_emails_for_bank_statements(
                         'already_processed': all(a['already_processed'] for a in statement_attachments),
                         'sort_key': sort_key,
                         'statement_date': statement_date,
-                        'opening_balance': statement_opening_balance
+                        'opening_balance': statement_opening_balance,
+                        'closing_balance': first_att.get('closing_balance'),
+                        'period_start': first_att.get('period_start'),
+                        'period_end': first_att.get('period_end'),
+                        'bank_name': first_att.get('bank_name'),
+                        'account_number': first_att.get('account_number'),
                     })
 
         # Deduplicate: if the same filename appears in multiple emails, keep only the newest
