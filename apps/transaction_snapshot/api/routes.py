@@ -189,7 +189,38 @@ def take_snapshot_se(sql_connector) -> Dict[str, Any]:
 # Diff Engine — Compares two snapshots
 # ============================================================================
 
-def diff_snapshots(before: Dict, after: Dict) -> Dict[str, Any]:
+def get_table_field_metadata(sql_connector, db_name: str, table_name: str) -> Dict[str, Dict]:
+    """
+    Get field metadata for a table — nullable, data type, default value.
+    Returns dict of field_name -> {nullable, data_type, default, max_length}
+    """
+    try:
+        df = sql_connector.execute_query(f"""
+            SELECT COLUMN_NAME, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH,
+                   COLUMN_DEFAULT, NUMERIC_PRECISION, NUMERIC_SCALE
+            FROM [{db_name}].INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = '{table_name}'
+            ORDER BY ORDINAL_POSITION
+        """)
+        if df is None or df.empty:
+            return {}
+        result = {}
+        for _, row in df.iterrows():
+            col = row['COLUMN_NAME']
+            result[col] = {
+                'mandatory': row['IS_NULLABLE'] == 'NO',
+                'data_type': row['DATA_TYPE'],
+                'max_length': int(row['CHARACTER_MAXIMUM_LENGTH']) if row['CHARACTER_MAXIMUM_LENGTH'] is not None else None,
+                'default': str(row['COLUMN_DEFAULT']).strip() if row['COLUMN_DEFAULT'] else None,
+                'precision': int(row['NUMERIC_PRECISION']) if row['NUMERIC_PRECISION'] is not None else None,
+                'scale': int(row['NUMERIC_SCALE']) if row['NUMERIC_SCALE'] is not None else None,
+            }
+        return result
+    except Exception:
+        return {}
+
+
+def diff_snapshots(before: Dict, after: Dict, sql_connector=None) -> Dict[str, Any]:
     """
     Compare before and after snapshots. Returns detailed diff showing:
     - Tables with row count changes (added/deleted rows)
@@ -238,7 +269,12 @@ def diff_snapshots(before: Dict, after: Dict) -> Dict[str, Any]:
                 'deleted_rows': [],
                 'modified_rows': [],
                 'modified_fields': set(),
+                'field_metadata': {},
             }
+
+            # Get field metadata (mandatory/type/default) for changed tables
+            if sql_connector:
+                table_change['field_metadata'] = get_table_field_metadata(sql_connector, db_name, table_name)
 
             # Detailed row-level diff if we have full row data
             before_rows = before_table.get('rows')
@@ -468,7 +504,7 @@ async def take_after_snapshot():
         after = take_snapshot_se(sql)
 
         # Generate diff
-        diff = diff_snapshots(before, after)
+        diff = diff_snapshots(before, after, sql_connector=sql)
 
         # Build library entry
         entry = {
