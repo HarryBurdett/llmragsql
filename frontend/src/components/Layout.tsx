@@ -122,6 +122,12 @@ const utilitiesMenu: TopLevelMenu = {
         { path: '/reconcile/vat', label: 'VAT', icon: Receipt, description: 'VAT return reconciliation', color: 'rose' },
       ],
     },
+    {
+      heading: 'Developer Tools',
+      items: [
+        { path: '/utilities/transaction-snapshot', label: 'Transaction Snapshot', icon: Database, description: 'Capture Opera posting patterns', color: 'indigo' },
+      ],
+    },
   ],
 };
 
