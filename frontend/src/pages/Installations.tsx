@@ -221,11 +221,13 @@ export function Installations() {
     try {
       const response = await apiClient.activateSystem(sys.id);
       if (response.data.success) {
-        setMessage({ type: 'success', text: `Switched to "${sys.name}"` });
-        invalidate();
-        queryClient.invalidateQueries({ queryKey: ['config'] });
-        queryClient.invalidateQueries({ queryKey: ['operaConfig'] });
-        queryClient.invalidateQueries({ queryKey: ['companies'] });
+        // Installation switch — force logout and fresh login for clean state
+        sessionStorage.clear();
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        queryClient.clear();
+        window.location.href = '/login';
+        return;
       } else {
         setMessage({ type: 'error', text: response.data.error || response.data.detail || 'Failed to switch installation' });
       }
