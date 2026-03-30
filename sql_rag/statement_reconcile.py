@@ -831,6 +831,14 @@ A typical business bank statement has 20-100+ transactions.
             money_out = _parse_amount(money_out_raw)
             money_in = _parse_amount(money_in_raw)
 
+            # Skip balance-only lines (not real transactions)
+            desc_lower = (txn_data.get('description') or '').strip().lower()
+            if desc_lower in ('start balance', 'end balance', 'opening balance', 'closing balance',
+                              'balance brought forward', 'balance carried forward',
+                              'previous balance', 'balance b/f', 'balance c/f'):
+                logger.debug(f"Transaction {i} skipped - balance line: {desc_lower}")
+                continue
+
             # Calculate signed amount (positive = in, negative = out)
             # AI may return money_out as positive or negative — use abs()
             if money_out is not None and abs(money_out) > 0:
