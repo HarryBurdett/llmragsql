@@ -228,8 +228,9 @@ export function Installations() {
       if (response.data.success) {
         // Installation switch — force logout and fresh login for clean state
         sessionStorage.clear();
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+        localStorage.removeItem('auth_permissions');
         queryClient.clear();
         window.location.href = '/login';
         return;
@@ -269,6 +270,18 @@ export function Installations() {
           opera3_share_user: form.opera3ShareUser,
           opera3_share_password: form.opera3SharePassword,
         });
+        // If Opera version changed on the active installation, force re-login
+        const previousVersion = sys.opera?.version;
+        if (previousVersion && previousVersion !== form.operaVersion) {
+          sessionStorage.clear();
+          localStorage.removeItem('auth_token');
+          localStorage.removeItem('auth_user');
+          localStorage.removeItem('auth_permissions');
+          queryClient.clear();
+          alert(`Opera version changed from ${previousVersion} to ${form.operaVersion}. You will be redirected to login.`);
+          window.location.href = '/login';
+          return;
+        }
         setMessage({ type: 'success', text: `"${sys.name}" settings saved` });
         invalidate();
         queryClient.invalidateQueries({ queryKey: ['config'] });
