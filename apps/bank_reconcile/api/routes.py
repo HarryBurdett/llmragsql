@@ -933,20 +933,13 @@ async def process_bank_statement(
         reconciler = StatementReconciler(sql_connector, config=config)
         logger.info(f"process-statement-SE: reconciler created for {Path(file_path).name}")
 
-        # Check if there's a reconciliation in progress in Opera
+        # Check if there's a reconciliation in progress in Opera (informational only — don't block)
         try:
             rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
+            if rec_in_progress['in_progress']:
+                logger.info(f"process-statement-SE: Bank {bank_code} has {rec_in_progress.get('partial_entries', 0)} partial reconciliation markers — proceeding with extraction")
         except Exception as rec_err:
             logger.error(f"process-statement-SE: check_reconciliation_in_progress failed: {rec_err}")
-            rec_in_progress = {'in_progress': False}
-        if rec_in_progress['in_progress']:
-            return {
-                "success": False,
-                "error": rec_in_progress['message'],
-                "bank_code": bank_code,
-                "reconciliation_in_progress": True,
-                "partial_entries": rec_in_progress.get('partial_entries', 0)
-            }
 
         # Extract transactions from statement
         logger.info(f"process-statement-SE: BEFORE extraction for {Path(file_path).name}")
@@ -12753,20 +12746,13 @@ async def opera3_process_statement(
         reader = Opera3Reader(data_path)
         reconciler = StatementReconcilerOpera3(reader, config=config)
 
-        # Check if there's a reconciliation in progress in Opera 3
+        # Check if there's a reconciliation in progress in Opera 3 (informational only — don't block)
         try:
             rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
+            if rec_in_progress['in_progress']:
+                logger.info(f"process-statement-Opera3: Bank {bank_code} has {rec_in_progress.get('partial_entries', 0)} partial reconciliation markers — proceeding with extraction")
         except Exception as rec_err:
             logger.error(f"process-statement-Opera3: check_reconciliation_in_progress failed: {rec_err}")
-            rec_in_progress = {'in_progress': False}
-        if rec_in_progress['in_progress']:
-            return {
-                "success": False,
-                "error": rec_in_progress['message'],
-                "bank_code": bank_code,
-                "reconciliation_in_progress": True,
-                "partial_entries": rec_in_progress.get('partial_entries', 0)
-            }
 
         # Extract transactions from statement
         statement_info, transactions = reconciler.extract_transactions_from_pdf(file_path)
