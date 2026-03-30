@@ -1293,7 +1293,7 @@ async def login(request: LoginRequest):
     if not user:
         return LoginResponse(success=False, error="Invalid username or password")
 
-    # Check if user already has an active session
+    # Clear any existing sessions for this user (enforce single active session)
     try:
         import sqlite3
         conn = sqlite3.connect(user_auth.DB_PATH)
@@ -1303,11 +1303,13 @@ async def login(request: LoginRequest):
             (user['id'],)
         )
         active_count = cursor.fetchone()[0]
-        conn.close()
         if active_count > 0:
-            return LoginResponse(success=False, error=f"User '{request.username}' is already logged in. Please log out from the other session first.")
+            cursor.execute("DELETE FROM sessions WHERE user_id = ?", (user['id'],))
+            conn.commit()
+            logger.info(f"Cleared {active_count} existing session(s) for user '{request.username}'")
+        conn.close()
     except Exception as e:
-        logger.warning(f"Could not check active sessions: {e}")
+        logger.warning(f"Could not check/clear active sessions: {e}")
 
     # Create session (with license if provided)
     license_data = None
