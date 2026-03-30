@@ -6633,21 +6633,16 @@ async def scan_all_banks_for_statements(
             rec_bal = bank.get('reconciled_balance')
             if rec_bal is None:
                 continue
-            first_corrected = False
+            # Never overwrite extracted opening/closing balances — they come from the PDF.
+            # Use reconciled balance only to determine status:
+            # - Statement whose CLOSING matches rec_bal → already processed
+            # - Statement whose OPENING matches rec_bal → next to process
             for s in bank.get('statements', []):
-                # Only correct opening balance for the FIRST statement in sequence
-                # Subsequent statements keep their extracted opening balance
                 ob = s.get('opening_balance')
-                if not first_corrected:
-                    if ob is not None and abs(ob - rec_bal) <= 0.02:
-                        # This statement's opening matches reconciled balance — correct it
-                        s['opening_balance'] = rec_bal
-                        first_corrected = True
-                    elif ob is None:
-                        # No opening balance — assume it's the first, use reconciled
-                        s['opening_balance'] = rec_bal
-                        first_corrected = True
-                # Subsequent statements: leave opening balance as extracted
+                cb = s.get('closing_balance')
+                # If no opening balance was extracted, use rec_bal only if it's the first unprocessed
+                if ob is None:
+                    s['opening_balance'] = rec_bal
 
                 # For the next statement (opening ≈ rec_bal), run chain validation
                 # on the full extraction to get the correct closing balance
