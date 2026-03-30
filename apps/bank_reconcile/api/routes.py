@@ -6442,6 +6442,12 @@ async def scan_all_banks_for_statements(
 
                         if cached:
                             info_data, _ = cached
+                            # Skip stale cache entries that have no balances — force re-extraction
+                            if info_data.get('opening_balance') is None and info_data.get('closing_balance') is None:
+                                scan_cache.delete(pdf_hash)
+                                cached = None
+                        if cached:
+                            info_data, _ = cached
                             stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
                             stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
                             stmt_entry['period_start'] = info_data.get('period_start')
