@@ -7868,6 +7868,29 @@ class OperaSQLImport:
         date_to = (txn_date + timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
         amount_pence = int(round(amount_pounds * 100))
 
+        # Check 0: Bank transfer duplicate — at_type=8, same amount + date on this bank
+        # Bank transfers appear on BOTH statements with different descriptions
+        if account_type == 'transfer':
+            query_bt = f"""
+                SELECT TOP 1 a.at_entry, e.ae_comment
+                FROM atran a WITH (NOLOCK)
+                JOIN aentry e WITH (NOLOCK) ON e.ae_entry = a.at_entry AND e.ae_acnt = a.at_acnt
+                WHERE a.at_acnt = '{bank_account}'
+                AND a.at_type = 8
+                AND a.at_pstdate BETWEEN '{date_from}' AND '{date_to}'
+                AND ABS(ABS(a.at_value) - {amount_pence}) < 1
+            """
+            df_bt = self.sql.execute_query(query_bt)
+            if df_bt is not None and len(df_bt) > 0:
+                entry = df_bt.iloc[0].get('at_entry', '?')
+                comment = (df_bt.iloc[0].get('ae_comment', '') or '').strip()
+                return {
+                    'is_duplicate': True,
+                    'location': 'cashbook',
+                    'details': f"Bank transfer {entry} already exists ({comment})",
+                    'entry_number': str(entry)
+                }
+
         # Check 1: Cashbook (atran) - amounts in PENCE
         # Compare description prefix to avoid false positives (different payees, same amount/date)
         safe_desc = (description or '').replace("'", "''").strip()[:15]

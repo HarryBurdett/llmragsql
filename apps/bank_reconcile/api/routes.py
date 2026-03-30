@@ -3496,7 +3496,7 @@ async def import_bank_statement_from_pdf(
                 try:
                     from sql_rag.opera_sql_import import OperaSQLImport as _OI
                     _oi = _OI(sql_connector)
-                    acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'nominal'
+                    acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'transfer' if txn.action == 'bank_transfer' else 'nominal'
                     dup_check = _oi.check_duplicate_before_posting(
                         bank_account=bank_code,
                         transaction_date=txn.date,
@@ -6633,16 +6633,21 @@ async def scan_all_banks_for_statements(
             rec_bal = bank.get('reconciled_balance')
             if rec_bal is None:
                 continue
+            first_corrected = False
             for s in bank.get('statements', []):
-                # Only correct opening balance for the FIRST statement (whose opening should match rec_bal)
-                # Subsequent statements keep their extracted opening balance (= previous statement's closing)
+                # Only correct opening balance for the FIRST statement in sequence
+                # Subsequent statements keep their extracted opening balance
                 ob = s.get('opening_balance')
-                if ob is not None and abs(ob - rec_bal) <= 0.02:
-                    # This statement's opening matches reconciled balance — it's the next one to process
-                    s['opening_balance'] = rec_bal
-                elif ob is None:
-                    # No opening balance extracted — use reconciled as fallback for first statement only
-                    s['opening_balance'] = rec_bal
+                if not first_corrected:
+                    if ob is not None and abs(ob - rec_bal) <= 0.02:
+                        # This statement's opening matches reconciled balance — correct it
+                        s['opening_balance'] = rec_bal
+                        first_corrected = True
+                    elif ob is None:
+                        # No opening balance — assume it's the first, use reconciled
+                        s['opening_balance'] = rec_bal
+                        first_corrected = True
+                # Subsequent statements: leave opening balance as extracted
 
                 # For the next statement (opening ≈ rec_bal), run chain validation
                 # on the full extraction to get the correct closing balance
@@ -8589,7 +8594,7 @@ async def import_bank_statement_from_email(
                 try:
                     from sql_rag.opera_sql_import import OperaSQLImport as _OI
                     _oi = _OI(sql_connector)
-                    acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'nominal'
+                    acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'transfer' if txn.action == 'bank_transfer' else 'nominal'
                     dup_check = _oi.check_duplicate_before_posting(
                         bank_account=bank_code,
                         transaction_date=txn.date,

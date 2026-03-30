@@ -1100,16 +1100,33 @@ class BankStatementMatcherOpera3:
             return abs((db_dt - txn_dt).days) <= tolerance_days
 
         try:
+            # Check 0: Bank transfer — at_type=8, same amount + date on this bank
+            if txn.action == 'bank_transfer':
+                atran_records_bt = self.reader.read_table("atran")
+                for record in atran_records_bt:
+                    at_acnt = record.get('AT_ACNT', record.get('at_acnt', '')).strip()
+                    at_type = int(record.get('AT_TYPE', record.get('at_type', 0)) or 0)
+                    at_pstdate = record.get('AT_PSTDATE', record.get('at_pstdate'))
+                    at_value = record.get('AT_VALUE', record.get('at_value', 0))
+                    if (at_acnt == bank_code and at_type == 8 and
+                        dates_within_tolerance(at_pstdate, txn.date) and
+                        abs(abs(at_value) - amount_pence) < 1):
+                        txn.is_duplicate = True
+                        return True, "Already in cashbook (bank transfer)"
+
             # Check 1: Cashbook (atran) - amounts in PENCE
-            # Note: Opera3Reader returns UPPERCASE keys and dates as strings
+            # Compare description prefix to avoid false positives
+            txn_comment = (txn.name or '').strip()[:15].lower()
             atran_records = self.reader.read_table("atran")
             for record in atran_records:
                 at_acnt = record.get('AT_ACNT', record.get('at_acnt', '')).strip()
                 at_pstdate = record.get('AT_PSTDATE', record.get('at_pstdate'))
                 at_value = record.get('AT_VALUE', record.get('at_value', 0))
+                at_comment = record.get('AT_COMMENT', record.get('at_comment', '')).strip()[:15].lower()
                 if (at_acnt == bank_code and
                     dates_within_tolerance(at_pstdate, txn.date) and
-                    abs(abs(at_value) - amount_pence) < 1):
+                    abs(abs(at_value) - amount_pence) < 1 and
+                    (at_comment == txn_comment or not txn_comment)):
                     txn.is_duplicate = True
                     return True, "Already in cashbook (atran)"
 
@@ -1621,7 +1638,7 @@ class BankStatementMatcherOpera3:
 
             # Just-in-time duplicate check - catches entries that appeared since statement was processed
             try:
-                acct_type = 'customer' if txn.action == 'sales_receipt' else 'supplier' if txn.action == 'purchase_payment' else 'nominal'
+                acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'transfer' if txn.action == 'bank_transfer' else 'nominal'
                 dup_check = importer.check_duplicate_before_posting(
                     bank_account=bank_code,
                     transaction_date=txn.date,

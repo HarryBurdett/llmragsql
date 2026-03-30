@@ -1471,6 +1471,24 @@ class BankStatementImport:
         date_from = (txn.date - timedelta(days=3)).strftime('%Y-%m-%d')
         date_to = (txn.date + timedelta(days=3)).strftime('%Y-%m-%d')
 
+        # Check 0: Bank transfer duplicate detection
+        # Bank transfers appear on BOTH bank statements with different descriptions:
+        #   BC055 statement: "TO 37686658" (sending to BC056)
+        #   BC056 statement: "FROM 41638069" (receiving from BC055)
+        # Check by at_type=8 (bank transfer) + same amount + date range on this bank
+        if txn.action == 'bank_transfer':
+            query_bt = f"""
+                SELECT COUNT(*) as cnt FROM atran WITH (NOLOCK)
+                WHERE at_acnt = '{self.bank_code}'
+                AND at_type = 8
+                AND at_pstdate BETWEEN '{date_from}' AND '{date_to}'
+                AND ABS(ABS(at_value) - {int(round(amount_pounds * 100))}) < 1
+            """
+            df_bt = self.sql_connector.execute_query(query_bt)
+            if int(df_bt.iloc[0]['cnt']) > 0:
+                txn.is_duplicate = True
+                return True, "Already in cashbook (bank transfer)"
+
         # Check 1: Cashbook (atran) - amounts in PENCE
         # Use NOLOCK to avoid blocking other users during validation
         # Match on amount + date range + description prefix to avoid false positives
