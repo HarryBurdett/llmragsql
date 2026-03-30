@@ -2321,7 +2321,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
     return {
       filename: importedStatementData?.filename || matchedStmt?.filename || null,
-      bankName: info?.bank_name || bankDescription || selectedBank,
+      bankName: `${selectedBank} — ${info?.bank_name || bankDescription || ''}`.replace(/ — $/, ''),
       accountNumber: info?.account_number || matchedStmt?.account_number || null,
       sortCode: info?.sort_code || matchedStmt?.sort_code || null,
       openingBalance: info?.opening_balance ?? matchedStmt?.opening_balance ?? null,
@@ -2692,7 +2692,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
           </div>
           <div>
             <h1 className="text-xl font-bold text-gray-900">
-              Reconcile: {bankDescription || selectedBank}
+              Reconcile: {selectedBank}{bankDescription ? ` — ${bankDescription}` : ''}
             </h1>
             {hasActiveStatement && activeStatementInfo?.filename && (
               <p className="text-sm text-gray-500">{activeStatementInfo.filename}</p>
