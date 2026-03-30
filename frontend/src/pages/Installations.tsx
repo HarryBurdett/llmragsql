@@ -219,6 +219,11 @@ export function Installations() {
 
   const handleActivate = async (sys: SystemProfile) => {
     try {
+      const proceed = window.confirm(
+        `Switch to "${sys.name}"?\n\nYou will be logged out and need to log in again to ensure the correct data is loaded.`
+      );
+      if (!proceed) return;
+
       const response = await apiClient.activateSystem(sys.id);
       if (response.data.success) {
         // Installation switch — force logout and fresh login for clean state
