@@ -1293,6 +1293,22 @@ async def login(request: LoginRequest):
     if not user:
         return LoginResponse(success=False, error="Invalid username or password")
 
+    # Check if user already has an active session
+    try:
+        import sqlite3
+        conn = sqlite3.connect(user_auth.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = ? AND expires_at > datetime('now')",
+            (user['id'],)
+        )
+        active_count = cursor.fetchone()[0]
+        conn.close()
+        if active_count > 0:
+            return LoginResponse(success=False, error=f"User '{request.username}' is already logged in. Please log out from the other session first.")
+    except Exception as e:
+        logger.warning(f"Could not check active sessions: {e}")
+
     # Create session (with license if provided)
     license_data = None
     try:
