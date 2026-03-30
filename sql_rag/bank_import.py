@@ -1473,20 +1473,51 @@ class BankStatementImport:
 
         # Check 1: Cashbook (atran) - amounts in PENCE
         # Use NOLOCK to avoid blocking other users during validation
+        # Match on amount + date range + description prefix to avoid false positives
+        # (e.g., two different £300 payments on the same date to different payees)
         amount_pence = int(round(amount_pounds * 100))
-        # Escape bank description for SQL (basic protection against special characters)
         safe_comment = (txn.name or '').replace("'", "''").strip()[:30]
+        # First check: amount + date + description prefix (strong match)
         query = f"""
             SELECT COUNT(*) as cnt FROM atran WITH (NOLOCK)
             WHERE at_acnt = '{self.bank_code}'
             AND at_pstdate BETWEEN '{date_from}' AND '{date_to}'
             AND ABS(ABS(at_value) - {amount_pence}) < 1
+            AND LEFT(RTRIM(ISNULL(at_comment, '')), 15) = LEFT('{safe_comment}', 15)
         """
         df = self.sql_connector.execute_query(query)
         atran_count = int(df.iloc[0]['cnt'])
         if atran_count > 0:
             txn.is_duplicate = True
             return True, "Already in cashbook (atran)"
+        # Second check: amount + exact date only (no description) — weaker, needs exact date
+        query2 = f"""
+            SELECT COUNT(*) as cnt FROM atran WITH (NOLOCK)
+            WHERE at_acnt = '{self.bank_code}'
+            AND at_pstdate = '{date_str}'
+            AND ABS(ABS(at_value) - {amount_pence}) < 1
+        """
+        df2 = self.sql_connector.execute_query(query2)
+        atran_count2 = int(df2.iloc[0]['cnt'])
+        if atran_count2 > 0:
+            # Check if ALL matches have different descriptions — if so, not a duplicate
+            query3 = f"""
+                SELECT RTRIM(ISNULL(at_comment, '')) as comment FROM atran WITH (NOLOCK)
+                WHERE at_acnt = '{self.bank_code}'
+                AND at_pstdate = '{date_str}'
+                AND ABS(ABS(at_value) - {amount_pence}) < 1
+            """
+            df3 = self.sql_connector.execute_query(query3)
+            has_match = False
+            for _, row in df3.iterrows():
+                existing_comment = row['comment'][:15].strip().lower()
+                txn_comment = safe_comment[:15].strip().lower()
+                if existing_comment == txn_comment or not txn_comment:
+                    has_match = True
+                    break
+            if has_match:
+                txn.is_duplicate = True
+                return True, "Already in cashbook (atran)"
 
         # Check 2: Purchase Ledger (ptran) - for supplier payments
         # Only check if we have a matched supplier
