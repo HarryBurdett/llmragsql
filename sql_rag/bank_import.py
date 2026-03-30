@@ -1489,11 +1489,36 @@ class BankStatementImport:
                 txn.is_duplicate = True
                 return True, "Already in cashbook (bank transfer)"
 
+        # Check 0b: Reference-based match — strongest non-fingerprint check
+        # If the transaction has a reference, check if any Opera entry has the same reference + amount
+        # This catches GoCardless payouts, BACS refs, etc. where descriptions differ but refs match
+        amount_pence = int(round(amount_pounds * 100))
+        txn_ref = (txn.reference or '').strip()
+        if not txn_ref and txn.name:
+            # Extract reference from description (e.g., "Direct Credit From GC C1 Ref: Intsysukltd-HG3E2C")
+            import re
+            ref_match = re.search(r'Ref[:\s]+(\S+)', txn.name, re.IGNORECASE)
+            if ref_match:
+                txn_ref = ref_match.group(1)
+        if txn_ref and len(txn_ref) >= 6:
+            safe_ref = txn_ref.replace("'", "''").strip().upper()
+            query_ref = f"""
+                SELECT COUNT(*) as cnt
+                FROM aentry WITH (NOLOCK)
+                WHERE ae_acnt = '{self.bank_code}'
+                AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
+                AND ABS(ABS(ae_value) - {amount_pence}) < 1
+                AND UPPER(RTRIM(ae_entref)) LIKE '%{safe_ref}%'
+            """
+            df_ref = self.sql_connector.execute_query(query_ref)
+            if int(df_ref.iloc[0]['cnt']) > 0:
+                txn.is_duplicate = True
+                return True, f"Already in cashbook (reference match: {txn_ref})"
+
         # Check 1: Cashbook (atran) - amounts in PENCE
         # Use NOLOCK to avoid blocking other users during validation
         # Match on amount + date range + description prefix to avoid false positives
         # (e.g., two different £300 payments on the same date to different payees)
-        amount_pence = int(round(amount_pounds * 100))
         safe_comment = (txn.name or '').replace("'", "''").strip()[:30]
         # First check: amount + date + description prefix (strong match)
         query = f"""
