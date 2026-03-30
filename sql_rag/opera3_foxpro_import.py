@@ -230,6 +230,23 @@ class Opera3FoxProImport:
                 "dbf package required for writing. Install with: pip install dbf"
             )
 
+        # SAFETY: Block writes via SMB — download-modify-upload is not safe for multi-user.
+        # All Opera 3 writes must go through the Write Agent running on the Windows server.
+        try:
+            from sql_rag.smb_access import get_smb_manager
+            smb = get_smb_manager()
+            if smb is not None and smb.get_local_base():
+                import tempfile
+                smb_base = str(smb.get_local_base())
+                if str(data_path).startswith(smb_base) or str(data_path).startswith(tempfile.gettempdir()):
+                    raise RuntimeError(
+                        "Opera 3 write operations are not available over SMB (network access). "
+                        "Writing to Opera 3 requires the Write Agent service running on the Opera 3 server. "
+                        "Reading and reporting via SMB is available."
+                    )
+        except ImportError:
+            pass
+
         self.data_path = Path(data_path)
         self.encoding = encoding
         self.lock_timeout = lock_timeout
