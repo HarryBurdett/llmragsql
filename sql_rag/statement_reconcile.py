@@ -853,6 +853,9 @@ A typical business bank statement has 20-100+ transactions.
             )
             transactions.append(txn)
 
+        # Sort transactions by date (oldest first) — PDFs may list newest first
+        transactions.sort(key=lambda t: t.date)
+
         logger.info(f"Parsed {len(transactions)} transactions from {source_label} (skipped: {skipped_no_date} no date, {skipped_no_amount} no amount)")
         return statement_info, transactions
 
