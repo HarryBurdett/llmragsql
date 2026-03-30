@@ -5588,7 +5588,7 @@ async def scan_emails_for_bank_statements(
                     break
             statements_found = ordered
         else:
-            statements_found.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
+            statements_found.sort(key=lambda s: (s.get('period_start') or '9999', s.get('opening_balance') or 0))
 
         # Add sequence numbers and detect missing statements
         expected_opening = reconciled_balance if reconciled_balance else None
@@ -6624,7 +6624,11 @@ async def scan_all_banks_for_statements(
                     bank['statements'].remove(stmt)
 
         # --- Step 4b: Correct balances using reconciled balance and chain validation ---
+        # Sort statements by period_start first so the oldest is processed first
         for code, bank in all_banks.items():
+            bank['statements'] = sorted(bank.get('statements', []),
+                key=lambda s: (s.get('period_start') or '9999', s.get('opening_balance') or 0))
+
             rec_bal = bank.get('reconciled_balance')
             if rec_bal is None:
                 continue
@@ -11108,7 +11112,7 @@ async def opera3_scan_emails_for_bank_statements(
                     break
             statements_found = ordered
         else:
-            statements_found.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
+            statements_found.sort(key=lambda s: (s.get('period_start') or '9999', s.get('opening_balance') or 0))
 
         # Add sequence numbers and detect missing statements
         expected_opening = reconciled_balance if reconciled_balance else None
