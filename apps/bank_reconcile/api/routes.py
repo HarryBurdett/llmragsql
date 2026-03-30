@@ -3496,7 +3496,12 @@ async def import_bank_statement_from_pdf(
                 try:
                     from sql_rag.opera_sql_import import OperaSQLImport as _OI
                     _oi = _OI(sql_connector)
-                    acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'transfer' if txn.action == 'bank_transfer' else 'nominal'
+                    acct_type = ('customer' if txn.action == 'sales_receipt'
+                                else 'customer_refund' if txn.action == 'sales_refund'
+                                else 'supplier' if txn.action == 'purchase_payment'
+                                else 'supplier_refund' if txn.action == 'purchase_refund'
+                                else 'transfer' if txn.action == 'bank_transfer'
+                                else 'nominal')
                     dup_check = _oi.check_duplicate_before_posting(
                         bank_account=bank_code,
                         transaction_date=txn.date,
@@ -8543,7 +8548,12 @@ async def import_bank_statement_from_email(
                 try:
                     from sql_rag.opera_sql_import import OperaSQLImport as _OI
                     _oi = _OI(sql_connector)
-                    acct_type = 'customer' if txn.action in ('sales_receipt', 'sales_refund') else 'supplier' if txn.action in ('purchase_payment', 'purchase_refund') else 'transfer' if txn.action == 'bank_transfer' else 'nominal'
+                    acct_type = ('customer' if txn.action == 'sales_receipt'
+                                else 'customer_refund' if txn.action == 'sales_refund'
+                                else 'supplier' if txn.action == 'purchase_payment'
+                                else 'supplier_refund' if txn.action == 'purchase_refund'
+                                else 'transfer' if txn.action == 'bank_transfer'
+                                else 'nominal')
                     dup_check = _oi.check_duplicate_before_posting(
                         bank_account=bank_code,
                         transaction_date=txn.date,

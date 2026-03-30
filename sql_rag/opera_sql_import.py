@@ -7918,15 +7918,15 @@ class OperaSQLImport:
                         'entry_number': str(entry)
                     }
 
-        # Check 2: Sales Ledger for customer receipts
-        if account_type == 'customer' and account_code:
+        # Check 2: Sales Ledger for customer receipts/refunds
+        if account_type in ('customer', 'customer_refund') and account_code:
             query = f"""
                 SELECT TOP 1 st_trref, st_trdate, st_trvalue
                 FROM stran WITH (NOLOCK)
                 WHERE RTRIM(st_account) = '{account_code}'
                 AND st_trdate BETWEEN '{date_from}' AND '{date_to}'
                 AND ABS(ABS(st_trvalue) - {amount_pounds}) < 0.01
-                AND st_trtype = 'R'
+                AND st_trtype = '{"F" if account_type == "customer_refund" else "R"}'
             """
             df = self.sql.execute_query(query)
             if df is not None and len(df) > 0:
@@ -7939,15 +7939,21 @@ class OperaSQLImport:
                     'entry_number': ref
                 }
 
-        # Check 3: Purchase Ledger for supplier payments
-        if account_type == 'supplier' and account_code:
+        # Check 3: Purchase Ledger for supplier payments/refunds
+        # Must check transaction type to avoid confusing payments with refunds
+        if account_type in ('supplier', 'supplier_refund') and account_code:
+            # Payments have pt_trvalue < 0, refunds have pt_trvalue > 0
+            if account_type == 'supplier_refund':
+                sign_filter = "AND pt_trvalue > 0"  # Refund — positive value
+            else:
+                sign_filter = "AND pt_trvalue < 0"  # Payment — negative value
             query = f"""
                 SELECT TOP 1 pt_trref, pt_trdate, pt_trvalue
                 FROM ptran WITH (NOLOCK)
                 WHERE RTRIM(pt_account) = '{account_code}'
                 AND pt_trdate BETWEEN '{date_from}' AND '{date_to}'
                 AND ABS(ABS(pt_trvalue) - {amount_pounds}) < 0.01
-                AND pt_trtype = 'P'
+                {sign_filter}
             """
             df = self.sql.execute_query(query)
             if df is not None and len(df) > 0:
@@ -7956,7 +7962,7 @@ class OperaSQLImport:
                 return {
                     'is_duplicate': True,
                     'location': 'purchase_ledger',
-                    'details': f"Payment already exists in purchase ledger for {account_code} (ref: {ref})",
+                    'details': f"Already exists in purchase ledger for {account_code} (ref: {ref})",
                     'entry_number': ref
                 }
 
