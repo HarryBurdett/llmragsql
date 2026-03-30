@@ -3502,7 +3502,8 @@ async def import_bank_statement_from_pdf(
                         transaction_date=txn.date,
                         amount_pounds=abs(txn.amount),
                         account_code=account,
-                        account_type=acct_type
+                        account_type=acct_type,
+                        description=txn.name or ''
                     )
                     if dup_check['is_duplicate']:
                         skipped_duplicates += 1
@@ -8594,7 +8595,8 @@ async def import_bank_statement_from_email(
                         transaction_date=txn.date,
                         amount_pounds=abs(txn.amount),
                         account_code=account,
-                        account_type=acct_type
+                        account_type=acct_type,
+                        description=txn.name or ''
                     )
                     if dup_check['is_duplicate']:
                         skipped_duplicates += 1

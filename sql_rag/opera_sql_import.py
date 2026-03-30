@@ -7837,7 +7837,8 @@ class OperaSQLImport:
         amount_pounds: float,
         account_code: str = '',
         account_type: str = 'nominal',
-        date_tolerance_days: int = 1
+        date_tolerance_days: int = 1,
+        description: str = ''
     ) -> Dict[str, Any]:
         """
         Pre-flight duplicate check before posting a transaction to Opera.
@@ -7868,6 +7869,8 @@ class OperaSQLImport:
         amount_pence = int(round(amount_pounds * 100))
 
         # Check 1: Cashbook (atran) - amounts in PENCE
+        # Compare description prefix to avoid false positives (different payees, same amount/date)
+        safe_desc = (description or '').replace("'", "''").strip()[:15]
         query = f"""
             SELECT TOP 1 a.at_entry, a.at_pstdate, a.at_value, e.ae_entref, e.ae_comment
             FROM atran a WITH (NOLOCK)
@@ -7878,16 +7881,19 @@ class OperaSQLImport:
         """
         df = self.sql.execute_query(query)
         if df is not None and len(df) > 0:
-            row = df.iloc[0]
-            entry = row.get('at_entry', '?')
-            ref = (row.get('ae_entref', '') or '').strip()
-            comment = (row.get('ae_comment', '') or '').strip()
-            return {
-                'is_duplicate': True,
-                'location': 'cashbook',
-                'details': f"Entry {entry} already exists in cashbook (ref: {ref}, {comment})",
-                'entry_number': str(entry)
-            }
+            # Verify description matches to avoid false positives
+            for _, row in df.iterrows():
+                entry = row.get('at_entry', '?')
+                ref = (row.get('ae_entref', '') or '').strip()
+                comment = (row.get('ae_comment', '') or '').strip()
+                # Match if descriptions are similar (first 15 chars) or no description to compare
+                if not safe_desc or comment[:15].lower().startswith(safe_desc.lower()[:10]):
+                    return {
+                        'is_duplicate': True,
+                        'location': 'cashbook',
+                        'details': f"Entry {entry} already exists in cashbook (ref: {ref}, {comment})",
+                        'entry_number': str(entry)
+                    }
 
         # Check 2: Sales Ledger for customer receipts
         if account_type == 'customer' and account_code:
