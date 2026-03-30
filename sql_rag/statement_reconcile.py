@@ -761,8 +761,8 @@ A typical business bank statement has 20-100+ transactions.
                         if idx in chain_used:
                             continue
                         t = raw_transactions[idx]
-                        mi = _safe_float(t.get('money_in')) or 0
-                        mo = _safe_float(t.get('money_out')) or 0
+                        mi = abs(_safe_float(t.get('money_in')) or 0)
+                        mo = abs(_safe_float(t.get('money_out')) or 0)
                         txn_bal = _safe_float(t.get('balance'))
                         if txn_bal is None:
                             continue
@@ -832,10 +832,11 @@ A typical business bank statement has 20-100+ transactions.
             money_in = _parse_amount(money_in_raw)
 
             # Calculate signed amount (positive = in, negative = out)
-            if money_out and money_out > 0:
-                amount = -money_out
-            elif money_in and money_in > 0:
-                amount = money_in
+            # AI may return money_out as positive or negative — use abs()
+            if money_out is not None and abs(money_out) > 0:
+                amount = -abs(money_out)
+            elif money_in is not None and abs(money_in) > 0:
+                amount = abs(money_in)
             else:
                 skipped_no_amount += 1
                 logger.debug(f"Transaction {i} skipped - no amount: money_out={money_out}, money_in={money_in}")
