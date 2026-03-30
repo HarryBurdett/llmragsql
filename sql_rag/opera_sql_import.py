@@ -1370,6 +1370,41 @@ class OperaSQLImport:
 
         return entry_to_use
 
+    def check_account_dormant(self, account_code: str, ledger: str = 'sales') -> Optional[str]:
+        """
+        Check if a customer or supplier account is dormant.
+        Dormant accounts cannot have transactions posted to them.
+
+        Args:
+            account_code: The account code (e.g., 'A001')
+            ledger: 'sales' for customers (sname) or 'purchase' for suppliers (pname)
+
+        Returns:
+            Error message if dormant, None if OK to post
+        """
+        if ledger == 'sales':
+            table, prefix, name_field = 'sname', 'sn', 'sn_name'
+        else:
+            table, prefix, name_field = 'pname', 'pn', 'pn_name'
+
+        dormant_field = f'{prefix}_dormant'
+        account_field = f'{prefix}_account'
+
+        try:
+            df = self.sql_connector.execute_query(f"""
+                SELECT {dormant_field}, RTRIM({name_field}) as name
+                FROM {table} WITH (NOLOCK)
+                WHERE {account_field} = '{account_code}'
+            """)
+            if df is not None and not df.empty:
+                if df.iloc[0][dormant_field]:
+                    name = df.iloc[0]['name']
+                    return f"Account {account_code} ({name}) is dormant — cannot post transactions to dormant accounts"
+        except Exception as e:
+            logger.warning(f"Could not check dormant status for {account_code}: {e}")
+
+        return None
+
     def get_default_cbtype(self, transaction_type: str) -> Optional[str]:
         """
         Get a default type code for a transaction type.
@@ -1959,6 +1994,11 @@ class OperaSQLImport:
         errors = []
         warnings = []
 
+        # Check dormant
+        dormant_err = self.check_account_dormant(customer_account, 'sales')
+        if dormant_err:
+            return ImportResult(success=False, records_processed=1, records_failed=1, errors=[dormant_err])
+
         # =====================
         # VALIDATE/GET CBTYPE
         # =====================
@@ -2506,6 +2546,11 @@ class OperaSQLImport:
         errors = []
         warnings = []
 
+        # Check dormant
+        dormant_err = self.check_account_dormant(customer_account, 'sales')
+        if dormant_err:
+            return ImportResult(success=False, records_processed=1, records_failed=1, errors=[dormant_err])
+
         # VALIDATE/GET CBTYPE - Sales refund uses PAYMENT category (money going out)
         if cbtype is None:
             cbtype = self.get_default_cbtype('sales_refund')
@@ -2944,6 +2989,11 @@ class OperaSQLImport:
         """
         errors = []
         warnings = []
+
+        # Check dormant
+        dormant_err = self.check_account_dormant(supplier_account, 'purchase')
+        if dormant_err:
+            return ImportResult(success=False, records_processed=1, records_failed=1, errors=[dormant_err])
 
         # =====================
         # VALIDATE/GET CBTYPE
@@ -4566,6 +4616,11 @@ class OperaSQLImport:
         """
         errors = []
         warnings = []
+
+        # Check dormant
+        dormant_err = self.check_account_dormant(supplier_account, 'purchase')
+        if dormant_err:
+            return ImportResult(success=False, records_processed=1, records_failed=1, errors=[dormant_err])
 
         # VALIDATE/GET CBTYPE - Purchase refund uses RECEIPT category (money coming in)
         if cbtype is None:

@@ -1048,6 +1048,43 @@ class Opera3FoxProImport:
             logger.error(f"Failed to update nbank for {bank_account}: {e}")
             raise  # Fail the transaction - bank balance must be updated correctly
 
+    def check_account_dormant(self, account_code: str, ledger: str = 'sales') -> Optional[str]:
+        """
+        Check if a customer or supplier account is dormant.
+        Dormant accounts cannot have transactions posted to them.
+
+        Args:
+            account_code: The account code (e.g., 'A001')
+            ledger: 'sales' for customers (sname) or 'purchase' for suppliers (pname)
+
+        Returns:
+            Error message if dormant, None if OK to post
+        """
+        if ledger == 'sales':
+            table_name, account_field, dormant_field, name_field = 'sname', 'SN_ACCOUNT', 'SN_DORMANT', 'SN_NAME'
+        else:
+            table_name, account_field, dormant_field, name_field = 'pname', 'PN_ACCOUNT', 'PN_DORMANT', 'PN_NAME'
+
+        try:
+            table = self._open_table(table_name)
+            account_upper = account_code.strip().upper()
+            for record in table:
+                rec_account = getattr(record, account_field, None)
+                if rec_account is not None and str(rec_account).strip().upper() == account_upper:
+                    dormant_val = getattr(record, dormant_field, None)
+                    if dormant_val:
+                        rec_name = getattr(record, name_field, None)
+                        name = str(rec_name).strip() if rec_name is not None else account_code
+                        return (
+                            f"Account {account_code} ({name}) is dormant "
+                            f"— cannot post transactions to dormant accounts"
+                        )
+                    return None  # Account found, not dormant
+        except Exception as e:
+            logger.warning(f"Could not check dormant status for {account_code}: {e}")
+
+        return None
+
     def import_purchase_payment(
         self,
         bank_account: str,
@@ -1091,6 +1128,11 @@ class Opera3FoxProImport:
         """
         errors = []
         warnings = []
+
+        # Check dormant
+        dormant_err = self.check_account_dormant(supplier_account, 'purchase')
+        if dormant_err:
+            return Opera3ImportResult(success=False, records_processed=1, records_failed=1, errors=[dormant_err])
 
         # =====================
         # VALIDATE/GET CBTYPE
@@ -1546,6 +1588,11 @@ class Opera3FoxProImport:
         errors = []
         warnings = []
 
+        # Check dormant
+        dormant_err = self.check_account_dormant(customer_account, 'sales')
+        if dormant_err:
+            return Opera3ImportResult(success=False, records_processed=1, records_failed=1, errors=[dormant_err])
+
         # =====================
         # VALIDATE/GET CBTYPE
         # =====================
@@ -1977,6 +2024,11 @@ class Opera3FoxProImport:
         """
         errors = []
 
+        # Check dormant
+        dormant_err = self.check_account_dormant(customer_account, 'sales')
+        if dormant_err:
+            return Opera3ImportResult(success=False, records_processed=1, records_failed=1, errors=[dormant_err])
+
         # Validate/get cbtype — sales refund is a PAYMENT category (money out)
         if cbtype is None:
             cbtype = self.get_default_cbtype('sales_refund')
@@ -2287,6 +2339,11 @@ class Opera3FoxProImport:
         Creates records in: aentry, atran, ptran, ntran (2), anoml (2), pname, nbank, nacnt.
         """
         errors = []
+
+        # Check dormant
+        dormant_err = self.check_account_dormant(supplier_account, 'purchase')
+        if dormant_err:
+            return Opera3ImportResult(success=False, records_processed=1, records_failed=1, errors=[dormant_err])
 
         # Validate/get cbtype — purchase refund is a RECEIPT category (money in)
         if cbtype is None:
