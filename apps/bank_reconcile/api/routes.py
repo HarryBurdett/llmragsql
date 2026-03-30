@@ -6624,65 +6624,13 @@ async def scan_all_banks_for_statements(
                 for stmt in corrected:
                     bank['statements'].remove(stmt)
 
-        # --- Step 4b: Correct balances using reconciled balance and chain validation ---
-        # Sort statements by period_start first so the oldest is processed first
+        # --- Step 4b: Sort statements and use extracted balances as-is ---
+        # The AI extraction returns correct opening/closing balances from the PDF.
+        # We NEVER overwrite them. Opera's reconciled balance is used only to
+        # determine which statement is "Next" (opening matches rec_bal).
         for code, bank in all_banks.items():
             bank['statements'] = sorted(bank.get('statements', []),
                 key=lambda s: (s.get('period_start') or '9999', s.get('opening_balance') or 0))
-
-            rec_bal = bank.get('reconciled_balance')
-            if rec_bal is None:
-                continue
-            # Never overwrite extracted opening/closing balances — they come from the PDF.
-            # Use reconciled balance only to determine status:
-            # - Statement whose CLOSING matches rec_bal → already processed
-            # - Statement whose OPENING matches rec_bal → next to process
-            for s in bank.get('statements', []):
-                ob = s.get('opening_balance')
-                cb = s.get('closing_balance')
-                # If no opening balance was extracted, use rec_bal only if it's the first unprocessed
-                if ob is None:
-                    s['opening_balance'] = rec_bal
-
-                # For the next statement (opening ≈ rec_bal), run chain validation
-                # on the full extraction to get the correct closing balance
-                full_path = s.get('full_path')
-                if full_path and s.get('opening_balance') == rec_bal:
-                    try:
-                        from sql_rag.pdf_extraction_cache import get_extraction_cache
-                        _ec = get_extraction_cache()
-                        _pb = open(full_path, 'rb').read()
-                        _ph = _ec.hash_pdf(_pb)
-                        _cached = _ec.get(_ph)
-                        if _cached:
-                            _info, _txns = _cached
-                            if _txns and not _info.get('_info_only'):
-                                # Have full transactions — run chain from rec_bal
-                                from sql_rag.statement_reconcile import StatementReconciler
-                                def _sf(v):
-                                    if v is None: return None
-                                    if isinstance(v, (int,float)): return float(v)
-                                    return float(str(v).replace(',','').replace('£','').strip()) if str(v).strip() else None
-                                cur = rec_bal
-                                used = set()
-                                for _ in range(len(_txns)):
-                                    fnd = False
-                                    for j, t in enumerate(_txns):
-                                        if j in used: continue
-                                        mi = _sf(t.get('money_in')) or 0
-                                        mo = _sf(t.get('money_out')) or 0
-                                        bal = _sf(t.get('balance'))
-                                        if bal is not None and abs(round(cur + mi - mo, 2) - bal) < 0.02:
-                                            cur = bal
-                                            used.add(j)
-                                            fnd = True
-                                            break
-                                    if not fnd: break
-                                if used:
-                                    s['closing_balance'] = cur
-                                    logger.info(f"Scan: chain-corrected closing for {s.get('filename','')}: £{cur:,.2f}")
-                    except Exception:
-                        pass
 
         # --- Step 5: Sort and finalize each bank's statements ---
         banks_with_statements = {}
