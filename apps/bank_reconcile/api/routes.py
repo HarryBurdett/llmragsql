@@ -6629,9 +6629,14 @@ async def scan_all_banks_for_statements(
             if rec_bal is None:
                 continue
             for s in bank.get('statements', []):
-                # Correct opening to rec_bal
+                # Only correct opening balance for the FIRST statement (whose opening should match rec_bal)
+                # Subsequent statements keep their extracted opening balance (= previous statement's closing)
                 ob = s.get('opening_balance')
-                if ob is None or abs(ob - rec_bal) > 0.02:
+                if ob is not None and abs(ob - rec_bal) <= 0.02:
+                    # This statement's opening matches reconciled balance — it's the next one to process
+                    s['opening_balance'] = rec_bal
+                elif ob is None:
+                    # No opening balance extracted — use reconciled as fallback for first statement only
                     s['opening_balance'] = rec_bal
 
                 # For the next statement (opening ≈ rec_bal), run chain validation
