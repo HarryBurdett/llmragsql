@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Camera, Play, Square, Trash2, Download, ChevronDown, ChevronRight, AlertCircle } from 'lucide-react';
+import { Camera, Play, Square, Trash2, Download, ChevronDown, ChevronRight, AlertCircle, Database } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
 
@@ -143,8 +143,9 @@ export function TransactionSnapshot() {
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <PageHeader
+        icon={Database}
         title="Transaction Snapshot Tool"
-        description="Capture before/after snapshots of Opera to identify exactly which tables and fields are updated for each transaction type"
+        subtitle="Capture before/after snapshots of Opera to identify exactly which tables and fields are updated for each transaction type"
       />
 
       {/* Capture Panel */}
