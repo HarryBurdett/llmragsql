@@ -84,6 +84,36 @@ def _sync_from_main():
         g[name] = getattr(m, name, None)
 
 
+def _check_opera3_write_agent() -> tuple:
+    """
+    Check if Opera 3 Write Agent is available for write operations.
+    Returns (available: bool, error_message: str or None).
+    """
+    try:
+        from sql_rag.opera3_write_provider import is_agent_available
+        available, info = is_agent_available()
+        if available:
+            return True, None
+        return False, (
+            "Opera 3 Write Agent is not running. "
+            "Posting transactions requires the Write Agent service on the Opera 3 server. "
+            "Check the Write Agent URL in Installations settings, or contact your administrator."
+        )
+    except ImportError:
+        # Write provider not configured — check if we're in Opera 3 mode
+        try:
+            from sql_rag.smb_access import get_smb_manager
+            if get_smb_manager() is not None:
+                return False, (
+                    "Opera 3 Write Agent is not configured. "
+                    "Go to Installations > Opera 3 > Write Agent to set up the connection. "
+                    "Without the Write Agent, Opera 3 is read-only."
+                )
+        except ImportError:
+            pass
+        return True, None  # Not Opera 3 mode — allow (SE uses SQL directly)
+
+
 @router.get("/api/reconcile/banks")
 async def get_bank_accounts():
     """
@@ -10621,6 +10651,11 @@ async def opera3_post_recurring_entries(request: Request):
         ]
     }
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     try:
         from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
         from datetime import date as date_type
@@ -11717,6 +11752,11 @@ async def opera3_import_bank_statement_from_pdf(
     Import bank statement from PDF file for Opera 3 (FoxPro).
     Uses AI extraction for PDFs and imports directly to Opera 3 DBF files.
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     import os
     from datetime import datetime
 
@@ -12594,6 +12634,11 @@ async def opera3_create_cashbook_entry(request: Request):
     Create a new cashbook entry in Opera 3 for an unmatched statement line.
     Mirrors the SQL SE /api/cashbook/create-entry endpoint.
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     try:
         body = await request.json()
 
@@ -13259,6 +13304,11 @@ async def opera3_mark_entries_reconciled(
     Mark cashbook entries as reconciled in Opera 3 FoxPro.
     Mirrors /api/reconcile/bank/{bank_code}/mark-reconciled.
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     from sql_rag.import_lock import acquire_import_lock, release_import_lock
     if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-mark-reconciled"):
         return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
@@ -13323,6 +13373,11 @@ async def opera3_unreconcile_entries(
     Unreconcile previously reconciled entries in Opera 3 FoxPro.
     Mirrors /api/reconcile/bank/{bank_code}/unreconcile.
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     from sql_rag.import_lock import acquire_import_lock, release_import_lock
     if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-unreconcile"):
         return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
@@ -13634,6 +13689,11 @@ async def opera3_confirm_statement_matches(
     Confirm matched transactions and mark them as reconciled in Opera 3.
     Mirrors /api/reconcile/bank/{bank_code}/confirm-matches.
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     from sql_rag.import_lock import acquire_import_lock, release_import_lock
     if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-confirm-matches"):
         return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
@@ -13737,6 +13797,11 @@ async def opera3_complete_batch(
     Mirrors /api/reconcile/bank/{bank_code}/complete-batch/{entry_number}.
     In Opera 3, batches are typically already complete (ae_complet=1) on write.
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     from sql_rag.import_lock import acquire_import_lock, release_import_lock
     if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-complete-batch"):
         return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
@@ -14051,6 +14116,11 @@ async def opera3_complete_reconciliation(
     Complete bank reconciliation for Opera 3 - mark matched entries as reconciled.
     Mirrors /api/bank-reconciliation/complete.
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     if not request_body:
         return {"success": False, "error": "Request body required"}
 
@@ -14311,6 +14381,11 @@ async def opera3_create_bank_transfer(
     Create a bank transfer between two Opera 3 bank accounts.
     Mirrors /api/cashbook/create-bank-transfer.
     """
+    # Check Write Agent is available for Opera 3 writes
+    available, agent_error = _check_opera3_write_agent()
+    if not available:
+        return {"success": False, "error": agent_error}
+
     try:
         from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
         from datetime import date as date_type
