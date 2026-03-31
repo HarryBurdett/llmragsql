@@ -704,6 +704,29 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Startup SMB connection failed: {e}")
 
+    # Check Opera 3 Write Agent if configured
+    if config and config.has_section("opera"):
+        agent_url = config.get("opera", "opera3_agent_url", fallback="")
+        agent_key = config.get("opera", "opera3_agent_key", fallback="")
+        if agent_url:
+            try:
+                import httpx
+                headers = {"X-Agent-Key": agent_key} if agent_key else {}
+                response = httpx.get(f"{agent_url.rstrip('/')}/health", headers=headers, timeout=5.0)
+                if response.status_code == 200:
+                    logger.info(f"Opera 3 Write Agent connected: {agent_url}")
+                    # Configure the write provider to use the agent
+                    try:
+                        from sql_rag.opera3_write_provider import configure_agent
+                        configure_agent(agent_url=agent_url, agent_key=agent_key, required=True)
+                        logger.info("Opera 3 write provider configured to use Write Agent")
+                    except ImportError:
+                        logger.debug("opera3_write_provider not available — will configure on demand")
+                else:
+                    logger.warning(f"Opera 3 Write Agent returned {response.status_code}: {agent_url}")
+            except Exception as e:
+                logger.warning(f"Opera 3 Write Agent not available at {agent_url}: {e}")
+
     yield
 
     # Shutdown
@@ -1026,6 +1049,8 @@ class OperaConfig(BaseModel):
     opera3_company_code: Optional[str] = None  # Company code from seqco.dbf
     opera3_share_user: Optional[str] = None  # Windows share username
     opera3_share_password: Optional[str] = None  # Windows share password
+    opera3_agent_url: Optional[str] = None      # Write Agent URL e.g. http://172.17.172.214:9000
+    opera3_agent_key: Optional[str] = None      # Shared secret for authentication
 
 class Opera3Company(BaseModel):
     """Opera 3 company information"""
@@ -2280,6 +2305,8 @@ async def get_opera_config():
         "opera3_server_path": opera_section.get("opera3_server_path", ""),
         "opera3_base_path": opera_section.get("opera3_base_path", ""),
         "opera3_company_code": opera_section.get("opera3_company_code", ""),
+        "opera3_agent_url": opera_section.get("opera3_agent_url", ""),
+        "opera3_agent_key": opera_section.get("opera3_agent_key", ""),
     }
 
 @app.post("/api/config/opera")
@@ -2305,6 +2332,10 @@ async def update_opera_config(opera_config: OperaConfig):
         config["opera"]["opera3_share_user"] = opera_config.opera3_share_user
     if opera_config.opera3_share_password is not None:
         config["opera"]["opera3_share_password"] = opera_config.opera3_share_password
+    if opera_config.opera3_agent_url is not None:
+        config["opera"]["opera3_agent_url"] = opera_config.opera3_agent_url
+    if opera_config.opera3_agent_key is not None:
+        config["opera"]["opera3_agent_key"] = opera_config.opera3_agent_key
 
     save_config(config)
 
@@ -2433,6 +2464,65 @@ async def test_opera_connection(opera_config: OperaConfig):
             return {"success": False, "error": f"Path not found: {str(e)}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+@app.post("/api/config/opera/test-agent")
+async def test_write_agent(opera_config: OperaConfig):
+    """Test connection to Opera 3 Write Agent."""
+    if not opera_config.opera3_agent_url:
+        return {"success": False, "error": "Write Agent URL not provided"}
+
+    try:
+        import httpx
+        headers = {}
+        if opera_config.opera3_agent_key:
+            headers["X-Agent-Key"] = opera_config.opera3_agent_key
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{opera_config.opera3_agent_url.rstrip('/')}/health", headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "success": True,
+                    "message": f"Write Agent connected — {data.get('status', 'OK')}",
+                    "details": data
+                }
+            elif response.status_code == 401:
+                return {"success": False, "error": "Authentication failed — check the Agent Key"}
+            else:
+                return {"success": False, "error": f"Agent returned status {response.status_code}"}
+    except Exception as e:
+        error_str = str(e)
+        if "ConnectError" in error_str or "Connection refused" in error_str:
+            return {"success": False, "error": f"Cannot connect to {opera_config.opera3_agent_url} — is the Write Agent running?"}
+        elif "TimeoutException" in error_str or "timed out" in error_str:
+            return {"success": False, "error": "Connection timed out — check the URL and ensure the agent is running"}
+        return {"success": False, "error": f"Connection failed: {error_str}"}
+
+@app.get("/api/config/opera/agent-status")
+async def get_agent_status():
+    """Check if Opera 3 Write Agent is currently available."""
+    if not config or not config.has_section("opera"):
+        return {"configured": False, "available": False}
+
+    agent_url = config.get("opera", "opera3_agent_url", fallback="")
+    if not agent_url:
+        return {"configured": False, "available": False}
+
+    try:
+        import httpx
+        agent_key = config.get("opera", "opera3_agent_key", fallback="")
+        headers = {"X-Agent-Key": agent_key} if agent_key else {}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{agent_url.rstrip('/')}/health", headers=headers)
+            return {
+                "configured": True,
+                "available": response.status_code == 200,
+                "url": agent_url,
+                "details": response.json() if response.status_code == 200 else None,
+                "error": f"Status {response.status_code}" if response.status_code != 200 else None
+            }
+    except Exception as e:
+        return {"configured": True, "available": False, "url": agent_url, "error": str(e)}
 
 # ============ Systems (Named Config Profiles) ============
 
