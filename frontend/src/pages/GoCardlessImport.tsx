@@ -1658,19 +1658,15 @@ function GoCardlessImportInner() {
               )}
             </div>
 
-            {scanStats && (
+            {scanStats && emailBatches.length > 0 && (
               <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
                 <div className="flex flex-wrap gap-4 text-blue-800">
-                  <span>Payouts found: {scanStats.total_payouts}</span>
                   <span>Ready to import: {emailBatches.filter(b => !b.possible_duplicate && !b.is_value_mismatch && !b.is_foreign_currency).length}</span>
                   {emailBatches.filter(b => b.is_value_mismatch).length > 0 && (
                     <span className="text-orange-700">Value mismatch: {emailBatches.filter(b => b.is_value_mismatch).length}</span>
                   )}
                   {scanStats.skipped_duplicates > 0 && (
                     <span className="text-amber-700">Already in cashbook: {scanStats.skipped_duplicates}</span>
-                  )}
-                  {scanStats.skipped_period_closed > 0 && (
-                    <span className="text-gray-600">Period closed: {scanStats.skipped_period_closed}</span>
                   )}
                 </div>
               </div>
