@@ -831,16 +831,67 @@ async def auth_middleware(request: Request, call_next):
         request.state.user = user
         request.state.user_permissions = user_auth.get_user_permissions(user['id'])
 
-        # Set company context from session — ensures every request uses the
-        # correct company's sql_connector, email_storage, settings, etc.
+        # Set system + company context from session — ensures every request uses the
+        # correct system's database and company's sql_connector, email_storage, etc.
         import sqlite3 as _sq3
         try:
             _conn = _sq3.connect(str(user_auth.DB_PATH))
-            _row = _conn.execute('SELECT company_id FROM sessions WHERE token = ?', (token,)).fetchone()
+            _row = _conn.execute('SELECT company_id, system_id FROM sessions WHERE token = ?', (token,)).fetchone()
             _conn.close()
-            if _row and _row[0]:
-                _ensure_company_context(_row[0])
-                _request_company_id.set(_row[0])
+            if _row:
+                session_company = _row[0]
+                session_system = _row[1]
+
+                # If this session has a system_id, ensure the right system config is active
+                if session_system and session_system != active_system_id:
+                    try:
+                        systems = load_systems()
+                        target = next((s for s in systems if s['id'] == session_system), None)
+                        if target:
+                            # Apply system config for THIS request only
+                            # Create/reuse connector for this system's database
+                            sys_db = target.get('database', {})
+                            sys_server = sys_db.get('server', '')
+                            sys_dbname = sys_db.get('database', '')
+                            if sys_server and sys_dbname:
+                                connector_key = f"{session_system}_{session_company or 'default'}"
+                                if connector_key not in _company_sql_connectors:
+                                    # Build a temporary config for this system
+                                    import configparser as _cp
+                                    temp_config = _cp.ConfigParser()
+                                    temp_config.read(CONFIG_PATH)
+                                    if not temp_config.has_section('database'):
+                                        temp_config.add_section('database')
+                                    for k, v in sys_db.items():
+                                        temp_config['database'][k] = str(v)
+                                    # Write to temp file for SQLConnector
+                                    import tempfile
+                                    with tempfile.NamedTemporaryFile(mode='w', suffix='.ini', delete=False) as tf:
+                                        temp_config.write(tf)
+                                        temp_path = tf.name
+                                    try:
+                                        _company_sql_connectors[connector_key] = SQLConnector(temp_path)
+                                        logger.debug(f"Created connector for {connector_key}: {sys_server}/{sys_dbname}")
+                                    finally:
+                                        import os
+                                        os.unlink(temp_path)
+                                request.state.session_system_id = session_system
+                    except Exception as sys_err:
+                        logger.debug(f"Could not apply session system context: {sys_err}")
+
+                if session_company:
+                    # Use system-scoped connector key if available
+                    if session_system:
+                        connector_key = f"{session_system}_{session_company}"
+                        if connector_key in _company_sql_connectors:
+                            _request_company_id.set(session_company)
+                            _ensure_company_context(session_company)
+                        else:
+                            _ensure_company_context(session_company)
+                            _request_company_id.set(session_company)
+                    else:
+                        _ensure_company_context(session_company)
+                        _request_company_id.set(session_company)
         except Exception:
             pass
 
@@ -2676,8 +2727,10 @@ async def delete_system(system_id: str):
     return {"success": True}
 
 @app.post("/api/systems/{system_id}/activate")
-async def activate_system(system_id: str):
-    """Switch to a different system. Updates config.ini and reinitialises the SQL connector."""
+async def activate_system(request: Request, system_id: str):
+    """Switch to a different system. Updates config.ini and reinitialises the SQL connector.
+    Also stores the system_id on the user's session for per-user isolation.
+    """
     systems = load_systems()
     target = None
     for s in systems:
@@ -2700,6 +2753,13 @@ async def activate_system(system_id: str):
                           "Please check the server address and credentials in Installation settings.",
             },
         )
+
+    # Store system_id on the user's session for per-user isolation
+    if user_auth:
+        auth_header = request.headers.get('Authorization', '')
+        session_token = auth_header.replace('Bearer ', '') if auth_header.startswith('Bearer ') else ''
+        if session_token:
+            user_auth.set_session_system(session_token, system_id)
 
     return {"success": True, "message": f"Switched to {target['name']}"}
 

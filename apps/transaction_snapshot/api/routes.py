@@ -69,11 +69,16 @@ MODULES = {
 
 
 def _get_sql_connector():
-    """Get the active SQL connector for the current company."""
+    """Get the active SQL connector for the current company/system."""
     try:
-        from api.main import _get_active_company_id, _company_sql_connectors, sql_connector
-        # Use per-company connector if available (respects company switch)
+        from api.main import _get_active_company_id, _company_sql_connectors, sql_connector, active_system_id
         company_id = _get_active_company_id()
+        # Try system-scoped connector first (per-session isolation)
+        if active_system_id and company_id:
+            key = f"{active_system_id}_{company_id}"
+            if key in _company_sql_connectors:
+                return _company_sql_connectors[key]
+        # Fall back to company connector
         if company_id and company_id in _company_sql_connectors:
             return _company_sql_connectors[company_id]
         return sql_connector

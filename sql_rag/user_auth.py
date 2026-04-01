@@ -124,6 +124,8 @@ class UserAuth:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     expires_at TEXT NOT NULL,
                     license_id INTEGER,
+                    company_id TEXT,
+                    system_id TEXT,
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                     FOREIGN KEY (license_id) REFERENCES licenses(id)
                 )
@@ -504,7 +506,7 @@ class UserAuth:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT s.user_id, s.expires_at, s.company_id,
+                SELECT s.user_id, s.expires_at, s.company_id, s.system_id,
                        u.username, u.display_name, u.email, u.is_admin, u.is_active,
                        u.default_company, u.default_system, u.ui_mode, u.voice_enabled
                 FROM sessions s
@@ -516,7 +518,7 @@ class UserAuth:
             if row is None:
                 return None
 
-            user_id, expires_at, session_company_id, username, display_name, email, is_admin, is_active, default_company, default_system, ui_mode, voice_enabled = row
+            user_id, expires_at, session_company_id, session_system_id, username, display_name, email, is_admin, is_active, default_company, default_system, ui_mode, voice_enabled = row
 
             # Check expiry
             if datetime.fromisoformat(expires_at) < datetime.utcnow():
@@ -555,6 +557,31 @@ class UserAuth:
             )
             conn.commit()
             return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def set_session_system(self, token: str, system_id: str) -> bool:
+        """Set the active system/installation for a session."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE sessions SET system_id = ? WHERE token = ?',
+                (system_id, token)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def get_session_system(self, token: str) -> Optional[str]:
+        """Get the active system/installation for a session."""
+        conn = sqlite3.connect(self.DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('SELECT system_id FROM sessions WHERE token = ?', (token,))
+            row = cursor.fetchone()
+            return row[0] if row else None
         finally:
             conn.close()
 
