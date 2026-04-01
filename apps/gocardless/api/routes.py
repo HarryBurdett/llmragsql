@@ -6008,13 +6008,49 @@ async def get_unposted_gocardless_payments():
         payments_db = get_payments_db()
 
         # Get payment requests with status indicating money collected but not posted
-        # confirmed = collected from customer, paid_out = money in bank — neither posted to Opera
+        # confirmed = collected from customer, paid_out = money in bank
+        # Check against Opera to see if the receipt has actually been posted
         all_requests = payments_db.list_payment_requests(limit=10000)
 
         unposted = []
         total_amount = 0
         for req in all_requests:
-            if req.get('status') in ('confirmed', 'paid_out'):
+            if req.get('status') not in ('confirmed', 'paid_out'):
+                continue
+
+            # Check if this payment has been posted to Opera by looking at stran
+            # If the invoice st_trbal is 0 (fully paid), it's been posted
+            already_posted = False
+            if sql_connector and req.get('invoice_refs'):
+                try:
+                    import json as _json
+                    refs = req['invoice_refs']
+                    if isinstance(refs, str):
+                        try:
+                            refs = _json.loads(refs)
+                        except Exception:
+                            refs = [refs]
+                    if refs:
+                        # Check if any of the invoice refs have been paid (st_trbal = 0)
+                        for ref in refs[:3]:  # Check first few
+                            ref_clean = str(ref).strip().replace("'", "''")
+                            df = sql_connector.execute_query(f"""
+                                SELECT st_trbal FROM stran WITH (NOLOCK)
+                                WHERE st_trref = '{ref_clean}' AND st_trtype = 'I'
+                                AND ABS(st_trbal) < 0.01
+                            """)
+                            if df is not None and len(df) > 0:
+                                already_posted = True
+                                # Update the status to 'posted' so we don't check again
+                                try:
+                                    payments_db.update_payment_request(req['id'], status='posted')
+                                except Exception:
+                                    pass
+                                break
+                except Exception:
+                    pass
+
+            if not already_posted:
                 amount = (req.get('amount_pence', 0) or 0) / 100.0
                 unposted.append({
                     'id': req.get('id'),
