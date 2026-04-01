@@ -590,7 +590,7 @@ def classify_transaction(diff: Dict[str, Any]) -> Dict[str, Any]:
                 type_labels = {'P': 'Payment', 'I': 'Invoice', 'C': 'Credit Note'}
                 classification['posting_characteristics'].append(f'Purchase ledger: pt_trtype={trtype} ({type_labels.get(trtype, "?")})')
             if trval is not None:
-                classification['amount_conventions']['ptran.pt_trvalue'] = f'{trval} (pounds, negative=payment)')
+                classification['amount_conventions']['ptran.pt_trvalue'] = f'{trval} (pounds, negative=payment)'
 
     # Nominal ledger (ntran)
     if 'ntran' in has_new:
