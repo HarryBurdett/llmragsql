@@ -29,8 +29,12 @@ router = APIRouter()
 # Transaction Library Storage
 # ============================================================================
 
-LIBRARY_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
-                           'docs', 'opera-transaction-library')
+# Transaction library — stored in central knowledge repo (shared across all installations)
+# Falls back to local docs/ if central repo not available
+_CENTRAL_LIBRARY = os.path.expanduser('~/opera-knowledge-ref/packages/opera-knowledge/transaction-library')
+_LOCAL_LIBRARY = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+                              'docs', 'opera-transaction-library')
+LIBRARY_DIR = _CENTRAL_LIBRARY if os.path.exists(os.path.dirname(_CENTRAL_LIBRARY)) else _LOCAL_LIBRARY
 
 SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
                             'data', '_transaction_snapshots')
@@ -922,6 +926,20 @@ async def take_after_snapshot():
         os.remove(meta_file)
 
         logger.info(f"Transaction library entry saved: {entry_id} — {diff['tables_changed']} tables changed")
+
+        # Auto-commit to central knowledge repo if available
+        if LIBRARY_DIR == _CENTRAL_LIBRARY:
+            try:
+                import subprocess
+                repo_dir = os.path.expanduser('~/opera-knowledge-ref')
+                subprocess.run(['git', 'add', entry_file], cwd=repo_dir, capture_output=True)
+                subprocess.run(
+                    ['git', 'commit', '-m', f'Transaction library: {meta["name"]} ({entry_id})'],
+                    cwd=repo_dir, capture_output=True
+                )
+                logger.info(f"Committed to central knowledge repo: {entry_id}")
+            except Exception as git_err:
+                logger.debug(f"Could not commit to central repo: {git_err}")
 
         # Generate summary for response
         summary = []
