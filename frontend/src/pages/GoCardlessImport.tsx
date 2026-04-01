@@ -977,24 +977,12 @@ function GoCardlessImportInner() {
         }));
         setEmailBatches(batchesWithState);
       } else {
-        // Provide detailed message about why no payouts are available
-        let errorMsg = 'No payouts available to import.';
+        // Only show a message if there were genuinely no payouts from the API
         if (filterStats.total_from_api === 0) {
-          errorMsg = 'No payouts found in GoCardless API for the last 30 days.';
-        } else if (filterStats.total_from_api > 0) {
-          const reasons = [];
-          if (filterStats.filtered_duplicate_in_opera > 0) {
-            reasons.push(`${filterStats.filtered_duplicate_in_opera} already in Opera cashbook`);
-          }
-          if (filterStats.filtered_period_closed > 0) {
-            reasons.push(`${filterStats.filtered_period_closed} period closed`);
-          }
-          if (filterStats.filtered_all_payments_excluded > 0) {
-            reasons.push(`${filterStats.filtered_all_payments_excluded} excluded by filter`);
-          }
-          // No message needed when all payouts are filtered — nothing to show
+          setScanError('No payouts found in GoCardless.');
         }
-        setScanError(errorMsg);
+        // If payouts were found but all filtered (period closed, duplicates etc.)
+        // — no message needed, just show empty state
       }
     } catch (error) {
       setScanError(`Failed to fetch payouts: ${error}`);
