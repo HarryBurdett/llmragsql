@@ -468,6 +468,240 @@ PRESETS = [
 ]
 
 
+# ============================================================================
+# Auto-Classification — Analyses diff to precisely define the transaction
+# ============================================================================
+
+def classify_transaction(diff: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Analyse a before/after diff to precisely classify the transaction type,
+    tables updated, amount conventions, sequence sources, and posting pattern.
+    Returns a structured classification for the library entry.
+    """
+    changes = diff.get('changes', [])
+    tables_changed = {c['table'].lower(): c for c in changes}
+
+    classification = {
+        'auto_detected_type': 'Unknown',
+        'transaction_category': 'unknown',
+        'tables_updated': [],
+        'tables_with_new_rows': [],
+        'tables_with_modified_rows': [],
+        'amount_conventions': {},
+        'sequence_sources': {},
+        'balance_updates': [],
+        'transfer_files': [],
+        'vat_tracking': False,
+        'allocation_created': False,
+        'posting_characteristics': [],
+        'precise_definition': '',
+    }
+
+    # Identify tables with new rows vs modified rows
+    for change in changes:
+        table = change['table'].lower()
+        classification['tables_updated'].append(table)
+        if change.get('rows_added', 0) > 0:
+            classification['tables_with_new_rows'].append(table)
+        if len(change.get('modified_rows', [])) > 0:
+            classification['tables_with_modified_rows'].append(table)
+
+    has_new = set(classification['tables_with_new_rows'])
+    has_mod = set(classification['tables_with_modified_rows'])
+
+    # ---- Determine transaction type from table patterns ----
+
+    # Cashbook transaction (aentry + atran)
+    if 'aentry' in has_new and 'atran' in has_new:
+        classification['transaction_category'] = 'cashbook'
+
+        # Determine specific type from atran at_type
+        atran_change = tables_changed.get('atran', {})
+        at_type = None
+        for row in atran_change.get('added_rows', []):
+            at_type = row.get('at_type')
+            if at_type is not None:
+                break
+
+        type_map = {
+            1: ('Nominal Payment', 'nominal_payment'),
+            2: ('Nominal Receipt', 'nominal_receipt'),
+            3: ('Sales Refund', 'sales_refund'),
+            4: ('Sales Receipt', 'sales_receipt'),
+            5: ('Purchase Payment', 'purchase_payment'),
+            6: ('Purchase Refund', 'purchase_refund'),
+            8: ('Bank Transfer', 'bank_transfer'),
+        }
+        if at_type is not None:
+            type_name, type_code = type_map.get(int(at_type), (f'Unknown (at_type={at_type})', 'unknown'))
+            classification['auto_detected_type'] = type_name
+        else:
+            classification['auto_detected_type'] = 'Cashbook Transaction (type unknown)'
+
+        # Check for batch posting
+        aentry_change = tables_changed.get('aentry', {})
+        for row in aentry_change.get('added_rows', []):
+            complet = row.get('ae_complet')
+            if complet is not None:
+                if not complet or complet == 0:
+                    classification['posting_characteristics'].append('Batch posting (ae_complet=0, awaiting completion)')
+                else:
+                    classification['posting_characteristics'].append('Immediate posting (ae_complet=1)')
+
+        # Check amounts — pence in aentry/atran
+        for row in aentry_change.get('added_rows', []):
+            val = row.get('ae_value')
+            if val is not None:
+                classification['amount_conventions']['aentry.ae_value'] = f'{val} (pence, {"negative=payment" if float(val) < 0 else "positive=receipt"})'
+
+        for row in atran_change.get('added_rows', []):
+            val = row.get('at_value')
+            if val is not None:
+                classification['amount_conventions']['atran.at_value'] = f'{val} (pence, {"negative=payment" if float(val) < 0 else "positive=receipt"})'
+
+    # Sales ledger (stran)
+    if 'stran' in has_new:
+        if classification['transaction_category'] == 'unknown':
+            classification['transaction_category'] = 'sales_ledger'
+        stran_change = tables_changed.get('stran', {})
+        for row in stran_change.get('added_rows', []):
+            trtype = row.get('st_trtype')
+            trval = row.get('st_trvalue')
+            if trtype:
+                type_labels = {'R': 'Receipt', 'I': 'Invoice', 'C': 'Credit Note', 'F': 'Refund'}
+                classification['posting_characteristics'].append(f'Sales ledger: st_trtype={trtype} ({type_labels.get(trtype, "?")})')
+            if trval is not None:
+                classification['amount_conventions']['stran.st_trvalue'] = f'{trval} (pounds)'
+
+    # Purchase ledger (ptran)
+    if 'ptran' in has_new:
+        if classification['transaction_category'] == 'unknown':
+            classification['transaction_category'] = 'purchase_ledger'
+        ptran_change = tables_changed.get('ptran', {})
+        for row in ptran_change.get('added_rows', []):
+            trtype = row.get('pt_trtype')
+            trval = row.get('pt_trvalue')
+            if trtype:
+                type_labels = {'P': 'Payment', 'I': 'Invoice', 'C': 'Credit Note'}
+                classification['posting_characteristics'].append(f'Purchase ledger: pt_trtype={trtype} ({type_labels.get(trtype, "?")})')
+            if trval is not None:
+                classification['amount_conventions']['ptran.pt_trvalue'] = f'{trval} (pounds, negative=payment)')
+
+    # Nominal ledger (ntran)
+    if 'ntran' in has_new:
+        ntran_change = tables_changed.get('ntran', {})
+        ntran_rows = ntran_change.get('added_rows', [])
+        classification['posting_characteristics'].append(f'Nominal entries: {len(ntran_rows)} ntran rows (double-entry)')
+        for row in ntran_rows[:2]:
+            acnt = row.get('nt_acnt', '?')
+            val = row.get('nt_value')
+            if val is not None:
+                side = 'DEBIT' if float(val) > 0 else 'CREDIT'
+                classification['posting_characteristics'].append(f'  ntran: {acnt} = {val} ({side}, pounds)')
+            jrnl = row.get('nt_jrnl')
+            if jrnl:
+                classification['sequence_sources']['nt_jrnl'] = f'{jrnl} (from nparm.np_nexjrnl)'
+
+    # Transfer files
+    if 'anoml' in has_new:
+        classification['transfer_files'].append('anoml (Cashbook → NL transfer)')
+    if 'snoml' in has_new:
+        classification['transfer_files'].append('snoml (Sales → NL transfer)')
+    if 'pnoml' in has_new:
+        classification['transfer_files'].append('pnoml (Purchase → NL transfer)')
+
+    # VAT tracking
+    if 'zvtran' in has_new or 'nvat' in has_new:
+        classification['vat_tracking'] = True
+        classification['posting_characteristics'].append('VAT tracking: zvtran and/or nvat records created')
+
+    # Allocation
+    if 'salloc' in has_new:
+        classification['allocation_created'] = True
+        classification['posting_characteristics'].append('Sales allocation created (salloc)')
+    if 'palloc' in has_new:
+        classification['allocation_created'] = True
+        classification['posting_characteristics'].append('Purchase allocation created (palloc)')
+
+    # Balance updates
+    if 'nacnt' in has_mod:
+        nacnt_change = tables_changed.get('nacnt', {})
+        for mod in nacnt_change.get('modified_rows', [])[:3]:
+            fields = list(mod.get('changes', {}).keys())
+            classification['balance_updates'].append(f'nacnt: {", ".join(fields)}')
+
+    if 'nbank' in has_mod:
+        nbank_change = tables_changed.get('nbank', {})
+        for mod in nbank_change.get('modified_rows', []):
+            fields = list(mod.get('changes', {}).keys())
+            classification['balance_updates'].append(f'nbank: {", ".join(fields)}')
+
+    if 'sname' in has_mod:
+        classification['balance_updates'].append('sname: customer balance updated (sn_currbal)')
+    if 'pname' in has_mod:
+        classification['balance_updates'].append('pname: supplier balance updated (pn_currbal)')
+
+    if 'nhist' in has_mod or 'nhist' in has_new:
+        classification['balance_updates'].append('nhist: nominal history updated')
+
+    # Sequence sources
+    if 'atype' in has_mod:
+        classification['sequence_sources']['ae_entry'] = 'atype.ay_entry (entry number counter)'
+    if 'nparm' in has_mod:
+        classification['sequence_sources']['nt_jrnl'] = 'nparm.np_nexjrnl (journal number counter)'
+
+    # Master record changes (no transaction)
+    if classification['transaction_category'] == 'unknown':
+        if 'sname' in has_new:
+            classification['auto_detected_type'] = 'New Customer'
+            classification['transaction_category'] = 'customer_master'
+        elif 'pname' in has_new:
+            classification['auto_detected_type'] = 'New Supplier'
+            classification['transaction_category'] = 'supplier_master'
+        elif 'nacnt' in has_new:
+            classification['auto_detected_type'] = 'New Nominal Account'
+            classification['transaction_category'] = 'nominal_master'
+        elif 'nbank' in has_new:
+            classification['auto_detected_type'] = 'New Bank Account'
+            classification['transaction_category'] = 'bank_master'
+        elif 'sname' in has_mod and 'aentry' not in has_new:
+            classification['auto_detected_type'] = 'Customer Edit'
+            classification['transaction_category'] = 'customer_master'
+        elif 'pname' in has_mod and 'aentry' not in has_new:
+            classification['auto_detected_type'] = 'Supplier Edit'
+            classification['transaction_category'] = 'supplier_master'
+
+    # Bank transfer detection
+    if 'aentry' in has_new:
+        aentry_rows = tables_changed.get('aentry', {}).get('added_rows', [])
+        if len(aentry_rows) == 2:
+            classification['posting_characteristics'].append('Bank transfer: 2 aentry records (one per bank)')
+
+    # Foreign currency detection
+    for table in ['atran', 'stran', 'ptran']:
+        if table in has_new:
+            for row in tables_changed.get(table, {}).get('added_rows', []):
+                fcurr = row.get('at_fcurr') or row.get('st_fcurr') or row.get('pt_fcurr')
+                if fcurr and str(fcurr).strip() and str(fcurr).strip() != 'Sterling':
+                    classification['posting_characteristics'].append(f'Foreign currency: {fcurr}')
+                    break
+
+    # Build precise definition
+    parts = [classification['auto_detected_type']]
+    if classification['vat_tracking']:
+        parts.append('with VAT')
+    if classification['allocation_created']:
+        parts.append('with auto-allocation')
+    for char in classification['posting_characteristics']:
+        if 'Foreign currency' in char:
+            parts.append(char.split(': ')[1] if ': ' in char else char)
+        if 'Batch posting' in char:
+            parts.append('(batch)')
+    classification['precise_definition'] = ' — '.join(parts[:4])
+
+    return classification
+
+
 @router.get("/api/transaction-snapshot/modules")
 async def get_modules():
     """Get available module categories for transaction types."""
@@ -654,6 +888,9 @@ async def take_after_snapshot():
         # Generate diff
         diff = diff_snapshots(before, after, sql_connector=_get_sql_connector() if source != 'opera3' else None)
 
+        # Auto-classify the transaction from the diff data
+        classification = classify_transaction(diff)
+
         # Build library entry
         entry = {
             'module': meta['module'],
@@ -666,6 +903,7 @@ async def take_after_snapshot():
             'after_timestamp': after['timestamp'],
             'tables_checked': diff['tables_checked'],
             'tables_changed': diff['tables_changed'],
+            'classification': classification,
             'changes': diff['changes'],
         }
 
@@ -702,6 +940,7 @@ async def take_after_snapshot():
             "entry_id": entry_id,
             "message": f"Diff captured — {diff['tables_changed']} table(s) changed across {diff['tables_checked']} scanned",
             "tables_changed": diff['tables_changed'],
+            "classification": classification,
             "summary": summary,
         }
     except Exception as e:

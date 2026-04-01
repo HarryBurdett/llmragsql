@@ -250,10 +250,49 @@ export function TransactionSnapshot() {
           )}
 
           {result && (
-            <div className="p-4 bg-green-50 border border-green-200 rounded-lg space-y-2">
+            <div className="p-4 bg-green-50 border border-green-200 rounded-lg space-y-3">
               <p className="text-green-800 font-medium">Snapshot captured — {result.tables_changed} table(s) changed</p>
+
+              {/* Auto-classification */}
+              {result.classification && (
+                <div className="p-3 bg-white border border-green-200 rounded space-y-2">
+                  <p className="font-semibold text-gray-800">
+                    Auto-detected: {result.classification.precise_definition || result.classification.auto_detected_type}
+                  </p>
+                  {result.classification.posting_characteristics?.length > 0 && (
+                    <ul className="text-xs text-gray-600 space-y-0.5 ml-2">
+                      {result.classification.posting_characteristics.map((c: string, i: number) => (
+                        <li key={i}>{c}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {result.classification.balance_updates?.length > 0 && (
+                    <div className="text-xs text-gray-600">
+                      <span className="font-medium">Balance updates:</span> {result.classification.balance_updates.join(', ')}
+                    </div>
+                  )}
+                  {result.classification.transfer_files?.length > 0 && (
+                    <div className="text-xs text-gray-600">
+                      <span className="font-medium">Transfer files:</span> {result.classification.transfer_files.join(', ')}
+                    </div>
+                  )}
+                  {result.classification.vat_tracking && (
+                    <div className="text-xs text-amber-700 font-medium">VAT tracking: zvtran/nvat records created</div>
+                  )}
+                  {Object.keys(result.classification.amount_conventions || {}).length > 0 && (
+                    <div className="text-xs text-gray-600">
+                      <span className="font-medium">Amounts:</span>
+                      {Object.entries(result.classification.amount_conventions).map(([k, v]: [string, any]) => (
+                        <span key={k} className="ml-2">{k}: {v}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Table changes */}
               <div className="text-sm text-green-700 space-y-1">
-                {result.summary.map((s, i) => (
+                {result.summary.map((s: any, i: number) => (
                   <div key={i} className="flex items-center gap-2">
                     <span className="font-mono text-xs bg-green-100 px-1 rounded">{s.database}.{s.table}</span>
                     <span>+{s.rows_added} added, {s.rows_modified} modified</span>
