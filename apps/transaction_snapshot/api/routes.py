@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Body
+from fastapi import APIRouter, HTTPException, Query, Body, Request
 
 logger = logging.getLogger(__name__)
 
@@ -795,8 +795,39 @@ async def get_library_entry(entry_id: str):
     return {"success": True, "entry": entry}
 
 
+def _get_request_sql_connector(request=None):
+    """Get SQL connector for the current request's session context."""
+    try:
+        from api.main import _company_sql_connectors, sql_connector, active_system_id
+        # Try to get session context from request
+        if request:
+            system_id = getattr(request.state, 'session_system_id', None) or active_system_id
+            company_id = None
+            try:
+                from api.main import _request_company_id
+                company_id = _request_company_id.get(None)
+            except Exception:
+                pass
+            if not company_id:
+                from api.main import _get_active_company_id
+                company_id = _get_active_company_id()
+
+            # Try system-scoped connector
+            if system_id and company_id:
+                key = f"{system_id}_{company_id}"
+                if key in _company_sql_connectors:
+                    return _company_sql_connectors[key]
+            # Try company connector
+            if company_id and company_id in _company_sql_connectors:
+                return _company_sql_connectors[company_id]
+        return sql_connector
+    except Exception:
+        return _get_sql_connector()
+
+
 @router.post("/api/transaction-snapshot/before")
 async def take_before_snapshot(
+    request: Request,
     module: str = Query(..., description="Module category (cashbook, sales_ledger, etc.)"),
     name: str = Query(..., description="Transaction type name (e.g., 'Sales Receipt — BACS')"),
     description: str = Query("", description="Detailed description of the transaction being entered"),
@@ -838,11 +869,16 @@ async def take_before_snapshot(
             except ImportError:
                 raise HTTPException(status_code=503, detail="SMB access module not available")
         else:
-            # Opera SE — snapshot via SQL
-            sql = _get_sql_connector()
+            # Opera SE — snapshot via SQL (use request-aware connector)
+            sql = _get_request_sql_connector(request)
             if not sql:
                 raise HTTPException(status_code=503, detail="No database connection")
-            logger.info(f"Taking BEFORE snapshot (Opera SE) for: {module}/{name}")
+            # Log which database we're scanning
+            try:
+                db_check = sql.execute_query("SELECT DB_NAME() as db")
+                logger.info(f"Taking BEFORE snapshot (Opera SE) for: {module}/{name} — database: {db_check.iloc[0]['db']}")
+            except Exception:
+                logger.info(f"Taking BEFORE snapshot (Opera SE) for: {module}/{name}")
             snapshot = take_snapshot_se(sql)
 
         # Save snapshot to temp file
@@ -878,7 +914,7 @@ async def take_before_snapshot(
 
 
 @router.post("/api/transaction-snapshot/after")
-async def take_after_snapshot():
+async def take_after_snapshot(request: Request):
     """
     Take an AFTER snapshot and generate the diff.
     Must be called after /before and after the transaction is entered in Opera.
@@ -918,8 +954,8 @@ async def take_after_snapshot():
             except ImportError:
                 raise HTTPException(status_code=503, detail="SMB access module not available")
         else:
-            # Opera SE
-            sql = _get_sql_connector()
+            # Opera SE (use request-aware connector)
+            sql = _get_request_sql_connector(request)
             if not sql:
                 raise HTTPException(status_code=503, detail="No database connection")
             after = take_snapshot_se(sql)
