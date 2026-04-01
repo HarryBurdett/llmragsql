@@ -185,6 +185,104 @@ def take_snapshot_se(sql_connector) -> Dict[str, Any]:
     return snapshot
 
 
+def take_snapshot_opera3(data_path: str) -> Dict[str, Any]:
+    """
+    Take a complete snapshot of ALL Opera 3 FoxPro DBF tables.
+    Scans both the company data folder and the System folder.
+    Returns row counts and checksums for every table, plus full row data
+    for tables with < 50,000 rows (for detailed diffing).
+    """
+    from pathlib import Path
+
+    snapshot = {
+        'timestamp': datetime.now().isoformat(),
+        'source': 'opera3',
+        'databases': {},
+    }
+
+    try:
+        from dbfread import DBF
+    except ImportError:
+        logger.warning("dbfread not installed — cannot snapshot Opera 3")
+        return snapshot
+
+    # Scan company data folder and System folder
+    base = Path(data_path)
+    folders_to_scan = {'company': base}
+
+    # Find System folder — may be at parent level
+    system_path = base.parent / 'System'
+    if not system_path.exists():
+        system_path = base / 'System'
+    if system_path.exists():
+        folders_to_scan['system'] = system_path
+
+    for folder_label, folder_path in folders_to_scan.items():
+        db_snapshot = {}
+
+        if not folder_path.exists():
+            continue
+
+        # Find all DBF files
+        dbf_files = list(folder_path.glob('*.dbf')) + list(folder_path.glob('*.DBF'))
+        # Deduplicate (case-insensitive)
+        seen = set()
+        unique_dbfs = []
+        for f in dbf_files:
+            key = f.stem.lower()
+            if key not in seen:
+                seen.add(key)
+                unique_dbfs.append(f)
+
+        for dbf_path in sorted(unique_dbfs, key=lambda f: f.stem.lower()):
+            table_name = dbf_path.stem.lower()
+            try:
+                # Open with shared read access (use smbclient if available)
+                dbf = DBF(str(dbf_path), encoding='cp1252', load=False)
+
+                # Count rows
+                row_count = 0
+                rows_data = []
+                checksum_val = 0
+
+                for record in dbf:
+                    row_count += 1
+                    record_dict = {}
+                    for key, value in dict(record).items():
+                        if value is None:
+                            record_dict[key] = None
+                        elif hasattr(value, 'isoformat'):
+                            record_dict[key] = value.isoformat()
+                        elif isinstance(value, (bytes, bytearray)):
+                            record_dict[key] = value.hex()[:100]
+                        elif isinstance(value, bool):
+                            record_dict[key] = value
+                        elif isinstance(value, (int, float)):
+                            record_dict[key] = float(value)
+                        else:
+                            record_dict[key] = str(value).strip()
+
+                    # Simple checksum from string representation
+                    checksum_val = (checksum_val + hash(str(record_dict))) & 0xFFFFFFFF
+
+                    if row_count <= 50000:
+                        rows_data.append(record_dict)
+
+                db_snapshot[table_name] = {
+                    'row_count': row_count,
+                    'checksum': checksum_val,
+                    'rows': rows_data if row_count <= 50000 else None,
+                }
+            except Exception as e:
+                logger.debug(f"Could not snapshot {folder_label}/{table_name}: {e}")
+                db_snapshot[table_name] = {'row_count': -1, 'checksum': 0, 'error': str(e)}
+
+        snapshot['databases'][folder_label] = db_snapshot
+        logger.info(f"Snapshot Opera 3: {folder_label} ({folder_path}) — {len(db_snapshot)} tables captured")
+
+    return snapshot
+
+
 # ============================================================================
 # Diff Engine — Compares two snapshots
 # ============================================================================
@@ -433,14 +531,46 @@ async def take_before_snapshot(
     """
     Take a BEFORE snapshot of all Opera tables.
     Call this, then enter the transaction in Opera, then call /after.
+    Automatically detects Opera SE (SQL) vs Opera 3 (FoxPro/SMB).
     """
-    sql = _get_sql_connector()
-    if not sql:
-        raise HTTPException(status_code=503, detail="No database connection")
+    # Detect Opera version and take appropriate snapshot
+    opera_version = 'opera_se'
+    try:
+        import configparser
+        cfg = configparser.ConfigParser()
+        cfg.read(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'config.ini'))
+        opera_version = cfg.get('opera', 'version', fallback='sql_se')
+    except Exception:
+        pass
 
     try:
-        logger.info(f"Taking BEFORE snapshot for: {module}/{name}")
-        snapshot = take_snapshot_se(sql)
+        if opera_version == 'opera3':
+            # Opera 3 — snapshot DBF files via SMB
+            try:
+                from sql_rag.smb_access import get_smb_manager
+                smb = get_smb_manager()
+                if smb and smb.is_connected():
+                    data_path = str(smb.get_local_base())
+                    # Use opera3_base_path from config if set
+                    try:
+                        base_path = cfg.get('opera', 'opera3_base_path', fallback='')
+                        if base_path:
+                            data_path = base_path
+                    except Exception:
+                        pass
+                    logger.info(f"Taking BEFORE snapshot (Opera 3) for: {module}/{name} at {data_path}")
+                    snapshot = take_snapshot_opera3(data_path)
+                else:
+                    raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available")
+            except ImportError:
+                raise HTTPException(status_code=503, detail="SMB access module not available")
+        else:
+            # Opera SE — snapshot via SQL
+            sql = _get_sql_connector()
+            if not sql:
+                raise HTTPException(status_code=503, detail="No database connection")
+            logger.info(f"Taking BEFORE snapshot (Opera SE) for: {module}/{name}")
+            snapshot = take_snapshot_se(sql)
 
         # Save snapshot to temp file
         snap_path = _get_snapshot_path()
@@ -481,10 +611,6 @@ async def take_after_snapshot():
     Must be called after /before and after the transaction is entered in Opera.
     Saves the result to the transaction library.
     """
-    sql = _get_sql_connector()
-    if not sql:
-        raise HTTPException(status_code=503, detail="No database connection")
-
     snap_path = _get_snapshot_path()
     snap_file = os.path.join(snap_path, 'current_before.json')
     meta_file = os.path.join(snap_path, 'current_meta.json')
@@ -499,12 +625,34 @@ async def take_after_snapshot():
         with open(meta_file) as f:
             meta = json.load(f)
 
-        # Take after snapshot
-        logger.info(f"Taking AFTER snapshot for: {meta['module']}/{meta['name']}")
-        after = take_snapshot_se(sql)
+        # Take after snapshot using same source as before
+        source = meta.get('source', 'opera_se')
+        logger.info(f"Taking AFTER snapshot ({source}) for: {meta['module']}/{meta['name']}")
+
+        if source == 'opera3':
+            # Opera 3 — snapshot DBF files
+            try:
+                import configparser
+                cfg = configparser.ConfigParser()
+                cfg.read(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'config.ini'))
+                from sql_rag.smb_access import get_smb_manager
+                smb = get_smb_manager()
+                if smb and smb.is_connected():
+                    data_path = cfg.get('opera', 'opera3_base_path', fallback=str(smb.get_local_base()))
+                    after = take_snapshot_opera3(data_path)
+                else:
+                    raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available")
+            except ImportError:
+                raise HTTPException(status_code=503, detail="SMB access module not available")
+        else:
+            # Opera SE
+            sql = _get_sql_connector()
+            if not sql:
+                raise HTTPException(status_code=503, detail="No database connection")
+            after = take_snapshot_se(sql)
 
         # Generate diff
-        diff = diff_snapshots(before, after, sql_connector=sql)
+        diff = diff_snapshots(before, after, sql_connector=_get_sql_connector() if source != 'opera3' else None)
 
         # Build library entry
         entry = {
