@@ -69,12 +69,20 @@ MODULES = {
 
 
 def _get_sql_connector():
-    """Get the active SQL connector from the main app."""
+    """Get the active SQL connector for the current company."""
     try:
-        from api.main import sql_connector
+        from api.main import _get_active_company_id, _company_sql_connectors, sql_connector
+        # Use per-company connector if available (respects company switch)
+        company_id = _get_active_company_id()
+        if company_id and company_id in _company_sql_connectors:
+            return _company_sql_connectors[company_id]
         return sql_connector
     except Exception:
-        return None
+        try:
+            from api.main import sql_connector
+            return sql_connector
+        except Exception:
+            return None
 
 
 def _get_library_path():
