@@ -644,6 +644,102 @@ class OperaSQLImport:
             logger.error(f"Failed to update nhist for {account}: {e}")
             raise  # Fail the transaction - nhist must be updated correctly
 
+        # Also update nsubt/ntype (nominal sub-type and type balance totals)
+        # Opera keeps these aggregate balances in sync with nacnt
+        try:
+            self._update_nsubt_ntype(conn, account, value)
+        except Exception as e:
+            logger.error(f"Failed to update nsubt/ntype for {account}: {e}")
+            raise  # Fail the transaction - nsubt/ntype must be updated correctly
+
+    def _update_nsubt_ntype(self, conn, account: str, value: float):
+        """
+        Update nsubt (nominal sub-type balance) and ntype (nominal type balance)
+        after posting to ntran.
+
+        Opera maintains running balance totals at the sub-type and type level.
+        When a nominal account balance changes, the corresponding nsubt.ns_balance
+        and ntype.nt_bal must be adjusted by the same amount.
+
+        Args:
+            conn: Active database connection (within transaction)
+            account: Nominal account code (e.g., 'BC010', 'BB020')
+            value: Transaction value in POUNDS (positive=DR, negative=CR)
+        """
+        type_info = self._get_nacnt_type(conn, account)
+        if not type_info:
+            logger.warning(f"Cannot update nsubt/ntype - account {account} not found in nacnt")
+            return
+        na_type, na_subt = type_info
+
+        # Update nsubt (sub-type balance)
+        nsubt_sql = f"""
+            UPDATE nsubt WITH (ROWLOCK)
+            SET ns_balance = ISNULL(ns_balance, 0) + {value},
+                datemodified = GETDATE()
+            WHERE ns_subt = '{na_subt}' AND ns_type = '{na_type}'
+        """
+        try:
+            result = conn.execute(text(nsubt_sql))
+            if result.rowcount == 0:
+                logger.warning(f"nsubt update affected 0 rows for type={na_type}, subt={na_subt} - row may not exist")
+            else:
+                logger.debug(f"Updated nsubt for {na_type}/{na_subt}: value={value}")
+        except Exception as e:
+            logger.error(f"Failed to update nsubt for {na_type}/{na_subt}: {e}")
+            raise
+
+        # Update ntype (type balance)
+        ntype_sql = f"""
+            UPDATE ntype WITH (ROWLOCK)
+            SET nt_bal = ISNULL(nt_bal, 0) + {value},
+                datemodified = GETDATE()
+            WHERE nt_type = '{na_type}'
+        """
+        try:
+            result = conn.execute(text(ntype_sql))
+            if result.rowcount == 0:
+                logger.warning(f"ntype update affected 0 rows for type={na_type} - row may not exist")
+            else:
+                logger.debug(f"Updated ntype for {na_type}: value={value}")
+        except Exception as e:
+            logger.error(f"Failed to update ntype for {na_type}: {e}")
+            raise
+
+    def _insert_njmemo(self, conn, journal_number: int, description: str):
+        """
+        Insert a journal memo record into njmemo for a nominal ledger posting.
+
+        Opera creates an njmemo record for each journal number when posting to
+        the nominal ledger. The nj_memo field uses a sentinel value to indicate
+        journal-only data, and nj_txtrep holds the human-readable description.
+
+        Args:
+            conn: Active database connection (within transaction)
+            journal_number: The journal number (from _get_next_journal)
+            description: Description text (e.g., 'Cashbook Ledger Transfer',
+                        'Sales Ledger Transfer', 'Purchase Ledger Transfer')
+        """
+        njmemo_id = self._get_next_id(conn, 'njmemo')
+        safe_desc = description.replace("'", "''") if description else ''
+        njmemo_sql = f"""
+            INSERT INTO njmemo (
+                id, nj_journal, nj_memo, nj_image, nj_txtrep, nj_binrep,
+                datecreated, datemodified, state
+            ) VALUES (
+                {njmemo_id}, {journal_number},
+                '{chr(255)}<<JOURNAL_DATA_ONLY>>{chr(255)}', '',
+                '{safe_desc[:60]}', 0,
+                GETDATE(), GETDATE(), 1
+            )
+        """
+        try:
+            conn.execute(text(njmemo_sql))
+            logger.debug(f"Inserted njmemo id={njmemo_id} for journal {journal_number}: {description}")
+        except Exception as e:
+            logger.error(f"Failed to insert njmemo for journal {journal_number}: {e}")
+            raise
+
     def _get_nacnt_type(self, conn, account: str):
         """Look up and cache the na_type/na_subt for a nominal account."""
         if not hasattr(self, '_nacnt_type_cache'):
@@ -2293,6 +2389,9 @@ class OperaSQLImport:
                     # Update nacnt balance for sales ledger control (CREDIT)
                     self.update_nacnt_balance(conn, sales_ledger_control, -amount_pounds, period, year)
 
+                    # Insert journal memo for this NL posting
+                    self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
+
                 # Update nbank balance (receipt increases bank balance) - ALWAYS when atran created
                 self.update_nbank_balance(conn, bank_account, amount_pounds)
 
@@ -2800,6 +2899,9 @@ class OperaSQLImport:
                     # Update nacnt balance for sales ledger control (DEBIT - increasing debtors)
                     self.update_nacnt_balance(conn, sales_ledger_control, amount_pounds, period, year)
 
+                    # Insert journal memo for this NL posting
+                    self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
+
                 # Update nbank balance (refund decreases bank balance) - ALWAYS when atran created
                 self.update_nbank_balance(conn, bank_account, -amount_pounds)
 
@@ -3266,6 +3368,9 @@ class OperaSQLImport:
                     conn.execute(text(ntran_control_sql))
                     # Update nacnt balance for creditors control (DEBIT - reducing liability)
                     self.update_nacnt_balance(conn, creditors_control, amount_pounds, period, year)
+
+                    # Insert journal memo for this NL posting
+                    self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
 
                 # Update nbank balance (payment decreases bank balance) - ALWAYS when atran created
                 self.update_nbank_balance(conn, bank_account, -amount_pounds)
@@ -3901,6 +4006,9 @@ class OperaSQLImport:
                         """
                         conn.execute(text(ntran_vat_sql))
                         self.update_nacnt_balance(conn, vat_nominal_account, vat_ntran_value, period, year)
+
+                    # Insert journal memo for this NL posting
+                    self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
 
                 # Update nbank balance - ALWAYS when atran created (GROSS amount)
                 self.update_nbank_balance(conn, bank_account, bank_ntran_value)
@@ -4866,6 +4974,9 @@ class OperaSQLImport:
                     # Update nacnt balance for creditors control (CREDIT - increasing liability back)
                     self.update_nacnt_balance(conn, creditors_control, -amount_pounds, period, year)
 
+                    # Insert journal memo for this NL posting
+                    self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
+
                 # Update nbank balance (purchase refund increases bank balance) - ALWAYS when atran created
                 self.update_nbank_balance(conn, bank_account, amount_pounds)
 
@@ -5271,6 +5382,9 @@ class OperaSQLImport:
                 # Update nacnt balance for debtors control (DEBIT)
                 self.update_nacnt_balance(conn, debtors_control, gross_amount, period, year)
 
+                # Insert journal memo for this NL posting
+                self._insert_njmemo(conn, next_journal, 'Sales Ledger Transfer (RT)')
+
                 # 5. INSERT INTO nhist (Nominal History for P&L account)
                 nhist_sql = f"""
                     INSERT INTO nhist (
@@ -5596,6 +5710,10 @@ class OperaSQLImport:
                     # Update nacnt balance for VAT account (DEBIT)
                     self.update_nacnt_balance(conn, vat_account, vat_amount, period, year)
 
+                # Insert journal memo for this NL posting
+                self._insert_njmemo(conn, next_journal, 'Purchase Ledger Transfer (RT)')
+
+                if vat_amount > 0:
                     # 4. zvtran - VAT analysis record (for VAT reporting)
                     vat_rate = (vat_amount / net_amount * 100) if net_amount > 0 else 20.0
                     zvtran_row_id = self._get_next_id(conn, 'zvtran')
@@ -5814,6 +5932,9 @@ class OperaSQLImport:
                     conn.execute(text(sql))
                     # Update nacnt balance for journal line
                     self.update_nacnt_balance(conn, line['account'], amount, period, year)
+
+                # Insert journal memo for this NL posting
+                self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
 
             total_debits = sum(float(l['amount']) for l in lines if float(l['amount']) > 0)
             logger.info(f"Successfully imported nominal journal: {reference} with {len(lines)} lines, £{total_debits:.2f}")
@@ -6260,6 +6381,9 @@ class OperaSQLImport:
                         conn.execute(text(ntran_credit_sql))
                         # Update nacnt balance for debtors control (CREDIT)
                         self.update_nacnt_balance(conn, sales_ledger_control, -amount_pounds, period, year)
+
+                        # Insert journal memo for this payment's NL posting
+                        self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
                         next_journal += 1
 
                     # Create anoml records (transfer file) - only when completing batch
@@ -6423,6 +6547,9 @@ class OperaSQLImport:
                         conn.execute(text(fees_cr_sql))
                         # Update nacnt balance for bank account fees (CREDIT gross)
                         self.update_nacnt_balance(conn, bank_account, -gross_fees, period, year)
+
+                        # Note: njmemo for fees shares the same journal number as receipts
+                        # which was already handled in the receipts posting section
 
                     # Create SEPARATE cashbook entry for fees (not part of receipts batch)
                     # This ensures fees appear as a distinct payment in cashbook
@@ -8593,6 +8720,10 @@ class OperaSQLImport:
                 if bank_delta_pounds != 0:
                     self.update_nbank_balance(conn, bank_account, bank_delta_pounds)
 
+                # Insert journal memo for this NL posting (if any ntran were created)
+                if ntran_count > 0:
+                    self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
+
                 # Set ae_complet = 1
                 conn.execute(text(f"""
                     UPDATE aentry WITH (ROWLOCK)
@@ -9149,6 +9280,9 @@ class OperaSQLImport:
                     conn.execute(text(ntran_second_sql))
                     # Update nacnt for SECOND bank
                     self.update_nacnt_balance(conn, second_bank, second_value, period, year)
+
+                    # Insert journal memo for this NL posting
+                    self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
 
                 # Update nbank for both banks - ALWAYS when atran created
                 self.update_nbank_balance(conn, source_bank, -amount_pounds)
@@ -9959,7 +10093,9 @@ class OperaSQLImport:
                             """))
                             tables_updated.update(['zvtran', 'nvat'])
 
-                        tables_updated.update(['ntran', 'nacnt'])
+                        # Insert journal memo for this NL posting
+                        self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
+                        tables_updated.update(['ntran', 'nacnt', 'njmemo'])
 
                     # 2d. anoml transfer file records
                     if posting_decision.post_to_transfer_file:
@@ -10524,6 +10660,9 @@ class SalesInvoiceFileImport:
                 # Update nacnt balance for debtors control (DEBIT)
                 self.update_nacnt_balance(conn, debtors_control, gross_amount, period, year)
 
+                # Insert journal memo for this NL posting
+                self._insert_njmemo(conn, next_journal, 'Sales Ledger Transfer (RT)')
+
                 # 5. zvtran - VAT transaction
                 if vat_amount > 0:
                     zvtran_id = self._get_next_id(conn, 'zvtran')
@@ -10950,6 +11089,9 @@ class PurchaseInvoiceFileImport:
                     conn.execute(text(ntran_vat_sql))
                     # Update nacnt balance for VAT input account (DEBIT)
                     self.update_nacnt_balance(conn, vat_input_account, vat_amount, period, year)
+
+                # Insert journal memo for this NL posting
+                self._insert_njmemo(conn, next_journal, 'Purchase Ledger Transfer (RT)')
 
                 # 5. zvtran - VAT transaction
                 if vat_amount > 0:
@@ -12374,6 +12516,9 @@ class PurchaseInvoiceFileImport:
                             )
                         """))
                         self.update_nacnt_balance(conn, vat_output_acct, -vat_total, period, year)
+
+                    # Insert journal memo for this NL posting
+                    self._insert_njmemo(conn, next_journal, 'Sales Ledger Transfer (RT)')
 
                 # ----- 7. CREATE ZVTRAN (VAT Analysis) -----
                 if vat_total > 0:

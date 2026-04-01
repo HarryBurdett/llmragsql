@@ -1122,6 +1122,68 @@ Updated via `update_nbank_balance()` for every cashbook transaction.
 
 **IMPORTANT: nbank is ALWAYS updated when a cashbook transaction (atran) is created**, regardless of whether `post_to_nominal` is True or False. The bank balance must always reflect actual transactions. Only nacnt/ntran/nhist are conditional on the posting decision.
 
+### `nsubt` - Nominal Sub-Type Balance Totals
+
+Updated automatically by `update_nacnt_balance()` (via `_update_nsubt_ntype()`). Tracks aggregate balances at the nominal sub-type level.
+
+| Field | Description |
+|-------|-------------|
+| `ns_subt` | Sub-type code (e.g., 'BC', 'CA', 'BB') |
+| `ns_type` | Type code (e.g., 'A ', 'B ', 'C ') |
+| `ns_desc` | Sub-type description |
+| `ns_balance` | Running balance total for all accounts of this sub-type |
+
+When nacnt is updated, nsubt.ns_balance is adjusted by the same value.
+
+### `ntype` - Nominal Type Balance Totals
+
+Updated automatically by `update_nacnt_balance()` (via `_update_nsubt_ntype()`). Tracks aggregate balances at the nominal type level.
+
+| Field | Description |
+|-------|-------------|
+| `nt_type` | Type code (e.g., 'A ' Fixed Assets, 'B ' Current Assets, 'C ' Current Liabilities) |
+| `nt_desc` | Type description |
+| `nt_cat` | Category (D=Debit, C=Credit) |
+| `nt_class` | Classification (A=Asset, L=Liability, etc.) |
+| `nt_bal` | Running balance total for all accounts of this type |
+
+When nacnt is updated, ntype.nt_bal is adjusted by the same value.
+
+### `njmemo` - Journal Memo Records
+
+Created by `_insert_njmemo()` for each journal number when posting to the nominal ledger.
+
+| Field | Description |
+|-------|-------------|
+| `nj_journal` | Journal number (matches ntran.nt_jrnl) |
+| `nj_memo` | Sentinel value: `ÿ<<JOURNAL_DATA_ONLY>>ÿ` |
+| `nj_image` | Empty string |
+| `nj_txtrep` | Human-readable description of the posting source |
+| `nj_binrep` | Always 0 |
+
+**nj_txtrep values by transaction source:**
+| Source | nj_txtrep |
+|--------|-----------|
+| Cashbook (sales receipt, purchase payment, nominal, transfer) | `Cashbook Ledger Transfer (RT)` |
+| Sales ledger (invoice posting) | `Sales Ledger Transfer (RT)` |
+| Purchase ledger (invoice posting) | `Purchase Ledger Transfer (RT)` |
+
+The `(RT)` suffix indicates real-time NL posting (as opposed to NL transfer file processing which omits it).
+
+### `ndetail` - Nominal Detail (Limited Use)
+
+**NOT a general-purpose table.** Only contains records for specific nominal accounts (e.g., Directors CB Loan). Has the same field layout as ntran but is NOT populated for every ntran INSERT. Do NOT insert ndetail records for normal postings.
+
+### `idtab` - ID Counter Table
+
+Tracks the "Nominal Journal Posting Number" used by Opera's NL transfer process. Our code uses `nparm.np_nexjrnl` for journal numbers (a separate counter), so idtab does NOT need updating by our import code.
+
+| Field | Description |
+|-------|-------------|
+| `id_uniqueid` | Counter identifier (1 = journal posting number) |
+| `id_numericid` | Next available number |
+| `id_description` | Description of what this counter tracks |
+
 ---
 
 ## Period Posting Rules (Detailed)
@@ -1365,8 +1427,9 @@ Before marking any posting code as complete, verify ALL items:
 □ Journal numbers from nparm.np_nexjrnl via _get_next_journal() — NEVER MAX+1
 □ ntran nt_type/nt_subt from nacnt via _get_nacnt_type() — NEVER hardcode
 □ Entry numbers from atype via increment_atype_entry() — NEVER MAX+1
-□ nacnt balances updated via update_nacnt_balance() (also updates nhist)
+□ nacnt balances updated via update_nacnt_balance() (also updates nhist, nsubt, ntype)
 □ nbank balances updated via update_nbank_balance() (if cashbook transaction)
+□ njmemo record created via _insert_njmemo() (when post_to_nominal=True)
 □ Customer/supplier balances updated (sname.sn_currbal / pname.pn_currbal)
 □ Transfer files created (anoml/snoml/pnoml) with correct ax_done flag
 □ ae_complet flag set correctly (1 only if post_to_nominal=True)
@@ -1396,8 +1459,10 @@ Before marking any posting code as complete, verify ALL items:
 | `_get_next_journal(conn)` | Atomic journal number from nparm.np_nexjrnl |
 | `_get_nacnt_type(conn, account)` | Get nt_type/nt_subt from nacnt for a nominal account |
 | `increment_atype_entry(conn, cbtype)` | Atomic entry number from atype |
-| `update_nacnt_balance(conn, acct, val, period)` | Update nacnt + nhist balances |
+| `update_nacnt_balance(conn, acct, val, period)` | Update nacnt + nhist + nsubt + ntype balances |
 | `update_nbank_balance(conn, bank, val)` | Update nbank.nk_curbal |
+| `_insert_njmemo(conn, journal, desc)` | Insert journal memo record into njmemo |
+| `_update_nsubt_ntype(conn, acct, val)` | Update nsubt/ntype balance totals (called by update_nacnt_balance) |
 | `get_vat_rate(vat_code, vat_type, date)` | VAT rate + nominal account from ztax |
 | `OperaUniqueIdGenerator.generate()` | Base-36 unique IDs (_XXXXXXXXX format) |
 
