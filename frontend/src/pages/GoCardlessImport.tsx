@@ -992,9 +992,7 @@ function GoCardlessImportInner() {
           if (filterStats.filtered_all_payments_excluded > 0) {
             reasons.push(`${filterStats.filtered_all_payments_excluded} excluded by filter`);
           }
-          if (reasons.length > 0) {
-            errorMsg = `No payouts to import — ${reasons.join(', ')}.`;
-          }
+          // No message needed when all payouts are filtered — nothing to show
         }
         setScanError(errorMsg);
       }
