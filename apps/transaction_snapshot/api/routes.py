@@ -715,8 +715,29 @@ async def get_modules():
 
 @router.get("/api/transaction-snapshot/presets")
 async def get_presets():
-    """Get preset transaction types that match what our app posts."""
-    return {"success": True, "presets": PRESETS}
+    """Get preset transaction types that match what our app posts. Excludes already-captured ones."""
+    # Load library to find already-captured types
+    lib_path = _get_library_path()
+    captured_names = set()
+    if os.path.exists(lib_path):
+        for filename in os.listdir(lib_path):
+            if filename.endswith('.json'):
+                try:
+                    with open(os.path.join(lib_path, filename)) as f:
+                        entry = json.load(f)
+                        captured_names.add(entry.get('name', '').lower())
+                except Exception:
+                    pass
+
+    # Filter out already-captured presets
+    remaining = [p for p in PRESETS if p['name'].lower() not in captured_names]
+
+    return {
+        "success": True,
+        "presets": remaining,
+        "total_presets": len(PRESETS),
+        "captured": len(PRESETS) - len(remaining),
+    }
 
 
 @router.get("/api/transaction-snapshot/library")
