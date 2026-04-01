@@ -993,7 +993,7 @@ function GoCardlessImportInner() {
             reasons.push(`${filterStats.filtered_all_payments_excluded} excluded by filter`);
           }
           if (reasons.length > 0) {
-            errorMsg = `Found ${filterStats.total_from_api} payouts from GoCardless API, but all were filtered: ${reasons.join(', ')}.`;
+            errorMsg = `No payouts to import — ${reasons.join(', ')}.`;
           }
         }
         setScanError(errorMsg);
