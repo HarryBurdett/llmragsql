@@ -471,6 +471,16 @@ function GoCardlessRequestsInner() {
     gcTime: 10 * 60 * 1000,
   });
 
+  // Unposted payments warning — check for collected but unposted GoCardless payments
+  const { data: unpostedData } = useQuery({
+    queryKey: ['gcUnpostedPayments'],
+    queryFn: async () => {
+      const res = await authFetch(gcUrl('/unposted-payments'));
+      return res.json();
+    },
+    staleTime: 2 * 60 * 1000,  // Cache for 2 minutes
+  });
+
   // Sync mandates mutation
   const syncMandatesMutation = useMutation({
     mutationFn: async () => {
@@ -1051,6 +1061,25 @@ function GoCardlessRequestsInner() {
 
       {success && (
         <Alert variant="success" onDismiss={() => setSuccess(null)}>{success}</Alert>
+      )}
+
+      {/* Unposted payments warning */}
+      {unpostedData?.has_unposted && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+          <div>
+            <h4 className="font-medium text-amber-800">Unposted GoCardless Payments</h4>
+            <p className="text-sm text-amber-700 mt-1">
+              There {unpostedData.unposted_count === 1 ? 'is' : 'are'} <strong>{unpostedData.unposted_count} payment{unpostedData.unposted_count !== 1 ? 's' : ''}</strong> totalling <strong>£{unpostedData.unposted_total?.toLocaleString('en-GB', {minimumFractionDigits: 2})}</strong> already collected by GoCardless but not yet posted to Opera.
+              {unpostedData.unprocessed_batches > 0 && (
+                <> Plus <strong>{unpostedData.unprocessed_batches} payout batch{unpostedData.unprocessed_batches !== 1 ? 'es' : ''}</strong> awaiting import.</>
+              )}
+            </p>
+            <p className="text-sm text-amber-600 mt-1">
+              Post these to Opera before requesting new payments to avoid duplicate charges.
+            </p>
+          </div>
+        </div>
       )}
 
       {/* Stats Summary */}

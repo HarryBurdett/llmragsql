@@ -5998,6 +5998,57 @@ async def get_gocardless_payment_stats():
         return {"success": False, "error": str(e)}
 
 
+@router.get("/api/gocardless/unposted-payments")
+async def get_unposted_gocardless_payments():
+    """
+    Check for GoCardless payments collected but not yet posted to Opera.
+    Returns count and total amount to warn users before requesting new payments.
+    """
+    try:
+        payments_db = get_payments_db()
+
+        # Get payment requests with status indicating money collected but not posted
+        # confirmed = collected from customer, paid_out = money in bank — neither posted to Opera
+        all_requests = payments_db.list_payment_requests(limit=10000)
+
+        unposted = []
+        total_amount = 0
+        for req in all_requests:
+            if req.get('status') in ('confirmed', 'paid_out'):
+                amount = (req.get('amount_pence', 0) or 0) / 100.0
+                unposted.append({
+                    'id': req.get('id'),
+                    'opera_account': req.get('opera_account'),
+                    'customer_name': req.get('customer_name', ''),
+                    'amount': amount,
+                    'status': req.get('status'),
+                    'charge_date': req.get('charge_date'),
+                    'invoice_refs': req.get('invoice_refs'),
+                })
+                total_amount += amount
+
+        # Also check for unprocessed payout emails (batches ready for import)
+        unprocessed_batches = 0
+        try:
+            if email_storage and hasattr(email_storage, 'get_gocardless_imports'):
+                gc_imports = email_storage.get_gocardless_imports()
+                unprocessed_batches = len([i for i in gc_imports if not i.get('is_imported')])
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "has_unposted": len(unposted) > 0 or unprocessed_batches > 0,
+            "unposted_count": len(unposted),
+            "unposted_total": round(total_amount, 2),
+            "unprocessed_batches": unprocessed_batches,
+            "unposted": unposted,
+        }
+    except Exception as e:
+        logger.warning(f"Could not check unposted GoCardless payments: {e}")
+        return {"success": True, "has_unposted": False, "unposted_count": 0, "unposted_total": 0, "unprocessed_batches": 0, "unposted": []}
+
+
 @router.get("/api/gocardless/mandates")
 async def list_gocardless_mandates(
     status: Optional[str] = Query(None, description="Filter by status (active, cancelled, etc)"),
@@ -7009,6 +7060,12 @@ async def opera3_list_payment_requests(
 async def opera3_payment_request_stats():
     """Get payment request statistics — same logic as SE."""
     return await get_gocardless_payment_stats()
+
+
+@router.get("/api/opera3/gocardless/unposted-payments")
+async def opera3_get_unposted_gocardless_payments():
+    """Check for unposted GoCardless payments — same logic as SE."""
+    return await get_unposted_gocardless_payments()
 
 
 @router.get("/api/opera3/gocardless/payment-requests/{request_id}")
