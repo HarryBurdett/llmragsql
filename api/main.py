@@ -806,9 +806,12 @@ async def auth_middleware(request: Request, call_next):
 
     if not token:
         from fastapi.responses import JSONResponse
+        origin = request.headers.get('origin', '')
+        headers = {'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true'} if origin else {}
         return JSONResponse(
             status_code=401,
-            content={'error': 'Not authenticated', 'detail': 'No authentication token provided'}
+            content={'error': 'Not authenticated', 'detail': 'No authentication token provided'},
+            headers=headers
         )
 
     # Validate token
@@ -816,9 +819,12 @@ async def auth_middleware(request: Request, call_next):
         user = user_auth.validate_session(token)
         if not user:
             from fastapi.responses import JSONResponse
+            origin = request.headers.get('origin', '')
+            headers = {'access-control-allow-origin': origin, 'access-control-allow-credentials': 'true'} if origin else {}
             return JSONResponse(
                 status_code=401,
-                content={'error': 'Invalid or expired session', 'detail': 'Please log in again'}
+                content={'error': 'Invalid or expired session', 'detail': 'Please log in again'},
+                headers=headers
             )
 
         # Attach user to request state
