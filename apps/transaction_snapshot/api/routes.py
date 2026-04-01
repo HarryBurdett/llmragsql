@@ -93,11 +93,14 @@ def _get_snapshot_path():
 # Snapshot Engine — Scans ALL tables
 # ============================================================================
 
-def take_snapshot_se(sql_connector) -> Dict[str, Any]:
+def take_snapshot_se(sql_connector, max_rows_for_full_data: int = 5000) -> Dict[str, Any]:
     """
-    Take a complete snapshot of ALL tables in both the company and system databases.
-    Returns row counts and checksums for every table, plus full row data for
-    tables with < 50,000 rows (for detailed diffing).
+    Take a snapshot of ALL tables in both the company and system databases.
+
+    Strategy: Get row counts for all tables via sys.partitions (instant).
+    Get checksums for all tables (fast). Read full row data only for
+    tables with <= max_rows_for_full_data rows. Large tables (reports,
+    audit logs) get checksum-only — changes detected but not diffed.
     """
     snapshot = {
         'timestamp': datetime.now().isoformat(),
@@ -105,7 +108,6 @@ def take_snapshot_se(sql_connector) -> Dict[str, Any]:
         'databases': {},
     }
 
-    # Get current database name
     db_result = sql_connector.execute_query("SELECT DB_NAME() as db_name")
     company_db = db_result.iloc[0]['db_name'] if db_result is not None else 'unknown'
     system_db = 'Opera3SESystem'
@@ -113,26 +115,26 @@ def take_snapshot_se(sql_connector) -> Dict[str, Any]:
     for db_name in [company_db, system_db]:
         db_snapshot = {}
         try:
-            # Get ALL user tables
+            # Get ALL user tables with row counts in a single query (FAST)
             tables_df = sql_connector.execute_query(f"""
-                SELECT TABLE_NAME
-                FROM [{db_name}].INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_TYPE = 'BASE TABLE'
-                ORDER BY TABLE_NAME
+                SELECT t.TABLE_NAME,
+                       p.rows as row_count
+                FROM [{db_name}].INFORMATION_SCHEMA.TABLES t WITH (NOLOCK)
+                LEFT JOIN [{db_name}].sys.partitions p ON p.object_id = OBJECT_ID('{db_name}.dbo.' + t.TABLE_NAME)
+                    AND p.index_id IN (0, 1)
+                WHERE t.TABLE_TYPE = 'BASE TABLE'
+                ORDER BY t.TABLE_NAME
             """)
             if tables_df is None or tables_df.empty:
                 continue
 
             for _, row in tables_df.iterrows():
                 table_name = row['TABLE_NAME']
-                try:
-                    # Get row count
-                    count_df = sql_connector.execute_query(f"""
-                        SELECT COUNT(*) as cnt FROM [{db_name}].dbo.[{table_name}] WITH (NOLOCK)
-                    """)
-                    row_count = int(count_df.iloc[0]['cnt']) if count_df is not None else 0
+                row_count = int(row['row_count']) if row['row_count'] is not None else 0
 
-                    # Get checksum for change detection
+                try:
+                    # Get checksum (fast — SQL Server computes internally)
+                    checksum = 0
                     try:
                         checksum_df = sql_connector.execute_query(f"""
                             SELECT CHECKSUM_AGG(CHECKSUM(*)) as chk
@@ -142,34 +144,34 @@ def take_snapshot_se(sql_connector) -> Dict[str, Any]:
                     except Exception:
                         checksum = 0
 
-                    # For small/medium tables, capture full data for row-level diff
+                    # Read full data for small tables (Opera transaction tables are typically < 5000 rows)
+                    # Large tables (reports, audit, system config) get checksum-only
                     rows_data = None
-                    if row_count > 0 and row_count <= 50000:
-                        try:
-                            data_df = sql_connector.execute_query(f"""
-                                SELECT * FROM [{db_name}].dbo.[{table_name}] WITH (NOLOCK)
-                            """)
-                            if data_df is not None and not data_df.empty:
-                                # Convert to list of dicts, handling special types
-                                rows_data = []
-                                for _, data_row in data_df.iterrows():
-                                    row_dict = {}
-                                    for col in data_df.columns:
-                                        val = data_row[col]
-                                        if val is None:
-                                            row_dict[col] = None
-                                        elif hasattr(val, 'isoformat'):
-                                            row_dict[col] = val.isoformat()
-                                        elif isinstance(val, (bytes, bytearray)):
-                                            row_dict[col] = val.hex()[:100]  # Truncate binary
-                                        else:
-                                            try:
-                                                row_dict[col] = float(val) if isinstance(val, (int, float)) else str(val).strip()
-                                            except (ValueError, TypeError):
-                                                row_dict[col] = str(val)[:200]
-                                    rows_data.append(row_dict)
-                        except Exception as e:
-                            logger.debug(f"Could not read full data from {db_name}.{table_name}: {e}")
+                    if row_count > 0 and row_count <= max_rows_for_full_data:
+                            try:
+                                data_df = sql_connector.execute_query(f"""
+                                    SELECT * FROM [{db_name}].dbo.[{table_name}] WITH (NOLOCK)
+                                """)
+                                if data_df is not None and not data_df.empty:
+                                    rows_data = []
+                                    for _, data_row in data_df.iterrows():
+                                        row_dict = {}
+                                        for col in data_df.columns:
+                                            val = data_row[col]
+                                            if val is None:
+                                                row_dict[col] = None
+                                            elif hasattr(val, 'isoformat'):
+                                                row_dict[col] = val.isoformat()
+                                            elif isinstance(val, (bytes, bytearray)):
+                                                row_dict[col] = val.hex()[:100]
+                                            else:
+                                                try:
+                                                    row_dict[col] = float(val) if isinstance(val, (int, float)) else str(val).strip()
+                                                except (ValueError, TypeError):
+                                                    row_dict[col] = str(val)[:200]
+                                        rows_data.append(row_dict)
+                            except Exception as e:
+                                logger.debug(f"Could not read {db_name}.{table_name}: {e}")
 
                     db_snapshot[table_name] = {
                         'row_count': row_count,
@@ -178,7 +180,6 @@ def take_snapshot_se(sql_connector) -> Dict[str, Any]:
                     }
                 except Exception as e:
                     logger.debug(f"Could not snapshot {db_name}.{table_name}: {e}")
-                    db_snapshot[table_name] = {'row_count': -1, 'checksum': 0, 'error': str(e)}
 
         except Exception as e:
             logger.warning(f"Could not access database {db_name}: {e}")
