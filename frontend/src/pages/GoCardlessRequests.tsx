@@ -1065,20 +1065,16 @@ function GoCardlessRequestsInner() {
 
       {/* Unposted payments warning */}
       {unpostedData?.has_unposted && (
-        <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
-          <div>
-            <h4 className="font-medium text-amber-800">Unposted GoCardless Payments</h4>
-            <p className="text-sm text-amber-700 mt-1">
-              There {unpostedData.unposted_count === 1 ? 'is' : 'are'} <strong>{unpostedData.unposted_count} payment{unpostedData.unposted_count !== 1 ? 's' : ''}</strong> totalling <strong>£{unpostedData.unposted_total?.toLocaleString('en-GB', {minimumFractionDigits: 2})}</strong> already collected by GoCardless but not yet posted to Opera.
-              {unpostedData.unprocessed_batches > 0 && (
-                <> Plus <strong>{unpostedData.unprocessed_batches} payout batch{unpostedData.unprocessed_batches !== 1 ? 'es' : ''}</strong> awaiting import.</>
-              )}
-            </p>
-            <p className="text-sm text-amber-600 mt-1">
-              Post these to Opera before requesting new payments to avoid duplicate charges.
-            </p>
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <span className="text-sm text-amber-800">
+              <strong>{unpostedData.unposted_count} payment{unpostedData.unposted_count !== 1 ? 's' : ''}</strong> (£{unpostedData.unposted_total?.toLocaleString('en-GB', {minimumFractionDigits: 2})}) collected but not posted to Opera
+            </span>
           </div>
+          <a href="/cashbook/gocardless" className="px-3 py-1 text-sm bg-amber-600 text-white rounded hover:bg-amber-700">
+            Go to Import
+          </a>
         </div>
       )}
 
