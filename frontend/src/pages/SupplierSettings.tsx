@@ -15,7 +15,7 @@ interface SettingConfig {
   label: string;
   description: string;
   icon: LucideIcon;
-  type: 'number' | 'text' | 'email' | 'toggle';
+  type: 'number' | 'text' | 'email' | 'toggle' | 'date';
   prefix?: string;
   suffix?: string;
   placeholder?: string;
@@ -67,6 +67,13 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
         icon: Calendar,
         type: 'number',
         suffix: 'days',
+      },
+      {
+        key: 'next_payment_run_date',
+        label: 'Next Payment Run Date',
+        description: 'Scheduled date for the next supplier payment run — included in automated responses to suppliers',
+        icon: Calendar,
+        type: 'date',
       },
     ],
   },
@@ -327,6 +334,7 @@ export default function SupplierSettings() {
                   const Icon = setting.icon;
                   const currentValue = formValues[setting.key] || '';
                   const isToggle = setting.type === 'toggle';
+                  const isDate = setting.type === 'date';
                   const isChecked = currentValue === 'true' || currentValue === '1';
 
                   return (
@@ -361,13 +369,22 @@ export default function SupplierSettings() {
                               {setting.prefix && (
                                 <span className="text-sm text-gray-500">{setting.prefix}</span>
                               )}
-                              <input
-                                type={setting.type === 'number' ? 'number' : 'text'}
-                                value={currentValue}
-                                onChange={e => handleChange(setting.key, e.target.value)}
-                                placeholder={setting.placeholder}
-                                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                              />
+                              {isDate ? (
+                                <input
+                                  type="date"
+                                  value={currentValue}
+                                  onChange={e => handleChange(setting.key, e.target.value)}
+                                  className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                />
+                              ) : (
+                                <input
+                                  type={setting.type === 'number' ? 'number' : 'text'}
+                                  value={currentValue}
+                                  onChange={e => handleChange(setting.key, e.target.value)}
+                                  placeholder={setting.placeholder}
+                                  className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                />
+                              )}
                               {setting.suffix && (
                                 <span className="text-sm text-gray-500">{setting.suffix}</span>
                               )}
