@@ -90,18 +90,10 @@ const suppliersMenu: TopLevelMenu = {
   sections: [
     {
       items: [
-        { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Automation overview & alerts', color: 'amber' },
-        { path: '/supplier/statements/queue', label: 'Statements', icon: FileText, description: 'Incoming statements to process', color: 'blue' },
-        { path: '/supplier/statements/reconciliations', label: 'Reconciliations', icon: Scale, description: 'Review & approve responses', color: 'purple' },
-        { path: '/supplier/queries/open', label: 'Queries', icon: MessageSquare, description: 'Outstanding supplier queries', color: 'rose' },
-        { path: '/supplier/security/alerts', label: 'Security', icon: Shield, description: 'Bank detail change alerts', color: 'rose' },
-      ],
-    },
-    {
-      heading: 'Reference',
-      items: [
-        { path: '/supplier/account', label: 'Account Lookup', icon: Receipt, description: 'Search supplier accounts', color: 'orange' },
-        { path: '/supplier/aged-creditors', label: 'Aged Creditors', icon: Building2, description: 'Outstanding balances by age', color: 'teal' },
+        { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Overview and alerts', color: 'amber' },
+        { path: '/supplier/statements/queue', label: 'Statements', icon: FileText, description: 'Review supplier statements', color: 'blue' },
+        { path: '/supplier/directory', label: 'Supplier Directory', icon: Building2, description: 'Supplier list and settings', color: 'purple' },
+        { path: '/supplier/aged-creditors', label: 'Aged Creditors', icon: Receipt, description: 'Outstanding balances by age', color: 'teal' },
       ],
     },
   ],

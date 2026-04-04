@@ -76,6 +76,29 @@ const lineStatusColors: Record<string, string> = {
   'Amount Difference': 'text-red-700 bg-red-50',
 };
 
+function fmtDate(d: string | null | undefined): string {
+  if (!d) return '';
+  // Handle "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS" or ISO formats
+  const s = d.replace('T', ' ').split(' ')[0];
+  const parts = s.split('-');
+  if (parts.length === 3 && parts[0].length === 4) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return d;
+}
+
+function fmtDateTime(d: string | null | undefined): string {
+  if (!d) return '';
+  const s = d.replace('T', ' ');
+  const [datePart, timePart] = s.split(' ');
+  const parts = datePart.split('-');
+  if (parts.length === 3 && parts[0].length === 4) {
+    const time = timePart ? ' ' + timePart.substring(0, 5) : '';
+    return `${parts[2]}/${parts[1]}/${parts[0]}${time}`;
+  }
+  return d;
+}
+
 export default function SupplierStatementDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -208,10 +231,10 @@ export default function SupplierStatementDetail() {
         <FileText className="w-6 h-6 text-blue-600" />
         <div className="flex-1">
           <h1 className="text-xl font-bold text-gray-900">
-            {statement.supplier_name} — Statement {statement.statement_date || ''}
+            {statement.supplier_name} — Statement {fmtDate(statement.statement_date)}
           </h1>
           <p className="text-sm text-gray-500">
-            Account: {statement.supplier_code} · From: {statement.sender_email} · Received: {statement.received_date?.split('T')[0]}
+            Account: {statement.supplier_code} · From: {statement.sender_email} · Received: {fmtDate(statement.received_date)}
           </p>
         </div>
         <span className={`px-3 py-1 rounded-full text-sm font-medium ${statusColors[statement.status] || 'bg-gray-100'}`}>
@@ -403,7 +426,7 @@ export default function SupplierStatementDetail() {
             <tbody>
               {lines.map((line, i) => (
                 <tr key={line.id} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
-                  <td className="px-3 py-1.5 text-gray-700">{line.line_date || ''}</td>
+                  <td className="px-3 py-1.5 text-gray-700">{fmtDate(line.line_date)}</td>
                   <td className="px-3 py-1.5 font-medium text-gray-900">{line.reference || ''}</td>
                   <td className="px-3 py-1.5 text-gray-600">{line.doc_type || ''}</td>
                   <td className="px-3 py-1.5 text-right text-gray-700">
@@ -463,7 +486,7 @@ export default function SupplierStatementDetail() {
                   const absAmt = Math.abs(sv);
                   return (
                     <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
-                      <td className="px-3 py-1.5 text-gray-700">{item.line_date || ''}</td>
+                      <td className="px-3 py-1.5 text-gray-700">{fmtDate(item.line_date)}</td>
                       <td className="px-3 py-1.5 font-medium text-gray-900">{item.reference || ''}</td>
                       <td className="px-3 py-1.5 text-gray-600">{item.doc_type || ''}</td>
                       <td className="px-3 py-1.5 text-right text-gray-700">
@@ -485,11 +508,11 @@ export default function SupplierStatementDetail() {
       <div className="mt-4 bg-white rounded-lg border p-4">
         <h3 className="text-sm font-semibold text-gray-700 mb-2">Timeline</h3>
         <div className="space-y-1.5 text-xs text-gray-600">
-          <p>Received: {statement.received_date || '—'}</p>
-          {statement.acknowledged_at && <p>Acknowledged: {statement.acknowledged_at}</p>}
-          {statement.processed_at && <p>Processed: {statement.processed_at}</p>}
-          {statement.approved_at && <p>Approved by {statement.approved_by}: {statement.approved_at}</p>}
-          {statement.sent_at && <p>Response sent: {statement.sent_at}</p>}
+          <p>Received: {fmtDateTime(statement.received_date) || '—'}</p>
+          {statement.acknowledged_at && <p>Acknowledged: {fmtDateTime(statement.acknowledged_at)}</p>}
+          {statement.processed_at && <p>Processed: {fmtDateTime(statement.processed_at)}</p>}
+          {statement.approved_at && <p>Approved by {statement.approved_by}: {fmtDateTime(statement.approved_at)}</p>}
+          {statement.sent_at && <p>Response sent: {fmtDateTime(statement.sent_at)}</p>}
           {statement.error_message && <p className="text-red-600">Error: {statement.error_message}</p>}
         </div>
       </div>

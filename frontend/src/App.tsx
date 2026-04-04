@@ -40,6 +40,7 @@ import { SupplierSecurity } from './pages/SupplierSecurity';
 import { SupplierSettings } from './pages/SupplierSettings';
 import { SupplierAgedCreditors } from './pages/SupplierAgedCreditors';
 import { SupplierAccount } from './pages/SupplierAccount';
+import SupplierStatementDetail from './pages/SupplierStatementDetail';
 import { UserActivity } from './pages/UserActivity';
 import { TransactionSnapshot } from './pages/TransactionSnapshot';
 import { PensionExport } from './pages/PensionExport';
@@ -212,6 +213,7 @@ function AppRoutes() {
                   {/* AP Automation routes */}
                   <Route path="/supplier/dashboard" element={<SupplierDashboard />} />
                   <Route path="/supplier/statements/queue" element={<SupplierStatementQueue />} />
+                  <Route path="/supplier/statements/:id" element={<SupplierStatementDetail />} />
                   <Route path="/supplier/statements/reconciliations" element={<SupplierReconciliations />} />
                   <Route path="/supplier/statements/history" element={<SupplierStatementHistory />} />
                   <Route path="/supplier/queries/open" element={<SupplierQueries />} />

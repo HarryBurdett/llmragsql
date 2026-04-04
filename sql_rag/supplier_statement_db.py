@@ -284,7 +284,7 @@ class SupplierStatementDB:
                 payment_terms_days INTEGER DEFAULT 30,
                 payment_method TEXT,
                 reconciliation_active BOOLEAN DEFAULT 1,
-                auto_respond BOOLEAN DEFAULT 0,
+                auto_respond BOOLEAN DEFAULT 1,
                 never_communicate BOOLEAN DEFAULT 0,
                 statements_contact_position TEXT,
                 last_synced DATETIME,
@@ -392,6 +392,9 @@ class SupplierStatementDB:
             ('response_agreed_text', 'We have reviewed your statement and confirm all items are agreed. Thank you.', 'Text shown when all items match'),
             ('response_query_intro', 'We have reviewed your statement. The following items require clarification:', 'Text shown before queried items list'),
             ('response_query_footer', 'Please could you provide further details on the items listed above at your earliest convenience.', 'Text shown after queried items list'),
+
+            # Payment schedule
+            ('next_payment_run_date', '', 'Next scheduled payment run date (YYYY-MM-DD)'),
         ]
         for key, value, description in default_config:
             cursor.execute("""

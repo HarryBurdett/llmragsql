@@ -1,15 +1,16 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
   FileText, RefreshCw, Clock, CheckCircle, Send, Eye, Play,
-  Inbox, HelpCircle
+  Inbox, HelpCircle, AlertTriangle
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, StatusBadge, Alert } from '../components/ui';
 import { HelpPanel } from '../components/HelpPanel';
 import { useHelp } from '../hooks/useHelp';
 
-type TabType = 'all' | 'received' | 'processing' | 'reconciled' | 'approved' | 'sent';
+type TabType = 'all' | 'differences' | 'agreed';
 
 interface SupplierStatement {
   id: number;
@@ -49,9 +50,12 @@ const STATUS_VARIANT: Record<string, 'info' | 'success' | 'warning' | 'danger' |
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '-';
-  return new Date(dateStr).toLocaleDateString('en-GB', {
-    day: '2-digit', month: 'short', year: 'numeric',
-  });
+  const s = dateStr.replace('T', ' ').split(' ')[0];
+  const parts = s.split('-');
+  if (parts.length === 3 && parts[0].length === 4) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return dateStr;
 }
 
 function formatMatchRate(rate: number | null): string {
@@ -60,27 +64,24 @@ function formatMatchRate(rate: number | null): string {
 }
 
 export default function SupplierStatementQueue() {
+  const navigate = useNavigate();
   const { showHelp, setShowHelp } = useHelp();
-  const [activeTab, setActiveTab] = useState<TabType>('all');
+  const [activeTab, setActiveTab] = useState<TabType>('differences');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [approvingId, setApprovingId] = useState<number | null>(null);
 
   const tabs: { id: TabType; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
     { id: 'all', label: 'All', icon: Inbox },
-    { id: 'received', label: 'Received', icon: FileText },
-    { id: 'processing', label: 'Processing', icon: Clock },
-    { id: 'reconciled', label: 'Reconciled', icon: CheckCircle },
-    { id: 'approved', label: 'Approved', icon: CheckCircle },
-    { id: 'sent', label: 'Sent', icon: Send },
+    { id: 'differences', label: 'Needs Review', icon: AlertTriangle },
+    { id: 'agreed', label: 'Agreed', icon: CheckCircle },
   ];
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['supplier-statements', activeTab],
     queryFn: async () => {
-      const url = activeTab === 'all'
-        ? '/api/supplier-statements'
-        : `/api/supplier-statements?status=${activeTab}`;
-      const res = await authFetch(url);
+      // Always fetch all — filter client-side by agreed/differences
+      const res = await authFetch('/api/supplier-statements');
       if (!res.ok) throw new Error('Failed to fetch supplier statements');
       const json = await res.json();
       if (json.error) throw new Error(json.error);
@@ -107,18 +108,26 @@ export default function SupplierStatementQueue() {
   const handleApprove = async (id: number) => {
     setError(null);
     setSuccess(null);
+    setApprovingId(id);
     try {
       const res = await authFetch(`/api/supplier-statements/${id}/approve`, { method: 'POST' });
       const json = await res.json();
-      if (!res.ok || json.error) throw new Error(json.error || 'Failed to approve statement');
-      setSuccess(json.message || 'Statement approved');
+      if (!res.ok || json.error || json.detail) throw new Error(json.detail || json.error || 'Failed to approve statement');
+      setSuccess(`${json.message}${json.recipient ? ' — sent to ' + json.recipient : ''}`);
       refetch();
     } catch (e: any) {
       setError(e.message);
+    } finally {
+      setApprovingId(null);
     }
   };
 
-  const statements = data?.statements || [];
+  const allStatements = data?.statements || [];
+  const statements = activeTab === 'all'
+    ? allStatements
+    : activeTab === 'differences'
+    ? allStatements.filter(s => (s.query_count || 0) > 0)
+    : allStatements.filter(s => (s.query_count || 0) === 0);
 
   return (
     <div className="space-y-6">
@@ -199,11 +208,9 @@ export default function SupplierStatementQueue() {
               <thead className="bg-gray-50">
                 <tr>
                   <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Supplier</th>
-                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Statement Date</th>
                   <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Received</th>
-                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Match Rate</th>
-                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Actions</th>
+                  <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">Result</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
@@ -211,7 +218,7 @@ export default function SupplierStatementQueue() {
                   <tr
                     key={stmt.id}
                     className="hover:bg-gray-50 cursor-pointer"
-                    onClick={() => window.location.href = `/suppliers/statements/${stmt.id}`}
+                    onClick={() => navigate(`/supplier/statements/${stmt.id}`)}
                   >
                     <td className="px-3 py-3">
                       <div className="text-sm font-medium text-gray-900">{stmt.supplier_name || stmt.supplier_code}</div>
@@ -220,58 +227,19 @@ export default function SupplierStatementQueue() {
                     <td className="px-3 py-3 text-sm text-gray-700">
                       {formatDate(stmt.statement_date)}
                     </td>
-                    <td className="px-3 py-3 text-center">
-                      <StatusBadge variant={STATUS_VARIANT[stmt.status] || 'neutral'}>
-                        {stmt.status.charAt(0).toUpperCase() + stmt.status.slice(1)}
-                      </StatusBadge>
-                    </td>
                     <td className="px-3 py-3 text-sm text-gray-500">
                       {formatDate(stmt.received_date)}
                     </td>
                     <td className="px-3 py-3 text-center">
-                      {stmt.match_rate !== null ? (
-                        <span className={`text-sm font-medium ${
-                          stmt.match_rate >= 0.9 ? 'text-green-600' :
-                          stmt.match_rate >= 0.7 ? 'text-amber-600' :
-                          'text-red-600'
-                        }`}>
-                          {formatMatchRate(stmt.match_rate)}
+                      {(stmt.query_count || 0) === 0 ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded">
+                          <CheckCircle className="w-3 h-3" /> Agreed
                         </span>
                       ) : (
-                        <span className="text-sm text-gray-400">-</span>
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 bg-red-50 px-2 py-0.5 rounded">
+                          <AlertTriangle className="w-3 h-3" /> {stmt.query_count} {stmt.query_count === 1 ? 'query' : 'queries'}
+                        </span>
                       )}
-                    </td>
-                    <td className="px-3 py-3 text-center">
-                      <div className="flex items-center justify-center gap-2" onClick={e => e.stopPropagation()}>
-                        {stmt.status === 'received' && (
-                          <button
-                            onClick={() => handleProcess(stmt.id)}
-                            className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100"
-                            title="Process statement"
-                          >
-                            <Play className="w-3 h-3" />
-                            Process
-                          </button>
-                        )}
-                        {stmt.status === 'reconciled' && (
-                          <button
-                            onClick={() => handleApprove(stmt.id)}
-                            className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg hover:bg-green-100"
-                            title="Approve statement"
-                          >
-                            <CheckCircle className="w-3 h-3" />
-                            Approve
-                          </button>
-                        )}
-                        <button
-                          onClick={() => window.location.href = `/suppliers/statements/${stmt.id}`}
-                          className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-gray-700 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100"
-                          title="View details"
-                        >
-                          <Eye className="w-3 h-3" />
-                          View
-                        </button>
-                      </div>
                     </td>
                   </tr>
                 ))}

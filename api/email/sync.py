@@ -40,6 +40,12 @@ class EmailSyncManager:
         self.providers: Dict[int, EmailProvider] = {}
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._post_sync_callbacks: List = []  # Called after each sync cycle
+
+    def add_post_sync_callback(self, callback):
+        """Register a callback to run after each email sync cycle.
+        Callback should be an async function accepting (storage, providers) args."""
+        self._post_sync_callbacks.append(callback)
 
     def register_provider(self, provider_id: int, provider: EmailProvider):
         """Register an email provider for syncing."""
@@ -81,6 +87,13 @@ class EmailSyncManager:
                 await self.sync_all_providers()
             except Exception as e:
                 logger.error(f"Error in sync loop: {e}")
+
+            # Run post-sync callbacks (e.g. supplier statement auto-processing)
+            for callback in self._post_sync_callbacks:
+                try:
+                    await callback(self.storage, self.providers)
+                except Exception as e:
+                    logger.error(f"Error in post-sync callback: {e}")
 
             # Wait for next sync
             await asyncio.sleep(interval_minutes * 60)

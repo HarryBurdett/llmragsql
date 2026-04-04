@@ -43,8 +43,19 @@ async def auto_process_supplier_statements(storage, providers):
             import sqlite3 as _sqlite3
             conn = _sqlite3.connect(str(db.db_path))
             c = conn.cursor()
+            # Emails that resulted in a statement record
             c.execute("SELECT source_email_id FROM supplier_statements WHERE source_email_id IS NOT NULL")
             already_processed_db = {row[0] for row in c.fetchall()}
+            # Emails we already tried (including skipped/failed) — tracked in a simple table
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS processed_emails (
+                    email_id INTEGER PRIMARY KEY,
+                    processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            c.execute("SELECT email_id FROM processed_emails")
+            already_processed_db.update(row[0] for row in c.fetchall())
+            conn.commit()
             conn.close()
         except Exception:
             pass
@@ -66,6 +77,16 @@ async def auto_process_supplier_statements(storage, providers):
                 await _process_single_email(email_id, storage, providers)
             except Exception as e:
                 logger.warning(f"Supplier auto-process failed for email {email_id}: {e}")
+            finally:
+                # Mark as processed regardless of outcome — don't retry
+                try:
+                    import sqlite3 as _sq_mark
+                    conn_m = _sq_mark.connect(str(db.db_path))
+                    conn_m.execute("INSERT OR IGNORE INTO processed_emails (email_id) VALUES (?)", (email_id,))
+                    conn_m.commit()
+                    conn_m.close()
+                except Exception:
+                    pass
 
     except Exception as e:
         logger.error(f"Supplier auto-processor error: {e}")
@@ -212,6 +233,25 @@ async def _process_single_email(email_id: int, storage, providers):
 
     logger.info(f"Supplier statement detected: {info.supplier_name} ({info.statement_date}) from {from_addr}")
 
+    # Dedup: if we already have a statement for this supplier + date, skip
+    # This catches the case where the same statement arrives via multiple emails
+    if info.account_reference and info.statement_date:
+        import sqlite3 as _sq_dedup2
+        try:
+            conn_d2 = _sq_dedup2.connect(str(db.db_path))
+            c_d2 = conn_d2.cursor()
+            c_d2.execute(
+                "SELECT id FROM supplier_statements WHERE supplier_code = ? AND statement_date = ? LIMIT 1",
+                (info.account_reference, info.statement_date)
+            )
+            if c_d2.fetchone():
+                conn_d2.close()
+                logger.debug(f"Email {email_id}: Statement already exists for {info.account_reference} date {info.statement_date}")
+                return
+            conn_d2.close()
+        except Exception:
+            pass
+
     # Save statement record (Step 1: create with provisional supplier code)
     statement_id = db.create_statement(
         supplier_code=info.account_reference or 'UNKNOWN',
@@ -261,6 +301,30 @@ async def _process_single_email(email_id: int, storage, providers):
 
     supplier_code = supplier.get('account', supplier.get('pn_account', ''))
     supplier_name = supplier.get('name', supplier.get('pn_name', supplier_name))
+
+    # --- Definitive dedup: same supplier + same statement date = same statement ---
+    if info.statement_date:
+        import sqlite3 as _sq_dedup3
+        try:
+            conn_d3 = _sq_dedup3.connect(str(db.db_path))
+            c_d3 = conn_d3.cursor()
+            c_d3.execute(
+                "SELECT id FROM supplier_statements WHERE supplier_code = ? AND statement_date = ? AND id != ?",
+                (supplier_code, info.statement_date, statement_id)
+            )
+            existing = c_d3.fetchone()
+            if existing:
+                # Delete the record we just created — it's a duplicate
+                c_d3.execute("DELETE FROM statement_lines WHERE statement_id = ?", (statement_id,))
+                c_d3.execute("DELETE FROM supplier_statements WHERE id = ?", (statement_id,))
+                conn_d3.commit()
+                conn_d3.close()
+                logger.debug(f"Email {email_id}: Duplicate for {supplier_code} date {info.statement_date}, keeping ID {existing[0]}")
+                return
+            conn_d3.close()
+        except Exception:
+            pass
+
     db.update_statement_status(statement_id, 'processing', supplier_code=supplier_code)
 
     # --- Step 4a: Sender verification ---
@@ -353,6 +417,31 @@ async def _process_single_email(email_id: int, storage, providers):
         db.update_statement_status(statement_id, 'reconciliation_error')
         return
 
+    # Also fetch ALL ptran (including settled) for the "Exists" check
+    # Two lookups: by reference, and by date+amount (fallback for payment matching)
+    all_opera_refs = set()
+    all_opera_date_amounts = set()  # (date_str, abs_amount) tuples
+    try:
+        all_txn_df = sql_connector.execute_query(f"""
+            SELECT RTRIM(pt_trref) as reference, pt_trdate, ABS(pt_trvalue) as abs_value
+            FROM ptran WITH (NOLOCK)
+            WHERE pt_account = '{supplier_code}'
+        """)
+        if all_txn_df is not None:
+            for _, row in all_txn_df.iterrows():
+                ref = clean_reference(str(row.get('reference', '')).strip())
+                if ref:
+                    all_opera_refs.add(ref)
+                # Build date+amount lookup for fallback matching
+                dt = row.get('pt_trdate')
+                if dt:
+                    date_str = str(dt)[:10]
+                    amt = round(float(row.get('abs_value', 0)), 2)
+                    if amt > 0:
+                        all_opera_date_amounts.add((date_str, amt))
+    except Exception:
+        pass
+
     # --- Step 7: Run reconciliation and verify ---
     recon_result = reconcile(their_items, our_items)
     if not recon_result.math_checks_out:
@@ -391,20 +480,55 @@ async def _process_single_email(email_id: int, storage, providers):
                         else 'Amount Difference'
                     )
                 else:
-                    exists = 'No'
-                    status = 'Query'
+                    # Not in outstanding list — but does it exist at all on our account?
+                    ref_clean = clean_reference(their_items[i].reference)
+                    exists_anywhere = ref_clean in all_opera_refs
+
+                    # Fallback: check by date + amount if reference didn't match
+                    if not exists_anywhere and i < len(lines or []):
+                        line_obj = lines[i]
+                        line_date = line_obj.date if hasattr(line_obj, 'date') else line_obj.get('date', '')
+                        line_amt = round(float(their_items[i].debit or 0) + float(their_items[i].credit or 0), 2)
+                        if line_date and line_amt > 0:
+                            date_str = str(line_date)[:10]
+                            if (date_str, line_amt) in all_opera_date_amounts:
+                                exists_anywhere = True
+
+                    exists = 'Yes' if exists_anywhere else 'No'
+
+                    if exists_anywhere:
+                        status = 'Agreed'  # Found on our account (by ref or date+amount)
+                    else:
+                        status = 'Query'  # Genuinely not on our account
                 cursor.execute(
                     "UPDATE statement_lines SET exists_in_opera=?, status=? WHERE id=?",
                     (exists, status, db_line_id)
                 )
 
-        # Save opera-only items
+        # Save opera-only items — extract date/type from the Opera query data
+        # Build a lookup from the original Opera query results
+        opera_detail_lookup = {}
+        try:
+            for _, row in df.iterrows():
+                ref = str(row.get('reference', '')).strip()
+                opera_detail_lookup[ref] = {
+                    'date': str(row.get('pt_trdate', ''))[:10] if row.get('pt_trdate') else None,
+                    'type': row.get('pt_trtype', ''),
+                }
+        except Exception:
+            pass
+
+        type_map = {'I': 'Invoice', 'P': 'Payment', 'C': 'Credit Note', 'F': 'Refund', 'A': 'Adjustment'}
+
         cursor.execute("DELETE FROM statement_opera_only WHERE statement_id = ?", (statement_id,))
         for item in recon_result.ours_only:
+            detail = opera_detail_lookup.get(item.reference, {})
+            line_date = detail.get('date')
+            doc_type = type_map.get(detail.get('type', ''), detail.get('type', ''))
             cursor.execute("""
                 INSERT INTO statement_opera_only (statement_id, line_date, reference, doc_type, amount, signed_value, balance)
-                VALUES (?, NULL, ?, '', ?, ?, 0)
-            """, (statement_id, item.reference, abs(item.amount), item.amount))
+                VALUES (?, ?, ?, ?, ?, ?, 0)
+            """, (statement_id, line_date, item.reference, doc_type, abs(item.amount), item.amount))
 
         conn.commit()
         conn.close()

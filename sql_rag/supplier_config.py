@@ -70,7 +70,7 @@ class SupplierConfigManager:
                     payment_terms_days INTEGER DEFAULT 30,
                     payment_method TEXT,
                     reconciliation_active BOOLEAN DEFAULT 1,
-                    auto_respond BOOLEAN DEFAULT 0,
+                    auto_respond BOOLEAN DEFAULT 1,
                     never_communicate BOOLEAN DEFAULT 0,
                     statements_contact_position TEXT,
                     last_synced DATETIME,

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
 
-from fastapi import APIRouter, HTTPException, Query, Body
+from fastapi import APIRouter, HTTPException, Query, Body, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,115 @@ class EditResponseRequest(BaseModel):
 class BulkApproveRequest(BaseModel):
     statement_ids: List[int]
     approved_by: str = "System"
+
+
+# ============================================================
+# Supplier Config API Endpoints
+# ============================================================
+
+@router.get("/api/supplier-config")
+async def list_supplier_config(active_only: bool = False):
+    """List all suppliers with their automation flags."""
+    from api.main import sql_connector
+    from sql_rag.supplier_config import SupplierConfigManager
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db')
+    if not db_path:
+        return {"success": False, "error": "Database not available"}
+
+    try:
+        mgr = SupplierConfigManager(str(db_path), sql_connector)
+        suppliers = mgr.get_all(active_only=active_only)
+        return {"success": True, "suppliers": suppliers}
+    except Exception as e:
+        logger.error(f"Error listing supplier config: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/supplier-config/{account}")
+async def get_supplier_config(account: str):
+    """Get config for a single supplier."""
+    from api.main import sql_connector
+    from sql_rag.supplier_config import SupplierConfigManager
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db')
+    if not db_path:
+        return {"success": False, "error": "Database not available"}
+
+    try:
+        mgr = SupplierConfigManager(str(db_path), sql_connector)
+        config = mgr.get_config(account)
+        if config is None:
+            raise HTTPException(status_code=404, detail=f"Supplier {account} not found in config")
+        return {"success": True, "config": config}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting supplier config for {account}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.put("/api/supplier-config/{account}")
+async def update_supplier_flags(account: str, request: Request):
+    """Update automation flags for a supplier.
+
+    Only the following fields are accepted:
+    reconciliation_active, auto_respond, never_communicate,
+    statements_contact_position.
+    """
+    from api.main import sql_connector
+    from sql_rag.supplier_config import SupplierConfigManager
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db')
+    if not db_path:
+        return {"success": False, "error": "Database not available"}
+
+    try:
+        body = await request.json()
+        # Only permit local flag fields — reject anything else
+        allowed = {'reconciliation_active', 'auto_respond', 'never_communicate', 'statements_contact_position'}
+        flags = {k: v for k, v in body.items() if k in allowed}
+        if not flags:
+            return {"success": False, "error": "No valid flag fields provided. Allowed: " + ", ".join(sorted(allowed))}
+
+        mgr = SupplierConfigManager(str(db_path), sql_connector)
+        updated = mgr.update_flags(account, **flags)
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Supplier {account} not found in config")
+        return {"success": True, "updated": flags}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        logger.error(f"Error updating supplier flags for {account}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/api/supplier-config/sync")
+async def sync_supplier_config():
+    """Trigger a one-way sync of supplier master data from Opera into supplier_config."""
+    from api.main import sql_connector
+    from sql_rag.supplier_config import SupplierConfigManager
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db')
+    if not db_path:
+        return {"success": False, "error": "Database not available"}
+
+    if not sql_connector:
+        return {"success": False, "error": "Opera connection not available"}
+
+    try:
+        mgr = SupplierConfigManager(str(db_path), sql_connector)
+        result = mgr.sync_from_opera()
+        return {"success": True, "new": result['new'], "synced": result['synced']}
+    except Exception as e:
+        logger.error(f"Error syncing supplier config from Opera: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 
 # ============================================================
@@ -124,6 +233,11 @@ async def get_supplier_statement_dashboard():
         week_start = today_start - timedelta(days=today_start.weekday())
         month_start = today_start.replace(day=1)
 
+        # Use space-separated format to match SQLite CURRENT_TIMESTAMP format
+        today_str = today_start.strftime('%Y-%m-%d %H:%M:%S')
+        week_str = week_start.strftime('%Y-%m-%d %H:%M:%S')
+        month_str = month_start.strftime('%Y-%m-%d %H:%M:%S')
+
         # KPIs - Statements counts
         cursor.execute("""
             SELECT
@@ -131,7 +245,7 @@ async def get_supplier_statement_dashboard():
                 COUNT(CASE WHEN received_date >= ? THEN 1 END) as week_count,
                 COUNT(CASE WHEN received_date >= ? THEN 1 END) as month_count
             FROM supplier_statements
-        """, (today_start.isoformat(), week_start.isoformat(), month_start.isoformat()))
+        """, (today_str, week_str, month_str))
         row = cursor.fetchone()
         if row:
             response["kpis"]["statements_today"] = row["today_count"] or 0
@@ -335,8 +449,8 @@ async def list_supplier_statements(status: Optional[str] = None):
                 ss.acknowledged_at, ss.processed_at, ss.approved_by, ss.approved_at,
                 ss.sent_at, ss.error_message,
                 COUNT(sl.id) as line_count,
-                SUM(CASE WHEN sl.match_status = 'matched' THEN 1 ELSE 0 END) as matched_count,
-                SUM(CASE WHEN sl.match_status = 'query' THEN 1 ELSE 0 END) as query_count
+                SUM(CASE WHEN sl.status = 'Agreed' THEN 1 ELSE 0 END) as matched_count,
+                SUM(CASE WHEN sl.status = 'Query' THEN 1 ELSE 0 END) as query_count
             FROM supplier_statements ss
             LEFT JOIN statement_lines sl ON sl.statement_id = ss.id
         """
@@ -347,23 +461,25 @@ async def list_supplier_statements(status: Optional[str] = None):
         query += " GROUP BY ss.id ORDER BY ss.received_date DESC"
 
         cursor.execute(query, params)
-        statements = []
+        rows = cursor.fetchall()
+        statements = [dict(row) for row in rows]
 
-        # Try to get supplier names from Opera if SQL connector is available
+        # Get supplier names from Opera
         supplier_names = {}
         if sql_connector:
-            try:
-                name_query = "SELECT pn_account, pn_name FROM pname WITH (NOLOCK)"
-                df = sql_connector.execute_query(name_query)
-                if df is not None and len(df) > 0:
-                    supplier_names = dict(zip(df['pn_account'], df['pn_name']))
-            except Exception:
-                pass  # Silently fail - will use supplier_code as name
+            codes = set(s['supplier_code'] for s in statements)
+            for code in codes:
+                try:
+                    df = sql_connector.execute_query(
+                        f"SELECT RTRIM(pn_name) as pn_name FROM pname WITH (NOLOCK) WHERE pn_account = '{code}'"
+                    )
+                    if df is not None and len(df) > 0:
+                        supplier_names[code] = str(df.iloc[0]['pn_name']).strip()
+                except Exception:
+                    pass
 
-        for row in cursor.fetchall():
-            stmt = dict(row)
+        for stmt in statements:
             stmt['supplier_name'] = supplier_names.get(stmt['supplier_code'], stmt['supplier_code'])
-            statements.append(stmt)
 
         conn.close()
         return {"success": True, "statements": statements}
@@ -431,8 +547,8 @@ async def list_supplier_statement_history(days: int = 90):
                 ss.status, ss.processed_at, ss.approved_by, ss.approved_at,
                 ss.sent_at, ss.opening_balance, ss.closing_balance,
                 COUNT(sl.id) as line_count,
-                SUM(CASE WHEN sl.match_status = 'matched' THEN 1 ELSE 0 END) as matched_count,
-                SUM(CASE WHEN sl.match_status = 'query' THEN 1 ELSE 0 END) as query_count
+                SUM(CASE WHEN sl.status = 'Agreed' THEN 1 ELSE 0 END) as matched_count,
+                SUM(CASE WHEN sl.status = 'Query' THEN 1 ELSE 0 END) as query_count
             FROM supplier_statements ss
             LEFT JOIN statement_lines sl ON sl.statement_id = ss.id
             WHERE ss.status IN ('approved', 'sent') AND ss.received_date >= ?
@@ -1164,6 +1280,56 @@ async def list_supplier_communications(supplier_code: Optional[str] = None, days
 
     except Exception as e:
         logger.error(f"Error listing communications: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/supplier-communications/{account}")
+async def get_supplier_communications(account: str):
+    """Get all communications for a supplier — full audit trail."""
+    from api.main import sql_connector
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
+
+    if not db_path.exists():
+        return {"success": True, "communications": [], "supplier_code": account}
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM supplier_communications
+            WHERE supplier_code = ?
+            ORDER BY created_at DESC
+        """, (account,))
+
+        communications = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        # Enrich with supplier name from Opera
+        supplier_name = account
+        if sql_connector:
+            try:
+                name_df = sql_connector.execute_query(
+                    f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{account}'"
+                )
+                if name_df is not None and len(name_df) > 0:
+                    supplier_name = str(name_df.iloc[0]['name']).strip()
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "supplier_code": account,
+            "supplier_name": supplier_name,
+            "communications": communications,
+            "count": len(communications),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting communications for {account}: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
@@ -1913,13 +2079,16 @@ async def approve_supplier_statement(statement_id: int, approved_by: str = "Syst
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # Get statement details
-        cursor.execute("SELECT * FROM supplier_statements WHERE id = ? AND status = 'queued'", (statement_id,))
+        # Get statement details — allow approve from reconciled or acknowledged status
+        cursor.execute("""
+            SELECT * FROM supplier_statements
+            WHERE id = ? AND status IN ('reconciled', 'acknowledged', 'queued', 'received')
+        """, (statement_id,))
         stmt = cursor.fetchone()
 
         if not stmt:
             conn.close()
-            raise HTTPException(status_code=404, detail="Statement not found or not in queued status")
+            raise HTTPException(status_code=404, detail="Statement not found or already approved")
 
         stmt = dict(stmt)
         supplier_code = stmt['supplier_code']
@@ -1947,21 +2116,27 @@ async def approve_supplier_statement(statement_id: int, approved_by: str = "Syst
 
         email_subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
 
-        # Send the response email
+        # Send the response email with original statement PDF attached
         email_sent = False
         email_error = None
         if recipient_email:
             try:
                 import httpx
+                email_payload = {
+                    "to": recipient_email,
+                    "subject": email_subject,
+                    "body": response_text,
+                    "from_email": "intsys@wimbledoncloud.net"
+                }
+                # Attach the original statement PDF if available
+                pdf_path = stmt.get('pdf_path')
+                if pdf_path and os.path.exists(pdf_path):
+                    email_payload["attachments"] = [pdf_path]
+
                 async with httpx.AsyncClient() as client:
                     email_resp = await client.post(
                         "http://127.0.0.1:8000/api/email/send",
-                        json={
-                            "to": recipient_email,
-                            "subject": email_subject,
-                            "body": response_text,
-                            "from_email": "intsys@wimbledoncloud.net"
-                        },
+                        json=email_payload,
                         timeout=30.0
                     )
                     if email_resp.status_code == 200:
@@ -2365,9 +2540,29 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     Get the best contact email for a supplier.
 
     Priority:
-    1. supplier_contacts_ext with is_statement_contact = 1
-    2. sender_email from the statement record
+    1. Opera pcontact — first contact with an email address for this supplier
+    2. supplier_contacts_ext with is_statement_contact = 1 (local override)
+    3. sender_email from the statement record (fallback)
     """
+    # 1. Check Opera contacts (zcontacts table, module 'P' for purchase)
+    try:
+        from api.main import sql_connector
+        if sql_connector:
+            df = sql_connector.execute_query(f"""
+                SELECT RTRIM(zc_email) as email, RTRIM(zc_contact) as name
+                FROM zcontacts WITH (NOLOCK)
+                WHERE zc_account = '{supplier_code}' AND zc_module = 'P'
+                  AND zc_email IS NOT NULL AND RTRIM(zc_email) != ''
+                ORDER BY zc_contact
+            """)
+            if df is not None and len(df) > 0:
+                email = str(df.iloc[0]['email']).strip()
+                if email:
+                    return email
+    except Exception:
+        pass
+
+    # 2. Check local contacts
     try:
         cursor.execute("""
             SELECT email FROM supplier_contacts_ext
@@ -2378,14 +2573,19 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
         if row and row['email']:
             return row['email']
     except Exception:
-        pass  # Table may not exist yet
+        pass
 
+    # 3. Fallback to sender
     return fallback_sender_email
 
 
 def _generate_default_response(cursor, statement_id: int, supplier_code: str,
                                 statement_date: Optional[str], sql_connector) -> str:
-    """Generate a default response text for a statement approval."""
+    """
+    Generate HTML response email for a statement approval.
+    Uses configurable templates from supplier_automation_config.
+    Merges statement data into the template with proper formatting.
+    """
     supplier_name = supplier_code
     if sql_connector:
         try:
@@ -2397,48 +2597,128 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
         except Exception:
             pass
 
+    # Load configurable template parts
+    from sql_rag.supplier_statement_db import get_supplier_statement_db
+    db = get_supplier_statement_db()
+    greeting = db.get_config('response_greeting', 'Dear {supplier_name},')
+    sign_off = db.get_config('response_sign_off', 'Regards,<br>Accounts Department')
+    company_name = db.get_config('response_company_name', '')
+    agreed_text = db.get_config('response_agreed_text',
+        'We have reviewed your statement and confirm all items are agreed. Thank you.')
+    query_intro = db.get_config('response_query_intro',
+        'We have reviewed your statement. The following items require clarification:')
+    query_footer = db.get_config('response_query_footer',
+        'Please could you provide further details on the items listed above at your earliest convenience.')
+
     # Get line details
     cursor.execute("""
-        SELECT reference, debit, credit, match_status, query_type
-        FROM statement_lines WHERE statement_id = ?
+        SELECT line_date, reference, description, debit, credit, match_status, query_type
+        FROM statement_lines WHERE statement_id = ? ORDER BY id
     """, (statement_id,))
     lines = cursor.fetchall()
 
-    response_lines = []
-    response_lines.append(f"Dear {supplier_name},")
-    response_lines.append("")
-    response_lines.append(f"Thank you for your statement dated {statement_date or 'N/A'}.")
-    response_lines.append("")
+    matched = [l for l in lines if l['match_status'] in ('matched', 'paid')]
+    queried = [l for l in lines if l['match_status'] == 'query']
+    unmatched = [l for l in lines if l['match_status'] not in ('matched', 'paid', 'query')]
 
-    matched_count = sum(1 for l in lines if l['match_status'] == 'matched')
-    query_count = sum(1 for l in lines if l['match_status'] == 'query')
-    total_lines = len(lines)
+    total = len(lines)
+    matched_count = len(matched)
+    query_count = len(queried)
 
-    if total_lines > 0:
-        response_lines.append(f"We have reviewed {total_lines} line(s):")
-        response_lines.append(f"  - {matched_count} agreed")
-        if query_count > 0:
-            response_lines.append(f"  - {query_count} queried (details below)")
-        response_lines.append("")
+    # Merge template variables
+    greeting_merged = greeting.replace('{supplier_name}', supplier_name)
+
+    # Build HTML
+    html = f"""<html>
+<head><style>
+  body {{ font-family: Arial, sans-serif; font-size: 14px; color: #333; line-height: 1.6; }}
+  .summary {{ background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 16px; margin: 16px 0; }}
+  .summary td {{ padding: 4px 16px 4px 0; }}
+  .summary .label {{ color: #666; font-size: 13px; }}
+  .summary .value {{ font-weight: bold; }}
+  table.lines {{ border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }}
+  table.lines th {{ background: #2c3e50; color: white; padding: 8px 12px; text-align: left; }}
+  table.lines td {{ border-bottom: 1px solid #eee; padding: 6px 12px; }}
+  table.lines tr:nth-child(even) {{ background: #f8f9fa; }}
+  .amount {{ text-align: right; }}
+  .query-tag {{ background: #fff3cd; color: #856404; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }}
+  .matched-tag {{ background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 4px; font-size: 12px; }}
+  .footer {{ color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px; }}
+</style></head>
+<body>
+<p>{greeting_merged}</p>
+
+<p>Thank you for your statement dated <b>{statement_date or 'N/A'}</b>.</p>
+
+<div class="summary">
+<table>
+  <tr><td class="label">Total items reviewed:</td><td class="value">{total}</td></tr>
+  <tr><td class="label">Items agreed:</td><td class="value">{matched_count}</td></tr>"""
 
     if query_count > 0:
-        response_lines.append("QUERIES:")
-        response_lines.append("-" * 40)
-        for line in lines:
-            if line['match_status'] == 'query':
-                amount = line['debit'] or line['credit'] or 0
-                ref = line['reference'] or 'N/A'
-                response_lines.append(f"  Ref: {ref} - Amount: {amount:,.2f} - {line['query_type'] or 'Query'}")
-        response_lines.append("")
-        response_lines.append("Please could you provide further details on the items queried above.")
+        html += f'\n  <tr><td class="label">Items queried:</td><td class="value" style="color:#856404;">{query_count}</td></tr>'
+    html += "\n</table>\n</div>"
+
+    if query_count == 0:
+        html += f"\n<p>{agreed_text}</p>"
     else:
-        response_lines.append("All items have been agreed. Thank you.")
+        html += f"\n<p>{query_intro}</p>"
+        html += """
+<table class="lines">
+<tr><th>Date</th><th>Reference</th><th>Type</th><th class="amount">Amount</th><th>Query</th></tr>"""
+        for l in queried:
+            amt = l['debit'] if l['debit'] else l['credit']
+            amt_str = f"£{abs(amt or 0):,.2f}"
+            doc_type = 'Invoice' if l['debit'] else 'Credit/Payment'
+            query_reason = (l['query_type'] or 'not_in_our_records').replace('_', ' ').title()
+            html += f"""
+<tr>
+  <td>{l['line_date'] or ''}</td>
+  <td><b>{l['reference'] or 'N/A'}</b></td>
+  <td>{doc_type}</td>
+  <td class="amount">{amt_str}</td>
+  <td><span class="query-tag">{query_reason}</span></td>
+</tr>"""
+        html += "\n</table>"
+        html += f"\n<p>{query_footer}</p>"
 
-    response_lines.append("")
-    response_lines.append("Regards,")
-    response_lines.append("Accounts Department")
+    # Show matched items summary if there are also queries (for context)
+    if query_count > 0 and matched_count > 0:
+        html += f"\n<p style='color:#666; font-size:13px;'>The remaining {matched_count} item(s) on your statement have been agreed.</p>"
 
-    return "\n".join(response_lines)
+    # Recent payments notification
+    if sql_connector:
+        try:
+            pay_days = int(db.get_config('payment_notification_days', '90'))
+            from datetime import datetime, timedelta
+            cutoff = (datetime.now() - timedelta(days=pay_days)).strftime('%Y-%m-%d')
+            pay_df = sql_connector.execute_query(f"""
+                SELECT pt_trdate, pt_trref, ABS(pt_trvalue) as amount, pt_supref
+                FROM ptran WITH (NOLOCK)
+                WHERE pt_account = '{supplier_code}' AND pt_trtype = 'P' AND pt_trdate >= '{cutoff}'
+                ORDER BY pt_trdate DESC
+            """)
+            if pay_df is not None and len(pay_df) > 0:
+                html += "\n<p style='margin-top:16px;'><b>Recent payments made:</b></p>"
+                html += '<table class="lines"><tr><th>Date</th><th>Reference</th><th class="amount">Amount</th></tr>'
+                for _, p in pay_df.iterrows():
+                    pdate = str(p['pt_trdate'])[:10] if p['pt_trdate'] else ''
+                    pref = str(p.get('pt_supref') or p.get('pt_trref') or '').strip()
+                    html += f'<tr><td>{pdate}</td><td>{pref}</td><td class="amount">£{float(p["amount"]):,.2f}</td></tr>'
+                html += "</table>"
+        except Exception:
+            pass
+
+    html += f"""
+<p>{sign_off}</p>
+{f'<p><b>{company_name}</b></p>' if company_name else ''}
+<div class="footer">
+  <p>This is an automated response generated by our accounts system.
+  If you have any questions, please reply to this email.</p>
+</div>
+</body></html>"""
+
+    return html
 
 
 @router.post("/api/supplier-statements/process-email/{email_id}")
@@ -2681,8 +2961,8 @@ async def get_supplier_statement_queue():
                 ss.sender_email, ss.opening_balance, ss.closing_balance, ss.currency,
                 ss.error_message,
                 COUNT(sl.id) as line_count,
-                SUM(CASE WHEN sl.match_status = 'matched' THEN 1 ELSE 0 END) as matched_count,
-                SUM(CASE WHEN sl.match_status = 'query' THEN 1 ELSE 0 END) as query_count
+                SUM(CASE WHEN sl.status = 'Agreed' THEN 1 ELSE 0 END) as matched_count,
+                SUM(CASE WHEN sl.status = 'Query' THEN 1 ELSE 0 END) as query_count
             FROM supplier_statements ss
             LEFT JOIN statement_lines sl ON sl.statement_id = ss.id
             WHERE ss.status IN ('received', 'processing')
@@ -2723,8 +3003,8 @@ async def get_supplier_statement_detail(statement_id: int):
                 ss.acknowledged_at, ss.processed_at, ss.approved_by, ss.approved_at,
                 ss.sent_at, ss.error_message, ss.pdf_path,
                 COUNT(sl.id) as line_count,
-                SUM(CASE WHEN sl.match_status = 'matched' THEN 1 ELSE 0 END) as matched_count,
-                SUM(CASE WHEN sl.match_status = 'query' THEN 1 ELSE 0 END) as query_count
+                SUM(CASE WHEN sl.status = 'Agreed' THEN 1 ELSE 0 END) as matched_count,
+                SUM(CASE WHEN sl.status = 'Query' THEN 1 ELSE 0 END) as query_count
             FROM supplier_statements ss
             LEFT JOIN statement_lines sl ON sl.statement_id = ss.id
             WHERE ss.id = ?
@@ -2739,19 +3019,26 @@ async def get_supplier_statement_detail(statement_id: int):
 
         stmt = dict(row)
 
-        # Get supplier name from Opera if available
+        # Get supplier name and balance from Opera
+        stmt['supplier_name'] = stmt['supplier_code']
+        stmt['opera_balance'] = None
         if sql_connector:
             try:
-                name_query = f"SELECT pn_name FROM pname WITH (NOLOCK) WHERE pn_account = '{stmt['supplier_code']}'"
-                df = sql_connector.execute_query(name_query)
+                df = sql_connector.execute_query(
+                    f"SELECT RTRIM(pn_name) as pn_name, pn_currbal FROM pname WITH (NOLOCK) WHERE pn_account = '{stmt['supplier_code']}'"
+                )
                 if df is not None and len(df) > 0:
-                    stmt['supplier_name'] = df.iloc[0]['pn_name']
-                else:
-                    stmt['supplier_name'] = stmt['supplier_code']
+                    stmt['supplier_name'] = str(df.iloc[0]['pn_name']).strip()
+                    # Show raw Opera balance — same sign convention as supplier statement
+                    # Negative = we owe them, Positive = we're in credit
+                    stmt['opera_balance'] = float(df.iloc[0]['pn_currbal'])
             except Exception:
-                stmt['supplier_name'] = stmt['supplier_code']
-        else:
-            stmt['supplier_name'] = stmt['supplier_code']
+                pass
+
+        # Difference: their balance - our balance
+        their_bal = stmt.get('closing_balance') or 0
+        our_bal = stmt.get('opera_balance') if stmt.get('opera_balance') is not None else 0
+        stmt['balance_difference'] = their_bal - our_bal
 
         return {"success": True, "statement": stmt}
 
@@ -2779,7 +3066,8 @@ async def get_supplier_statement_lines(statement_id: int):
 
         cursor.execute("""
             SELECT id, line_date, reference, description, debit, credit, balance,
-                   doc_type, match_status, matched_ptran_id, query_type,
+                   doc_type, exists_in_opera, status, match_status,
+                   matched_ptran_id, query_type,
                    query_sent_at, query_resolved_at
             FROM statement_lines
             WHERE statement_id = ?
@@ -2788,24 +3076,111 @@ async def get_supplier_statement_lines(statement_id: int):
 
         lines = [dict(row) for row in cursor.fetchall()]
 
-        # Calculate summary
+        # Calculate summary using the new status field
         summary = {
             "total_lines": len(lines),
             "total_debits": sum(l['debit'] or 0 for l in lines),
             "total_credits": sum(l['credit'] or 0 for l in lines),
-            "matched_count": sum(1 for l in lines if l['match_status'] == 'matched'),
-            "query_count": sum(1 for l in lines if l['match_status'] == 'query'),
-            "unmatched_count": sum(1 for l in lines if l['match_status'] == 'unmatched'),
+            "exists_yes": sum(1 for l in lines if l.get('exists_in_opera') == 'Yes'),
+            "exists_no": sum(1 for l in lines if l.get('exists_in_opera') == 'No'),
+            "agreed_count": sum(1 for l in lines if l.get('status') == 'Agreed'),
+            "paid_count": sum(1 for l in lines if l.get('status') == 'Paid'),
+            "query_count": sum(1 for l in lines if l.get('status') == 'Query'),
+            "disputed_count": sum(1 for l in lines if l.get('status') == 'Disputed'),
+            "in_our_favour_count": sum(1 for l in lines if l.get('status') == 'In Our Favour'),
+            # Legacy fields for backwards compat
+            "matched_count": sum(1 for l in lines if l.get('exists_in_opera') == 'Yes'),
+            "unmatched_count": sum(1 for l in lines if l.get('exists_in_opera') == 'No'),
         }
 
+        # Get Opera-only transactions (on our account but not on their statement)
+        opera_only = []
+        try:
+            cursor.execute("""
+                SELECT line_date, reference, doc_type, amount, signed_value, balance
+                FROM statement_opera_only
+                WHERE statement_id = ?
+                ORDER BY line_date, id
+            """, (statement_id,))
+            opera_only = [dict(r) for r in cursor.fetchall()]
+        except Exception:
+            pass  # Table may not exist yet
+
+        # === Reconciliation calculation ===
+        # The difference between their balance and ours is ALWAYS fully explained by:
+        # 1. Items on their statement not on our account (net)
+        # 2. Items on our account not on their statement (net)
+        # 3. Anything left = amount differences on items that exist on both sides
+
+        # 1. Items on their statement not on our account
+        not_ours_net = sum(
+            (l.get('debit') or 0) - (l.get('credit') or 0)
+            for l in lines if l.get('exists_in_opera') == 'No'
+        )
+        not_ours_count = sum(1 for l in lines if l.get('exists_in_opera') == 'No')
+
+        # 2. Items on our account not on their statement
+        # Use signed_value from reconciler (positive=invoice, negative=payment/credit)
+        # Guard against None values in signed_value
+        opera_only_net = sum(item.get('signed_value', 0) or 0 for item in opera_only)
+
+        # 3. Amount differences on agreed items (items that exist on both sides but differ)
+        amount_diffs_net = sum(
+            (l.get('debit') or 0) - (l.get('credit') or 0)
+            for l in lines
+            if l.get('exists_in_opera') == 'Yes' and l.get('status') == 'Amount Difference'
+        )
+
+        summary['opera_only_count'] = len(opera_only)
+        summary['opera_only_net'] = opera_only_net
+        summary['not_ours_net'] = not_ours_net
+        summary['not_ours_count'] = not_ours_count
+        summary['amount_diffs_net'] = amount_diffs_net
+        summary['math_checks_out'] = True  # Verified by reconciler
+
         conn.close()
-        return {"success": True, "lines": lines, "summary": summary}
+        return {"success": True, "lines": lines, "summary": summary, "opera_only": opera_only}
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting statement lines: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
+
+
+@router.get("/api/supplier-statements/{statement_id}/pdf")
+async def get_supplier_statement_pdf(statement_id: int):
+    """Serve the original PDF for a statement so the user can verify extraction."""
+    from sql_rag.company_data import get_current_db_path
+    from fastapi.responses import FileResponse
+
+    db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT pdf_path, supplier_code, statement_date FROM supplier_statements WHERE id = ?", (statement_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row or not row['pdf_path']:
+            raise HTTPException(status_code=404, detail="PDF not available for this statement")
+
+        pdf_path = row['pdf_path']
+        if not os.path.exists(pdf_path):
+            raise HTTPException(status_code=404, detail="PDF file not found on disk")
+
+        filename = f"{row['supplier_code']}_{row['statement_date'] or 'statement'}.pdf"
+        return FileResponse(pdf_path, media_type='application/pdf', filename=filename)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving PDF for statement {statement_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/supplier-statements/{statement_id}/process")

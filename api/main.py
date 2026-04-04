@@ -672,6 +672,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Could not initialize supplier statement database: {e}")
 
+    # Start background email sync and supplier statement auto-processing
+    if email_sync_manager:
+        try:
+            from apps.suppliers.api.background import auto_process_supplier_statements
+            email_sync_manager.add_post_sync_callback(auto_process_supplier_statements)
+            await email_sync_manager.start_periodic_sync(interval_minutes=5)
+            logger.info("Background email sync started (5 min interval) with supplier auto-processing")
+        except Exception as e:
+            logger.warning(f"Could not start background email sync: {e}")
+
     # Set the module-level globals to the initial company's resources
     if _default_company_id:
         _ensure_company_context(_default_company_id)

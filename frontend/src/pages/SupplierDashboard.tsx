@@ -82,7 +82,14 @@ async function fetchDashboard(): Promise<DashboardData> {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || body.detail || 'Failed to load dashboard data');
   }
-  return res.json();
+  const data = await res.json();
+  // API returns {success, kpis, alerts, ...} — extract the dashboard fields
+  return {
+    kpis: data.kpis || {},
+    alerts: data.alerts || [],
+    recent_statements: data.recent_statements || [],
+    recent_responses: data.recent_responses || [],
+  };
 }
 
 async function fetchAgedCreditors(): Promise<AgedCreditor> {
@@ -91,7 +98,17 @@ async function fetchAgedCreditors(): Promise<AgedCreditor> {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error || body.detail || 'Failed to load aged creditors');
   }
-  return res.json();
+  const data = await res.json();
+  // API returns {success, summary: {...}} — extract the summary
+  const s = data.summary || data;
+  return {
+    current: s.current || 0,
+    days_30: s.days_30 || 0,
+    days_60: s.days_60 || 0,
+    days_90: s.days_90 || 0,
+    days_120_plus: s.days_120_plus || 0,
+    total: s.total || 0,
+  };
 }
 
 // ─── KPI Card ────────────────────────────────────────────────
