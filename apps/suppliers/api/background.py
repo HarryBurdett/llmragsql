@@ -89,6 +89,9 @@ async def _process_single_email(email_id: int, storage, providers):
     from api.main import sql_connector, config as app_config
     from sql_rag.supplier_statement_db import get_supplier_statement_db
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
+    # TODO: SupplierStatementReconciler is imported only for find_supplier().
+    # Once find_supplier() is extracted to sql_rag/supplier_lookup.py this
+    # import (and supplier_statement_reconcile.py) can be removed entirely.
     from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
     from sql_rag.supplier_reconciler import reconcile, TheirItem, OurItem, clean_reference
     from sql_rag.supplier_config import SupplierConfigManager

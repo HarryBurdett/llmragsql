@@ -1,4 +1,14 @@
 """
+DEPRECATED: This module is retained solely because background.py uses
+``SupplierStatementReconciler.find_supplier()`` to resolve a supplier
+account from a name or reference.  The reconciliation engine logic
+(match_statement, generate_response, etc.) has been superseded by the
+new sql_rag/supplier_config.py + apps/suppliers/api/routes.py pipeline.
+
+TODO: Extract ``find_supplier()`` into a small, standalone utility
+(e.g. sql_rag/supplier_lookup.py) so this entire module can be removed.
+Do NOT add new callers to this module.
+
 Supplier Statement Reconciliation against Opera Purchase Ledger.
 
 Reconciles extracted statement data against ptran and generates
@@ -57,6 +67,8 @@ class ReconciliationLine:
     opera_due_date: Optional[str] = None
 
     match_status: MatchStatus = MatchStatus.NOT_IN_OPERA
+    exists_in_opera: str = "No"     # "Yes" or "No" — does this transaction exist on our supplier account?
+    status: str = "Query"           # Agreed, Paid, Query, In Our Favour, Disputed
     difference: float = 0.0
     query_required: bool = False
     query_type: Optional[str] = None
@@ -81,6 +93,7 @@ class ReconciliationResult:
     statement_age_days: int = 0
 
     lines: List[ReconciliationLine] = field(default_factory=list)
+    opera_only: List[Dict[str, Any]] = field(default_factory=list)  # On our account but not on their statement
 
     # Summary counts
     matched_count: int = 0
@@ -346,6 +359,30 @@ class SupplierStatementReconciler:
         # Apply business rules to all reconciled lines
         self._apply_business_rules(result.lines)
 
+        # Populate the two-column fields: exists_in_opera + status
+        for line in result.lines:
+            # Exists: did we find this transaction on our supplier account?
+            if line.opera_ref or line.match_status in (MatchStatus.MATCHED, MatchStatus.PAID, MatchStatus.AMOUNT_MISMATCH, MatchStatus.IN_OUR_FAVOUR):
+                line.exists_in_opera = "Yes"
+            else:
+                line.exists_in_opera = "No"
+
+            # Status: what's the position?
+            if line.match_status == MatchStatus.MATCHED:
+                line.status = "Agreed"
+            elif line.match_status == MatchStatus.PAID:
+                line.status = "Paid"
+            elif line.match_status == MatchStatus.AMOUNT_MISMATCH:
+                line.status = "Disputed"
+            elif line.match_status == MatchStatus.IN_OUR_FAVOUR:
+                line.status = "In Our Favour"
+            elif line.match_status == MatchStatus.NOT_IN_OPERA:
+                line.status = "Query"
+            elif line.match_status == MatchStatus.NOT_ON_STATEMENT:
+                line.status = "Query"
+            else:
+                line.status = "Query"
+
         # Recount after business rules have been applied (rules may change statuses)
         result.matched_count = 0
         result.query_count = 0
@@ -363,28 +400,49 @@ class SupplierStatementReconciler:
                 if line.query_text:
                     result.queries.append(line.query_text)
 
-        # Check for Opera items not on statement (potential payment notifications)
-        # Only notify about payments made in the last 90 days to keep response focused
-        cutoff_date = datetime.now() - timedelta(days=90)
+        # Find Opera transactions not on the supplier's statement
+        # Track which Opera refs were matched
+        matched_opera_refs = set()
+        for line in result.lines:
+            if line.opera_ref:
+                matched_opera_refs.add(line.opera_ref.upper())
+
         statement_refs = {l.get("reference", "").upper() for l in statement_lines if l.get("reference")}
 
-        for txn in opera_txns:
-            if txn["reference"] and txn["reference"].upper() not in statement_refs:
-                if txn["type_code"] == "P" and txn["balance"] == 0:
-                    txn_date = txn["date"]
-                    if isinstance(txn_date, str):
-                        try:
-                            txn_date = datetime.strptime(txn_date[:10], "%Y-%m-%d")
-                        except ValueError:
-                            continue
+        # Every unmatched Opera transaction contributes to the balance difference.
+        # Include ALL of them — no filtering by date or outstanding balance.
+        type_map = {'I': 'Invoice', 'P': 'Payment', 'C': 'Credit Note', 'F': 'Refund', 'A': 'Adjustment'}
+        cutoff_date = datetime.now() - timedelta(days=90)
 
-                    # Only include recent payments
-                    if txn_date and txn_date >= cutoff_date:
-                        result.payment_notifications += 1
-                        date_str = txn_date.strftime("%d/%m/%Y") if isinstance(txn_date, datetime) else str(txn_date)[:10]
-                        result.payment_info.append(
-                            f"Payment of {self._format_currency(abs(txn['value']))} on {date_str} (Ref: {txn['reference']})"
-                        )
+        for txn in opera_txns:
+            ref = (txn.get("reference") or "").strip()
+            if not ref:
+                continue
+            if ref.upper() in matched_opera_refs or ref.upper() in statement_refs:
+                continue
+
+            txn_date = txn["date"]
+            if isinstance(txn_date, str):
+                try:
+                    txn_date = datetime.strptime(txn_date[:10], "%Y-%m-%d")
+                except ValueError:
+                    txn_date = None
+
+            date_str = txn_date.strftime("%Y-%m-%d") if isinstance(txn_date, datetime) else str(txn.get("date", ""))[:10]
+            value = txn.get("value", 0)
+            result.opera_only.append({
+                'date': date_str,
+                'reference': ref,
+                'type': type_map.get(txn.get("type_code", ""), txn.get("type_code", "")),
+                'amount': abs(value),
+                'signed_value': value,  # Positive = debit (invoice), Negative = credit (payment)
+                'balance': txn.get("balance", 0),
+            })
+
+            # Track recent payment notifications for the response email
+            is_recent = txn_date and txn_date >= cutoff_date if txn_date else False
+            if txn.get("type_code") == "P" and is_recent:
+                result.payment_notifications += 1
 
         # Generate response
         result.response_text = self._generate_response(result, statement_info, recent_payments)
@@ -397,20 +455,38 @@ class SupplierStatementReconciler:
         opera_by_ref: Dict[str, Dict],
         all_opera_txns: List[Dict]
     ) -> ReconciliationLine:
-        """Reconcile a single statement line against Opera records."""
+        """
+        Reconcile a single statement line against Opera records.
+
+        Matching is by REFERENCE ONLY — no amount guessing.
+        If the reference doesn't match, the item is not on our account.
+        This ensures the reconciliation is precise and the difference
+        between balances is always fully explained by the two lists:
+        items on their statement not on ours, and items on ours not on theirs.
+        """
         recon = ReconciliationLine()
         recon.statement_ref = statement_line.get("reference")
         recon.statement_date = statement_line.get("date")
         recon.statement_amount = statement_line.get("debit") or statement_line.get("credit")
         recon.statement_type = statement_line.get("doc_type")
 
-        ref = (recon.statement_ref or "").upper()
+        ref = (recon.statement_ref or "").strip().upper()
 
-        # Try to match by reference
-        if ref and ref in {k.upper(): k for k in opera_by_ref}:
-            # Find the actual key (case-insensitive)
-            actual_key = next(k for k in opera_by_ref if k.upper() == ref)
-            opera_txn = opera_by_ref[actual_key]
+        # Strip common suffixes that AI extraction may add (e.g. "*OVERDUE*")
+        clean_ref = ref.replace('*OVERDUE*', '').replace('*', '').strip()
+
+        # Build case-insensitive lookup
+        ref_lookup = {k.strip().upper(): k for k in opera_by_ref}
+
+        # Match by reference only
+        matched_key = None
+        if clean_ref and clean_ref in ref_lookup:
+            matched_key = ref_lookup[clean_ref]
+        elif ref and ref in ref_lookup:
+            matched_key = ref_lookup[ref]
+
+        if matched_key:
+            opera_txn = opera_by_ref[matched_key]
 
             recon.opera_ref = opera_txn["reference"]
             recon.opera_date = str(opera_txn["date"])[:10] if opera_txn["date"] else None
@@ -419,7 +495,7 @@ class SupplierStatementReconciler:
             recon.opera_type = opera_txn["type"]
             recon.opera_due_date = str(opera_txn["due_date"])[:10] if opera_txn["due_date"] else None
 
-            # Check if amounts match
+            # Reference matched — check amounts
             stmt_amt = recon.statement_amount or 0
             opera_amt = recon.opera_amount or 0
             recon.difference = stmt_amt - opera_amt
@@ -427,51 +503,25 @@ class SupplierStatementReconciler:
             if abs(recon.difference) < 0.01:
                 recon.match_status = MatchStatus.MATCHED
             elif recon.difference > 0:
-                # Their amount is higher - query (not in our favour)
                 recon.match_status = MatchStatus.AMOUNT_MISMATCH
                 recon.query_required = True
                 recon.query_type = QueryType.AMOUNT_DISCREPANCY.value
                 recon.query_text = (
-                    f"Invoice {recon.statement_ref}: Your statement shows {self._format_currency(stmt_amt)}, "
+                    f"{recon.statement_ref}: Your statement shows {self._format_currency(stmt_amt)}, "
                     f"our records show {self._format_currency(opera_amt)}. "
-                    f"Please clarify the difference of {self._format_currency(recon.difference)}."
+                    f"Difference: {self._format_currency(recon.difference)}."
                 )
             else:
-                # Our amount is higher - in our favour, stay quiet
+                # Our amount is higher — in our favour
                 recon.match_status = MatchStatus.IN_OUR_FAVOUR
 
-            # Check if paid
-            if opera_txn["balance"] == 0:
+            # If invoice is fully paid (balance = 0), note it
+            if opera_txn.get("type_code") != "P" and opera_txn["balance"] == 0:
                 recon.match_status = MatchStatus.PAID
                 recon.notify_payment = True
-                recon.payment_details = f"Invoice {recon.statement_ref} has been paid"
-
         else:
-            # Not found by reference - try amount match
-            stmt_amt = recon.statement_amount or 0
-
-            # Look for invoices with matching amount
-            matches = [t for t in all_opera_txns
-                      if abs(abs(t["value"]) - stmt_amt) < 0.01 and t["type_code"] == "I"]
-
-            if matches:
-                # Found potential match by amount
-                opera_txn = matches[0]
-                recon.opera_ref = opera_txn["reference"]
-                recon.opera_amount = abs(opera_txn["value"])
-                recon.opera_balance = opera_txn["balance"]
-                recon.match_status = MatchStatus.MATCHED
-                logger.info(f"Matched {recon.statement_ref} to {opera_txn['reference']} by amount")
-            else:
-                # Not in our system - query
-                recon.match_status = MatchStatus.NOT_IN_OPERA
-                recon.query_required = True
-                recon.query_type = QueryType.REQUEST_COPY.value
-                recon.query_text = (
-                    f"Invoice {recon.statement_ref or 'unknown'} for {self._format_currency(stmt_amt)} "
-                    f"dated {recon.statement_date}: We do not have this invoice on our system. "
-                    f"Please send a copy."
-                )
+            # No reference match — not on our account
+            recon.match_status = MatchStatus.NOT_IN_OPERA
 
         return recon
 
