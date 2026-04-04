@@ -59,8 +59,9 @@ snapshots/
 # Keep requirements.txt but ignore other txt files
 !requirements.txt
 
-# Test files
+# Test files (but keep structured pytest suite under tests/)
 test_*.py
+!tests/test_*.py
 update_*.py
 updated-*.py
 modified-*.py
