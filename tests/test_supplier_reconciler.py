@@ -287,3 +287,90 @@ def test_clean_reference():
     assert clean_reference("INV005*")         == "inv005"
     # Mixed case
     assert clean_reference("Inv006")          == "inv006"
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Duplicate their-side references — grouped and summed correctly
+# ---------------------------------------------------------------------------
+
+def test_duplicate_their_side_references_grouped():
+    """
+    Two supplier statement lines share the same reference (e.g., a part-payment
+    split across two statement rows).  They must be merged into a single
+    AgreedItem rather than producing two entries that double-count our_amount.
+    """
+    # Statement has INV040 split into two lines: £60 + £40 = £100 total
+    theirs = [
+        TheirItem(reference="INV040", debit=60.00, credit=0.00, detail="line A"),
+        TheirItem(reference="INV040", debit=40.00, credit=0.00, detail="line B"),
+    ]
+    # Opera has a single row for INV040 at £100
+    ours = [
+        OurItem(reference="INV040", balance=100.00, detail="opera row"),
+    ]
+    result = reconcile(theirs, ours)
+
+    # Should produce exactly ONE agreed item, not two
+    assert len(result.agreed) == 1, (
+        f"Expected 1 agreed item, got {len(result.agreed)} — "
+        "duplicate their-side refs were not grouped"
+    )
+    item = result.agreed[0]
+
+    # their_amount must be the summed total (60 + 40 = 100), not 60 or 40 alone
+    assert item.their_amount == pytest.approx(100.00)
+    assert item.our_amount == pytest.approx(100.00)
+    assert item.amount_difference == pytest.approx(0.00)
+
+    # Balances and difference
+    assert result.their_balance == pytest.approx(100.00)
+    assert result.our_balance == pytest.approx(100.00)
+    assert result.difference == pytest.approx(0.00)
+
+    assert len(result.theirs_only) == 0
+    assert len(result.ours_only) == 0
+
+    _assert_math(result)
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Tolerance edge case — floating-point penny rounding
+# ---------------------------------------------------------------------------
+
+def test_tolerance_edge_case_floating_point():
+    """
+    Amounts chosen so that Python floating-point arithmetic produces a
+    difference that is representable as exactly 0.01 (or indistinguishably
+    close to it).  The math check must pass because <= is used, not <.
+
+    0.1 + 0.2 == 0.30000000000000004 in IEEE 754, so using those as the
+    building blocks produces a real-world fp rounding scenario.
+    """
+    # their net = 0.30 (debit 0.30, credit 0.00)
+    # our balance = 0.20
+    # amount_difference = 0.10; difference = 0.10; math trivially checks out.
+    # For the edge case we want the *computed* check itself to land exactly on
+    # the boundary.  Construct amounts where the rounded difference is exactly
+    # 0.01 due to cumulative floating-point arithmetic.
+    theirs = [
+        TheirItem(reference="INV050", debit=1.10, credit=0.00),   # net = 1.10
+        TheirItem(reference="INV051", debit=2.20, credit=0.00),   # net = 2.20
+    ]
+    ours = [
+        OurItem(reference="INV050", balance=1.10),
+        OurItem(reference="INV051", balance=2.19),   # 1p less → amount_diff = 0.01
+    ]
+    result = reconcile(theirs, ours)
+
+    assert len(result.agreed) == 2
+
+    inv051 = next(a for a in result.agreed if "INV051" in a.reference)
+    assert inv051.amount_difference == pytest.approx(0.01, abs=1e-9)
+
+    # The overall difference is 0.01 — math must check out with <= not <
+    assert result.difference == pytest.approx(0.01)
+    assert result.math_checks_out is True, (
+        "math_checks_out failed on a penny-rounding edge case — "
+        "tolerance check must use <= not <"
+    )
+    _assert_math(result)

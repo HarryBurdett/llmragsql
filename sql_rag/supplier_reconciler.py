@@ -141,15 +141,25 @@ def reconcile(
         Three-way split: agreed, theirs_only, ours_only plus the math check.
     """
 
-    # --- Build lookup: clean_ref -> TheirItem ---------------------------
-    their_by_ref: Dict[str, TheirItem] = {}
+    # --- Group their items by clean ref, sum debits/credits -------------
+    # Duplicate statement lines with the same reference are merged so that
+    # each reference is matched exactly once against Opera.
+    their_grouped: Dict[str, List[TheirItem]] = {}
+    theirs_only_empty: List[UnmatchedItem] = []
+
     for item in their_items:
         key = clean_reference(item.reference)
         if key == '':
-            # Empty reference — treated as unmatched below
+            # Empty reference — always unmatched
+            theirs_only_empty.append(
+                UnmatchedItem(
+                    reference=item.reference,
+                    amount=item.net,
+                    detail=item.detail,
+                )
+            )
             continue
-        # Last one wins if there are duplicates on their side
-        their_by_ref[key] = item
+        their_grouped.setdefault(key, []).append(item)
 
     # --- Group Opera items by clean ref, sum balances -------------------
     # Empty references go straight to ours_only (cannot be matched)
@@ -169,43 +179,32 @@ def reconcile(
             continue
         our_grouped.setdefault(key, []).append(item)
 
-    # --- Walk their items -----------------------------------------------
+    # --- Walk their grouped items ----------------------------------------
     agreed: List[AgreedItem] = []
-    theirs_only: List[UnmatchedItem] = []
+    theirs_only: List[UnmatchedItem] = list(theirs_only_empty)
 
     # Track which of our refs have been matched
     matched_our_refs: set = set()
 
-    # Also add empty-reference their items to theirs_only immediately
-    for item in their_items:
-        key = clean_reference(item.reference)
-        if key == '':
-            theirs_only.append(
-                UnmatchedItem(
-                    reference=item.reference,
-                    amount=item.net,
-                    detail=item.detail,
-                )
-            )
-
-    for item in their_items:
-        key = clean_reference(item.reference)
-        if key == '':
-            continue  # already handled above
+    for key, their_group in their_grouped.items():
+        # Sum all statement lines for this reference
+        their_net = sum(i.net for i in their_group)
+        # Use the original reference from the first line
+        their_ref = their_group[0].reference
+        their_detail = their_group[0].detail if len(their_group) == 1 else None
 
         if key in our_grouped:
             # Matched — build AgreedItem
             our_group = our_grouped[key]
             our_total = sum(o.balance for o in our_group)
-            their_net = item.net
             diff = round(their_net - our_total, 6)
 
             agreed.append(AgreedItem(
-                reference=item.reference,
+                reference=their_ref,
                 their_amount=their_net,
                 our_amount=our_total,
                 amount_difference=diff,
-                their_detail=item.detail,
+                their_detail=their_detail,
                 our_details=[o.detail for o in our_group if o.detail],
             ))
             matched_our_refs.add(key)
@@ -213,9 +212,9 @@ def reconcile(
             # On their statement, not in Opera
             theirs_only.append(
                 UnmatchedItem(
-                    reference=item.reference,
-                    amount=item.net,
-                    detail=item.detail,
+                    reference=their_ref,
+                    amount=their_net,
+                    detail=their_detail,
                 )
             )
 
@@ -246,7 +245,7 @@ def reconcile(
     # --- Math check -------------------------------------------------------
     # difference = theirs_only_net - ours_only_net + amount_diffs_net
     computed = round(theirs_only_net - ours_only_net + amount_diffs_net, 6)
-    math_checks_out = abs(computed - difference) < _AMOUNT_TOLERANCE
+    math_checks_out = abs(computed - difference) <= _AMOUNT_TOLERANCE
 
     return ReconciliationResult(
         their_balance=their_balance,
