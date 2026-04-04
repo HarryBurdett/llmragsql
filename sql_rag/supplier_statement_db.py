@@ -85,6 +85,7 @@ class SupplierStatementDB:
                 approved_at DATETIME,
                 sent_at DATETIME,
                 response_email_id INTEGER,
+                source_email_id INTEGER,
                 error_message TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -103,6 +104,8 @@ class SupplierStatementDB:
                 credit DECIMAL(15,2),
                 balance DECIMAL(15,2),
                 doc_type TEXT,
+                exists_in_opera TEXT,
+                status TEXT,
                 match_status TEXT,
                 matched_ptran_id TEXT,
                 query_type TEXT,
@@ -111,6 +114,36 @@ class SupplierStatementDB:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Opera-only transactions (on our account but not on supplier statement)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS statement_opera_only (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                statement_id INTEGER NOT NULL REFERENCES supplier_statements(id),
+                line_date DATE,
+                reference TEXT,
+                doc_type TEXT,
+                amount DECIMAL(15,2),
+                signed_value DECIMAL(15,2),
+                balance DECIMAL(15,2),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # Migration: add signed_value if missing
+        try:
+            cursor.execute("SELECT signed_value FROM statement_opera_only LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE statement_opera_only ADD COLUMN signed_value DECIMAL(15,2)")
+
+        # Migration: add exists_in_opera and status columns if missing
+        try:
+            cursor.execute("SELECT exists_in_opera FROM statement_lines LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE statement_lines ADD COLUMN exists_in_opera TEXT")
+        try:
+            cursor.execute("SELECT status FROM statement_lines LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE statement_lines ADD COLUMN status TEXT")
 
         # Approved sender emails per supplier
         cursor.execute("""
@@ -242,6 +275,25 @@ class SupplierStatementDB:
             )
         """)
 
+        # Supplier config — synced from Opera pname, plus local automation flags
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS supplier_config (
+                account_code TEXT PRIMARY KEY,
+                name TEXT,
+                balance DECIMAL(15,2),
+                payment_terms_days INTEGER DEFAULT 30,
+                payment_method TEXT,
+                reconciliation_active BOOLEAN DEFAULT 1,
+                auto_respond BOOLEAN DEFAULT 0,
+                never_communicate BOOLEAN DEFAULT 0,
+                statements_contact_position TEXT,
+                last_synced DATETIME,
+                last_statement_date DATE,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Indexes for performance
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_statements_supplier
@@ -289,6 +341,17 @@ class SupplierStatementDB:
             ON supplier_remittance_log(supplier_code)
         """)
 
+        # Migration: add source_email_id if missing (existing databases)
+        try:
+            cursor.execute("SELECT source_email_id FROM supplier_statements LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE supplier_statements ADD COLUMN source_email_id INTEGER")
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_statements_email
+            ON supplier_statements(source_email_id)
+        """)
+
         # Insert default configuration if not exists
         default_config = [
             # Immediate response settings
@@ -321,6 +384,14 @@ class SupplierStatementDB:
             # Onboarding
             ('onboarding_auto_detect', 'true', 'Auto-detect new suppliers from Opera'),
             ('onboarding_require_bank_verify', 'true', 'Require bank detail phone verification for new suppliers'),
+
+            # Response email templates
+            ('response_greeting', 'Dear {supplier_name},', 'Opening greeting ({supplier_name} is replaced automatically)'),
+            ('response_sign_off', 'Regards,<br>Accounts Department', 'Email sign-off (HTML allowed)'),
+            ('response_company_name', '', 'Company name shown below sign-off (leave blank to hide)'),
+            ('response_agreed_text', 'We have reviewed your statement and confirm all items are agreed. Thank you.', 'Text shown when all items match'),
+            ('response_query_intro', 'We have reviewed your statement. The following items require clarification:', 'Text shown before queried items list'),
+            ('response_query_footer', 'Please could you provide further details on the items listed above at your earliest convenience.', 'Text shown after queried items list'),
         ]
         for key, value, description in default_config:
             cursor.execute("""
@@ -341,7 +412,8 @@ class SupplierStatementDB:
         pdf_path: Optional[str] = None,
         opening_balance: Optional[float] = None,
         closing_balance: Optional[float] = None,
-        currency: str = 'GBP'
+        currency: str = 'GBP',
+        email_id: Optional[int] = None
     ) -> int:
         """Create a new statement record."""
         conn = self._get_connection()
@@ -350,10 +422,10 @@ class SupplierStatementDB:
         cursor.execute("""
             INSERT INTO supplier_statements
             (supplier_code, sender_email, statement_date, pdf_path,
-             opening_balance, closing_balance, currency, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'received')
+             opening_balance, closing_balance, currency, source_email_id, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'received')
         """, (supplier_code, sender_email, statement_date, pdf_path,
-              opening_balance, closing_balance, currency))
+              opening_balance, closing_balance, currency, email_id))
 
         statement_id = cursor.lastrowid
         conn.commit()
@@ -361,6 +433,20 @@ class SupplierStatementDB:
 
         logger.info(f"Created statement {statement_id} for supplier {supplier_code}")
         return statement_id
+
+    def get_statement_by_email_id(self, email_id: int) -> Optional[Dict[str, Any]]:
+        """Check if an email has already been processed as a statement."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM supplier_statements WHERE source_email_id = ?",
+            (email_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return dict(row)
+        return None
 
     def update_statement_status(
         self,
