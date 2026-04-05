@@ -402,6 +402,30 @@ class SupplierStatementDB:
 
             # Payment schedule
             ('next_payment_run_date', '', 'Next scheduled payment run date (YYYY-MM-DD)'),
+
+            # Email templates (HTML with merge fields)
+            ('email_template_agreed', '''<p>Dear {contact_name},</p>
+<p>Thank you for your statement dated {statement_date}.</p>
+<p>We confirm the balance of {their_balance} is agreed.</p>
+{payment_schedule}
+<p>Regards,<br>{company_sign_off}</p>''', 'Email template when balances agree (HTML with merge fields)'),
+
+            ('email_template_query', '''<p>Dear {contact_name},</p>
+<p>Thank you for your statement dated {statement_date}.</p>
+<table style="margin:12px 0;font-size:13px;">
+<tr><td style="padding:4px 16px 4px 0;color:#666;">Balance per your statement:</td><td style="font-weight:bold;">{their_balance}</td></tr>
+<tr><td style="padding:4px 16px 4px 0;color:#666;">Balance per our records:</td><td style="font-weight:bold;">{our_balance}</td></tr>
+<tr><td style="padding:4px 16px 4px 0;color:#666;">Difference:</td><td style="font-weight:bold;">{difference}</td></tr>
+</table>
+<p>{agreed_count} item(s) agreed. The following {query_count} item(s) require your attention:</p>
+{query_table}
+<p>Please provide further details on the items listed above.</p>
+{payment_table}
+{payment_schedule}
+<p>Regards,<br>{company_sign_off}</p>''', 'Email template when there are queries (HTML with merge fields)'),
+
+            ('email_template_subject_agreed', 'Statement Confirmed — {supplier_name} — {statement_date}', 'Subject line for agreed statements'),
+            ('email_template_subject_query', 'Statement Response — {supplier_name} — {statement_date}', 'Subject line for query statements'),
         ]
         for key, value, description in default_config:
             cursor.execute("""

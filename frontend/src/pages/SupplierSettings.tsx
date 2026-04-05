@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Settings, RefreshCw, Save, Clock, Mail, AlertTriangle,
-  Calendar, Banknote, Users, FileText, HelpCircle
+  Calendar, Banknote, Users, FileText, HelpCircle, Code2
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert } from '../components/ui';
@@ -15,7 +15,7 @@ interface SettingConfig {
   label: string;
   description: string;
   icon: LucideIcon;
-  type: 'number' | 'text' | 'email' | 'toggle' | 'date';
+  type: 'number' | 'text' | 'email' | 'toggle' | 'date' | 'textarea';
   prefix?: string;
   suffix?: string;
   placeholder?: string;
@@ -199,6 +199,42 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
       },
     ],
   },
+  {
+    title: 'Email Templates',
+    description: 'Customise the HTML email body and subject lines sent to suppliers',
+    settings: [
+      {
+        key: 'email_template_subject_agreed',
+        label: 'Agreed Subject',
+        description: 'Subject line when all items are agreed. Merge fields: {supplier_name}, {statement_date}',
+        icon: Mail,
+        type: 'text',
+        placeholder: 'Statement Confirmed — {supplier_name} — {statement_date}',
+      },
+      {
+        key: 'email_template_subject_query',
+        label: 'Query Subject',
+        description: 'Subject line when there are outstanding queries. Merge fields: {supplier_name}, {statement_date}',
+        icon: Mail,
+        type: 'text',
+        placeholder: 'Statement Response — {supplier_name} — {statement_date}',
+      },
+      {
+        key: 'email_template_agreed',
+        label: 'Agreed Template',
+        description: 'HTML email body sent when all items agree. Use merge fields listed in the help panel.',
+        icon: Code2,
+        type: 'textarea',
+      },
+      {
+        key: 'email_template_query',
+        label: 'Query Template',
+        description: 'HTML email body sent when there are queried items. Use merge fields listed in the help panel.',
+        icon: Code2,
+        type: 'textarea',
+      },
+    ],
+  },
 ];
 
 export default function SupplierSettings() {
@@ -303,6 +339,23 @@ export default function SupplierSettings() {
           { title: 'Notifications', content: 'Security alert recipients receive emails when supplier bank details change. CC on responses sends a copy of every outgoing response for audit.' },
           { title: 'Remittance', content: 'Auto-send remittance advice after payment. Configure format (email or PDF) and CC address for copies.' },
           { title: 'Onboarding', content: 'Auto-detect new suppliers from incoming emails. Require bank detail verification before processing the first payment to a new supplier.' },
+          {
+            title: 'Email Template Merge Fields',
+            content: [
+              '{contact_name} — First named contact from Opera (falls back to supplier name)',
+              '{supplier_name} — Supplier name from Opera',
+              '{statement_date} — Date of the supplier statement',
+              '{their_balance} — Closing balance on the statement (£X,XXX.XX)',
+              '{our_balance} — Outstanding balance per our Purchase Ledger (£X,XXX.XX)',
+              '{difference} — Difference between the two balances (coloured green/red)',
+              '{agreed_count} — Number of items that matched',
+              '{query_count} — Number of items requiring attention',
+              '{query_table} — Auto-generated HTML table of queried items (do not edit)',
+              '{payment_table} — Auto-generated HTML table of recent payments (do not edit)',
+              '{payment_schedule} — Upcoming payment run date text (do not edit)',
+              '{company_sign_off} — Sign-off text from the "Response Sign-Off" setting',
+            ].join('\n'),
+          },
         ]}
       />
 
@@ -335,10 +388,11 @@ export default function SupplierSettings() {
                   const currentValue = formValues[setting.key] || '';
                   const isToggle = setting.type === 'toggle';
                   const isDate = setting.type === 'date';
+                  const isTextarea = setting.type === 'textarea';
                   const isChecked = currentValue === 'true' || currentValue === '1';
 
                   return (
-                    <Card key={setting.key}>
+                    <Card key={setting.key} className={isTextarea ? 'md:col-span-2' : ''}>
                       <div className="flex items-start gap-3">
                         <div className="p-2 bg-gray-100 rounded-lg flex-shrink-0">
                           <Icon className="h-5 w-5 text-gray-600" />
@@ -369,7 +423,15 @@ export default function SupplierSettings() {
                               {setting.prefix && (
                                 <span className="text-sm text-gray-500">{setting.prefix}</span>
                               )}
-                              {isDate ? (
+                              {isTextarea ? (
+                                <textarea
+                                  value={currentValue}
+                                  onChange={e => handleChange(setting.key, e.target.value)}
+                                  rows={12}
+                                  spellCheck={false}
+                                  className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y"
+                                />
+                              ) : isDate ? (
                                 <input
                                   type="date"
                                   value={currentValue}
@@ -409,6 +471,7 @@ export default function SupplierSettings() {
           <li><strong>Notifications:</strong> Bank detail changes will be emailed to security alert recipients.</li>
           <li><strong>Remittance:</strong> Auto-respond settings control whether responses need manual approval.</li>
           <li><strong>Onboarding:</strong> Governs how new supplier senders are handled.</li>
+          <li><strong>Email Templates:</strong> Use HTML with merge fields (e.g. {'{contact_name}'}, {'{their_balance}'}) to personalise outgoing emails. Click Help for the full list of available fields.</li>
         </ul>
       </Alert>
     </div>

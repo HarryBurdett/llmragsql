@@ -2114,7 +2114,7 @@ async def preview_supplier_statement_response(statement_id: int):
             cursor, statement_id, supplier_code, stmt.get('statement_date'), sql_connector
         )
 
-        # Build subject
+        # Build subject using configurable template
         supplier_name = supplier_code
         if sql_connector:
             try:
@@ -2122,11 +2122,20 @@ async def preview_supplier_statement_response(statement_id: int):
                     f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
                 )
                 if name_df is not None and len(name_df) > 0:
-                    supplier_name = name_df.iloc[0]['name']
+                    supplier_name = str(name_df.iloc[0]['name']).strip()
             except Exception:
                 pass
 
-        subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
+        # Determine whether this statement has queries (to pick the right subject template)
+        cursor.execute(
+            "SELECT COUNT(*) as cnt FROM statement_lines WHERE statement_id = ? AND match_status = 'query'",
+            (statement_id,)
+        )
+        qrow = cursor.fetchone()
+        has_queries = (qrow['cnt'] > 0) if qrow else False
+
+        from sql_rag.supplier_statement_db import get_supplier_statement_db as _get_db
+        subject = _generate_subject(_get_db(), supplier_name, stmt.get('statement_date'), has_queries)
 
         conn.close()
 
@@ -2193,7 +2202,7 @@ async def approve_supplier_statement(statement_id: int, request: ApproveWithBody
                 cursor, statement_id, supplier_code, stmt.get('statement_date'), sql_connector
             )
 
-        # Build email subject — caller may supply edited subject, else generate
+        # Build email subject — caller may supply edited subject, else use configurable template
         if request.subject:
             email_subject = request.subject
         else:
@@ -2204,10 +2213,19 @@ async def approve_supplier_statement(statement_id: int, request: ApproveWithBody
                         f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
                     )
                     if name_df is not None and len(name_df) > 0:
-                        supplier_name = name_df.iloc[0]['name']
+                        supplier_name = str(name_df.iloc[0]['name']).strip()
                 except Exception:
                     pass
-            email_subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM statement_lines WHERE statement_id = ? AND match_status = 'query'",
+                (statement_id,)
+            )
+            qrow = cursor.fetchone()
+            has_queries = (qrow['cnt'] > 0) if qrow else False
+            from sql_rag.supplier_statement_db import get_supplier_statement_db as _get_db_approve
+            email_subject = _generate_subject(
+                _get_db_approve(), supplier_name, stmt.get('statement_date'), has_queries
+            )
 
         # Send the response email with original statement PDF attached
         email_sent = False
@@ -2549,7 +2567,7 @@ async def bulk_approve_statements(body: BulkApproveRequest):
                 cursor, stmt_id, supplier_code, stmt.get('statement_date'), sql_connector
             )
 
-            # Get supplier name
+            # Get supplier name and generate subject from configurable template
             supplier_name = supplier_code
             if sql_connector:
                 try:
@@ -2557,11 +2575,20 @@ async def bulk_approve_statements(body: BulkApproveRequest):
                         f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
                     )
                     if name_df is not None and len(name_df) > 0:
-                        supplier_name = name_df.iloc[0]['name']
+                        supplier_name = str(name_df.iloc[0]['name']).strip()
                 except Exception:
                     pass
 
-            email_subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM statement_lines WHERE statement_id = ? AND match_status = 'query'",
+                (stmt_id,)
+            )
+            qrow = cursor.fetchone()
+            has_queries_bulk = (qrow['cnt'] > 0) if qrow else False
+            from sql_rag.supplier_statement_db import get_supplier_statement_db as _get_db_bulk
+            email_subject = _generate_subject(
+                _get_db_bulk(), supplier_name, stmt.get('statement_date'), has_queries_bulk
+            )
 
             # Send the response email
             email_sent = False
@@ -2672,38 +2699,177 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     return fallback_sender_email
 
 
+def _format_currency(value) -> str:
+    """Format a numeric value as £X,XXX.XX (negative = minus prefix)."""
+    try:
+        v = float(value or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    sign = '-' if v < 0 else ''
+    return f'{sign}£{abs(v):,.2f}'
+
+
+def _build_query_table(queried) -> str:
+    """Build an HTML table of queried statement lines."""
+    if not queried:
+        return ''
+    rows = ''
+    for l in queried:
+        amt = l['debit'] if l['debit'] else l['credit']
+        amt_str = _format_currency(amt)
+        doc_type = 'Invoice' if l['debit'] else 'Credit/Payment'
+        query_reason = (l['query_type'] or 'not_in_our_records').replace('_', ' ').title()
+        rows += (
+            f'<tr style="border-bottom:1px solid #eee;">'
+            f'<td style="padding:6px 12px;">{l["line_date"] or ""}</td>'
+            f'<td style="padding:6px 12px;"><b>{l["reference"] or "N/A"}</b></td>'
+            f'<td style="padding:6px 12px;">{doc_type}</td>'
+            f'<td style="padding:6px 12px;text-align:right;">{amt_str}</td>'
+            f'<td style="padding:6px 12px;">'
+            f'<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:bold;">'
+            f'{query_reason}</span></td>'
+            f'</tr>'
+        )
+    return (
+        '<table style="border-collapse:collapse;width:100%;margin:12px 0;font-size:13px;">'
+        '<tr style="background:#2c3e50;color:white;">'
+        '<th style="padding:8px 12px;text-align:left;">Date</th>'
+        '<th style="padding:8px 12px;text-align:left;">Reference</th>'
+        '<th style="padding:8px 12px;text-align:left;">Type</th>'
+        '<th style="padding:8px 12px;text-align:right;">Amount</th>'
+        '<th style="padding:8px 12px;text-align:left;">Query</th>'
+        '</tr>'
+        + rows +
+        '</table>'
+    )
+
+
+def _build_payment_table(supplier_code: str, db, sql_connector) -> str:
+    """Build an HTML table of recent payments made to a supplier."""
+    if not sql_connector:
+        return ''
+    try:
+        pay_days = int(db.get_config('payment_notification_days', '90'))
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=pay_days)).strftime('%Y-%m-%d')
+        pay_df = sql_connector.execute_query(f"""
+            SELECT pt_trdate, pt_trref, ABS(pt_trvalue) as amount, pt_supref
+            FROM ptran WITH (NOLOCK)
+            WHERE pt_account = '{supplier_code}' AND pt_trtype = 'P'
+              AND pt_trdate >= '{cutoff}'
+            ORDER BY pt_trdate DESC
+        """)
+        if pay_df is None or len(pay_df) == 0:
+            return ''
+        rows = ''
+        for _, p in pay_df.iterrows():
+            pdate = str(p['pt_trdate'])[:10] if p['pt_trdate'] else ''
+            pref = str(p.get('pt_supref') or p.get('pt_trref') or '').strip()
+            rows += (
+                f'<tr style="border-bottom:1px solid #eee;">'
+                f'<td style="padding:6px 12px;">{pdate}</td>'
+                f'<td style="padding:6px 12px;">{pref}</td>'
+                f'<td style="padding:6px 12px;text-align:right;">£{float(p["amount"]):,.2f}</td>'
+                f'</tr>'
+            )
+        return (
+            '<p style="margin-top:16px;"><b>Recent payments made:</b></p>'
+            '<table style="border-collapse:collapse;width:100%;margin:12px 0;font-size:13px;">'
+            '<tr style="background:#2c3e50;color:white;">'
+            '<th style="padding:8px 12px;text-align:left;">Date</th>'
+            '<th style="padding:8px 12px;text-align:left;">Reference</th>'
+            '<th style="padding:8px 12px;text-align:right;">Amount</th>'
+            '</tr>'
+            + rows +
+            '</table>'
+        )
+    except Exception:
+        return ''
+
+
+def _build_payment_schedule(db, sql_connector, supplier_code: str) -> str:
+    """Build HTML snippet for upcoming payment schedule from pt_dueday."""
+    next_run = db.get_config('next_payment_run_date', '')
+    if not next_run:
+        return ''
+    return (
+        f'<p style="margin-top:12px;">Our next scheduled payment run is '
+        f'<b>{next_run}</b>. Invoices due before this date will be included.</p>'
+    )
+
+
+def _generate_subject(db, supplier_name: str, statement_date: Optional[str],
+                      has_queries: bool) -> str:
+    """Generate email subject from configurable template."""
+    if has_queries:
+        tpl = db.get_config(
+            'email_template_subject_query',
+            'Statement Response \u2014 {supplier_name} \u2014 {statement_date}'
+        )
+    else:
+        tpl = db.get_config(
+            'email_template_subject_agreed',
+            'Statement Confirmed \u2014 {supplier_name} \u2014 {statement_date}'
+        )
+    return tpl.replace('{supplier_name}', supplier_name or '').replace(
+        '{statement_date}', statement_date or 'N/A'
+    )
+
+
 def _generate_default_response(cursor, statement_id: int, supplier_code: str,
                                 statement_date: Optional[str], sql_connector) -> str:
     """
     Generate HTML response email for a statement approval.
     Uses configurable templates from supplier_automation_config.
     Merges statement data into the template with proper formatting.
+
+    Supported merge fields in templates:
+      {contact_name}      - First contact name from zcontacts (Opera), else supplier name
+      {supplier_name}     - Supplier name from pname
+      {statement_date}    - Statement date
+      {their_balance}     - Supplier's closing balance (formatted currency)
+      {our_balance}       - Our balance from Opera ptran (formatted currency)
+      {difference}        - Difference between balances (formatted currency, coloured)
+      {agreed_count}      - Number of agreed items
+      {query_count}       - Number of queried items
+      {query_table}       - Auto-generated HTML table of queried items
+      {payment_table}     - Auto-generated HTML table of recent payments
+      {payment_schedule}  - Auto-generated HTML for upcoming payment run date
+      {company_sign_off}  - response_sign_off config value
     """
+    from sql_rag.supplier_statement_db import get_supplier_statement_db
+    db = get_supplier_statement_db()
+
+    # --- Supplier name ---
     supplier_name = supplier_code
     if sql_connector:
         try:
             name_df = sql_connector.execute_query(
-                f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
+                f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) "
+                f"WHERE pn_account = '{supplier_code}'"
             )
             if name_df is not None and len(name_df) > 0:
-                supplier_name = name_df.iloc[0]['name']
+                supplier_name = str(name_df.iloc[0]['name']).strip()
         except Exception:
             pass
 
-    # Load configurable template parts
-    from sql_rag.supplier_statement_db import get_supplier_statement_db
-    db = get_supplier_statement_db()
-    greeting = db.get_config('response_greeting', 'Dear {supplier_name},')
-    sign_off = db.get_config('response_sign_off', 'Regards,<br>Accounts Department')
-    company_name = db.get_config('response_company_name', '')
-    agreed_text = db.get_config('response_agreed_text',
-        'We have reviewed your statement and confirm all items are agreed. Thank you.')
-    query_intro = db.get_config('response_query_intro',
-        'We have reviewed your statement. The following items require clarification:')
-    query_footer = db.get_config('response_query_footer',
-        'Please could you provide further details on the items listed above at your earliest convenience.')
+    # --- Contact name (first named contact from zcontacts for this supplier) ---
+    contact_name = supplier_name
+    if sql_connector:
+        try:
+            ct_df = sql_connector.execute_query(f"""
+                SELECT RTRIM(zc_contact) as name
+                FROM zcontacts WITH (NOLOCK)
+                WHERE zc_account = '{supplier_code}' AND zc_module = 'P'
+                  AND zc_contact IS NOT NULL AND RTRIM(zc_contact) != ''
+                ORDER BY zc_contact
+            """)
+            if ct_df is not None and len(ct_df) > 0:
+                contact_name = str(ct_df.iloc[0]['name']).strip() or supplier_name
+        except Exception:
+            pass
 
-    # Get line details
+    # --- Statement lines ---
     cursor.execute("""
         SELECT line_date, reference, description, debit, credit, match_status, query_type
         FROM statement_lines WHERE statement_id = ? ORDER BY id
@@ -2712,99 +2878,106 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
 
     matched = [l for l in lines if l['match_status'] in ('matched', 'paid')]
     queried = [l for l in lines if l['match_status'] == 'query']
-    unmatched = [l for l in lines if l['match_status'] not in ('matched', 'paid', 'query')]
 
-    total = len(lines)
-    matched_count = len(matched)
+    agreed_count = len(matched)
     query_count = len(queried)
+    has_queries = query_count > 0
 
-    # Merge template variables
-    greeting_merged = greeting.replace('{supplier_name}', supplier_name)
+    # --- Balance values ---
+    # their_balance: closing balance on the statement record
+    cursor.execute(
+        "SELECT closing_balance, opening_balance FROM supplier_statements WHERE id = ?",
+        (statement_id,)
+    )
+    stmt_row = cursor.fetchone()
+    their_balance_raw = float(stmt_row['closing_balance'] or 0) if stmt_row else 0.0
+    their_balance = _format_currency(their_balance_raw)
 
-    # Build HTML
-    html = f"""<html>
-<head><style>
-  body {{ font-family: Arial, sans-serif; font-size: 14px; color: #333; line-height: 1.6; }}
-  .summary {{ background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 6px; padding: 16px; margin: 16px 0; }}
-  .summary td {{ padding: 4px 16px 4px 0; }}
-  .summary .label {{ color: #666; font-size: 13px; }}
-  .summary .value {{ font-weight: bold; }}
-  table.lines {{ border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }}
-  table.lines th {{ background: #2c3e50; color: white; padding: 8px 12px; text-align: left; }}
-  table.lines td {{ border-bottom: 1px solid #eee; padding: 6px 12px; }}
-  table.lines tr:nth-child(even) {{ background: #f8f9fa; }}
-  .amount {{ text-align: right; }}
-  .query-tag {{ background: #fff3cd; color: #856404; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }}
-  .matched-tag {{ background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 4px; font-size: 12px; }}
-  .footer {{ color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px; }}
-</style></head>
-<body>
-<p>{greeting_merged}</p>
-
-<p>Thank you for your statement dated <b>{statement_date or 'N/A'}</b>.</p>
-
-<div class="summary">
-<table>
-  <tr><td class="label">Total items reviewed:</td><td class="value">{total}</td></tr>
-  <tr><td class="label">Items agreed:</td><td class="value">{matched_count}</td></tr>"""
-
-    if query_count > 0:
-        html += f'\n  <tr><td class="label">Items queried:</td><td class="value" style="color:#856404;">{query_count}</td></tr>'
-    html += "\n</table>\n</div>"
-
-    if query_count == 0:
-        html += f"\n<p>{agreed_text}</p>"
-    else:
-        html += f"\n<p>{query_intro}</p>"
-        html += """
-<table class="lines">
-<tr><th>Date</th><th>Reference</th><th>Type</th><th class="amount">Amount</th><th>Query</th></tr>"""
-        for l in queried:
-            amt = l['debit'] if l['debit'] else l['credit']
-            amt_str = f"£{abs(amt or 0):,.2f}"
-            doc_type = 'Invoice' if l['debit'] else 'Credit/Payment'
-            query_reason = (l['query_type'] or 'not_in_our_records').replace('_', ' ').title()
-            html += f"""
-<tr>
-  <td>{l['line_date'] or ''}</td>
-  <td><b>{l['reference'] or 'N/A'}</b></td>
-  <td>{doc_type}</td>
-  <td class="amount">{amt_str}</td>
-  <td><span class="query-tag">{query_reason}</span></td>
-</tr>"""
-        html += "\n</table>"
-        html += f"\n<p>{query_footer}</p>"
-
-    # Show matched items summary if there are also queries (for context)
-    if query_count > 0 and matched_count > 0:
-        html += f"\n<p style='color:#666; font-size:13px;'>The remaining {matched_count} item(s) on your statement have been agreed.</p>"
-
-    # Recent payments notification
+    # our_balance: sum of ptran outstanding for the supplier
+    our_balance_raw = 0.0
     if sql_connector:
         try:
-            pay_days = int(db.get_config('payment_notification_days', '90'))
-            from datetime import datetime, timedelta
-            cutoff = (datetime.now() - timedelta(days=pay_days)).strftime('%Y-%m-%d')
-            pay_df = sql_connector.execute_query(f"""
-                SELECT pt_trdate, pt_trref, ABS(pt_trvalue) as amount, pt_supref
+            bal_df = sql_connector.execute_query(f"""
+                SELECT SUM(pt_trbal) as bal
                 FROM ptran WITH (NOLOCK)
-                WHERE pt_account = '{supplier_code}' AND pt_trtype = 'P' AND pt_trdate >= '{cutoff}'
-                ORDER BY pt_trdate DESC
+                WHERE pt_account = '{supplier_code}'
             """)
-            if pay_df is not None and len(pay_df) > 0:
-                html += "\n<p style='margin-top:16px;'><b>Recent payments made:</b></p>"
-                html += '<table class="lines"><tr><th>Date</th><th>Reference</th><th class="amount">Amount</th></tr>'
-                for _, p in pay_df.iterrows():
-                    pdate = str(p['pt_trdate'])[:10] if p['pt_trdate'] else ''
-                    pref = str(p.get('pt_supref') or p.get('pt_trref') or '').strip()
-                    html += f'<tr><td>{pdate}</td><td>{pref}</td><td class="amount">£{float(p["amount"]):,.2f}</td></tr>'
-                html += "</table>"
+            if bal_df is not None and len(bal_df) > 0 and bal_df.iloc[0]['bal'] is not None:
+                our_balance_raw = float(bal_df.iloc[0]['bal'])
         except Exception:
             pass
+    our_balance = _format_currency(our_balance_raw)
 
-    html += f"""
-<p>{sign_off}</p>
-{f'<p><b>{company_name}</b></p>' if company_name else ''}
+    # difference
+    diff_raw = their_balance_raw - our_balance_raw
+    diff_str = _format_currency(diff_raw)
+    if abs(diff_raw) < 0.01:
+        difference = f'<span style="color:#155724;font-weight:bold;">{diff_str}</span>'
+    else:
+        difference = f'<span style="color:#721c24;font-weight:bold;">{diff_str}</span>'
+
+    # --- Data-driven HTML blocks ---
+    query_table = _build_query_table(queried)
+    payment_table = _build_payment_table(supplier_code, db, sql_connector)
+    payment_schedule = _build_payment_schedule(db, sql_connector, supplier_code)
+
+    # --- Config values ---
+    company_sign_off = db.get_config('response_sign_off', 'Regards,<br>Accounts Department')
+    company_name = db.get_config('response_company_name', '')
+    if company_name:
+        company_sign_off = f'{company_sign_off}<br><b>{company_name}</b>'
+
+    # --- Select and merge template ---
+    if has_queries:
+        template = db.get_config('email_template_query', None)
+    else:
+        template = db.get_config('email_template_agreed', None)
+
+    if not template:
+        # Fallback: build minimal body (should not happen once DB is initialised)
+        if has_queries:
+            template = (
+                '<p>Dear {contact_name},</p>'
+                '<p>Thank you for your statement dated {statement_date}.</p>'
+                '{query_table}'
+                '<p>Regards,<br>{company_sign_off}</p>'
+            )
+        else:
+            template = (
+                '<p>Dear {contact_name},</p>'
+                '<p>Thank you for your statement dated {statement_date}.</p>'
+                '<p>We confirm the balance of {their_balance} is agreed.</p>'
+                '{payment_schedule}'
+                '<p>Regards,<br>{company_sign_off}</p>'
+            )
+
+    merge_fields = {
+        'contact_name': contact_name,
+        'supplier_name': supplier_name,
+        'statement_date': statement_date or 'N/A',
+        'their_balance': their_balance,
+        'our_balance': our_balance,
+        'difference': difference,
+        'agreed_count': str(agreed_count),
+        'query_count': str(query_count),
+        'query_table': query_table,
+        'payment_table': payment_table,
+        'payment_schedule': payment_schedule,
+        'company_sign_off': company_sign_off,
+    }
+
+    body = template
+    for field, value in merge_fields.items():
+        body = body.replace('{' + field + '}', value)
+
+    # Wrap in a full HTML document with shared styles
+    html = """<html>
+<head><style>
+  body { font-family: Arial, sans-serif; font-size: 14px; color: #333; line-height: 1.6; }
+  .footer { color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px; }
+</style></head>
+<body>
+""" + body + """
 <div class="footer">
   <p>This is an automated response generated by our accounts system.
   If you have any questions, please reply to this email.</p>
