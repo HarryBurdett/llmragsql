@@ -63,6 +63,11 @@ class BulkApproveRequest(BaseModel):
     statement_ids: List[int]
     approved_by: str = "System"
 
+class ApproveWithBodyRequest(BaseModel):
+    approved_by: str = "System"
+    subject: Optional[str] = None
+    body: Optional[str] = None
+
 
 # ============================================================
 # Supplier Config API Endpoints
@@ -2057,8 +2062,74 @@ async def list_supplier_directory(search: Optional[str] = None):
         return {"success": False, "error": str(e)}
 
 
+@router.post("/api/supplier-statements/{statement_id}/preview-response")
+async def preview_supplier_statement_response(statement_id: int):
+    """
+    Generate a draft response email for a statement without sending it.
+    Returns subject, body HTML, and recipient for preview/editing.
+    """
+    from api.main import sql_connector
+
+    db_path = _get_db_path()
+    _run_migrations(db_path)
+
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Database not found")
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT * FROM supplier_statements WHERE id = ?", (statement_id,))
+        stmt = cursor.fetchone()
+
+        if not stmt:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Statement not found")
+
+        stmt = dict(stmt)
+        supplier_code = stmt['supplier_code']
+
+        recipient_email = _get_supplier_contact_email(cursor, supplier_code, stmt.get('sender_email'))
+
+        # Build response body — use saved response_text if present, else generate
+        body = stmt.get('response_text') or _generate_default_response(
+            cursor, statement_id, supplier_code, stmt.get('statement_date'), sql_connector
+        )
+
+        # Build subject
+        supplier_name = supplier_code
+        if sql_connector:
+            try:
+                name_df = sql_connector.execute_query(
+                    f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
+                )
+                if name_df is not None and len(name_df) > 0:
+                    supplier_name = name_df.iloc[0]['name']
+            except Exception:
+                pass
+
+        subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
+
+        conn.close()
+
+        return {
+            "success": True,
+            "recipient": recipient_email,
+            "subject": subject,
+            "body": body,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating preview for statement {statement_id}: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 @router.post("/api/supplier-statements/{statement_id}/approve")
-async def approve_supplier_statement(statement_id: int, approved_by: str = "System"):
+async def approve_supplier_statement(statement_id: int, request: ApproveWithBodyRequest = Body(default=ApproveWithBodyRequest())):
     """
     Approve a reconciled statement and send the response email.
 
@@ -2092,29 +2163,35 @@ async def approve_supplier_statement(statement_id: int, approved_by: str = "Syst
 
         stmt = dict(stmt)
         supplier_code = stmt['supplier_code']
+        approved_by = request.approved_by
         now_iso = datetime.now().isoformat()
 
         # Determine recipient email
         recipient_email = _get_supplier_contact_email(cursor, supplier_code, stmt.get('sender_email'))
 
-        # Build response text — use edited response_text if available, else generate default
-        response_text = stmt.get('response_text') or _generate_default_response(
-            cursor, statement_id, supplier_code, stmt.get('statement_date'), sql_connector
-        )
+        # Build response body — caller may supply edited body, else use saved text, else generate
+        if request.body:
+            response_text = request.body
+        else:
+            response_text = stmt.get('response_text') or _generate_default_response(
+                cursor, statement_id, supplier_code, stmt.get('statement_date'), sql_connector
+            )
 
-        # Get supplier name for email subject
-        supplier_name = supplier_code
-        if sql_connector:
-            try:
-                name_df = sql_connector.execute_query(
-                    f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
-                )
-                if name_df is not None and len(name_df) > 0:
-                    supplier_name = name_df.iloc[0]['name']
-            except Exception:
-                pass
-
-        email_subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
+        # Build email subject — caller may supply edited subject, else generate
+        if request.subject:
+            email_subject = request.subject
+        else:
+            supplier_name = supplier_code
+            if sql_connector:
+                try:
+                    name_df = sql_connector.execute_query(
+                        f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'"
+                    )
+                    if name_df is not None and len(name_df) > 0:
+                        supplier_name = name_df.iloc[0]['name']
+                except Exception:
+                    pass
+            email_subject = f"Statement Response - {supplier_name} - {stmt.get('statement_date', 'N/A')}"
 
         # Send the response email with original statement PDF attached
         email_sent = False

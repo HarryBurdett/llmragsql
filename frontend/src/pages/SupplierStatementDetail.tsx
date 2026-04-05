@@ -183,16 +183,50 @@ export default function SupplierStatementDetail() {
 
   const [approving, setApproving] = useState(false);
 
-  const handleApprove = async () => {
+  // Email preview/edit state
+  const [showEmailPreview, setShowEmailPreview] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [emailRecipient, setEmailRecipient] = useState('');
+  const [emailSubject, setEmailSubject] = useState('');
+  const [emailBody, setEmailBody] = useState('');
+
+  const handleOpenEmailPreview = async () => {
+    if (!id) return;
+    setPreviewLoading(true);
+    setError(null);
+    try {
+      const resp = await authFetch(`/api/supplier-statements/${id}/preview-response`, { method: 'POST' });
+      const res = await resp.json();
+      if (res.success) {
+        setEmailRecipient(res.recipient || '');
+        setEmailSubject(res.subject || '');
+        setEmailBody(res.body || '');
+        setShowEmailPreview(true);
+      } else {
+        setError(res.error || 'Failed to generate email preview');
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to generate email preview');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleSendEmail = async () => {
     if (!id) return;
     setSuccess(null);
     setError(null);
     setApproving(true);
     try {
-      const resp = await authFetch(`/api/supplier-statements/${id}/approve`, { method: 'POST' });
+      const resp = await authFetch(`/api/supplier-statements/${id}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: emailSubject, body: emailBody }),
+      });
       const res = await resp.json();
       if (res.success) {
         setSuccess(res.message + (res.recipient ? ` — sent to ${res.recipient}` : ''));
+        setShowEmailPreview(false);
         loadStatement(parseInt(id));
       } else {
         setError(res.detail || res.error || 'Approval failed');
@@ -355,12 +389,12 @@ export default function SupplierStatementDetail() {
         )}
         {(statement.status === 'reconciled' || statement.status === 'acknowledged') && (
           <button
-            onClick={handleApprove}
-            disabled={approving}
+            onClick={handleOpenEmailPreview}
+            disabled={previewLoading || approving}
             className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-wait"
           >
-            {approving ? (
-              <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Sending...</>
+            {previewLoading ? (
+              <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Preparing...</>
             ) : (
               <><CheckCircle className="w-4 h-4" /> Approve & Send Response</>
             )}
@@ -373,6 +407,74 @@ export default function SupplierStatementDetail() {
           </div>
         )}
       </div>
+
+      {/* Email Preview / Edit Panel */}
+      {showEmailPreview && (
+        <div className="mb-4 bg-white rounded-lg border border-green-200 overflow-hidden">
+          <div className="px-4 py-3 bg-green-50 border-b border-green-200 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-green-800">Review & Send Response Email</h3>
+            <button
+              onClick={() => setShowEmailPreview(false)}
+              className="text-green-600 hover:text-green-800 text-lg leading-none"
+            >
+              ×
+            </button>
+          </div>
+          <div className="p-4 space-y-3">
+            {/* Recipient — read-only */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">To</label>
+              <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded text-sm text-gray-700">
+                {emailRecipient || <span className="text-gray-400 italic">No recipient email found</span>}
+              </div>
+            </div>
+
+            {/* Subject — editable */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Subject</label>
+              <input
+                type="text"
+                value={emailSubject}
+                onChange={e => setEmailSubject(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-green-400"
+              />
+            </div>
+
+            {/* Body — editable textarea showing HTML source */}
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Body (HTML)</label>
+              <textarea
+                value={emailBody}
+                onChange={e => setEmailBody(e.target.value)}
+                rows={16}
+                className="w-full px-3 py-2 border border-gray-300 rounded text-sm font-mono focus:outline-none focus:ring-1 focus:ring-green-400 resize-y"
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={handleSendEmail}
+                disabled={approving || !emailRecipient}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-wait"
+              >
+                {approving ? (
+                  <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Sending...</>
+                ) : (
+                  <><CheckCircle className="w-4 h-4" /> Send</>
+                )}
+              </button>
+              <button
+                onClick={() => setShowEmailPreview(false)}
+                disabled={approving}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* PDF Viewer */}
       {showPdf && (
