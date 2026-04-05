@@ -2790,14 +2790,52 @@ def _build_payment_table(supplier_code: str, db, sql_connector) -> str:
 def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items=None) -> str:
     """Build HTML snippet listing invoices included in the next payment run.
 
-    If there are outstanding queries (missing credit notes, disputed amounts),
-    the schedule notes that payment may be adjusted pending resolution.
+    If the account is in credit (we've overpaid), suggest allocation instead.
+    If there are outstanding queries, note payment may be adjusted.
     """
     next_run = db.get_config('next_payment_run_date', '')
     if not next_run or not sql_connector:
         return ''
 
     try:
+        # Check overall balance first — if in credit, no payment due
+        bal_df = sql_connector.execute_query(f"""
+            SELECT pn_currbal FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'
+        """)
+        if bal_df is not None and not bal_df.empty:
+            balance = float(bal_df.iloc[0]['pn_currbal'])
+            if balance >= 0:
+                # pn_currbal >= 0 means we're in credit (they owe us) or clear
+                if balance > 0:
+                    return (
+                        f'<p style="margin-top:12px;"><b>Payment:</b> Our records show a credit balance of '
+                        f'£{balance:,.2f} on your account. We recommend outstanding payments are allocated '
+                        f'against invoices. No further payment is required at this time.</p>'
+                    )
+                else:
+                    return ''  # Zero balance — nothing to say
+
+            # Also check: do we have unallocated payments that cover the invoices?
+            # If sum of outstanding invoices <= abs of sum of outstanding payments,
+            # allocation would clear the balance
+            inv_df = sql_connector.execute_query(f"""
+                SELECT SUM(pt_trbal) as inv_total FROM ptran WITH (NOLOCK)
+                WHERE pt_account = '{supplier_code}' AND pt_trtype = 'I' AND pt_trbal > 0
+            """)
+            pay_df = sql_connector.execute_query(f"""
+                SELECT SUM(ABS(pt_trbal)) as pay_total FROM ptran WITH (NOLOCK)
+                WHERE pt_account = '{supplier_code}' AND pt_trtype = 'P' AND pt_trbal < 0
+            """)
+            inv_total = float(inv_df.iloc[0]['inv_total'] or 0) if inv_df is not None and not inv_df.empty else 0
+            pay_total = float(pay_df.iloc[0]['pay_total'] or 0) if pay_df is not None and not pay_df.empty else 0
+
+            if pay_total >= inv_total and inv_total > 0:
+                return (
+                    f'<p style="margin-top:12px;"><b>Payment:</b> Our records show unallocated payments of '
+                    f'£{pay_total:,.2f} against outstanding invoices of £{inv_total:,.2f}. '
+                    f'We recommend these are allocated. No further payment is required at this time.</p>'
+                )
+
         # Get outstanding invoices with due dates on or before the next payment run
         df = sql_connector.execute_query(f"""
             SELECT RTRIM(pt_trref) as reference, pt_dueday, pt_trbal
