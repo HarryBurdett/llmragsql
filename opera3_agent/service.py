@@ -1,9 +1,11 @@
 """
-Opera 3 Write Agent Service
+Opera 3 Agent Service
 
 A FastAPI microservice that runs on the Opera 3 server alongside the FoxPro
-data files. Handles all DBF writes with proper CDX index maintenance via the
-Harbour DBFCDX bridge.
+data files. Single gateway for ALL Opera 3 access — reads and writes.
+
+Writes: Proper CDX index maintenance via the Harbour DBFCDX bridge.
+Reads: Generic table access via dbfread — any table, any filter.
 
 The main application proxies all Opera 3 write operations through this service,
 ensuring data integrity (CDX indexes, VFP-compatible locking, proper memo handling).
@@ -950,6 +952,205 @@ async def wal_unblock():
     safety.block_reason = ""
     logger.warning(f"Writes UNBLOCKED manually (was: {reason})")
     return {"success": True, "message": f"Writes unblocked (was: {reason})"}
+
+
+# ============================================================
+# Generic Table Read
+# ============================================================
+
+class ReadRequest(BaseModel):
+    """Generic table read request."""
+    table: str = Field(..., description="Table name without extension (e.g. 'pname', 'ptran')")
+    fields: Optional[List[str]] = Field(None, description="Field names to return. None = all fields.")
+    filter: Optional[Dict[str, Any]] = Field(None, description="Field=value filter pairs (exact match, AND logic)")
+    filter_expr: Optional[str] = Field(None, description="Python expression filter (e.g. 'pt_trbal != 0'). Fields referenced by name.")
+    limit: int = Field(10000, description="Maximum rows to return")
+    order_by: Optional[str] = Field(None, description="Field name to sort by")
+
+
+@app.post("/read", dependencies=[Depends(verify_agent_key)])
+async def read_table(req: ReadRequest):
+    """
+    Generic read from any Opera 3 DBF table.
+
+    Supports:
+    - Field selection (return only specific columns)
+    - Exact-match filtering (field=value pairs, AND logic)
+    - Expression filtering (Python expression evaluated per row)
+    - Row limit
+    - Sort by field
+
+    All reads are shared (no locking) — safe for concurrent access.
+    """
+    if not OPERA3_DATA_PATH or not os.path.isdir(OPERA3_DATA_PATH):
+        raise HTTPException(status_code=503, detail="Opera 3 data path not configured")
+
+    table_name = req.table.strip().lower()
+    if not table_name.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid table name")
+
+    # Find the DBF file (case-insensitive)
+    data_path = Path(OPERA3_DATA_PATH)
+    dbf_path = data_path / f"{table_name}.dbf"
+    if not dbf_path.exists():
+        dbf_path = data_path / f"{table_name.upper()}.DBF"
+    if not dbf_path.exists():
+        # Try with mixed case
+        for f in data_path.iterdir():
+            if f.name.lower() == f"{table_name}.dbf":
+                dbf_path = f
+                break
+    if not dbf_path.exists():
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
+    try:
+        from dbfread import DBF
+
+        table = DBF(str(dbf_path), encoding='latin-1', char_decode_errors='ignore')
+
+        rows = []
+        count = 0
+
+        for record in table:
+            if record.get('_deletion_flag'):
+                continue  # Skip deleted records
+
+            # Apply exact-match filter
+            if req.filter:
+                match = True
+                for fld, val in req.filter.items():
+                    rec_val = record.get(fld) or record.get(fld.lower()) or record.get(fld.upper())
+                    if rec_val is None:
+                        # Try case-insensitive field lookup
+                        for k, v in record.items():
+                            if k.lower() == fld.lower():
+                                rec_val = v
+                                break
+                    # Compare: strip strings, handle types
+                    if isinstance(rec_val, str):
+                        rec_val = rec_val.strip()
+                    if isinstance(val, str):
+                        val = val.strip()
+                    if rec_val != val:
+                        match = False
+                        break
+                if not match:
+                    continue
+
+            # Apply expression filter (evaluated safely)
+            if req.filter_expr:
+                try:
+                    # Build a clean dict with lowercase keys for the expression
+                    expr_vars = {}
+                    for k, v in record.items():
+                        if k.startswith('_'):
+                            continue
+                        clean_val = v.strip() if isinstance(v, str) else v
+                        expr_vars[k.lower()] = clean_val
+                        expr_vars[k] = clean_val  # Also original case
+                    if not eval(req.filter_expr, {"__builtins__": {}}, expr_vars):
+                        continue
+                except Exception:
+                    continue  # Skip rows that fail the expression
+
+            # Build output row
+            row = {}
+            for k, v in record.items():
+                if k.startswith('_'):
+                    continue
+                if req.fields and k.lower() not in [f.lower() for f in req.fields]:
+                    continue
+                # Serialise values
+                if isinstance(v, (date, datetime)):
+                    row[k.lower()] = v.isoformat() if v else None
+                elif isinstance(v, str):
+                    row[k.lower()] = v.strip()
+                elif isinstance(v, bytes):
+                    row[k.lower()] = v.decode('latin-1', errors='ignore').strip()
+                else:
+                    row[k.lower()] = v
+
+            rows.append(row)
+            count += 1
+            if count >= req.limit:
+                break
+
+        # Sort if requested
+        if req.order_by:
+            sort_key = req.order_by.lower()
+            rows.sort(key=lambda r: r.get(sort_key) or '', reverse=False)
+
+        return {
+            "success": True,
+            "table": table_name,
+            "count": len(rows),
+            "rows": rows,
+        }
+
+    except ImportError:
+        raise HTTPException(status_code=503, detail="dbfread not installed — run: pip install dbfread")
+    except Exception as e:
+        logger.error(f"Error reading table {table_name}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/read/count", dependencies=[Depends(verify_agent_key)])
+async def count_table(req: ReadRequest):
+    """Count rows matching filter without returning data."""
+    if not OPERA3_DATA_PATH or not os.path.isdir(OPERA3_DATA_PATH):
+        raise HTTPException(status_code=503, detail="Opera 3 data path not configured")
+
+    table_name = req.table.strip().lower()
+    data_path = Path(OPERA3_DATA_PATH)
+    dbf_path = data_path / f"{table_name}.dbf"
+    if not dbf_path.exists():
+        dbf_path = data_path / f"{table_name.upper()}.DBF"
+    if not dbf_path.exists():
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
+    try:
+        from dbfread import DBF
+        table = DBF(str(dbf_path), encoding='latin-1', char_decode_errors='ignore')
+        count = 0
+        for record in table:
+            if record.get('_deletion_flag'):
+                continue
+            if req.filter:
+                match = True
+                for fld, val in req.filter.items():
+                    rec_val = None
+                    for k, v in record.items():
+                        if k.lower() == fld.lower():
+                            rec_val = v.strip() if isinstance(v, str) else v
+                            break
+                    if isinstance(val, str):
+                        val = val.strip()
+                    if rec_val != val:
+                        match = False
+                        break
+                if not match:
+                    continue
+            count += 1
+        return {"success": True, "table": table_name, "count": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/tables", dependencies=[Depends(verify_agent_key)])
+async def list_tables():
+    """List all available DBF tables."""
+    if not OPERA3_DATA_PATH or not os.path.isdir(OPERA3_DATA_PATH):
+        raise HTTPException(status_code=503, detail="Opera 3 data path not configured")
+
+    data_path = Path(OPERA3_DATA_PATH)
+    tables = []
+    for f in sorted(data_path.iterdir()):
+        if f.suffix.lower() == '.dbf' and not f.name.startswith('.'):
+            tables.append({
+                "name": f.stem.lower(),
+                "size_bytes": f.stat().st_size,
+            })
+    return {"success": True, "tables": tables, "count": len(tables)}
 
 
 # ============================================================
