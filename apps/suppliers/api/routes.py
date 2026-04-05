@@ -4386,3 +4386,100 @@ async def get_supplier_account_view(
     except Exception as e:
         logger.error(f"Supplier account view failed: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
+
+
+# ============================================================
+# Supplier Detail Page Endpoint
+# ============================================================
+
+@router.get("/api/supplier-config/{account}/detail")
+async def get_supplier_detail(account: str):
+    """Full supplier detail — Opera data, automation flags, contact, statement history, audit trail."""
+    from api.main import sql_connector
+    from sql_rag.supplier_config import SupplierConfigManager
+    from sql_rag.company_data import get_current_db_path
+
+    db_path = get_current_db_path('supplier_statements.db')
+    if not db_path:
+        return {"success": False, "error": "Database not available"}
+
+    result: dict = {
+        "success": True,
+        "account": account,
+        "config": None,
+        "opera_contact": None,
+        "statement_history": [],
+        "balance": None,
+    }
+
+    # --- Supplier config (flags + name/balance from local cache) ---
+    try:
+        mgr = SupplierConfigManager(str(db_path), sql_connector)
+        config = mgr.get_config(account)
+        result["config"] = config
+    except Exception as e:
+        logger.warning(f"Could not load supplier config for {account}: {e}")
+
+    # --- Opera contact from zcontacts (first P-module contact) ---
+    if sql_connector:
+        try:
+            contact_df = sql_connector.execute_query(f"""
+                SELECT TOP 1
+                    RTRIM(zc_contact) AS name,
+                    RTRIM(ISNULL(zc_pos, '')) AS role,
+                    RTRIM(ISNULL(zc_email, '')) AS email,
+                    RTRIM(ISNULL(zc_phone, '')) AS phone,
+                    RTRIM(ISNULL(zc_mobile, '')) AS mobile
+                FROM zcontacts WITH (NOLOCK)
+                WHERE zc_account = '{account}' AND zc_module = 'P'
+                ORDER BY zc_contact
+            """)
+            if contact_df is not None and len(contact_df) > 0:
+                row = contact_df.iloc[0]
+                result["opera_contact"] = {
+                    "name": str(row.get("name", "") or "").strip(),
+                    "role": str(row.get("role", "") or "").strip(),
+                    "email": str(row.get("email", "") or "").strip(),
+                    "phone": str(row.get("phone", "") or "").strip(),
+                    "mobile": str(row.get("mobile", "") or "").strip(),
+                }
+        except Exception as e:
+            logger.warning(f"Could not load Opera contact for {account}: {e}")
+
+        # --- Current balance from Opera pname ---
+        try:
+            bal_df = sql_connector.execute_query(
+                f"SELECT pn_currbal FROM pname WITH (NOLOCK) WHERE pn_account = '{account}'"
+            )
+            if bal_df is not None and len(bal_df) > 0:
+                result["balance"] = float(bal_df.iloc[0]["pn_currbal"] or 0)
+        except Exception as e:
+            logger.warning(f"Could not load balance for {account}: {e}")
+
+    # --- Statement history from SQLite ---
+    try:
+        if db_path.exists():
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    id,
+                    statement_date,
+                    received_date,
+                    status,
+                    line_count,
+                    matched_count,
+                    query_count,
+                    closing_balance
+                FROM supplier_statements
+                WHERE supplier_code = ?
+                ORDER BY received_date DESC
+                LIMIT 50
+            """, (account,))
+            result["statement_history"] = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+    except Exception as e:
+        logger.warning(f"Could not load statement history for {account}: {e}")
+
+    return result

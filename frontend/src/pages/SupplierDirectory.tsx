@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import {
   Building,
   RefreshCw,
@@ -29,6 +30,7 @@ interface SupplierConfigResponse {
 
 export function SupplierDirectory() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
@@ -146,7 +148,7 @@ export function SupplierDirectory() {
     return (
       <div className="flex items-center gap-1.5">
         <button
-          onClick={() => handleToggleFlag(account, flag, value)}
+          onClick={(e) => { e.stopPropagation(); handleToggleFlag(account, flag, value); }}
           disabled={busy}
           title={label}
           className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
@@ -231,7 +233,14 @@ export function SupplierDirectory() {
             </div>
           ) : (
             suppliers.map((supplier) => (
-              <Card key={supplier.account_code}>
+              <div
+                key={supplier.account_code}
+                onClick={() => navigate(`/supplier/directory/${supplier.account_code}`)}
+                className="cursor-pointer"
+              >
+              <Card
+                className="hover:border-blue-300 hover:shadow-md transition-all"
+              >
                 {/* Header row: name + balance */}
                 <div className="flex items-start justify-between mb-1">
                   <div className="min-w-0 flex-1 mr-2">
@@ -281,6 +290,7 @@ export function SupplierDirectory() {
                   />
                 </div>
               </Card>
+              </div>
             ))
           )}
         </div>
