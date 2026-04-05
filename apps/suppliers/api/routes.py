@@ -7,21 +7,14 @@ creditors control (Purchase Ledger), and supplier account views.
 
 Does NOT include /api/reconcile/creditors (that belongs to balance_check app).
 
-Opera 3 Parity:
-    This module queries Opera SQL SE (SQL Server) via sql_connector.execute_query().
-    It accesses:
-    - ptran (Purchase Ledger) — for statement matching and reconciliation
-    - pname (Supplier Master) — for supplier lookups and data
-    - pcontact (Supplier Contacts) — for email verification
-    - pterms (Payment Terms) — via supplier_config.py
+Data Access:
+    This module uses the SupplierDataProvider abstraction layer for accounting
+    system access (supplier_data_provider.py). The data provider handles all
+    system-specific queries (Opera SE, Opera 3, etc.) behind a unified interface.
 
-    To support Opera 3 (FoxPro DBF), routes need Opera 3 equivalents that:
-    - Use opera3_foxpro.py or opera3_data_provider.py patterns
-    - Query the same DBF files (ptran.DBF, pname.DBF, pcontact.DBF, pterms.DBF)
-    - Return DataFrames with same column names (pt_trref, pn_account, etc.)
-
-    See background.py and supplier_config.py for specific queries marked with
-    TODO comments.
+    Some endpoints still use sql_connector directly for complex queries not yet
+    migrated. The helper functions (_get_supplier_contact_email, _build_payment_table,
+    _build_payment_schedule, _generate_default_response) all use the data provider.
 """
 
 import os
@@ -794,24 +787,15 @@ async def auto_resolve_supplier_queries():
             reference = query['reference']
             amount = query['debit'] or query['credit'] or 0
 
-            # Check if this invoice now exists in Opera
-            # Match by reference OR by amount for this supplier
-            check_query = f"""
-                SELECT TOP 1 pt_unique, pt_trref, pt_trvalue
-                FROM ptran WITH (NOLOCK)
-                WHERE pt_account = '{supplier_code}'
-                  AND pt_trtype = 'I'
-                  AND (
-                      pt_trref LIKE '%{reference}%'
-                      OR pt_supref LIKE '%{reference}%'
-                      OR ABS(pt_trvalue - {amount}) < 0.01
-                  )
-                ORDER BY pt_trdate DESC
-            """
+            # Check if this invoice now exists in the accounting system
+            try:
+                from sql_rag.supplier_data_provider import get_supplier_data_provider
+                provider = get_supplier_data_provider()
+                matched_id = provider.check_invoice_exists(supplier_code, reference, amount)
+            except Exception:
+                matched_id = None
 
-            result = sql_connector.execute_query(check_query)
-
-            if result is not None and len(result) > 0:
+            if matched_id:
                 # Invoice found - auto-resolve the query
                 cursor.execute("""
                     UPDATE statement_lines
@@ -819,7 +803,7 @@ async def auto_resolve_supplier_queries():
                         match_status = 'matched',
                         matched_ptran_id = ?
                     WHERE id = ?
-                """, (result.iloc[0]['pt_unique'], query['id']))
+                """, (matched_id, query['id']))
 
                 resolved_count += 1
                 resolved_items.append({
@@ -2660,25 +2644,17 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     Get the best contact email for a supplier.
 
     Priority:
-    1. Opera pcontact — first contact with an email address for this supplier
+    1. Accounting system contacts — first contact with an email for this supplier
     2. supplier_contacts_ext with is_statement_contact = 1 (local override)
     3. sender_email from the statement record (fallback)
     """
-    # 1. Check Opera contacts (zcontacts table, module 'P' for purchase)
+    # 1. Check accounting system contacts via data provider
     try:
-        from api.main import sql_connector
-        if sql_connector:
-            df = sql_connector.execute_query(f"""
-                SELECT RTRIM(zc_email) as email, RTRIM(zc_contact) as name
-                FROM zcontacts WITH (NOLOCK)
-                WHERE zc_account = '{supplier_code}' AND zc_module = 'P'
-                  AND zc_email IS NOT NULL AND RTRIM(zc_email) != ''
-                ORDER BY zc_contact
-            """)
-            if df is not None and len(df) > 0:
-                email = str(df.iloc[0]['email']).strip()
-                if email:
-                    return email
+        from sql_rag.supplier_data_provider import get_supplier_data_provider
+        provider = get_supplier_data_provider()
+        contact = provider.get_supplier_contact(supplier_code)
+        if contact and contact.email:
+            return contact.email
     except Exception:
         pass
 
@@ -2746,30 +2722,23 @@ def _build_query_table(queried) -> str:
 
 def _build_payment_table(supplier_code: str, db, sql_connector) -> str:
     """Build an HTML table of recent payments made to a supplier."""
-    if not sql_connector:
-        return ''
     try:
+        from sql_rag.supplier_data_provider import get_supplier_data_provider
+        provider = get_supplier_data_provider()
         pay_days = int(db.get_config('payment_notification_days', '90'))
-        from datetime import timedelta
-        cutoff = (datetime.now() - timedelta(days=pay_days)).strftime('%Y-%m-%d')
-        pay_df = sql_connector.execute_query(f"""
-            SELECT pt_trdate, pt_trref, ABS(pt_trvalue) as amount, pt_supref
-            FROM ptran WITH (NOLOCK)
-            WHERE pt_account = '{supplier_code}' AND pt_trtype = 'P'
-              AND pt_trdate >= '{cutoff}'
-            ORDER BY pt_trdate DESC
-        """)
-        if pay_df is None or len(pay_df) == 0:
+        payments = provider.get_recent_payments(supplier_code, since_days=pay_days)
+        if not payments:
             return ''
         rows = ''
-        for _, p in pay_df.iterrows():
-            pdate = str(p['pt_trdate'])[:10] if p['pt_trdate'] else ''
-            pref = str(p.get('pt_supref') or p.get('pt_trref') or '').strip()
+        for p in payments:
+            pdate = p.date or ''
+            pref = p.supplier_ref or p.reference or ''
+            amt = abs(p.value)
             rows += (
                 f'<tr style="border-bottom:1px solid #eee;">'
                 f'<td style="padding:6px 12px;">{pdate}</td>'
                 f'<td style="padding:6px 12px;">{pref}</td>'
-                f'<td style="padding:6px 12px;text-align:right;">£{float(p["amount"]):,.2f}</td>'
+                f'<td style="padding:6px 12px;text-align:right;">£{amt:,.2f}</td>'
                 f'</tr>'
             )
         return (
@@ -2794,16 +2763,16 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items
     If there are outstanding queries, note payment may be adjusted.
     """
     next_run = db.get_config('next_payment_run_date', '')
-    if not next_run or not sql_connector:
+    if not next_run:
         return ''
 
     try:
+        from sql_rag.supplier_data_provider import get_supplier_data_provider
+        provider = get_supplier_data_provider()
+
         # Check overall balance first — if in credit, no payment due
-        bal_df = sql_connector.execute_query(f"""
-            SELECT pn_currbal FROM pname WITH (NOLOCK) WHERE pn_account = '{supplier_code}'
-        """)
-        if bal_df is not None and not bal_df.empty:
-            balance = float(bal_df.iloc[0]['pn_currbal'])
+        balance = provider.get_supplier_balance(supplier_code)
+        if balance is not None:
             if balance >= 0:
                 # pn_currbal >= 0 means we're in credit (they owe us) or clear
                 if balance > 0:
@@ -2816,18 +2785,8 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items
                     return ''  # Zero balance — nothing to say
 
             # Also check: do we have unallocated payments that cover the invoices?
-            # If sum of outstanding invoices <= abs of sum of outstanding payments,
-            # allocation would clear the balance
-            inv_df = sql_connector.execute_query(f"""
-                SELECT SUM(pt_trbal) as inv_total FROM ptran WITH (NOLOCK)
-                WHERE pt_account = '{supplier_code}' AND pt_trtype = 'I' AND pt_trbal > 0
-            """)
-            pay_df = sql_connector.execute_query(f"""
-                SELECT SUM(ABS(pt_trbal)) as pay_total FROM ptran WITH (NOLOCK)
-                WHERE pt_account = '{supplier_code}' AND pt_trtype = 'P' AND pt_trbal < 0
-            """)
-            inv_total = float(inv_df.iloc[0]['inv_total'] or 0) if inv_df is not None and not inv_df.empty else 0
-            pay_total = float(pay_df.iloc[0]['pay_total'] or 0) if pay_df is not None and not pay_df.empty else 0
+            inv_total = provider.get_outstanding_invoice_total(supplier_code)
+            pay_total = provider.get_unallocated_payment_total(supplier_code)
 
             if pay_total >= inv_total and inv_total > 0:
                 return (
@@ -2837,26 +2796,12 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items
                 )
 
         # Get outstanding invoices with due dates on or before the next payment run
-        df = sql_connector.execute_query(f"""
-            SELECT RTRIM(pt_trref) as reference, pt_dueday, pt_trbal
-            FROM ptran WITH (NOLOCK)
-            WHERE pt_account = '{supplier_code}'
-              AND pt_trtype = 'I'
-              AND pt_trbal > 0
-              AND pt_dueday IS NOT NULL
-              AND pt_dueday <= '{next_run}'
-            ORDER BY pt_dueday
-        """)
-        if df is None or df.empty:
-            df_any = sql_connector.execute_query(f"""
-                SELECT RTRIM(pt_trref) as reference, pt_dueday, pt_trbal
-                FROM ptran WITH (NOLOCK)
-                WHERE pt_account = '{supplier_code}'
-                  AND pt_trtype = 'I'
-                  AND pt_trbal > 0
-                ORDER BY pt_dueday
-            """)
-            if df_any is not None and not df_any.empty:
+        due_invoices = provider.get_outstanding_invoices_due_by(supplier_code, next_run)
+        if not due_invoices:
+            # Check if there are ANY outstanding invoices
+            all_outstanding = provider.get_outstanding_transactions(supplier_code)
+            has_any_invoices = any(t.type_code == 'I' and t.balance > 0 for t in all_outstanding)
+            if has_any_invoices:
                 return (
                     f'<p style="margin-top:12px;"><b>Payment schedule:</b> Our next payment run is '
                     f'<b>{next_run}</b>. No invoices are currently due before this date.</p>'
@@ -2866,10 +2811,10 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items
         # Build table of invoices included in next payment run
         total = 0.0
         rows_html = ''
-        for _, row in df.iterrows():
-            ref = str(row.get('reference', '')).strip()
-            due = str(row.get('pt_dueday', ''))[:10]
-            bal = float(row.get('pt_trbal', 0))
+        for inv in due_invoices:
+            ref = inv.reference
+            due = inv.due_date or ''
+            bal = inv.balance
             total += bal
             due_parts = due.split('-')
             if len(due_parts) == 3 and len(due_parts[0]) == 4:
@@ -2957,11 +2902,11 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
     Merges statement data into the template with proper formatting.
 
     Supported merge fields in templates:
-      {contact_name}      - First contact name from zcontacts (Opera), else supplier name
-      {supplier_name}     - Supplier name from pname
+      {contact_name}      - First contact name (from accounting system), else supplier name
+      {supplier_name}     - Supplier name
       {statement_date}    - Statement date
       {their_balance}     - Supplier's closing balance (formatted currency)
-      {our_balance}       - Our balance from Opera ptran (formatted currency)
+      {our_balance}       - Our balance from outstanding transactions (formatted currency)
       {difference}        - Difference between balances (formatted currency, coloured)
       {agreed_count}      - Number of agreed items
       {query_count}       - Number of queried items
@@ -2973,34 +2918,24 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
     from sql_rag.supplier_statement_db import get_supplier_statement_db
     db = get_supplier_statement_db()
 
-    # --- Supplier name ---
+    # --- Supplier name and contact via data provider ---
     supplier_name = supplier_code
-    if sql_connector:
-        try:
-            name_df = sql_connector.execute_query(
-                f"SELECT RTRIM(pn_name) as name FROM pname WITH (NOLOCK) "
-                f"WHERE pn_account = '{supplier_code}'"
-            )
-            if name_df is not None and len(name_df) > 0:
-                supplier_name = str(name_df.iloc[0]['name']).strip()
-        except Exception:
-            pass
+    contact_name = supplier_code
+    try:
+        from sql_rag.supplier_data_provider import get_supplier_data_provider
+        provider = get_supplier_data_provider()
 
-    # --- Contact name (first named contact from zcontacts for this supplier) ---
-    contact_name = supplier_name
-    if sql_connector:
-        try:
-            ct_df = sql_connector.execute_query(f"""
-                SELECT RTRIM(zc_contact) as name
-                FROM zcontacts WITH (NOLOCK)
-                WHERE zc_account = '{supplier_code}' AND zc_module = 'P'
-                  AND zc_contact IS NOT NULL AND RTRIM(zc_contact) != ''
-                ORDER BY zc_contact
-            """)
-            if ct_df is not None and len(ct_df) > 0:
-                contact_name = str(ct_df.iloc[0]['name']).strip() or supplier_name
-        except Exception:
-            pass
+        name = provider.get_supplier_name(supplier_code)
+        if name:
+            supplier_name = name
+
+        contact = provider.get_supplier_contact(supplier_code)
+        if contact and contact.name:
+            contact_name = contact.name
+        else:
+            contact_name = supplier_name
+    except Exception:
+        contact_name = supplier_name
 
     # --- Statement lines ---
     cursor.execute("""
@@ -3026,19 +2961,14 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
     their_balance_raw = float(stmt_row['closing_balance'] or 0) if stmt_row else 0.0
     their_balance = _format_currency(their_balance_raw)
 
-    # our_balance: sum of ptran outstanding for the supplier
+    # our_balance: sum of outstanding transaction balances for the supplier
     our_balance_raw = 0.0
-    if sql_connector:
-        try:
-            bal_df = sql_connector.execute_query(f"""
-                SELECT SUM(pt_trbal) as bal
-                FROM ptran WITH (NOLOCK)
-                WHERE pt_account = '{supplier_code}'
-            """)
-            if bal_df is not None and len(bal_df) > 0 and bal_df.iloc[0]['bal'] is not None:
-                our_balance_raw = float(bal_df.iloc[0]['bal'])
-        except Exception:
-            pass
+    try:
+        from sql_rag.supplier_data_provider import get_supplier_data_provider
+        provider_bal = get_supplier_data_provider()
+        our_balance_raw = provider_bal.get_outstanding_balance(supplier_code)
+    except Exception:
+        pass
     our_balance = _format_currency(our_balance_raw)
 
     # difference
@@ -3418,21 +3348,20 @@ async def get_supplier_statement_detail(statement_id: int):
 
         stmt = dict(row)
 
-        # Get supplier name and balance from Opera
+        # Get supplier name and balance from accounting system
         stmt['supplier_name'] = stmt['supplier_code']
         stmt['opera_balance'] = None
-        if sql_connector:
-            try:
-                df = sql_connector.execute_query(
-                    f"SELECT RTRIM(pn_name) as pn_name, pn_currbal FROM pname WITH (NOLOCK) WHERE pn_account = '{stmt['supplier_code']}'"
-                )
-                if df is not None and len(df) > 0:
-                    stmt['supplier_name'] = str(df.iloc[0]['pn_name']).strip()
-                    # Show raw Opera balance — same sign convention as supplier statement
-                    # Negative = we owe them, Positive = we're in credit
-                    stmt['opera_balance'] = float(df.iloc[0]['pn_currbal'])
-            except Exception:
-                pass
+        try:
+            from sql_rag.supplier_data_provider import get_supplier_data_provider
+            provider = get_supplier_data_provider()
+            supplier_info = provider.get_supplier(stmt['supplier_code'])
+            if supplier_info:
+                stmt['supplier_name'] = supplier_info.name
+                # Show balance — same sign convention as supplier statement
+                # Negative = we owe them, Positive = we're in credit
+                stmt['opera_balance'] = supplier_info.balance
+        except Exception:
+            pass
 
         # Difference: their balance - our balance
         their_bal = stmt.get('closing_balance') or 0
@@ -4743,41 +4672,31 @@ async def get_supplier_detail(account: str):
     except Exception as e:
         logger.warning(f"Could not load supplier config for {account}: {e}")
 
-    # --- Opera contact from zcontacts (first P-module contact) ---
-    if sql_connector:
-        try:
-            contact_df = sql_connector.execute_query(f"""
-                SELECT TOP 1
-                    RTRIM(zc_contact) AS name,
-                    RTRIM(ISNULL(zc_pos, '')) AS role,
-                    RTRIM(ISNULL(zc_email, '')) AS email,
-                    RTRIM(ISNULL(zc_phone, '')) AS phone,
-                    RTRIM(ISNULL(zc_mobile, '')) AS mobile
-                FROM zcontacts WITH (NOLOCK)
-                WHERE zc_account = '{account}' AND zc_module = 'P'
-                ORDER BY zc_contact
-            """)
-            if contact_df is not None and len(contact_df) > 0:
-                row = contact_df.iloc[0]
-                result["opera_contact"] = {
-                    "name": str(row.get("name", "") or "").strip(),
-                    "role": str(row.get("role", "") or "").strip(),
-                    "email": str(row.get("email", "") or "").strip(),
-                    "phone": str(row.get("phone", "") or "").strip(),
-                    "mobile": str(row.get("mobile", "") or "").strip(),
-                }
-        except Exception as e:
-            logger.warning(f"Could not load Opera contact for {account}: {e}")
+    # --- Contact from accounting system (first P-module contact) ---
+    try:
+        from sql_rag.supplier_data_provider import get_supplier_data_provider
+        provider = get_supplier_data_provider()
+        contact = provider.get_supplier_contact(account)
+        if contact:
+            result["opera_contact"] = {
+                "name": contact.name,
+                "role": contact.position,
+                "email": contact.email,
+                "phone": contact.phone,
+                "mobile": contact.mobile,
+            }
+    except Exception as e:
+        logger.warning(f"Could not load contact for {account}: {e}")
 
-        # --- Current balance from Opera pname ---
-        try:
-            bal_df = sql_connector.execute_query(
-                f"SELECT pn_currbal FROM pname WITH (NOLOCK) WHERE pn_account = '{account}'"
-            )
-            if bal_df is not None and len(bal_df) > 0:
-                result["balance"] = float(bal_df.iloc[0]["pn_currbal"] or 0)
-        except Exception as e:
-            logger.warning(f"Could not load balance for {account}: {e}")
+    # --- Current balance from accounting system ---
+    try:
+        from sql_rag.supplier_data_provider import get_supplier_data_provider
+        provider_bal = get_supplier_data_provider()
+        balance = provider_bal.get_supplier_balance(account)
+        if balance is not None:
+            result["balance"] = balance
+    except Exception as e:
+        logger.warning(f"Could not load balance for {account}: {e}")
 
     # --- Statement history from SQLite ---
     try:

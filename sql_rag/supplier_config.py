@@ -1,18 +1,13 @@
 """
 Supplier Config Manager.
 
-Maintains a local SQLite cache of supplier data synced from Opera's pname table,
-plus local automation flags that are never overwritten by Opera sync.
+Maintains a local SQLite cache of supplier data synced from the accounting system,
+plus local automation flags that are never overwritten by sync.
 
-The sync is strictly read-only from Opera — it never writes back to Opera.
+The sync is strictly read-only from the accounting system — it never writes back.
 
-Opera 3 Parity:
-    This module queries Opera SE (SQL Server) via self.sql.execute_query().
-    To support Opera 3 (FoxPro DBF), create a parallel implementation:
-    - sync_from_opera() needs a FoxPro equivalent that reads pname DBF directly
-    - _get_payment_terms() needs a FoxPro equivalent that reads pterms DBF
-    - Use sql_rag/opera3_foxpro.py or opera3_data_provider.py patterns
-    - See supplier_config_opera3.py for skeleton implementation (TODO)
+Uses the SupplierDataProvider abstraction when available, falling back to direct
+SQL queries when the provider is not yet initialised (e.g. during startup).
 """
 
 import sqlite3
@@ -98,6 +93,8 @@ class SupplierConfigManager:
         Checks for an account-specific override in pterms first; falls back
         to the supplier's terms profile, then defaults to 30.
 
+        Uses the data provider when available, falls back to direct SQL.
+
         Args:
             account_code: Opera supplier account code (already stripped).
             terms_profile: The pn_tprfl value from pname (may be empty).
@@ -105,9 +102,16 @@ class SupplierConfigManager:
         Returns:
             Payment terms in days (integer).
         """
+        # Try using the data provider first
         try:
-            # Account-specific override
-            # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
+            from sql_rag.supplier_data_provider import get_supplier_data_provider
+            provider = get_supplier_data_provider()
+            return provider.get_payment_terms_days(account_code)
+        except Exception:
+            pass
+
+        # Fallback to direct SQL (for cases where provider isn't initialised yet)
+        try:
             df = self.sql.execute_query(f"""
                 SELECT TOP 1 pr_termday
                 FROM pterms WITH (NOLOCK)
@@ -119,7 +123,6 @@ class SupplierConfigManager:
                 if val is not None:
                     return int(val)
 
-            # Profile-level fallback
             if terms_profile:
                 df2 = self.sql.execute_query(f"""
                     SELECT TOP 1 pr_termday
@@ -145,27 +148,38 @@ class SupplierConfigManager:
 
     def sync_from_opera(self) -> Dict[str, int]:
         """
-        One-way sync from Opera pname into supplier_config.
+        One-way sync from accounting system into supplier_config.
 
-        Reads all non-dormant suppliers from Opera and upserts them into
+        Reads all non-dormant suppliers and upserts them into
         supplier_config.  Local automation flags are NEVER overwritten.
 
         Returns:
             dict with keys 'synced' (updated existing) and 'new' (inserted).
         """
-        # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
-        # For Opera 3, read pname DBF directly with same column names (pn_account, pn_name, etc.)
-        df = self.sql.execute_query("""
-            SELECT
-                pn_account,
-                RTRIM(pn_name) AS pn_name,
-                pn_currbal,
-                RTRIM(ISNULL(pn_paymeth, '')) AS pn_paymeth,
-                pn_dormant,
-                RTRIM(ISNULL(pn_tprfl, '')) AS pn_tprfl
-            FROM pname WITH (NOLOCK)
-            WHERE pn_dormant = 0 OR pn_dormant IS NULL
-        """)
+        # Try using the data provider for system-agnostic access
+        suppliers = []
+        use_provider = False
+        try:
+            from sql_rag.supplier_data_provider import get_supplier_data_provider
+            provider = get_supplier_data_provider()
+            suppliers = provider.get_all_suppliers()
+            use_provider = True
+        except Exception:
+            pass
+
+        if not use_provider:
+            # Fallback to direct SQL (for cases where provider isn't initialised yet)
+            df = self.sql.execute_query("""
+                SELECT
+                    pn_account,
+                    RTRIM(pn_name) AS pn_name,
+                    pn_currbal,
+                    RTRIM(ISNULL(pn_paymeth, '')) AS pn_paymeth,
+                    pn_dormant,
+                    RTRIM(ISNULL(pn_tprfl, '')) AS pn_tprfl
+                FROM pname WITH (NOLOCK)
+                WHERE pn_dormant = 0 OR pn_dormant IS NULL
+            """)
 
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         count_new = 0
@@ -173,49 +187,91 @@ class SupplierConfigManager:
 
         conn = self._get_connection()
         try:
-            for _, row in df.iterrows():
-                account_code = str(row['pn_account']).strip()
-                if not account_code:
-                    continue
+            if use_provider:
+                # Use data provider results
+                for sup in suppliers:
+                    account_code = sup.account_code
+                    if not account_code:
+                        continue
+                    name = sup.name
+                    balance = sup.balance
+                    payment_method = sup.payment_method
+                    payment_terms_days = provider.get_payment_terms_days(account_code)
 
-                name = str(row['pn_name']).strip() if row['pn_name'] is not None else ''
-                balance = float(row['pn_currbal']) if row['pn_currbal'] is not None else 0.0
-                payment_method = str(row['pn_paymeth']).strip() if row['pn_paymeth'] is not None else ''
-                terms_profile = str(row['pn_tprfl']).strip() if row['pn_tprfl'] is not None else ''
-                payment_terms_days = self._get_payment_terms(account_code, terms_profile)
+                    existing = conn.execute(
+                        "SELECT account_code FROM supplier_config WHERE account_code = ?",
+                        (account_code,)
+                    ).fetchone()
 
-                # Check if already exists
-                existing = conn.execute(
-                    "SELECT account_code FROM supplier_config WHERE account_code = ?",
-                    (account_code,)
-                ).fetchone()
+                    if existing:
+                        conn.execute("""
+                            UPDATE supplier_config
+                            SET name = ?,
+                                balance = ?,
+                                payment_terms_days = ?,
+                                payment_method = ?,
+                                last_synced = ?,
+                                updated_at = ?
+                            WHERE account_code = ?
+                        """, (name, balance, payment_terms_days, payment_method,
+                              now, now, account_code))
+                        count_synced += 1
+                    else:
+                        conn.execute("""
+                            INSERT INTO supplier_config
+                                (account_code, name, balance, payment_terms_days,
+                                 payment_method, last_synced)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (account_code, name, balance, payment_terms_days,
+                              payment_method, now))
+                        count_new += 1
 
-                if existing:
-                    # Update Opera-sourced fields only — never touch local flags
-                    conn.execute("""
-                        UPDATE supplier_config
-                        SET name = ?,
-                            balance = ?,
-                            payment_terms_days = ?,
-                            payment_method = ?,
-                            last_synced = ?,
-                            updated_at = ?
-                        WHERE account_code = ?
-                    """, (name, balance, payment_terms_days, payment_method,
-                          now, now, account_code))
-                    count_synced += 1
-                else:
-                    # Insert with defaults for local flags
-                    conn.execute("""
-                        INSERT INTO supplier_config
-                            (account_code, name, balance, payment_terms_days,
-                             payment_method, last_synced)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (account_code, name, balance, payment_terms_days,
-                          payment_method, now))
-                    count_new += 1
+                conn.commit()
+            else:
+                # Fallback: iterate DataFrame rows
+                for _, row in df.iterrows():
+                    account_code = str(row['pn_account']).strip()
+                    if not account_code:
+                        continue
 
-            conn.commit()
+                    name = str(row['pn_name']).strip() if row['pn_name'] is not None else ''
+                    balance = float(row['pn_currbal']) if row['pn_currbal'] is not None else 0.0
+                    payment_method = str(row['pn_paymeth']).strip() if row['pn_paymeth'] is not None else ''
+                    terms_profile = str(row['pn_tprfl']).strip() if row['pn_tprfl'] is not None else ''
+                    payment_terms_days = self._get_payment_terms(account_code, terms_profile)
+
+                    # Check if already exists
+                    existing = conn.execute(
+                        "SELECT account_code FROM supplier_config WHERE account_code = ?",
+                        (account_code,)
+                    ).fetchone()
+
+                    if existing:
+                        # Update synced fields only — never touch local flags
+                        conn.execute("""
+                            UPDATE supplier_config
+                            SET name = ?,
+                                balance = ?,
+                                payment_terms_days = ?,
+                                payment_method = ?,
+                                last_synced = ?,
+                                updated_at = ?
+                            WHERE account_code = ?
+                        """, (name, balance, payment_terms_days, payment_method,
+                              now, now, account_code))
+                        count_synced += 1
+                    else:
+                        # Insert with defaults for local flags
+                        conn.execute("""
+                            INSERT INTO supplier_config
+                                (account_code, name, balance, payment_terms_days,
+                                 payment_method, last_synced)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (account_code, name, balance, payment_terms_days,
+                              payment_method, now))
+                        count_new += 1
+
+                conn.commit()
         finally:
             conn.close()
 
@@ -318,25 +374,34 @@ class SupplierConfigManager:
 
     def refresh_balance(self, account_code: str) -> Optional[float]:
         """
-        Refresh just the balance for a single supplier from Opera.
+        Refresh just the balance for a single supplier from the accounting system.
 
         Args:
-            account_code: Opera supplier account code.
+            account_code: Supplier account code.
 
         Returns:
-            The updated balance, or None if the supplier was not found in Opera.
+            The updated balance, or None if the supplier was not found.
         """
-        df = self.sql.execute_query(f"""
-            SELECT pn_currbal
-            FROM pname WITH (NOLOCK)
-            WHERE pn_account = '{account_code}'
-        """)
+        # Try using the data provider
+        balance = None
+        try:
+            from sql_rag.supplier_data_provider import get_supplier_data_provider
+            provider = get_supplier_data_provider()
+            balance = provider.get_supplier_balance(account_code)
+        except Exception:
+            pass
 
-        if df.empty:
-            logger.warning("refresh_balance: account %s not found in Opera", account_code)
-            return None
-
-        balance = float(df.iloc[0]['pn_currbal']) if df.iloc[0]['pn_currbal'] is not None else 0.0
+        if balance is None:
+            # Fallback to direct SQL
+            df = self.sql.execute_query(f"""
+                SELECT pn_currbal
+                FROM pname WITH (NOLOCK)
+                WHERE pn_account = '{account_code}'
+            """)
+            if df.empty:
+                logger.warning("refresh_balance: account %s not found", account_code)
+                return None
+            balance = float(df.iloc[0]['pn_currbal']) if df.iloc[0]['pn_currbal'] is not None else 0.0
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
 
         conn = self._get_connection()

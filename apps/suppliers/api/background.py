@@ -116,12 +116,9 @@ async def _process_single_email(email_id: int, storage, providers):
     from api.main import sql_connector, config as app_config
     from sql_rag.supplier_statement_db import get_supplier_statement_db
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
-    # TODO: SupplierStatementReconciler is imported only for find_supplier().
-    # Once find_supplier() is extracted to sql_rag/supplier_lookup.py this
-    # import (and supplier_statement_reconcile.py) can be removed entirely.
-    from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
     from sql_rag.supplier_reconciler import reconcile, TheirItem, OurItem, clean_reference
     from sql_rag.supplier_config import SupplierConfigManager
+    from sql_rag.supplier_data_provider import get_supplier_data_provider
 
     db = get_supplier_statement_db()
 
@@ -288,7 +285,7 @@ async def _process_single_email(email_id: int, storage, providers):
     if line_records:
         db.add_statement_lines(statement_id, line_records)
 
-    # --- Step 4: Identify supplier in Opera ---
+    # --- Step 4: Identify supplier in accounting system ---
     supplier_name = info.supplier_name or ''
     supplier_code = None
 
@@ -297,16 +294,22 @@ async def _process_single_email(email_id: int, storage, providers):
         db.update_statement_status(statement_id, 'received')
         return
 
-    reconciler_helper = SupplierStatementReconciler(sql_connector)
-    supplier = reconciler_helper.find_supplier(info.supplier_name, info.account_reference)
-
-    if not supplier:
-        logger.info(f"Could not match supplier '{info.supplier_name}' to Opera account")
+    try:
+        provider = get_supplier_data_provider()
+    except Exception as exc:
+        logger.warning(f"Could not initialise supplier data provider: {exc}")
         db.update_statement_status(statement_id, 'received')
         return
 
-    supplier_code = supplier.get('account', supplier.get('pn_account', ''))
-    supplier_name = supplier.get('name', supplier.get('pn_name', supplier_name))
+    supplier = provider.find_supplier_by_name(info.supplier_name, info.account_reference)
+
+    if not supplier:
+        logger.info(f"Could not match supplier '{info.supplier_name}' to account")
+        db.update_statement_status(statement_id, 'received')
+        return
+
+    supplier_code = supplier.account_code
+    supplier_name = supplier.name or supplier_name
 
     # --- Dedup: same supplier + same statement date = same statement ---
     if info.statement_date:
@@ -335,23 +338,11 @@ async def _process_single_email(email_id: int, storage, providers):
     sender_verified = False
     sender_email_lower = from_addr.strip().lower()
 
-    # Check Opera pcontact for this supplier
-    # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
+    # Check accounting system contacts for this supplier
     try:
-        contact_query = f"""
-            SELECT RTRIM(pc_email) as email, RTRIM(pc_contact) as name
-            FROM pcontact WITH (NOLOCK)
-            WHERE pc_account = '{supplier_code}'
-        """
-        contact_df = sql_connector.execute_query(contact_query)
-        if not contact_df.empty:
-            for _, crow in contact_df.iterrows():
-                contact_email = (crow.get('email') or '').strip().lower()
-                if contact_email and contact_email == sender_email_lower:
-                    sender_verified = True
-                    break
+        sender_verified = provider.verify_sender(supplier_code, sender_email_lower)
     except Exception as exc:
-        logger.warning(f"Could not query pcontact for supplier {supplier_code}: {exc}")
+        logger.warning(f"Could not verify sender for supplier {supplier_code}: {exc}")
 
     # If not verified via Opera contacts, check approved senders table
     if not sender_verified:
@@ -400,52 +391,35 @@ async def _process_single_email(email_id: int, storage, providers):
             credit=float(credit or 0),
         ))
 
-    # Our items from Opera — outstanding only (pt_trbal <> 0), NOLOCK
-    # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
+    # Our items from accounting system — outstanding only
     our_items = []
+    outstanding_txns = []
     try:
-        opera_query = f"""
-            SELECT RTRIM(pt_trref) as reference, pt_trbal as balance, pt_trdate, pt_trtype
-            FROM ptran WITH (NOLOCK)
-            WHERE pt_account = '{supplier_code}' AND pt_trbal <> 0
-            ORDER BY pt_trdate
-        """
-        df = sql_connector.execute_query(opera_query)
+        outstanding_txns = provider.get_outstanding_transactions(supplier_code)
         our_items = [
             OurItem(
-                reference=str(row.get('reference', '')).strip(),
-                balance=float(row['balance']),
+                reference=txn.reference,
+                balance=txn.balance,
             )
-            for _, row in df.iterrows()
+            for txn in outstanding_txns
         ]
     except Exception as exc:
-        logger.warning(f"Could not fetch Opera transactions for {supplier_code}: {exc}")
+        logger.warning(f"Could not fetch outstanding transactions for {supplier_code}: {exc}")
         db.update_statement_status(statement_id, 'reconciliation_error')
         return
 
-    # Also fetch ALL ptran (including settled) for the "Exists" check
-    # Two lookups: by reference, and by date+amount (fallback for payment matching)
-    # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
+    # Also fetch ALL transaction refs (including settled) for the "Exists" check
     all_opera_refs = set()
     all_opera_date_amounts = set()  # (date_str, abs_amount) tuples
     try:
-        all_txn_df = sql_connector.execute_query(f"""
-            SELECT RTRIM(pt_trref) as reference, pt_trdate, ABS(pt_trvalue) as abs_value
-            FROM ptran WITH (NOLOCK)
-            WHERE pt_account = '{supplier_code}'
-        """)
-        if all_txn_df is not None:
-            for _, row in all_txn_df.iterrows():
-                ref = clean_reference(str(row.get('reference', '')).strip())
-                if ref:
-                    all_opera_refs.add(ref)
-                # Build date+amount lookup for fallback matching
-                dt = row.get('pt_trdate')
-                if dt:
-                    date_str = str(dt)[:10]
-                    amt = round(float(row.get('abs_value', 0)), 2)
-                    if amt > 0:
-                        all_opera_date_amounts.add((date_str, amt))
+        all_txn_refs = provider.get_all_transaction_refs(supplier_code)
+        for txn_ref in all_txn_refs:
+            ref = clean_reference(txn_ref.reference)
+            if ref:
+                all_opera_refs.add(ref)
+            # Build date+amount lookup for fallback matching
+            if txn_ref.date and txn_ref.abs_value > 0:
+                all_opera_date_amounts.add((txn_ref.date, txn_ref.abs_value))
     except Exception:
         pass
 
@@ -512,15 +486,13 @@ async def _process_single_email(email_id: int, storage, providers):
                     (exists, status, db_line_id)
                 )
 
-        # Save opera-only items — extract date/type from the Opera query data
-        # Build a lookup from the original Opera query results
+        # Save opera-only items — extract date/type from the outstanding transactions
         opera_detail_lookup = {}
         try:
-            for _, row in df.iterrows():
-                ref = str(row.get('reference', '')).strip()
-                opera_detail_lookup[ref] = {
-                    'date': str(row.get('pt_trdate', ''))[:10] if row.get('pt_trdate') else None,
-                    'type': row.get('pt_trtype', ''),
+            for txn in outstanding_txns:
+                opera_detail_lookup[txn.reference] = {
+                    'date': txn.date or None,
+                    'type': txn.type_code,
                 }
         except Exception:
             pass
@@ -582,19 +554,15 @@ def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_a
         if not auto_ack:
             return
 
-        # Get recipient from Opera contact, not the sender
+        # Get recipient from accounting system contact, not the sender
         recipient = None
-        if sql_connector and supplier_code:
+        if supplier_code:
             try:
-                df = sql_connector.execute_query(f"""
-                    SELECT RTRIM(zc_email) as email
-                    FROM zcontacts WITH (NOLOCK)
-                    WHERE zc_account = '{supplier_code}' AND zc_module = 'P'
-                      AND zc_email IS NOT NULL AND RTRIM(zc_email) != ''
-                    ORDER BY zc_contact
-                """)
-                if df is not None and len(df) > 0:
-                    recipient = str(df.iloc[0]['email']).strip()
+                from sql_rag.supplier_data_provider import get_supplier_data_provider
+                provider = get_supplier_data_provider()
+                contact = provider.get_supplier_contact(supplier_code)
+                if contact and contact.email:
+                    recipient = contact.email
             except Exception:
                 pass
 
