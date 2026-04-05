@@ -948,7 +948,7 @@ function GoCardlessImportInner() {
         })));
       }
 
-      const response = await authFetch('/api/gocardless/api-payouts?limit=100&days_back=365');
+      const response = await authFetch('/api/gocardless/api-payouts?limit=50');
       const data = await response.json();
 
       if (!data.success) {
@@ -977,12 +977,7 @@ function GoCardlessImportInner() {
         }));
         setEmailBatches(batchesWithState);
       } else {
-        // Only show a message if there were genuinely no payouts from the API
-        if (filterStats.total_from_api === 0) {
-          setScanError('No payouts found in GoCardless.');
-        }
-        // If payouts were found but all filtered (period closed, duplicates etc.)
-        // — no message needed, just show empty state
+        setScanError('No payouts to import');
       }
     } catch (error) {
       setScanError(`Failed to fetch payouts: ${error}`);
@@ -1673,7 +1668,7 @@ function GoCardlessImportInner() {
             )}
 
             {scanError && (
-              <Alert variant="error" onDismiss={() => setScanError(null)}>{scanError}</Alert>
+              <Alert variant={scanError === 'No payouts to import' ? 'info' : 'error'} onDismiss={() => setScanError(null)}>{scanError}</Alert>
             )}
 
             {emailBatches.length > 0 && (

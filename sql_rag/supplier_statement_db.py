@@ -294,6 +294,13 @@ class SupplierStatementDB:
             )
         """)
 
+        # Unique constraint: one statement per supplier per date
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_statements_supplier_date
+            ON supplier_statements(supplier_code, statement_date)
+            WHERE supplier_code != 'UNKNOWN'
+        """)
+
         # Indexes for performance
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_statements_supplier

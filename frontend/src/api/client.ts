@@ -389,6 +389,8 @@ export interface OperaConfig {
   opera3_company_code?: string;
   opera3_share_user?: string;
   opera3_share_password?: string;
+  opera3_agent_url?: string;
+  opera3_agent_key?: string;
 }
 
 export interface SystemProfile {
@@ -1097,6 +1099,7 @@ export const apiClient = {
   updateOperaConfig: (config: OperaConfig) => api.post('/config/opera', config),
   getOpera3Companies: () => api.get<Opera3CompaniesResponse>('/config/opera/companies'),
   testOperaConnection: (config: OperaConfig) => api.post<OperaTestResponse>('/config/opera/test', config),
+  testWriteAgent: (config: OperaConfig) => api.post<OperaTestResponse>('/config/opera/test-agent', config),
 
   // Database
   getTables: () => api.get<TableInfo[]>('/database/tables'),

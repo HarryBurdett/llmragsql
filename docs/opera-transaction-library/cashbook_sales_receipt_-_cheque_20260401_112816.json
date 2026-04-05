@@ -1,0 +1,13 @@
+{
+  "module": "cashbook",
+  "module_name": "Cashbook Transactions",
+  "name": "Sales Receipt \u2014 Cheque",
+  "description": "Receipt from customer via cheque.",
+  "source": "opera_se",
+  "recorded_at": "2026-04-01T11:28:16.580095",
+  "before_timestamp": "2026-04-01T11:03:46.894818",
+  "after_timestamp": "2026-04-01T11:28:00.632432",
+  "tables_checked": 425,
+  "tables_changed": 0,
+  "changes": []
+}

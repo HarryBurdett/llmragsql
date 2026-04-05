@@ -25,6 +25,8 @@ interface SystemFormState {
   opera3CompanyCode: string;
   opera3ShareUser: string;
   opera3SharePassword: string;
+  opera3AgentUrl: string;
+  opera3AgentKey: string;
 }
 
 function systemToForm(sys: SystemProfile): SystemFormState {
@@ -43,6 +45,8 @@ function systemToForm(sys: SystemProfile): SystemFormState {
     opera3ShareUser: sys.opera?.opera3_share_user || '',
     opera3SharePassword: sys.opera?.opera3_share_password || '',
     opera3CompanyCode: sys.opera?.opera3_company_code || '',
+    opera3AgentUrl: sys.opera?.opera3_agent_url || '',
+    opera3AgentKey: sys.opera?.opera3_agent_key || '',
   };
 }
 
@@ -71,6 +75,8 @@ function formToSystemData(form: SystemFormState) {
       opera3_company_code: form.opera3CompanyCode,
       opera3_share_user: form.opera3ShareUser,
       opera3_share_password: form.opera3SharePassword,
+      opera3_agent_url: form.opera3AgentUrl,
+      opera3_agent_key: form.opera3AgentKey,
     },
   };
 }
@@ -269,6 +275,8 @@ export function Installations() {
           opera3_company_code: form.opera3CompanyCode,
           opera3_share_user: form.opera3ShareUser,
           opera3_share_password: form.opera3SharePassword,
+          opera3_agent_url: form.opera3AgentUrl,
+          opera3_agent_key: form.opera3AgentKey,
         });
         // If Opera version changed on the active installation, force re-login
         const previousVersion = sys.opera?.version;
@@ -314,6 +322,8 @@ export function Installations() {
       opera3_company_code: form.opera3CompanyCode,
       opera3_share_user: form.opera3ShareUser,
       opera3_share_password: form.opera3SharePassword,
+      opera3_agent_url: form.opera3AgentUrl,
+      opera3_agent_key: form.opera3AgentKey,
     });
   };
 
@@ -596,6 +606,92 @@ export function Installations() {
                           />
                         </div>
                         <p className="text-xs text-gray-500">Companies are detected automatically from the data path and available at login.</p>
+
+                            {/* Write Agent */}
+                            <div className="space-y-3 mt-4 pt-4 border-t border-gray-100">
+                              <h4 className="text-sm font-medium text-gray-700">Write Agent</h4>
+                              <p className="text-xs text-gray-500">
+                                The Write Agent runs on the Opera 3 server to safely post transactions. Without it, Opera 3 is read-only.
+                              </p>
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <label className="label">Write Agent URL</label>
+                                  <input
+                                    type="text"
+                                    className="input"
+                                    placeholder="http://172.17.172.214:9000"
+                                    value={form.opera3AgentUrl}
+                                    onChange={(e) => updateForm({ opera3AgentUrl: e.target.value })}
+                                  />
+                                </div>
+                                <div>
+                                  <label className="label">Write Agent Key</label>
+                                  <input
+                                    type="password"
+                                    className="input"
+                                    placeholder="Shared secret from installer"
+                                    value={form.opera3AgentKey}
+                                    onChange={(e) => updateForm({ opera3AgentKey: e.target.value })}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-3">
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      const res = await apiClient.testWriteAgent({
+                                        version: form.operaVersion,
+                                        opera3_agent_url: form.opera3AgentUrl,
+                                        opera3_agent_key: form.opera3AgentKey,
+                                      });
+                                      if (res.data.success) {
+                                        setMessage({ type: 'success', text: res.data.message || 'Write Agent connected' });
+                                      } else {
+                                        setMessage({ type: 'error', text: res.data.error || 'Write Agent test failed' });
+                                      }
+                                    } catch {
+                                      setMessage({ type: 'error', text: 'Failed to test Write Agent connection' });
+                                    }
+                                  }}
+                                  disabled={!form.opera3AgentUrl}
+                                  className="px-3 py-1.5 text-sm bg-blue-50 text-blue-700 rounded hover:bg-blue-100 disabled:opacity-50"
+                                >
+                                  Test Connection
+                                </button>
+                              </div>
+
+                              <details className="mt-2">
+                                <summary className="text-sm font-medium text-blue-600 cursor-pointer hover:text-blue-800">
+                                  Setup Instructions
+                                </summary>
+                                <div className="mt-2 p-3 bg-blue-50 rounded text-sm text-gray-700 space-y-2">
+                                  <p><strong>The Write Agent</strong> is a service that runs on the Opera 3 server to safely post transactions to the FoxPro database. It must be installed on the same server as the Opera 3 data files.</p>
+                                  <p className="font-medium">Setup:</p>
+                                  <ol className="list-decimal list-inside space-y-1 ml-2">
+                                    <li>Copy the <code className="bg-white px-1 rounded">opera3-write-agent</code> folder to the Opera 3 server</li>
+                                    <li>Run <code className="bg-white px-1 rounded">install.bat</code> as Administrator</li>
+                                    <li>The installer displays the URL and Key</li>
+                                    <li>Enter the URL and Key in the fields above</li>
+                                    <li>Click <strong>Test Connection</strong> to verify</li>
+                                  </ol>
+                                  <div className="mt-2 pt-2 border-t border-blue-100">
+                                    <p className="text-xs text-gray-500">
+                                      <strong>Without the Write Agent:</strong> Opera 3 is read-only in this application.
+                                      Bank statement viewing, reporting, and analysis work without it.
+                                      Posting transactions, importing, and reconciliation require the Write Agent.
+                                    </p>
+                                  </div>
+                                  <div className="mt-1">
+                                    <p className="text-xs text-gray-500">
+                                      <strong>How it works:</strong> The Write Agent uses proper FoxPro file locking (record-level)
+                                      to safely write transactions without interfering with Opera 3 users.
+                                      It includes crash recovery, post-write verification, and an audit trail.
+                                    </p>
+                                  </div>
+                                </div>
+                              </details>
+                            </div>
                       </div>
                     )}
 
