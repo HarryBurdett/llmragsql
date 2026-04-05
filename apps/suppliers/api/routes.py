@@ -2787,8 +2787,12 @@ def _build_payment_table(supplier_code: str, db, sql_connector) -> str:
         return ''
 
 
-def _build_payment_schedule(db, sql_connector, supplier_code: str) -> str:
-    """Build HTML snippet listing invoices included in the next payment run."""
+def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items=None) -> str:
+    """Build HTML snippet listing invoices included in the next payment run.
+
+    If there are outstanding queries (missing credit notes, disputed amounts),
+    the schedule notes that payment may be adjusted pending resolution.
+    """
     next_run = db.get_config('next_payment_run_date', '')
     if not next_run or not sql_connector:
         return ''
@@ -2806,7 +2810,6 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str) -> str:
             ORDER BY pt_dueday
         """)
         if df is None or df.empty:
-            # No invoices due — check if there are any outstanding at all
             df_any = sql_connector.execute_query(f"""
                 SELECT RTRIM(pt_trref) as reference, pt_dueday, pt_trbal
                 FROM ptran WITH (NOLOCK)
@@ -2830,7 +2833,6 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str) -> str:
             due = str(row.get('pt_dueday', ''))[:10]
             bal = float(row.get('pt_trbal', 0))
             total += bal
-            # Format due date to DD/MM/YYYY
             due_parts = due.split('-')
             if len(due_parts) == 3 and len(due_parts[0]) == 4:
                 due = f"{due_parts[2]}/{due_parts[1]}/{due_parts[0]}"
@@ -2849,7 +2851,7 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str) -> str:
         else:
             next_run_fmt = next_run
 
-        return (
+        html = (
             f'<p style="margin-top:12px;"><b>Payment schedule:</b> The following invoices '
             f'are included in our next payment run on <b>{next_run_fmt}</b>:</p>'
             f'<table style="border-collapse:collapse;width:100%;font-size:13px;margin:8px 0;">'
@@ -2863,6 +2865,29 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str) -> str:
             f'<td style="padding:6px 10px;text-align:right;font-weight:bold;">£{total:,.2f}</td></tr>'
             f'</table>'
         )
+
+        # If there are outstanding queries, add a caveat
+        if queried_items:
+            # Check what types of queries — credit notes are particularly relevant
+            credit_queries = [q for q in queried_items
+                             if (q.get('doc_type') or '').upper() in ('CN', 'CREDIT', 'CREDIT NOTE', 'CR')]
+
+            if credit_queries:
+                credit_total = sum(abs(q.get('credit') or q.get('debit') or 0) for q in credit_queries)
+                html += (
+                    f'<p style="color:#856404;font-size:13px;margin-top:8px;">'
+                    f'<b>Note:</b> Payment is subject to resolution of the {len(queried_items)} item(s) '
+                    f'queried above. In particular, we are awaiting {len(credit_queries)} credit note(s) '
+                    f'totalling £{credit_total:,.2f} which may reduce the payment amount.</p>'
+                )
+            else:
+                html += (
+                    f'<p style="color:#856404;font-size:13px;margin-top:8px;">'
+                    f'<b>Note:</b> Payment is subject to resolution of the {len(queried_items)} item(s) '
+                    f'queried above. The payment amount may be adjusted once these items are clarified.</p>'
+                )
+
+        return html
     except Exception as e:
         logger.warning(f"Could not build payment schedule for {supplier_code}: {e}")
         return ''
@@ -2989,7 +3014,7 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
     # --- Data-driven HTML blocks ---
     query_table = _build_query_table(queried)
     payment_table = _build_payment_table(supplier_code, db, sql_connector)
-    payment_schedule = _build_payment_schedule(db, sql_connector, supplier_code)
+    payment_schedule = _build_payment_schedule(db, sql_connector, supplier_code, queried)
 
     # --- Config values ---
     company_sign_off = db.get_config('response_sign_off', 'Regards,<br>Accounts Department')
