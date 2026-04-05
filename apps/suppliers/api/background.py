@@ -106,6 +106,12 @@ def _has_pdf_attachment(email_data: Dict[str, Any]) -> bool:
 async def _process_single_email(email_id: int, storage, providers):
     """
     Process a single email through the supplier statement pipeline.
+
+    Opera 3 Parity:
+        This function queries Opera SQL SE via sql_connector (ptran table).
+        For Opera 3 support, adapt queries to use opera3_foxpro.py or
+        opera3_data_provider.py patterns. See SQL SE queries below marked with
+        TODO comments for the specific queries that need Opera 3 equivalents.
     """
     from api.main import sql_connector, config as app_config
     from sql_rag.supplier_statement_db import get_supplier_statement_db
@@ -302,24 +308,22 @@ async def _process_single_email(email_id: int, storage, providers):
     supplier_code = supplier.get('account', supplier.get('pn_account', ''))
     supplier_name = supplier.get('name', supplier.get('pn_name', supplier_name))
 
-    # --- Definitive dedup: same supplier + same statement date = same statement ---
+    # --- Dedup: same supplier + same statement date = same statement ---
     if info.statement_date:
-        import sqlite3 as _sq_dedup3
+        import sqlite3 as _sq_dd
         try:
-            conn_d3 = _sq_dedup3.connect(str(db.db_path))
-            c_d3 = conn_d3.cursor()
-            c_d3.execute(
+            conn_dd = _sq_dd.connect(str(db.db_path))
+            c_dd = conn_dd.cursor()
+            c_dd.execute(
                 "SELECT id FROM supplier_statements WHERE supplier_code = ? AND statement_date = ? AND id != ?",
                 (supplier_code, info.statement_date, statement_id)
             )
-            existing = c_d3.fetchone()
-            if existing:
-                # Delete the record we just created — it's a duplicate
-                c_d3.execute("DELETE FROM statement_lines WHERE statement_id = ?", (statement_id,))
-                c_d3.execute("DELETE FROM supplier_statements WHERE id = ?", (statement_id,))
-                conn_d3.commit()
-                conn_d3.close()
-                logger.debug(f"Email {email_id}: Duplicate for {supplier_code} date {info.statement_date}, keeping ID {existing[0]}")
+            if c_dd.fetchone():
+                c_dd.execute("DELETE FROM statement_lines WHERE statement_id = ?", (statement_id,))
+                c_dd.execute("DELETE FROM supplier_statements WHERE id = ?", (statement_id,))
+                conn_dd.commit()
+                conn_dd.close()
+                logger.debug(f"Duplicate statement for {supplier_code} date {info.statement_date} — skipped")
                 return
             conn_d3.close()
         except Exception:
@@ -332,6 +336,7 @@ async def _process_single_email(email_id: int, storage, providers):
     sender_email_lower = from_addr.strip().lower()
 
     # Check Opera pcontact for this supplier
+    # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
     try:
         contact_query = f"""
             SELECT RTRIM(pc_email) as email, RTRIM(pc_contact) as name
@@ -396,6 +401,7 @@ async def _process_single_email(email_id: int, storage, providers):
         ))
 
     # Our items from Opera — outstanding only (pt_trbal <> 0), NOLOCK
+    # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
     our_items = []
     try:
         opera_query = f"""
@@ -419,6 +425,7 @@ async def _process_single_email(email_id: int, storage, providers):
 
     # Also fetch ALL ptran (including settled) for the "Exists" check
     # Two lookups: by reference, and by date+amount (fallback for payment matching)
+    # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
     all_opera_refs = set()
     all_opera_date_amounts = set()  # (date_str, abs_amount) tuples
     try:
@@ -559,9 +566,9 @@ async def _process_single_email(email_id: int, storage, providers):
 
 
 def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_addr, info):
-    """Send acknowledgement email to the supplier."""
+    """Send acknowledgement email to the supplier contact in Opera."""
     try:
-        from api.main import config as app_config
+        from api.main import config as app_config, sql_connector
 
         # Check if auto-acknowledge is enabled
         auto_ack = True
@@ -575,10 +582,28 @@ def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_a
         if not auto_ack:
             return
 
-        # Don't send to our own address
-        if 'intsys@' in from_addr.lower() or 'wimbledoncloud' in from_addr.lower():
-            logger.debug(f"Skipping acknowledgement to own address: {from_addr}")
-            return
+        # Get recipient from Opera contact, not the sender
+        recipient = None
+        if sql_connector and supplier_code:
+            try:
+                df = sql_connector.execute_query(f"""
+                    SELECT RTRIM(zc_email) as email
+                    FROM zcontacts WITH (NOLOCK)
+                    WHERE zc_account = '{supplier_code}' AND zc_module = 'P'
+                      AND zc_email IS NOT NULL AND RTRIM(zc_email) != ''
+                    ORDER BY zc_contact
+                """)
+                if df is not None and len(df) > 0:
+                    recipient = str(df.iloc[0]['email']).strip()
+            except Exception:
+                pass
+
+        if not recipient:
+            # No Opera contact — fall back to sender but skip our own address
+            if 'intsys@' in from_addr.lower() or 'wimbledoncloud' in from_addr.lower():
+                logger.debug(f"No Opera contact and sender is own address — skipping acknowledgement")
+                return
+            recipient = from_addr
 
         ack_subject = f"Statement Received — {supplier_name} — {info.statement_date or 'today'}"
         ack_body = f"""<html><body>
@@ -605,7 +630,7 @@ def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_a
         msg = MIMEMultipart('alternative')
         msg['Subject'] = ack_subject
         msg['From'] = from_email
-        msg['To'] = from_addr
+        msg['To'] = recipient
         msg.attach(MIMEText(ack_body, 'html'))
 
         with smtplib.SMTP(smtp_server, smtp_port) as server:

@@ -12,6 +12,12 @@ Mathematical guarantee:
     difference == theirs_only_net - ours_only_net + amount_diffs_net
 
 If math_checks_out is False there is a bug in this module.
+
+Opera 3 Parity:
+    This module is pure logic — no database access. It works identically for
+    both Opera SQL SE and Opera 3. The data provider (which queries ptran/pname)
+    is responsible for the database layer. See supplier_config.py and
+    background.py for the data access points that need Opera 3 equivalents.
 """
 
 from __future__ import annotations

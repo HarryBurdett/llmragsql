@@ -5,6 +5,14 @@ Maintains a local SQLite cache of supplier data synced from Opera's pname table,
 plus local automation flags that are never overwritten by Opera sync.
 
 The sync is strictly read-only from Opera — it never writes back to Opera.
+
+Opera 3 Parity:
+    This module queries Opera SE (SQL Server) via self.sql.execute_query().
+    To support Opera 3 (FoxPro DBF), create a parallel implementation:
+    - sync_from_opera() needs a FoxPro equivalent that reads pname DBF directly
+    - _get_payment_terms() needs a FoxPro equivalent that reads pterms DBF
+    - Use sql_rag/opera3_foxpro.py or opera3_data_provider.py patterns
+    - See supplier_config_opera3.py for skeleton implementation (TODO)
 """
 
 import sqlite3
@@ -99,6 +107,7 @@ class SupplierConfigManager:
         """
         try:
             # Account-specific override
+            # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
             df = self.sql.execute_query(f"""
                 SELECT TOP 1 pr_termday
                 FROM pterms WITH (NOLOCK)
@@ -144,6 +153,8 @@ class SupplierConfigManager:
         Returns:
             dict with keys 'synced' (updated existing) and 'new' (inserted).
         """
+        # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
+        # For Opera 3, read pname DBF directly with same column names (pn_account, pn_name, etc.)
         df = self.sql.execute_query("""
             SELECT
                 pn_account,

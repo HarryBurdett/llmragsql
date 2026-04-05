@@ -6,6 +6,22 @@ supplier queries, communications, security, settings, supplier directory,
 creditors control (Purchase Ledger), and supplier account views.
 
 Does NOT include /api/reconcile/creditors (that belongs to balance_check app).
+
+Opera 3 Parity:
+    This module queries Opera SQL SE (SQL Server) via sql_connector.execute_query().
+    It accesses:
+    - ptran (Purchase Ledger) — for statement matching and reconciliation
+    - pname (Supplier Master) — for supplier lookups and data
+    - pcontact (Supplier Contacts) — for email verification
+    - pterms (Payment Terms) — via supplier_config.py
+
+    To support Opera 3 (FoxPro DBF), routes need Opera 3 equivalents that:
+    - Use opera3_foxpro.py or opera3_data_provider.py patterns
+    - Query the same DBF files (ptran.DBF, pname.DBF, pcontact.DBF, pterms.DBF)
+    - Return DataFrames with same column names (pt_trref, pn_account, etc.)
+
+    See background.py and supplier_config.py for specific queries marked with
+    TODO comments.
 """
 
 import os
@@ -3315,6 +3331,7 @@ async def process_supplier_statement(statement_id: int):
             supplier_code = stmt['supplier_code']
 
             # Get ptran data for this supplier
+            # TODO: Opera 3 parity — equivalent query using opera3_foxpro.py
             ptran_query = f"""
                 SELECT pt_unique, pt_trdate, pt_trref, pt_supref, pt_trtype, pt_trvalue, pt_trbal
                 FROM ptran WITH (NOLOCK)
