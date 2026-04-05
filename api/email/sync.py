@@ -199,42 +199,44 @@ class EmailSyncManager:
                     logger.info(f"  -> {e.message_id[:40]}  subj={e.subject}  att={e.has_attachments}")
 
                 for email in emails:
-                    # Store email
-                    email_id = self.storage.store_email(
+                    # Store email — is_new is False for duplicates already in the DB
+                    email_id, is_new = self.storage.store_email(
                         provider_id,
                         folder['id'],
                         email
                     )
 
-                    # Categorize if enabled
-                    if self.categorizer and self.categorizer.llm:
-                        try:
-                            category_result = self.categorizer.categorize(
-                                subject=email.subject,
-                                from_address=email.from_address,
-                                body=email.body_text or email.body_preview
-                            )
-                            self.storage.update_email_category(
-                                email_id,
-                                category_result['category'],
-                                category_result['confidence'],
-                                category_result.get('reason')
-                            )
-                        except Exception as e:
-                            logger.warning(f"Error categorizing email {email_id}: {e}")
-
-                    # Auto-link to customer if enabled
-                    if self.linker and self.linker.sql_connector:
-                        try:
-                            customer = self.linker.find_customer_by_email(email.from_address)
-                            if customer:
-                                self.storage.link_email_to_customer(
-                                    email_id,
-                                    customer['sn_account'],
-                                    linked_by='auto'
+                    if is_new:
+                        # Categorize new emails only — Gemini calls are slow (~30s each)
+                        # and re-categorising known emails blocks the event loop for no gain
+                        if self.categorizer and self.categorizer.llm:
+                            try:
+                                category_result = self.categorizer.categorize(
+                                    subject=email.subject,
+                                    from_address=email.from_address,
+                                    body=email.body_text or email.body_preview
                                 )
-                        except Exception as e:
-                            logger.warning(f"Error linking email {email_id}: {e}")
+                                self.storage.update_email_category(
+                                    email_id,
+                                    category_result['category'],
+                                    category_result['confidence'],
+                                    category_result.get('reason')
+                                )
+                            except Exception as e:
+                                logger.warning(f"Error categorizing email {email_id}: {e}")
+
+                        # Auto-link new emails to customer if enabled
+                        if self.linker and self.linker.sql_connector:
+                            try:
+                                customer = self.linker.find_customer_by_email(email.from_address)
+                                if customer:
+                                    self.storage.link_email_to_customer(
+                                        email_id,
+                                        customer['sn_account'],
+                                        linked_by='auto'
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Error linking email {email_id}: {e}")
 
                     total_synced += 1
 

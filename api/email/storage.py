@@ -716,8 +716,13 @@ class EmailStorage:
         provider_id: int,
         folder_db_id: int,
         email: EmailMessage
-    ) -> int:
-        """Store an email message. Returns email ID."""
+    ) -> tuple:
+        """Store an email message. Returns (email_id, is_new) tuple.
+
+        is_new is True if the email was freshly inserted, False if it already
+        existed in the database.  Callers should skip expensive post-processing
+        (e.g. AI categorisation) when is_new is False.
+        """
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
@@ -728,7 +733,7 @@ class EmailStorage:
             )
             existing = cursor.fetchone()
             if existing:
-                return existing['id']
+                return existing['id'], False
 
             cursor.execute("""
                 INSERT INTO emails (
@@ -768,7 +773,7 @@ class EmailStorage:
                     VALUES (?, ?, ?, ?, ?)
                 """, (email_id, att.attachment_id, att.filename, att.content_type, att.size_bytes))
 
-            return email_id
+            return email_id, True
 
     def get_emails(
         self,
