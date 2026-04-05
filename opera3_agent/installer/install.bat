@@ -117,10 +117,47 @@ echo.
 
 :: Install Python dependencies
 echo Installing Python dependencies...
-"%PYTHON_EXE%" -m pip install fastapi uvicorn httpx pydantic >nul 2>&1
+"%PYTHON_EXE%" -m pip install fastapi uvicorn httpx pydantic dbfread >nul 2>&1
 if %errorlevel% neq 0 (
     echo WARNING: pip install failed. Dependencies may already be installed.
 )
+
+:: Build Harbour DLL (for CDX index maintenance on writes)
+echo.
+echo Checking Harbour DLL...
+set "DLL_PATH=%INSTALL_DIR%\opera3_agent\harbour\libdbfbridge.dll"
+if exist "%DLL_PATH%" (
+    echo Harbour DLL already exists: %DLL_PATH%
+) else (
+    echo Harbour DLL not found — attempting to build...
+
+    :: Check if Harbour is installed
+    where hbmk2 >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo Found Harbour compiler. Building DLL...
+        pushd "%INSTALL_DIR%\opera3_agent\harbour"
+        hbmk2 dbfbridge.prg -shared -o libdbfbridge.dll
+        if exist "libdbfbridge.dll" (
+            echo SUCCESS: Harbour DLL built.
+        ) else (
+            echo WARNING: DLL build failed. Write operations may not maintain CDX indexes.
+            echo Read operations will work fine without it.
+        )
+        popd
+    ) else (
+        echo Harbour not found on PATH.
+        echo.
+        echo The Harbour DLL is optional — needed only for CDX index maintenance on writes.
+        echo Read operations work without it.
+        echo.
+        echo To add write support later:
+        echo   1. Install Harbour from https://harbour.github.io/
+        echo   2. Run: cd "%INSTALL_DIR%\opera3_agent\harbour"
+        echo   3. Run: hbmk2 dbfbridge.prg -shared -o libdbfbridge.dll
+        echo   4. Restart the service: net stop Opera3Agent ^&^& net start Opera3Agent
+    )
+)
+echo.
 
 :: Generate agent key
 set "AGENT_KEY="
@@ -130,13 +167,13 @@ for /f "tokens=*" %%i in ('"%PYTHON_EXE%" -c "import secrets; print(secrets.toke
 
 :: Stop existing service if running
 echo Checking for existing service...
-"%NSSM_EXE%" status OperaWriteAgent >nul 2>&1
+"%NSSM_EXE%" status Opera3Agent >nul 2>&1
 if %errorlevel% equ 0 (
     echo Stopping existing service...
-    "%NSSM_EXE%" stop OperaWriteAgent >nul 2>&1
+    "%NSSM_EXE%" stop Opera3Agent >nul 2>&1
     timeout /t 2 >nul
     echo Removing existing service...
-    "%NSSM_EXE%" remove OperaWriteAgent confirm >nul 2>&1
+    "%NSSM_EXE%" remove Opera3Agent confirm >nul 2>&1
     timeout /t 1 >nul
 )
 
@@ -144,33 +181,33 @@ if %errorlevel% equ 0 (
 echo.
 echo Installing Opera 3 Write Agent service...
 
-"%NSSM_EXE%" install OperaWriteAgent "%PYTHON_EXE%" "-m" "uvicorn" "opera3_agent.service:app" "--host" "0.0.0.0" "--port" "9000"
-"%NSSM_EXE%" set OperaWriteAgent AppDirectory "%INSTALL_DIR%\.."
-"%NSSM_EXE%" set OperaWriteAgent DisplayName "Opera 3 Write Agent"
-"%NSSM_EXE%" set OperaWriteAgent Description "Handles Opera 3 FoxPro DBF writes with CDX index maintenance for SQL RAG"
-"%NSSM_EXE%" set OperaWriteAgent Start SERVICE_AUTO_START
+"%NSSM_EXE%" install Opera3Agent "%PYTHON_EXE%" "-m" "uvicorn" "opera3_agent.service:app" "--host" "0.0.0.0" "--port" "9000"
+"%NSSM_EXE%" set Opera3Agent AppDirectory "%INSTALL_DIR%\.."
+"%NSSM_EXE%" set Opera3Agent DisplayName "Opera 3 Agent"
+"%NSSM_EXE%" set Opera3Agent Description "Gateway for all Opera 3 FoxPro data access — reads and writes"
+"%NSSM_EXE%" set Opera3Agent Start SERVICE_AUTO_START
 
 :: Environment variables
-"%NSSM_EXE%" set OperaWriteAgent AppEnvironmentExtra "OPERA3_DATA_PATH=%OPERA3_PATH%" "OPERA3_AGENT_KEY=%AGENT_KEY%"
+"%NSSM_EXE%" set Opera3Agent AppEnvironmentExtra "OPERA3_DATA_PATH=%OPERA3_PATH%" "OPERA3_AGENT_KEY=%AGENT_KEY%"
 
 :: Restart on failure
-"%NSSM_EXE%" set OperaWriteAgent AppRestartDelay 5000
-"%NSSM_EXE%" set OperaWriteAgent AppThrottle 10000
+"%NSSM_EXE%" set Opera3Agent AppRestartDelay 5000
+"%NSSM_EXE%" set Opera3Agent AppThrottle 10000
 
 :: Logging
-"%NSSM_EXE%" set OperaWriteAgent AppStdout "%INSTALL_DIR%\logs\agent.log"
-"%NSSM_EXE%" set OperaWriteAgent AppStderr "%INSTALL_DIR%\logs\agent-error.log"
-"%NSSM_EXE%" set OperaWriteAgent AppStdoutCreationDisposition 4
-"%NSSM_EXE%" set OperaWriteAgent AppStderrCreationDisposition 4
-"%NSSM_EXE%" set OperaWriteAgent AppRotateFiles 1
-"%NSSM_EXE%" set OperaWriteAgent AppRotateBytes 10485760
+"%NSSM_EXE%" set Opera3Agent AppStdout "%INSTALL_DIR%\logs\agent.log"
+"%NSSM_EXE%" set Opera3Agent AppStderr "%INSTALL_DIR%\logs\agent-error.log"
+"%NSSM_EXE%" set Opera3Agent AppStdoutCreationDisposition 4
+"%NSSM_EXE%" set Opera3Agent AppStderrCreationDisposition 4
+"%NSSM_EXE%" set Opera3Agent AppRotateFiles 1
+"%NSSM_EXE%" set Opera3Agent AppRotateBytes 10485760
 
 :: Create logs directory
 if not exist "%INSTALL_DIR%\logs" mkdir "%INSTALL_DIR%\logs"
 
 :: Start the service
 echo Starting service...
-"%NSSM_EXE%" start OperaWriteAgent
+"%NSSM_EXE%" start Opera3Agent
 
 :: Wait for startup
 echo Waiting for service to start...
@@ -183,10 +220,10 @@ curl -s http://localhost:9000/health >nul 2>&1
 if %errorlevel% equ 0 (
     echo.
     echo ========================================
-    echo  SUCCESS: Opera 3 Write Agent installed
+    echo  SUCCESS: Opera 3 Agent installed
     echo ========================================
     echo.
-    echo  Service:    OperaWriteAgent
+    echo  Service:    Opera3Agent
     echo  URL:        http://localhost:9000
     echo  Data path:  %OPERA3_PATH%
     echo  Agent key:  %AGENT_KEY%
@@ -206,11 +243,11 @@ if %errorlevel% equ 0 (
     echo Check logs at: %INSTALL_DIR%\logs\agent-error.log
     echo.
     echo Service status:
-    "%NSSM_EXE%" status OperaWriteAgent
+    "%NSSM_EXE%" status Opera3Agent
 )
 
 :: Save config for reference
-echo [OperaWriteAgent] > "%INSTALL_DIR%\agent-config.ini"
+echo [Opera3Agent] > "%INSTALL_DIR%\agent-config.ini"
 echo data_path=%OPERA3_PATH% >> "%INSTALL_DIR%\agent-config.ini"
 echo agent_key=%AGENT_KEY% >> "%INSTALL_DIR%\agent-config.ini"
 echo port=9000 >> "%INSTALL_DIR%\agent-config.ini"

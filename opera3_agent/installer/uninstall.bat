@@ -1,13 +1,13 @@
 @echo off
-:: Opera 3 Write Agent - Windows Service Uninstaller
+:: Opera 3 Agent - Windows Service Uninstaller
 ::
-:: Stops and removes the OperaWriteAgent Windows Service.
+:: Stops and removes the Opera3Agent Windows Service.
 :: Does NOT delete files - only removes the service registration.
 
 setlocal
 
 echo ========================================
-echo  Opera 3 Write Agent - Uninstaller
+echo  Opera 3 Agent - Uninstaller
 echo ========================================
 echo.
 
@@ -34,21 +34,21 @@ if not exist "%NSSM_EXE%" (
 )
 
 :: Check if service exists
-"%NSSM_EXE%" status OperaWriteAgent >nul 2>&1
+"%NSSM_EXE%" status Opera3Agent >nul 2>&1
 if %errorlevel% neq 0 (
-    echo Service OperaWriteAgent is not installed.
+    echo Service Opera3Agent is not installed.
     pause
     exit /b 0
 )
 
 :: Stop the service
-echo Stopping OperaWriteAgent service...
-"%NSSM_EXE%" stop OperaWriteAgent >nul 2>&1
+echo Stopping Opera3Agent service...
+"%NSSM_EXE%" stop Opera3Agent >nul 2>&1
 timeout /t 3 >nul
 
 :: Remove the service
-echo Removing OperaWriteAgent service...
-"%NSSM_EXE%" remove OperaWriteAgent confirm
+echo Removing Opera3Agent service...
+"%NSSM_EXE%" remove Opera3Agent confirm
 
 echo.
 echo Service removed. Files remain at:
