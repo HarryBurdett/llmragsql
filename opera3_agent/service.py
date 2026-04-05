@@ -45,10 +45,111 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================
 
+# Base path to Opera 3 installation (contains System/ folder and company data)
+OPERA3_BASE_PATH = os.environ.get("OPERA3_BASE_PATH", os.environ.get("OPERA3_DATA_PATH", ""))
+# Legacy: single company path (still supported for backward compat)
 OPERA3_DATA_PATH = os.environ.get("OPERA3_DATA_PATH", "")
 OPERA3_AGENT_KEY = os.environ.get("OPERA3_AGENT_KEY", "")
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.2.0"
 START_TIME = time.time()
+
+# Company data paths discovered from seqco.dbf
+# Key = company code (letter), Value = full path to data directory
+_company_paths: Dict[str, str] = {}
+
+
+def _discover_companies():
+    """Discover all company datasets from seqco.dbf."""
+    global _company_paths
+    base = Path(OPERA3_BASE_PATH or OPERA3_DATA_PATH)
+    if not base.exists():
+        return
+
+    system_path = base / "System"
+    seqco_path = system_path / "seqco.dbf"
+    if not seqco_path.exists():
+        seqco_path = system_path / "SEQCO.DBF"
+    if not seqco_path.exists():
+        # No seqco — treat base path as single-company data path
+        _company_paths["_default"] = str(base)
+        logger.info(f"No seqco.dbf found — single company mode: {base}")
+        return
+
+    try:
+        from dbfread import DBF
+        dbf = DBF(str(seqco_path), encoding='cp1252', char_decode_errors='ignore')
+        for record in dbf:
+            code = ''
+            name = ''
+            subdir = ''
+            for k, v in record.items():
+                kl = k.lower()
+                val = v.strip() if isinstance(v, str) else (v or '')
+                if kl == 'co_code':
+                    code = str(val).strip()
+                elif kl == 'co_name':
+                    name = str(val).strip()
+                elif kl == 'co_subdir':
+                    subdir = str(val).strip()
+
+            if code and subdir:
+                # Resolve subdir to actual path
+                norm = subdir.replace("\\", "/").strip("/")
+                # Try as relative to base
+                candidate = base / norm
+                if not candidate.exists():
+                    # Try extracting relative portion after base path
+                    base_str = str(base).replace("\\", "/").lower()
+                    norm_lower = norm.lower()
+                    if norm_lower.startswith(base_str.lstrip("/")):
+                        relative = norm[len(base_str):].strip("/")
+                        candidate = base / relative
+                    else:
+                        # Last resort: look for last path component
+                        parts = norm.split("/")
+                        candidate = base / parts[-1] if parts else base
+
+                _company_paths[code] = str(candidate)
+                logger.info(f"Company {code} ({name}): {candidate}")
+
+        if not _company_paths:
+            _company_paths["_default"] = str(base)
+            logger.info(f"seqco.dbf empty — single company mode: {base}")
+
+    except Exception as e:
+        logger.warning(f"Could not read seqco.dbf: {e} — single company mode")
+        _company_paths["_default"] = str(base)
+
+
+def _resolve_data_path(company: Optional[str] = None) -> str:
+    """Resolve the data path for a company code.
+
+    Args:
+        company: Company code letter (e.g. 'I', 'Z'). None = default/legacy.
+
+    Returns:
+        Full path to the company's data directory.
+
+    Raises:
+        HTTPException if company not found.
+    """
+    if not _company_paths:
+        # Legacy mode — use OPERA3_DATA_PATH directly
+        if OPERA3_DATA_PATH and os.path.isdir(OPERA3_DATA_PATH):
+            return OPERA3_DATA_PATH
+        raise HTTPException(status_code=503, detail="Opera 3 data path not configured")
+
+    if company:
+        company = company.strip().upper()
+        if company in _company_paths:
+            return _company_paths[company]
+        raise HTTPException(status_code=404, detail=f"Company '{company}' not found. Available: {list(_company_paths.keys())}")
+
+    # No company specified — use default or first
+    if "_default" in _company_paths:
+        return _company_paths["_default"]
+    # Return first company as default
+    return next(iter(_company_paths.values()))
 
 # WAL database lives alongside the agent (NOT in Opera data)
 WAL_DB_PATH = os.environ.get(
@@ -447,26 +548,31 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events with WAL initialisation and crash recovery."""
     global wal, safety
 
-    logger.info(f"Opera 3 Write Agent v{AGENT_VERSION} starting")
-    logger.info(f"Data path: {OPERA3_DATA_PATH}")
+    logger.info(f"Opera 3 Agent v{AGENT_VERSION} starting")
+    logger.info(f"Base path: {OPERA3_BASE_PATH or OPERA3_DATA_PATH}")
     logger.info(f"WAL path: {WAL_DB_PATH}")
     logger.info(f"Platform: {platform.system()} {platform.machine()}")
+
+    # Discover company datasets
+    _discover_companies()
+    logger.info(f"Companies discovered: {list(_company_paths.keys())}")
 
     # Initialise Write-Ahead Log
     wal = WriteAheadLog(WAL_DB_PATH)
     logger.info("WAL initialised")
 
-    # Initialise safety layer
-    if OPERA3_DATA_PATH and os.path.isdir(OPERA3_DATA_PATH):
-        safety = TransactionSafety(OPERA3_DATA_PATH)
+    # Initialise safety layer with first available data path
+    first_path = next(iter(_company_paths.values()), OPERA3_DATA_PATH)
+    if first_path and os.path.isdir(first_path):
+        safety = TransactionSafety(first_path)
         logger.info("Transaction safety layer initialised")
 
         # Crash recovery — check for incomplete operations
         _run_crash_recovery(wal, safety)
     else:
         logger.warning(
-            "Data path not configured or missing — "
-            "safety layer disabled until path is set"
+            "No valid data path found — "
+            "safety layer disabled until path is configured"
         )
 
     # Periodic WAL cleanup (remove old completed entries)
@@ -961,6 +1067,7 @@ async def wal_unblock():
 class ReadRequest(BaseModel):
     """Generic table read request."""
     table: str = Field(..., description="Table name without extension (e.g. 'pname', 'ptran')")
+    company: Optional[str] = Field(None, description="Company code (e.g. 'I', 'Z'). None = default.")
     fields: Optional[List[str]] = Field(None, description="Field names to return. None = all fields.")
     filter: Optional[Dict[str, Any]] = Field(None, description="Field=value filter pairs (exact match, AND logic)")
     filter_expr: Optional[str] = Field(None, description="Python expression filter (e.g. 'pt_trbal != 0'). Fields referenced by name.")
@@ -982,15 +1089,14 @@ async def read_table(req: ReadRequest):
 
     All reads are shared (no locking) — safe for concurrent access.
     """
-    if not OPERA3_DATA_PATH or not os.path.isdir(OPERA3_DATA_PATH):
-        raise HTTPException(status_code=503, detail="Opera 3 data path not configured")
+    data_dir = _resolve_data_path(req.company)
 
     table_name = req.table.strip().lower()
     if not table_name.isalnum():
         raise HTTPException(status_code=400, detail="Invalid table name")
 
     # Find the DBF file (case-insensitive)
-    data_path = Path(OPERA3_DATA_PATH)
+    data_path = Path(data_dir)
     dbf_path = data_path / f"{table_name}.dbf"
     if not dbf_path.exists():
         dbf_path = data_path / f"{table_name.upper()}.DBF"
@@ -1097,11 +1203,9 @@ async def read_table(req: ReadRequest):
 @app.post("/read/count", dependencies=[Depends(verify_agent_key)])
 async def count_table(req: ReadRequest):
     """Count rows matching filter without returning data."""
-    if not OPERA3_DATA_PATH or not os.path.isdir(OPERA3_DATA_PATH):
-        raise HTTPException(status_code=503, detail="Opera 3 data path not configured")
-
+    data_dir = _resolve_data_path(req.company)
     table_name = req.table.strip().lower()
-    data_path = Path(OPERA3_DATA_PATH)
+    data_path = Path(data_dir)
     dbf_path = data_path / f"{table_name}.dbf"
     if not dbf_path.exists():
         dbf_path = data_path / f"{table_name.upper()}.DBF"
@@ -1136,13 +1240,25 @@ async def count_table(req: ReadRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/tables", dependencies=[Depends(verify_agent_key)])
-async def list_tables():
-    """List all available DBF tables."""
-    if not OPERA3_DATA_PATH or not os.path.isdir(OPERA3_DATA_PATH):
-        raise HTTPException(status_code=503, detail="Opera 3 data path not configured")
+@app.get("/companies", dependencies=[Depends(verify_agent_key)])
+async def list_companies():
+    """List all discovered company datasets."""
+    companies = []
+    for code, path in _company_paths.items():
+        exists = os.path.isdir(path)
+        companies.append({
+            "code": code,
+            "path": path,
+            "accessible": exists,
+        })
+    return {"success": True, "companies": companies, "count": len(companies)}
 
-    data_path = Path(OPERA3_DATA_PATH)
+
+@app.get("/tables", dependencies=[Depends(verify_agent_key)])
+async def list_tables(company: Optional[str] = None):
+    """List all available DBF tables for a company."""
+    data_dir = _resolve_data_path(company)
+    data_path = Path(data_dir)
     tables = []
     for f in sorted(data_path.iterdir()):
         if f.suffix.lower() == '.dbf' and not f.name.startswith('.'):
