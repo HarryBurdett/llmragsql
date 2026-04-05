@@ -2788,14 +2788,84 @@ def _build_payment_table(supplier_code: str, db, sql_connector) -> str:
 
 
 def _build_payment_schedule(db, sql_connector, supplier_code: str) -> str:
-    """Build HTML snippet for upcoming payment schedule from pt_dueday."""
+    """Build HTML snippet listing invoices included in the next payment run."""
     next_run = db.get_config('next_payment_run_date', '')
-    if not next_run:
+    if not next_run or not sql_connector:
         return ''
-    return (
-        f'<p style="margin-top:12px;">Our next scheduled payment run is '
-        f'<b>{next_run}</b>. Invoices due before this date will be included.</p>'
-    )
+
+    try:
+        # Get outstanding invoices with due dates on or before the next payment run
+        df = sql_connector.execute_query(f"""
+            SELECT RTRIM(pt_trref) as reference, pt_dueday, pt_trbal
+            FROM ptran WITH (NOLOCK)
+            WHERE pt_account = '{supplier_code}'
+              AND pt_trtype = 'I'
+              AND pt_trbal > 0
+              AND pt_dueday IS NOT NULL
+              AND pt_dueday <= '{next_run}'
+            ORDER BY pt_dueday
+        """)
+        if df is None or df.empty:
+            # No invoices due — check if there are any outstanding at all
+            df_any = sql_connector.execute_query(f"""
+                SELECT RTRIM(pt_trref) as reference, pt_dueday, pt_trbal
+                FROM ptran WITH (NOLOCK)
+                WHERE pt_account = '{supplier_code}'
+                  AND pt_trtype = 'I'
+                  AND pt_trbal > 0
+                ORDER BY pt_dueday
+            """)
+            if df_any is not None and not df_any.empty:
+                return (
+                    f'<p style="margin-top:12px;"><b>Payment schedule:</b> Our next payment run is '
+                    f'<b>{next_run}</b>. No invoices are currently due before this date.</p>'
+                )
+            return ''
+
+        # Build table of invoices included in next payment run
+        total = 0.0
+        rows_html = ''
+        for _, row in df.iterrows():
+            ref = str(row.get('reference', '')).strip()
+            due = str(row.get('pt_dueday', ''))[:10]
+            bal = float(row.get('pt_trbal', 0))
+            total += bal
+            # Format due date to DD/MM/YYYY
+            due_parts = due.split('-')
+            if len(due_parts) == 3 and len(due_parts[0]) == 4:
+                due = f"{due_parts[2]}/{due_parts[1]}/{due_parts[0]}"
+            rows_html += (
+                f'<tr style="border-bottom:1px solid #eee;">'
+                f'<td style="padding:4px 10px;">{ref}</td>'
+                f'<td style="padding:4px 10px;">{due}</td>'
+                f'<td style="padding:4px 10px;text-align:right;">£{bal:,.2f}</td>'
+                f'</tr>'
+            )
+
+        # Format next_run date
+        run_parts = next_run.split('-')
+        if len(run_parts) == 3 and len(run_parts[0]) == 4:
+            next_run_fmt = f"{run_parts[2]}/{run_parts[1]}/{run_parts[0]}"
+        else:
+            next_run_fmt = next_run
+
+        return (
+            f'<p style="margin-top:12px;"><b>Payment schedule:</b> The following invoices '
+            f'are included in our next payment run on <b>{next_run_fmt}</b>:</p>'
+            f'<table style="border-collapse:collapse;width:100%;font-size:13px;margin:8px 0;">'
+            f'<tr style="background:#2c3e50;color:white;">'
+            f'<th style="padding:6px 10px;text-align:left;">Invoice</th>'
+            f'<th style="padding:6px 10px;text-align:left;">Due Date</th>'
+            f'<th style="padding:6px 10px;text-align:right;">Amount</th></tr>'
+            f'{rows_html}'
+            f'<tr style="border-top:2px solid #333;">'
+            f'<td style="padding:6px 10px;font-weight:bold;" colspan="2">Total</td>'
+            f'<td style="padding:6px 10px;text-align:right;font-weight:bold;">£{total:,.2f}</td></tr>'
+            f'</table>'
+        )
+    except Exception as e:
+        logger.warning(f"Could not build payment schedule for {supplier_code}: {e}")
+        return ''
 
 
 def _generate_subject(db, supplier_name: str, statement_date: Optional[str],
