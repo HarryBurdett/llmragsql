@@ -1062,6 +1062,213 @@ async def cancel_snapshot():
     return {"success": True, "message": "Snapshot cancelled"}
 
 
+# ============================================================================
+# Field Analysis — Identifies mandatory/optional/unused fields per table
+# ============================================================================
+
+def _is_field_populated(value) -> bool:
+    """Return True if the value counts as populated (not null, not empty, not zero)."""
+    if value is None:
+        return False
+    if isinstance(value, str) and value.strip() == '':
+        return False
+    if isinstance(value, (int, float)) and value == 0:
+        return False
+    return True
+
+
+def _load_library_entries(module: str = None, transaction_type: str = None) -> List[Dict]:
+    """Load all library entries, optionally filtered by module and/or transaction_type."""
+    lib_path = _get_library_path()
+    entries = []
+    if not os.path.exists(lib_path):
+        return entries
+    for filename in sorted(os.listdir(lib_path)):
+        if not filename.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(lib_path, filename)) as f:
+                entry = json.load(f)
+            if module and entry.get('module', '') != module:
+                continue
+            if transaction_type and entry.get('name', '').lower() != transaction_type.lower():
+                continue
+            entries.append(entry)
+        except Exception as e:
+            logger.warning(f"Could not load library entry {filename}: {e}")
+    return entries
+
+
+def _analyse_fields_for_table(table_name: str, entries: List[Dict]) -> Dict[str, Any]:
+    """
+    For a given table, collect all rows that were added across library entries
+    and analyse field population rates.
+
+    Returns a dict with 'entries_analysed', 'total_rows', and 'fields' list.
+    """
+    table_lower = table_name.lower()
+
+    # Gather all added rows for this table across all entries
+    all_rows: List[Dict] = []
+    entries_with_table = 0
+
+    for entry in entries:
+        found_in_entry = False
+        for change in entry.get('changes', []):
+            if change.get('table', '').lower() == table_lower:
+                added = change.get('added_rows', [])
+                if added:
+                    all_rows.extend(added)
+                    found_in_entry = True
+        if found_in_entry:
+            entries_with_table += 1
+
+    if not all_rows:
+        return {
+            'table': table_name,
+            'entries_analysed': entries_with_table,
+            'total_rows': 0,
+            'fields': [],
+        }
+
+    # Collect all field names across all rows
+    all_field_names: List[str] = []
+    seen_fields = set()
+    for row in all_rows:
+        for field in row.keys():
+            if field not in seen_fields:
+                seen_fields.add(field)
+                all_field_names.append(field)
+
+    total_rows = len(all_rows)
+
+    fields_result = []
+    for field in all_field_names:
+        populated_count = 0
+        sample_values: List = []
+        seen_sample_values = set()
+        unique_values = set()
+
+        for row in all_rows:
+            if field not in row:
+                continue
+            val = row[field]
+            if _is_field_populated(val):
+                populated_count += 1
+            # Collect sample values (up to 5 distinct)
+            val_key = str(val) if val is not None else '__none__'
+            unique_values.add(val_key)
+            if len(sample_values) < 5 and val_key not in seen_sample_values:
+                seen_sample_values.add(val_key)
+                sample_values.append(val)
+
+        # Classify
+        if populated_count == total_rows:
+            if len(unique_values) == 1:
+                classification = 'constant'
+            else:
+                classification = 'always'
+        elif populated_count == 0:
+            classification = 'never'
+        else:
+            classification = 'sometimes'
+
+        fields_result.append({
+            'name': field,
+            'populated_count': populated_count,
+            'total_count': total_rows,
+            'classification': classification,
+            'sample_values': sample_values,
+        })
+
+    # Sort: always/constant first, then sometimes, then never; within group alphabetical
+    order = {'always': 0, 'constant': 1, 'sometimes': 2, 'never': 3}
+    fields_result.sort(key=lambda f: (order.get(f['classification'], 9), f['name']))
+
+    return {
+        'table': table_name,
+        'entries_analysed': entries_with_table,
+        'total_rows': total_rows,
+        'fields': fields_result,
+    }
+
+
+@router.get("/api/transaction-snapshot/field-analysis")
+async def analyse_fields(
+    module: str = Query(None, description="Filter by module (e.g. cashbook, sales_ledger)"),
+    transaction_type: str = Query(None, description="Filter by transaction type name"),
+):
+    """
+    Analyse field population rates across all library entries (or a filtered subset).
+
+    For each table that appears in the library, identifies which fields are:
+    - always: non-null/non-empty/non-zero in every row — effectively mandatory
+    - constant: always populated AND always the same value — likely a default
+    - sometimes: populated in some rows but not all — optional
+    - never: always null/empty/zero — likely unused
+    """
+    entries = _load_library_entries(module=module, transaction_type=transaction_type)
+
+    if not entries:
+        return {
+            'success': True,
+            'entries_analysed': 0,
+            'filters': {'module': module, 'transaction_type': transaction_type},
+            'tables': [],
+            'message': 'No library entries found matching the filters.',
+        }
+
+    # Collect all table names that appear across entries
+    table_names: List[str] = []
+    seen_tables = set()
+    for entry in entries:
+        for change in entry.get('changes', []):
+            tname = change.get('table', '')
+            if tname and tname.lower() not in seen_tables:
+                seen_tables.add(tname.lower())
+                table_names.append(tname)
+
+    # Analyse each table
+    tables_analysis = []
+    for table_name in sorted(table_names):
+        analysis = _analyse_fields_for_table(table_name, entries)
+        if analysis['total_rows'] > 0:
+            tables_analysis.append(analysis)
+
+    return {
+        'success': True,
+        'entries_analysed': len(entries),
+        'filters': {'module': module, 'transaction_type': transaction_type},
+        'tables': tables_analysis,
+    }
+
+
+@router.get("/api/transaction-snapshot/field-analysis/{table_name}")
+async def analyse_table_fields(
+    table_name: str,
+    module: str = Query(None, description="Filter by module"),
+    transaction_type: str = Query(None, description="Filter by transaction type name"),
+):
+    """
+    Detailed field analysis for a single table across all library entries where
+    that table was modified (rows added).
+
+    Returns field-by-field population rates and sample values.
+    """
+    entries = _load_library_entries(module=module, transaction_type=transaction_type)
+
+    analysis = _analyse_fields_for_table(table_name, entries)
+
+    return {
+        'success': True,
+        'table': analysis['table'],
+        'entries_analysed': analysis['entries_analysed'],
+        'total_rows': analysis['total_rows'],
+        'filters': {'module': module, 'transaction_type': transaction_type},
+        'fields': analysis['fields'],
+    }
+
+
 @router.post("/api/transaction-snapshot/export-to-knowledge")
 async def export_to_knowledge(entry_id: str = Query(...)):
     """
