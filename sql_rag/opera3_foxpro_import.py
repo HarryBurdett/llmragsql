@@ -932,27 +932,31 @@ class Opera3FoxProImport:
             logger.error(f"Error getting customer control account: {e}")
             return default_control
 
-    def _update_supplier_balance(self, supplier_account: str, amount_change: float):
-        """Update supplier balance in pname"""
+    def _update_supplier_balance(self, supplier_account: str, amount_change: float, increment_nextpay: bool = False):
+        """Update supplier balance in pname. If increment_nextpay=True, also increments pn_nextpay."""
         try:
             table = self._open_table('pname')
             for record in table:
                 if record.pn_account.strip().upper() == supplier_account.upper():
                     with record:
                         record.pn_currbal = float(record.pn_currbal or 0) + amount_change
+                        if increment_nextpay:
+                            record.pn_nextpay = int(record.pn_nextpay or 0) + 1
                     break
         except Exception as e:
             logger.error(f"Error updating supplier balance: {e}")
             raise  # Fail the transaction - supplier balance must be updated correctly
 
-    def _update_customer_balance(self, customer_account: str, amount_change: float):
-        """Update customer balance in sname"""
+    def _update_customer_balance(self, customer_account: str, amount_change: float, increment_nextpay: bool = False):
+        """Update customer balance in sname. If increment_nextpay=True, also increments sn_nextpay."""
         try:
             table = self._open_table('sname')
             for record in table:
                 if record.sn_account.strip().upper() == customer_account.upper():
                     with record:
                         record.sn_currbal = float(record.sn_currbal or 0) + amount_change
+                        if increment_nextpay:
+                            record.sn_nextpay = int(record.sn_nextpay or 0) + 1
                     break
         except Exception as e:
             logger.error(f"Error updating customer balance: {e}")
@@ -1235,6 +1239,8 @@ class Opera3FoxProImport:
             # Build trnref like Opera does
             ntran_comment = f"{reference[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
+            # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_type}" for ledger transactions
+            ax_comment_ledger = f"{supplier_name[:30]:<30}{payment_type}"
 
             # Generate unique IDs
             unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
@@ -1439,7 +1445,7 @@ class Opera3FoxProImport:
                             'ax_date': post_date,
                             'ax_value': -amount_pounds,
                             'ax_tref': reference[:20],
-                            'ax_comment': ntran_comment[:50],
+                            'ax_comment': ax_comment_ledger[:50],
                             'ax_done': done_flag,
                             'ax_fcurr': '   ',
                             'ax_fvalue': 0,
@@ -1462,7 +1468,7 @@ class Opera3FoxProImport:
                             'ax_date': post_date,
                             'ax_value': amount_pounds,
                             'ax_tref': reference[:20],
-                            'ax_comment': ntran_comment[:50],
+                            'ax_comment': ax_comment_ledger[:50],
                             'ax_done': done_flag,
                             'ax_fcurr': '   ',
                             'ax_fvalue': 0,
@@ -1517,8 +1523,8 @@ class Opera3FoxProImport:
 
                 # NOTE: No palloc created at posting time -- allocation happens separately
 
-                # 7. Update supplier balance
-                self._update_supplier_balance(supplier_account, -amount_pounds)
+                # 7. Update supplier balance and increment pn_nextpay
+                self._update_supplier_balance(supplier_account, -amount_pounds, increment_nextpay=True)
 
                 # Build list of tables updated based on what was actually done
                 tables_updated = ["aentry", "atran", "ptran", "pname"]
@@ -1694,6 +1700,8 @@ class Opera3FoxProImport:
             # Build trnref like Opera does
             ntran_comment = f"{reference[:50]:<50}"
             ntran_trnref = f"{customer_name[:30]:<30}{receipt_type:<10}(RT)     "
+            # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_method}" for ledger transactions
+            ax_comment_ledger = f"{customer_name[:30]:<30}{receipt_type}"
 
             # Generate unique IDs
             unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
@@ -1895,7 +1903,7 @@ class Opera3FoxProImport:
                             'ax_date': post_date,
                             'ax_value': amount_pounds,
                             'ax_tref': reference[:20],
-                            'ax_comment': ntran_comment[:50],
+                            'ax_comment': ax_comment_ledger[:50],
                             'ax_done': done_flag,
                             'ax_fcurr': '   ',
                             'ax_fvalue': 0,
@@ -1918,7 +1926,7 @@ class Opera3FoxProImport:
                             'ax_date': post_date,
                             'ax_value': -amount_pounds,
                             'ax_tref': reference[:20],
-                            'ax_comment': ntran_comment[:50],
+                            'ax_comment': ax_comment_ledger[:50],
                             'ax_done': done_flag,
                             'ax_fcurr': '   ',
                             'ax_fvalue': 0,
@@ -1973,8 +1981,8 @@ class Opera3FoxProImport:
 
                 # NOTE: No salloc created at posting time -- allocation happens separately
 
-                # 7. Update customer balance
-                self._update_customer_balance(customer_account, -amount_pounds)
+                # 7. Update customer balance and increment sn_nextpay
+                self._update_customer_balance(customer_account, -amount_pounds, increment_nextpay=True)
 
                 # Build list of tables updated based on what was actually done
                 tables_updated = ["aentry", "atran", "stran", "sname"]
@@ -2103,6 +2111,8 @@ class Opera3FoxProImport:
 
             ntran_comment = f"{comment or reference[:50]:<50}"
             ntran_trnref = f"{customer_name[:30]:<30}{payment_method:<10}(RF)     "
+            # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_method}" for ledger transactions
+            ax_comment_ledger = f"{customer_name[:30]:<30}Refund"
 
             unique_ids = OperaUniqueIdGenerator.generate_multiple(3)
             atran_unique = unique_ids[0]
@@ -3239,6 +3249,17 @@ class Opera3FoxProImport:
                 errors=[type_validation['error']]
             )
 
+        # Look up cbtype description for ax_comment (e.g., "Cheque", "BACS", "GoCardless")
+        cbtype_desc = 'Cheque'  # Default
+        try:
+            atype_list = self.get_atype_list()
+            for at in atype_list:
+                if at['code'] == cbtype:
+                    cbtype_desc = at['description'] or 'Cheque'
+                    break
+        except Exception:
+            pass  # Use default
+
         try:
             # Period validation and posting decision
             from sql_rag.opera3_config import Opera3Config, get_period_posting_decision
@@ -3544,6 +3565,9 @@ class Opera3FoxProImport:
                             done_flag = posting_decision.transfer_file_done_flag
                             jrnl_num = journal_number - 1 if posting_decision.post_to_nominal else 0
 
+                            # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_type}" for ledger transactions
+                            gc_ax_comment = f"{customer_name[:30]:<30}{cbtype_desc}"
+
                             # Bank account (debit)
                             anoml_table.append({
                                 'ax_nacnt': bank_account[:10],
@@ -3552,7 +3576,7 @@ class Opera3FoxProImport:
                                 'ax_date': post_date,
                                 'ax_value': amount_pounds,
                                 'ax_tref': reference[:20],
-                                'ax_comment': description[:50],
+                                'ax_comment': gc_ax_comment[:50],
                                 'ax_done': done_flag,
                                 'ax_fcurr': '   ',
                                 'ax_fvalue': 0,
@@ -3575,7 +3599,7 @@ class Opera3FoxProImport:
                                 'ax_date': post_date,
                                 'ax_value': -amount_pounds,
                                 'ax_tref': reference[:20],
-                                'ax_comment': description[:50],
+                                'ax_comment': gc_ax_comment[:50],
                                 'ax_done': done_flag,
                                 'ax_fcurr': '   ',
                                 'ax_fvalue': 0,
@@ -3592,8 +3616,8 @@ class Opera3FoxProImport:
                         except FileNotFoundError:
                             logger.warning("anoml table not found - skipping transfer file")
 
-                    # Update customer balance
-                    self._update_customer_balance(customer_account, -amount_pounds)
+                    # Update customer balance and increment sn_nextpay
+                    self._update_customer_balance(customer_account, -amount_pounds, increment_nextpay=True)
 
                 # Post GoCardless fees if provided
                 if gocardless_fees > 0 and fees_nominal_account:
@@ -6439,7 +6463,7 @@ class Opera3FoxProImport:
 
                         # NOTE: No salloc created at posting time -- allocation happens separately
 
-                        self._update_customer_balance(acct, -gross_pounds)
+                        self._update_customer_balance(acct, -gross_pounds, increment_nextpay=True)
                         tables_updated.update(['stran', 'sname'])
 
                     elif ae_type == 5:
@@ -6481,7 +6505,7 @@ class Opera3FoxProImport:
 
                         # NOTE: No palloc created at posting time -- allocation happens separately
 
-                        self._update_supplier_balance(acct, -gross_pounds)
+                        self._update_supplier_balance(acct, -gross_pounds, increment_nextpay=True)
                         tables_updated.update(['ptran', 'pname'])
 
                     elif ae_type == 6:

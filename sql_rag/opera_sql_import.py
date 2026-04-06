@@ -2328,6 +2328,8 @@ class OperaSQLImport:
                 # Use comment (full description) for nt_cmnt, fall back to reference
                 ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
+                # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_method}" for ledger transactions
+                ax_comment_ledger = f"{customer_name[:30]:<30}{payment_method}".replace("'", "''")
 
                 if posting_decision.post_to_nominal:
                     # Look up nominal account types before ntran INSERTs
@@ -2412,7 +2414,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start}, '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ax_comment_ledger[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -2428,7 +2430,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start + 1}, '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ax_comment_ledger[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -2473,10 +2475,11 @@ class OperaSQLImport:
                 # during explicit allocation (auto_allocate_receipt or manual in Opera).
                 # See docs/opera_knowledge_base.md "Allocation Pattern" section.
 
-                # 6. UPDATE sname.sn_currbal with row-level lock (reduce customer balance - they paid us)
+                # 6. UPDATE sname.sn_currbal and sn_nextpay with row-level lock (reduce customer balance - they paid us)
                 sname_update_sql = f"""
                     UPDATE sname WITH (ROWLOCK)
                     SET sn_currbal = sn_currbal - {amount_pounds},
+                        sn_nextpay = sn_nextpay + 1,
                         datemodified = '{now_str}'
                     WHERE RTRIM(sn_account) = '{customer_account}'
                 """
@@ -2838,6 +2841,8 @@ class OperaSQLImport:
                 # 3. Nominal postings - Bank CR (money out), Debtors DR (increase asset - owed back)
                 ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
+                # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_method}" for ledger transactions
+                ax_comment_ledger = f"{customer_name[:30]:<30}Refund".replace("'", "''")
 
                 if posting_decision.post_to_nominal:
                     # Look up nominal account types before ntran INSERTs
@@ -2922,7 +2927,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start}, '{bank_account}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ax_comment_ledger[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -2938,7 +2943,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start + 1}, '{sales_ledger_control}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ax_comment_ledger[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -3218,6 +3223,8 @@ class OperaSQLImport:
             # Use comment (full description) for nt_cmnt, fall back to reference
             ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
+            # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_type}" for ledger transactions
+            ax_comment_ledger = f"{supplier_name[:30]:<30}{payment_type}".replace("'", "''")
 
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
@@ -3392,7 +3399,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start}, '{bank_account}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ax_comment_ledger[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -3408,7 +3415,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start + 1}, '{creditors_control}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ax_comment_ledger[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -3443,10 +3450,11 @@ class OperaSQLImport:
 
                 # NOTE: No palloc created at posting time — allocation happens separately.
 
-                # 6. UPDATE pname.pn_currbal with ROWLOCK (reduce supplier balance - we paid them)
+                # 6. UPDATE pname.pn_currbal and pn_nextpay with ROWLOCK (reduce supplier balance - we paid them)
                 pname_update_sql = f"""
                     UPDATE pname WITH (ROWLOCK)
                     SET pn_currbal = pn_currbal - {amount_pounds},
+                        pn_nextpay = pn_nextpay + 1,
                         datemodified = '{now_str}'
                     WHERE RTRIM(pn_account) = '{supplier_account}'
                 """
@@ -4023,6 +4031,8 @@ class OperaSQLImport:
                     anoml_id_start = self._get_next_id(conn, 'anoml', anoml_count)
 
                     # anoml record 1 - Bank account (GROSS)
+                    # For ax_source='A' (nominal entries), set FC fields: fvalue=value*100, fcrate=1.0, fcdec=2.0
+                    anoml_bank_fvalue = int(round(bank_ntran_value * 100))
                     anoml_bank_sql = f"""
                         INSERT INTO anoml (
                             id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -4031,7 +4041,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start}, '{bank_account}', '    ', 'A', '{post_date}', {bank_ntran_value}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', {anoml_bank_fvalue}, 1.0, 0, 2.0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -4039,6 +4049,7 @@ class OperaSQLImport:
                     conn.execute(text(anoml_bank_sql))
 
                     # anoml record 2 - Nominal account (NET when VAT, GROSS when no VAT)
+                    anoml_nominal_fvalue = int(round(nominal_ntran_value * 100))
                     anoml_nominal_sql = f"""
                         INSERT INTO anoml (
                             id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -4047,7 +4058,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start + 1}, '{nominal_account}', '    ', 'A', '{post_date}', {nominal_ntran_value}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', {anoml_nominal_fvalue}, 1.0, 0, 2.0,
                             'I', '{atran_unique}', '{project_padded}', '{department_padded}', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -4056,6 +4067,7 @@ class OperaSQLImport:
 
                     # anoml record 3 - VAT account (only when VAT applies)
                     if has_vat:
+                        anoml_vat_fvalue = int(round(vat_ntran_value * 100))
                         anoml_vat_sql = f"""
                             INSERT INTO anoml (
                                 id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -4064,7 +4076,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 {anoml_id_start + 2}, '{vat_nominal_account}', '    ', 'A', '{post_date}', {vat_ntran_value}, '{reference[:20]}',
-                                '{ntran_comment[:36]} VAT', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{ntran_comment[:36]} VAT', '{done_flag}', '   ', {anoml_vat_fvalue}, 1.0, 0, 2.0,
                                 'I', '{atran_vat_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -4833,6 +4845,8 @@ class OperaSQLImport:
             # Use comment (full description) for nt_cmnt, fall back to reference
             ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
+            # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_type}" for ledger transactions
+            ax_comment_ledger = f"{supplier_name[:30]:<30}Refund".replace("'", "''")
 
             # ae_complet should only be 1 if we're posting to nominal ledger
             ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
@@ -4995,7 +5009,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start}, '{bank_account}', '    ', 'P', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ax_comment_ledger[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -5011,7 +5025,7 @@ class OperaSQLImport:
                             datecreated, datemodified, state
                         ) VALUES (
                             {anoml_id_start + 1}, '{creditors_control}', '    ', 'P', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ax_comment_ledger[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                             'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -6104,6 +6118,12 @@ class OperaSQLImport:
                 errors=[type_validation['error']]
             )
 
+        # Look up cbtype description for ax_comment (e.g., "Cheque", "BACS", "GoCardless")
+        cbtype_desc_result = self.sql.execute_query(f"""
+            SELECT ay_desc FROM atype WITH (NOLOCK) WHERE RTRIM(ay_cbtype) = '{cbtype}'
+        """)
+        cbtype_desc = cbtype_desc_result.iloc[0]['ay_desc'].strip() if cbtype_desc_result is not None and len(cbtype_desc_result) > 0 else 'Cheque'
+
         # =====================
         # VALIDATE CUSTOMERS
         # =====================
@@ -6395,6 +6415,8 @@ class OperaSQLImport:
 
                         # anoml Bank account - ax_done flag from posting decision
                         done_flag = posting_decision.transfer_file_done_flag
+                        # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_type}" for ledger transactions
+                        gc_ax_comment = f"{customer_name[:30]:<30}{cbtype_desc}".replace("'", "''")
                         anoml_bank_sql = f"""
                             INSERT INTO anoml (
                                 id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -6403,7 +6425,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 {anoml_id_start}, '{bank_account}', '    ', 'S', '{post_date}', {amount_pounds}, '{reference[:20]}',
-                                '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{gc_ax_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -6419,17 +6441,18 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 {anoml_id_start + 1}, '{sales_ledger_control}', '    ', 'S', '{post_date}', {-amount_pounds}, '{reference[:20]}',
-                                '{description[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{gc_ax_comment[:50]}', '{done_flag}', '   ', 0, 0, 0, 0,
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
                         """
                         conn.execute(text(anoml_control_sql))
 
-                    # Update customer balance - ALWAYS updated
+                    # Update customer balance and payment counter - ALWAYS updated
                     sname_update_sql = f"""
                         UPDATE sname WITH (ROWLOCK)
                         SET sn_currbal = sn_currbal - {amount_pounds},
+                            sn_nextpay = sn_nextpay + 1,
                             datemodified = '{now_str}'
                         WHERE RTRIM(sn_account) = '{customer_account}'
                     """
@@ -6693,6 +6716,8 @@ class OperaSQLImport:
                         fees_done_flag = posting_decision.transfer_file_done_flag
 
                         anoml_id_start = self._get_next_id(conn, 'anoml', 3)
+                        # For ax_source='A' (nominal entries), set FC fields: fvalue=value*100, fcrate=1.0, fcdec=2.0
+                        fees_bank_fvalue = int(round(-gross_fees * 100))
                         # anoml Bank account (credit - fees reduce bank balance)
                         anoml_fees_bank_sql = f"""
                             INSERT INTO anoml (
@@ -6702,7 +6727,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 {anoml_id_start}, '{bank_account}', '    ', 'A', '{post_date}', {-gross_fees}, '{reference[:20]}',
-                                '{fees_comment[:40]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
+                                '{fees_comment[:40]}', '{fees_done_flag}', '   ', {fees_bank_fvalue}, 1.0, 0, 2.0,
                                 'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -6710,6 +6735,7 @@ class OperaSQLImport:
                         conn.execute(text(anoml_fees_bank_sql))
 
                         # anoml Fees expense account (debit - net amount)
+                        fees_expense_fvalue = int(round(net_fees * 100))
                         anoml_fees_expense_sql = f"""
                             INSERT INTO anoml (
                                 id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -6718,7 +6744,7 @@ class OperaSQLImport:
                                 datecreated, datemodified, state
                             ) VALUES (
                                 {anoml_id_start + 1}, '{fees_nominal_account}', '    ', 'A', '{post_date}', {net_fees}, '{reference[:20]}',
-                                '{fees_comment[:40]}', '{fees_done_flag}', '   ', 0, 0, 0, 0,
+                                '{fees_comment[:40]}', '{fees_done_flag}', '   ', {fees_expense_fvalue}, 1.0, 0, 2.0,
                                 'I', '{fees_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -6727,6 +6753,7 @@ class OperaSQLImport:
 
                         # anoml VAT account (debit - VAT amount) if VAT > 0
                         if vat_on_fees > 0:
+                            fees_vat_fvalue = int(round(abs(vat_on_fees) * 100))
                             anoml_fees_vat_sql = f"""
                                 INSERT INTO anoml (
                                     id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
@@ -6735,7 +6762,7 @@ class OperaSQLImport:
                                     datecreated, datemodified, state
                                 ) VALUES (
                                     {anoml_id_start + 2}, '{vat_nominal_account}', '    ', 'A', '{post_date}', {abs(vat_on_fees)}, '{reference[:20]}',
-                                    '{fees_comment[:36]} VAT', '{fees_done_flag}', '   ', 0, 0, 0, 0,
+                                    '{fees_comment[:36]} VAT', '{fees_done_flag}', '   ', {fees_vat_fvalue}, 1.0, 0, 2.0,
                                     'I', '{fees_vat_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                     '{now_str}', '{now_str}', 1
                                 )
@@ -6989,7 +7016,7 @@ class OperaSQLImport:
             # Filter by amount to pick the correct receipt when multiple payments from the
             # same customer share the same reference (e.g., GoCardless batch with 3 H012 payments)
             receipt_df = self.sql.execute_query(f"""
-                SELECT st_trref, st_trvalue, st_trbal, st_paid, st_custref, st_unique
+                SELECT id, st_trref, st_trvalue, st_trbal, st_paid, st_custref, st_unique
                 FROM stran WITH (NOLOCK)
                 WHERE st_account = '{customer_account}'
                   AND RTRIM(st_trref) = '{receipt_ref}'
@@ -7007,6 +7034,7 @@ class OperaSQLImport:
             receipt_balance = abs(float(receipt['st_trbal']))
             receipt_custref = receipt['st_custref'].strip() if receipt['st_custref'] else ''
             receipt_unique = receipt['st_unique'].strip() if receipt['st_unique'] else ''
+            receipt_stran_id = int(receipt['id'])  # stran row id — used as al_unique per Opera convention
 
             if receipt_balance <= 0:
                 result["message"] = "Receipt already fully allocated"
@@ -7014,7 +7042,7 @@ class OperaSQLImport:
 
             # Get outstanding invoices for customer
             invoices_df = self.sql.execute_query(f"""
-                SELECT st_trref, st_trvalue, st_trbal, st_custref, st_trdate, st_unique
+                SELECT id, st_trref, st_trvalue, st_trbal, st_custref, st_trdate, st_unique
                 FROM stran WITH (NOLOCK)
                 WHERE st_account = '{customer_account}'
                   AND st_trtype = 'I'
@@ -7063,7 +7091,8 @@ class OperaSQLImport:
                                             'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
                                             'amount': inv_balance,
                                             'full_allocation': True,
-                                            'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                                            'unique': inv['st_unique'].strip() if inv['st_unique'] else '',
+                                            'stran_id': int(inv['id'])
                                         })
                                     else:
                                         skipped_invoices.append(f"{inv_ref} (already paid)")
@@ -7121,7 +7150,8 @@ class OperaSQLImport:
                                     'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
                                     'amount': inv_balance,
                                     'full_allocation': True,
-                                    'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                                    'unique': inv['st_unique'].strip() if inv['st_unique'] else '',
+                                    'stran_id': int(inv['id'])
                                 })
                             break
 
@@ -7159,7 +7189,8 @@ class OperaSQLImport:
                                 'custref': inv['st_custref'].strip() if inv['st_custref'] else '',
                                 'amount': inv_balance,
                                 'full_allocation': True,
-                                'unique': inv['st_unique'].strip() if inv['st_unique'] else ''
+                                'unique': inv['st_unique'].strip() if inv['st_unique'] else '',
+                                'stran_id': int(inv['id'])
                             })
                     allocation_method = "clears_account" if invoice_count >= 2 else "single_invoice_match"
                 else:
@@ -7194,11 +7225,7 @@ class OperaSQLImport:
             with self.sql.engine.begin() as conn:
                 conn.execute(text(get_lock_timeout_sql()))
 
-                # Get next al_unique values
-                max_unique_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(al_unique), 0) as max_unique FROM salloc WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_unique = int(max_unique_result.scalar() or 0) + 1
+                # al_unique uses the stran.id (row ID) per Opera convention — NOT MAX+1
 
                 # Get next al_payflag (sequential, links receipt to invoice(s))
                 max_payflag_result = conn.execute(text("""
@@ -7227,6 +7254,7 @@ class OperaSQLImport:
 
                 # Insert salloc record for receipt (if fully allocated)
                 # al_ref2 indicates allocation method for audit trail
+                # al_unique = stran row id (Opera convention)
                 if receipt_fully_allocated:
                     if allocation_method == "payment_request":
                         alloc_ref2 = "AUTO:GC_REQ"
@@ -7247,11 +7275,10 @@ class OperaSQLImport:
                             '{customer_account}', '{receipt_df.iloc[0]["st_trdate"] if "st_trdate" in receipt_df.columns else alloc_date_str}',
                             '{receipt_ref}', '{alloc_ref2}', 'R', {-receipt_balance},
                             'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
-                            0, '{bank_account}', '    ', 0, {next_unique}, 0,
+                            0, '{bank_account}', '    ', 0, {receipt_stran_id}, 0,
                             '{now_str}', '{now_str}', 1
                         )
                     """))
-                    next_unique += 1
 
                 # Update each invoice and create salloc records
                 for alloc in invoices_to_allocate:
@@ -7259,6 +7286,8 @@ class OperaSQLImport:
                     alloc_amount = alloc['amount']
                     is_full = alloc['full_allocation']
                     inv_custref = alloc['custref']
+
+                    inv_stran_id = alloc.get('stran_id', 0)
 
                     # Get current invoice balance
                     inv_current = conn.execute(text(f"""
@@ -7273,6 +7302,8 @@ class OperaSQLImport:
                         inv_date = inv_current[1]
                         inv_paid_flag = 'P' if new_inv_bal < 0.01 else ' '
                         inv_payday = f"'{alloc_date_str}'" if new_inv_bal < 0.01 else 'NULL'
+                        # st_lastrec: set to invoice date when invoice is fully paid (st_trbal = 0)
+                        st_lastrec_clause = f", st_lastrec = '{inv_date}'" if new_inv_bal < 0.01 else ''
 
                         # Update invoice
                         conn.execute(text(f"""
@@ -7280,7 +7311,7 @@ class OperaSQLImport:
                             SET st_trbal = {new_inv_bal},
                                 st_paid = '{inv_paid_flag}',
                                 st_payday = {inv_payday},
-                                st_payflag = {next_payflag},
+                                st_payflag = {next_payflag}{st_lastrec_clause},
                                 datemodified = '{now_str}'
                             WHERE st_account = '{customer_account}'
                               AND RTRIM(st_trref) = '{inv_ref}'
@@ -7288,6 +7319,7 @@ class OperaSQLImport:
                         """))
 
                         # Insert salloc record for invoice (if fully paid)
+                        # al_unique = stran row id (Opera convention)
                         if new_inv_bal < 0.01:
                             salloc_inv_id = self._get_next_id(conn, 'salloc')
                             conn.execute(text(f"""
@@ -7302,11 +7334,18 @@ class OperaSQLImport:
                                     '{customer_account}', '{inv_date}',
                                     '{inv_ref}', '{inv_custref[:20]}', 'I', {alloc_amount},
                                     'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
-                                    0, '{bank_account}', '    ', 0, {next_unique}, 0,
+                                    0, '{bank_account}', '    ', 0, {inv_stran_id}, 0,
                                     '{now_str}', '{now_str}', 1
                                 )
                             """))
-                            next_unique += 1
+
+                # Update sname.sn_lastrec (last receipt date) on allocation
+                conn.execute(text(f"""
+                    UPDATE sname WITH (ROWLOCK)
+                    SET sn_lastrec = '{alloc_date_str}',
+                        datemodified = '{now_str}'
+                    WHERE RTRIM(sn_account) = '{customer_account}'
+                """))
 
             result["success"] = True
             result["allocated_amount"] = total_to_allocate
@@ -7379,7 +7418,7 @@ class OperaSQLImport:
         try:
             # Get the payment from ptran
             payment_df = self.sql.execute_query(f"""
-                SELECT pt_trref, pt_trvalue, pt_trbal, pt_paid, pt_suppref, pt_unique
+                SELECT id, pt_trref, pt_trvalue, pt_trbal, pt_paid, pt_suppref, pt_unique
                 FROM ptran WITH (NOLOCK)
                 WHERE pt_account = '{supplier_account}'
                   AND RTRIM(pt_trref) = '{payment_ref}'
@@ -7395,6 +7434,7 @@ class OperaSQLImport:
             payment_balance = abs(float(payment['pt_trbal']))
             payment_suppref = payment['pt_suppref'].strip() if payment['pt_suppref'] else ''
             payment_unique = payment['pt_unique'].strip() if payment['pt_unique'] else ''
+            payment_ptran_id = int(payment['id'])  # ptran row id — used as pl_unique per Opera convention
 
             if payment_balance <= 0:
                 result["message"] = "Payment already fully allocated"
@@ -7402,7 +7442,7 @@ class OperaSQLImport:
 
             # Get outstanding invoices for supplier
             invoices_df = self.sql.execute_query(f"""
-                SELECT pt_trref, pt_trvalue, pt_trbal, pt_suppref, pt_trdate, pt_unique
+                SELECT id, pt_trref, pt_trvalue, pt_trbal, pt_suppref, pt_trdate, pt_unique
                 FROM ptran WITH (NOLOCK)
                 WHERE pt_account = '{supplier_account}'
                   AND pt_trtype = 'I'
@@ -7457,7 +7497,8 @@ class OperaSQLImport:
                                         'suppref': inv['pt_suppref'].strip() if inv['pt_suppref'] else '',
                                         'amount': inv_balance,
                                         'full_allocation': True,
-                                        'unique': inv['pt_unique'].strip() if inv['pt_unique'] else ''
+                                        'unique': inv['pt_unique'].strip() if inv['pt_unique'] else '',
+                                        'ptran_id': int(inv['id'])
                                     })
                             break
 
@@ -7495,7 +7536,8 @@ class OperaSQLImport:
                                 'suppref': inv['pt_suppref'].strip() if inv['pt_suppref'] else '',
                                 'amount': inv_balance,
                                 'full_allocation': True,
-                                'unique': inv['pt_unique'].strip() if inv['pt_unique'] else ''
+                                'unique': inv['pt_unique'].strip() if inv['pt_unique'] else '',
+                                'ptran_id': int(inv['id'])
                             })
                     allocation_method = "clears_account" if invoice_count >= 2 else "single_invoice_match"
                 else:
@@ -7523,11 +7565,7 @@ class OperaSQLImport:
             with self.sql.engine.begin() as conn:
                 conn.execute(text(get_lock_timeout_sql()))
 
-                # Get next pl_unique values
-                max_unique_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(pl_unique), 0) as max_unique FROM palloc WITH (UPDLOCK, ROWLOCK)
-                """))
-                next_unique = int(max_unique_result.scalar() or 0) + 1
+                # pl_unique uses the ptran.id (row ID) per Opera convention — NOT MAX+1
 
                 # Get next pl_payflag (sequential, links payment to invoice(s))
                 max_payflag_result = conn.execute(text("""
@@ -7555,6 +7593,7 @@ class OperaSQLImport:
 
                 # Insert palloc record for payment (if fully allocated)
                 # pl_ref2 indicates allocation method for audit trail
+                # pl_unique = ptran row id (Opera convention)
                 if payment_fully_allocated:
                     alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
                     palloc_id = self._get_next_id(conn, 'palloc')
@@ -7570,11 +7609,10 @@ class OperaSQLImport:
                             '{supplier_account}', '{payment_df.iloc[0]["pt_trdate"] if "pt_trdate" in payment_df.columns else alloc_date_str}',
                             '{payment_ref}', '{alloc_ref2}', 'P', {-payment_balance},
                             'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
-                            0, '{bank_account}', '    ', 0, {next_unique}, 0,
+                            0, '{bank_account}', '    ', 0, {payment_ptran_id}, 0,
                             '{now_str}', '{now_str}', 1
                         )
                     """))
-                    next_unique += 1
 
                 # Update each invoice and create palloc records
                 for alloc in invoices_to_allocate:
@@ -7582,6 +7620,7 @@ class OperaSQLImport:
                     alloc_amount = alloc['amount']
                     is_full = alloc['full_allocation']
                     inv_suppref = alloc['suppref']
+                    inv_ptran_id = alloc.get('ptran_id', 0)
 
                     # Get current invoice balance
                     inv_current = conn.execute(text(f"""
@@ -7596,6 +7635,8 @@ class OperaSQLImport:
                         inv_date = inv_current[1]
                         inv_paid_flag = 'P' if new_inv_bal < 0.01 else ' '
                         inv_payday = f"'{alloc_date_str}'" if new_inv_bal < 0.01 else 'NULL'
+                        # pt_lastpay: set to invoice date when allocated (even partially)
+                        pt_lastpay_clause = f", pt_lastpay = '{inv_date}'"
 
                         # Update invoice
                         conn.execute(text(f"""
@@ -7603,7 +7644,7 @@ class OperaSQLImport:
                             SET pt_trbal = {new_inv_bal},
                                 pt_paid = '{inv_paid_flag}',
                                 pt_payday = {inv_payday},
-                                pt_payflag = {next_payflag},
+                                pt_payflag = {next_payflag}{pt_lastpay_clause},
                                 datemodified = '{now_str}'
                             WHERE pt_account = '{supplier_account}'
                               AND RTRIM(pt_trref) = '{inv_ref}'
@@ -7611,6 +7652,7 @@ class OperaSQLImport:
                         """))
 
                         # Insert palloc record for invoice (if fully paid)
+                        # pl_unique = ptran row id (Opera convention)
                         if new_inv_bal < 0.01:
                             palloc_inv_id = self._get_next_id(conn, 'palloc')
                             conn.execute(text(f"""
@@ -7625,11 +7667,14 @@ class OperaSQLImport:
                                     '{supplier_account}', '{inv_date}',
                                     '{inv_ref}', '{inv_suppref[:20]}', 'I', {alloc_amount},
                                     'A', {next_payflag}, '{alloc_date_str}', '   ', 0, 0,
-                                    0, '{bank_account}', '    ', 0, {next_unique}, 0,
+                                    0, '{bank_account}', '    ', 0, {inv_ptran_id}, 0,
                                     '{now_str}', '{now_str}', 1
                                 )
                             """))
-                            next_unique += 1
+
+                # NOTE: pname is NOT updated during purchase allocation.
+                # pn_nextpay is already incremented during payment posting (import_purchase_payment).
+                # pn_lastrec is NOT a standard Opera field for purchase allocation.
 
             result["success"] = True
             result["allocated_amount"] = total_to_allocate
@@ -8963,7 +9008,7 @@ class OperaSQLImport:
 
             # Check source bank exists and is not foreign currency
             source_check = self.sql.execute_query(f"""
-                SELECT nk_acnt, nk_desc, nk_fcurr
+                SELECT nk_acnt, nk_desc, nk_fcurr, nk_sort, nk_number
                 FROM nbank WITH (NOLOCK)
                 WHERE RTRIM(nk_acnt) = '{source_bank}'
             """)
@@ -8974,6 +9019,8 @@ class OperaSQLImport:
                 }
             source_name = source_check.iloc[0]['nk_desc'].strip()
             source_fcurr = source_check.iloc[0]['nk_fcurr']
+            source_sort = source_check.iloc[0]['nk_sort'].strip() if source_check.iloc[0]['nk_sort'] else ''
+            source_number = source_check.iloc[0]['nk_number'].strip() if source_check.iloc[0]['nk_number'] else ''
             if source_fcurr and source_fcurr.strip():
                 return {
                     'success': False,
@@ -8982,7 +9029,7 @@ class OperaSQLImport:
 
             # Check dest bank exists and is not foreign currency
             dest_check = self.sql.execute_query(f"""
-                SELECT nk_acnt, nk_desc, nk_fcurr
+                SELECT nk_acnt, nk_desc, nk_fcurr, nk_sort, nk_number
                 FROM nbank WITH (NOLOCK)
                 WHERE RTRIM(nk_acnt) = '{dest_bank}'
             """)
@@ -8993,6 +9040,8 @@ class OperaSQLImport:
                 }
             dest_name = dest_check.iloc[0]['nk_desc'].strip()
             dest_fcurr = dest_check.iloc[0]['nk_fcurr']
+            dest_sort = dest_check.iloc[0]['nk_sort'].strip() if dest_check.iloc[0]['nk_sort'] else ''
+            dest_number = dest_check.iloc[0]['nk_number'].strip() if dest_check.iloc[0]['nk_number'] else ''
             if dest_fcurr and dest_fcurr.strip():
                 return {
                     'success': False,
@@ -9143,6 +9192,7 @@ class OperaSQLImport:
                 atran_id_start = self._get_next_id(conn, 'atran', 2)
                 atran_source_id = atran_id_start
                 atran_dest_id = atran_id_start + 1
+                # Source bank atran gets destination bank's sort code and account number
                 atran_source_sql = f"""
                     INSERT INTO atran (
                         id,
@@ -9162,7 +9212,7 @@ class OperaSQLImport:
                         {AT_TYPE_TRANSFER}, '{post_date}', '{post_date}', 1, {-amount_pence},
                         0, '   ', 1.0, 0, 2,
                         '{dest_bank}', '{dest_name[:35]}', '{comment.replace(chr(10), " ").replace(chr(13), " ")[:40].replace("'", "''")}', '        ', '',
-                        '        ', '         ', 0, 0, 0,
+                        '{dest_sort[:8]}', '{dest_number[:9]}', 0, 0, 0,
                         0, 0, '', 0, 0,
                         0, 0, '{shared_unique}', 0, '0       ',
                         '{reference[:20]}', 'I', 0, ' ', '      ',
@@ -9297,10 +9347,12 @@ class OperaSQLImport:
                     jrnl_num = next_journal if posting_decision.post_to_nominal else 0
 
                     # anoml for FIRST bank (in lock order)
+                    # For ax_source='A' (bank transfers), set FC fields: fvalue=value*100, fcrate=1.0, fcdec=2.0
                     anoml_id_start = self._get_next_id(conn, 'anoml', 2)
                     anoml_first_id = anoml_id_start
                     anoml_second_id = anoml_id_start + 1
                     first_anoml_value = -amount_pounds if source_is_first else amount_pounds
+                    first_anoml_fvalue = int(round(first_anoml_value * 100))
                     anoml_first_sql = f"""
                         INSERT INTO anoml (
                             id,
@@ -9311,7 +9363,7 @@ class OperaSQLImport:
                         ) VALUES (
                             {anoml_first_id},
                             '{first_bank}', '    ', 'A', '{post_date}', {first_anoml_value}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', {first_anoml_fvalue}, 1.0, 0, 2.0,
                             'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -9320,6 +9372,7 @@ class OperaSQLImport:
 
                     # anoml for SECOND bank (in lock order)
                     second_anoml_value = amount_pounds if source_is_first else -amount_pounds
+                    second_anoml_fvalue = int(round(second_anoml_value * 100))
                     anoml_second_sql = f"""
                         INSERT INTO anoml (
                             id,
@@ -9330,7 +9383,7 @@ class OperaSQLImport:
                         ) VALUES (
                             {anoml_second_id},
                             '{second_bank}', '    ', 'A', '{post_date}', {second_anoml_value}, '{reference[:20]}',
-                            '{ntran_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                            '{ntran_comment[:40]}', '{done_flag}', '   ', {second_anoml_fvalue}, 1.0, 0, 2.0,
                             'I', '{shared_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -9822,10 +9875,12 @@ class OperaSQLImport:
 
                         # NOTE: No salloc created at posting time — allocation happens separately.
 
-                        # Receipt DECREASES customer balance (they paid)
+                        # Receipt DECREASES customer balance (they paid) and increments sn_nextpay
                         conn.execute(text(f"""
                             UPDATE sname WITH (ROWLOCK)
-                            SET sn_currbal = sn_currbal - {gross_pounds}, datemodified = '{now_str}'
+                            SET sn_currbal = sn_currbal - {gross_pounds},
+                                sn_nextpay = sn_nextpay + 1,
+                                datemodified = '{now_str}'
                             WHERE RTRIM(sn_account) = '{acct}'
                         """))
                         tables_updated.update(['stran', 'sname'])
@@ -9864,10 +9919,12 @@ class OperaSQLImport:
 
                         # NOTE: No palloc created at posting time — allocation happens separately.
 
-                        # Payment DECREASES supplier balance (we paid them)
+                        # Payment DECREASES supplier balance (we paid them) and increments pn_nextpay
                         conn.execute(text(f"""
                             UPDATE pname WITH (ROWLOCK)
-                            SET pn_currbal = pn_currbal - {gross_pounds}, datemodified = '{now_str}'
+                            SET pn_currbal = pn_currbal - {gross_pounds},
+                                pn_nextpay = pn_nextpay + 1,
+                                datemodified = '{now_str}'
                             WHERE RTRIM(pn_account) = '{acct}'
                         """))
                         tables_updated.update(['ptran', 'pname'])
@@ -10103,6 +10160,13 @@ class OperaSQLImport:
                         jrnl_num = next_journal if posting_decision.post_to_nominal else 0
                         ax_source = 'A' if ae_type in (1, 2) else ('S' if ae_type in (3, 4) else 'P')
 
+                        # For ax_source='A' (nominal entries), set FC fields: fvalue=value*100, fcrate=1.0, fcdec=2.0
+                        # For ax_source='S'/'P' (ledger entries), FC fields are zero
+                        is_nominal_source = (ax_source == 'A')
+                        bank_fvalue = int(round(bank_ntran_value * 100)) if is_nominal_source else 0
+                        bank_fcrate = 1.0 if is_nominal_source else 0
+                        bank_fcdec = 2.0 if is_nominal_source else 0
+
                         # Bank side anoml
                         anoml_bank_id = self._get_next_id(conn, 'anoml')
                         conn.execute(text(f"""
@@ -10115,7 +10179,7 @@ class OperaSQLImport:
                             ) VALUES (
                                 {anoml_bank_id},
                                 '{bank_account}', '    ', '{ax_source}', '{post_date}', {bank_ntran_value}, '{reference}',
-                                '{safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{safe_comment[:40]}', '{done_flag}', '   ', {bank_fvalue}, {bank_fcrate}, 0, {bank_fcdec},
                                 'I', '{atran_unique}', '        ', '        ', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -10123,6 +10187,7 @@ class OperaSQLImport:
 
                         # Target side anoml — always use control/nominal account, not raw supplier/customer
                         target_anoml_val = target_ntran_value
+                        target_fvalue = int(round(target_anoml_val * 100)) if is_nominal_source else 0
                         anoml_target_id = self._get_next_id(conn, 'anoml')
                         conn.execute(text(f"""
                             INSERT INTO anoml (
@@ -10134,7 +10199,7 @@ class OperaSQLImport:
                             ) VALUES (
                                 {anoml_target_id},
                                 '{target_account}', '    ', '{ax_source}', '{post_date}', {target_anoml_val}, '{reference}',
-                                '{safe_comment[:40]}', '{done_flag}', '   ', 0, 0, 0, 0,
+                                '{safe_comment[:40]}', '{done_flag}', '   ', {target_fvalue}, {bank_fcrate}, 0, {bank_fcdec},
                                 'I', '{atran_unique}', '{project_padded}', '{department_padded}', {jrnl_num}, '{post_date}',
                                 '{now_str}', '{now_str}', 1
                             )
@@ -10142,6 +10207,7 @@ class OperaSQLImport:
 
                         # VAT anoml if applicable
                         if ln['has_vat'] and posting_decision.post_to_nominal:
+                            vat_fvalue = int(round(vat_ntran_value * 100)) if is_nominal_source else 0
                             anoml_vat_id = self._get_next_id(conn, 'anoml')
                             conn.execute(text(f"""
                                 INSERT INTO anoml (
@@ -10153,7 +10219,7 @@ class OperaSQLImport:
                                 ) VALUES (
                                     {anoml_vat_id},
                                     '{vat_nominal}', '    ', '{ax_source}', '{post_date}', {vat_ntran_value}, '{reference}',
-                                    '{ntran_comment} VAT', '{done_flag}', '   ', 0, 0, 0, 0,
+                                    '{ntran_comment} VAT', '{done_flag}', '   ', {vat_fvalue}, {bank_fcrate}, 0, {bank_fcdec},
                                     'I', '{ntran_pstid_vat}', '        ', '        ', {jrnl_num}, '{post_date}',
                                     '{now_str}', '{now_str}', 1
                                 )
