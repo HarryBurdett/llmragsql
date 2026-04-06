@@ -2973,8 +2973,8 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
     """, (statement_id,))
     lines = cursor.fetchall()
 
-    matched = [l for l in lines if l['match_status'] in ('matched', 'paid')]
-    queried = [l for l in lines if l['match_status'] == 'query']
+    matched = [l for l in lines if l.get('status') == 'Agreed']
+    queried = [l for l in lines if l.get('status') == 'Query']
 
     agreed_count = len(matched)
     query_count = len(queried)
