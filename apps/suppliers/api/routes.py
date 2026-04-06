@@ -2694,7 +2694,7 @@ def _build_query_table(queried) -> str:
         amt = l['debit'] if l['debit'] else l['credit']
         amt_str = _format_currency(amt)
         ref = l['reference'] or 'N/A'
-        doc_type_raw = (l.get('doc_type') or '').upper()
+        doc_type_raw = (l['doc_type'] or '').upper() if l['doc_type'] else ''
 
         # Determine the specific action needed based on transaction type
         if doc_type_raw in ('INV', 'INVOICE', 'I'):
@@ -2968,13 +2968,13 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
 
     # --- Statement lines ---
     cursor.execute("""
-        SELECT line_date, reference, description, debit, credit, match_status, query_type
+        SELECT line_date, reference, description, debit, credit, doc_type, match_status, status, query_type
         FROM statement_lines WHERE statement_id = ? ORDER BY id
     """, (statement_id,))
     lines = cursor.fetchall()
 
-    matched = [l for l in lines if l.get('status') == 'Agreed']
-    queried = [l for l in lines if l.get('status') == 'Query']
+    matched = [l for l in lines if l['status'] == 'Agreed']
+    queried = [l for l in lines if l['status'] == 'Query']
 
     agreed_count = len(matched)
     query_count = len(queried)
