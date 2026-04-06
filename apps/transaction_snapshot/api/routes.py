@@ -1253,11 +1253,40 @@ async def analyse_table_fields(
     Detailed field analysis for a single table across all library entries where
     that table was modified (rows added).
 
-    Returns field-by-field population rates and sample values.
+    Returns field-by-field population rates, sample values, and cross-table
+    relationship hints (which other table.field each field may reference).
     """
+    # Load filtered entries for field analysis, but all entries for relationship detection
     entries = _load_library_entries(module=module, transaction_type=transaction_type)
+    all_entries = _load_library_entries()  # Full set for relationship detection
 
     analysis = _analyse_fields_for_table(table_name, entries)
+
+    # Build relationship map for this specific table using all entries
+    all_field_values = _collect_field_values(all_entries)
+    all_relationships = _detect_relationships(all_field_values)
+
+    # Index relationships by source_table.source_field
+    table_lower = table_name.lower()
+    rel_by_field: Dict[str, List[Dict]] = {}
+    for rel in all_relationships:
+        if rel['source_table'] == table_lower:
+            key = rel['source_field']
+            if key not in rel_by_field:
+                rel_by_field[key] = []
+            rel_by_field[key].append({
+                'target_table': rel['target_table'],
+                'target_field': rel['target_field'],
+                'confidence': rel['confidence'],
+                'reason': rel['reason'],
+            })
+
+    # Attach relationship hints to each field
+    fields_with_rels = []
+    for field_info in analysis['fields']:
+        enriched = dict(field_info)
+        enriched['relationships'] = rel_by_field.get(field_info['name'], [])
+        fields_with_rels.append(enriched)
 
     return {
         'success': True,
@@ -1265,7 +1294,209 @@ async def analyse_table_fields(
         'entries_analysed': analysis['entries_analysed'],
         'total_rows': analysis['total_rows'],
         'filters': {'module': module, 'transaction_type': transaction_type},
-        'fields': analysis['fields'],
+        'fields': fields_with_rels,
+    }
+
+
+# ============================================================================
+# Cross-Table Relationship Analysis
+# ============================================================================
+
+# Fields that are metadata/system and should never be used for relationship detection
+_RELATIONSHIP_IGNORE_FIELDS = frozenset({
+    'id', 'datecreated', 'datemodified', 'state', 'sq_user', 'sq_date', 'sq_time',
+})
+
+
+def _is_boolean_field(values: set) -> bool:
+    """Return True if all values in the set are 0/0.0 or 1/1.0 (boolean flags)."""
+    for v in values:
+        try:
+            f = float(v)
+            if f not in (0.0, 1.0):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def _looks_like_reference_field(values: set) -> bool:
+    """
+    Return True if the values look like account codes, type codes, or references
+    (short strings, not long free-text or pure large numbers).
+    """
+    for v in values:
+        s = str(v).strip()
+        if not s or s == 'None':
+            continue
+        # Pure numeric — only keep if it's a short integer (could be a code)
+        try:
+            f = float(s)
+            # Long floating-point numbers (large amounts) are not references
+            if abs(f) > 9999999 or (s.count('.') and len(s.split('.')[1]) > 2):
+                return False
+        except ValueError:
+            pass
+        # Strings longer than 50 chars are free-text, not codes
+        if len(s) > 50:
+            return False
+    return True
+
+
+def _collect_field_values(entries: List[Dict]) -> Dict[str, Dict[str, set]]:
+    """
+    Walk every library entry and collect, per table per field, the complete set
+    of non-null/non-empty values seen in added_rows and modified_rows.after.
+
+    Returns: { "table_name": { "field_name": {value1, value2, ...} } }
+    """
+    field_values: Dict[str, Dict[str, set]] = {}
+
+    for entry in entries:
+        for change in entry.get('changes', []):
+            table = change.get('table', '').lower()
+            if not table:
+                continue
+            if table not in field_values:
+                field_values[table] = {}
+
+            def _record_value(field: str, val):
+                if val is None:
+                    return
+                s = str(val).strip()
+                if s == '' or s == 'None':
+                    return
+                if field not in field_values[table]:
+                    field_values[table][field] = set()
+                field_values[table][field].add(s)
+
+            # Collect from added_rows
+            for row in change.get('added_rows', []):
+                for field, val in row.items():
+                    _record_value(field, val)
+
+            # Collect from modified_rows — use 'after' values
+            for mod_row in change.get('modified_rows', []):
+                for field, change_vals in mod_row.get('changes', {}).items():
+                    after_val = change_vals.get('after') if isinstance(change_vals, dict) else None
+                    _record_value(field, after_val)
+
+    return field_values
+
+
+def _detect_relationships(field_values: Dict[str, Dict[str, set]]) -> List[Dict[str, Any]]:
+    """
+    For each (source_table, source_field), check if its values exist in any
+    (target_table, target_field). Returns a list of relationship dicts.
+
+    Rules:
+    - Only consider fields with 3+ distinct values (avoid single-value false positives)
+    - Ignore metadata fields in _RELATIONSHIP_IGNORE_FIELDS
+    - Ignore boolean-flag fields (only 0/1 values)
+    - Only consider fields that look like reference/code fields (not long free-text)
+    - Skip self-matches (same table.field)
+    - High confidence: 100% of source values in target
+    - Medium confidence: 80%+ of source values in target
+    """
+    relationships = []
+
+    tables = sorted(field_values.keys())
+
+    for src_table in tables:
+        src_fields = field_values[src_table]
+
+        for src_field, src_vals in src_fields.items():
+            # Apply ignore rules
+            if src_field.lower() in _RELATIONSHIP_IGNORE_FIELDS:
+                continue
+            if len(src_vals) < 3:
+                continue
+            if _is_boolean_field(src_vals):
+                continue
+            if not _looks_like_reference_field(src_vals):
+                continue
+
+            for tgt_table in tables:
+                tgt_fields = field_values[tgt_table]
+
+                for tgt_field, tgt_vals in tgt_fields.items():
+                    # Skip same field
+                    if src_table == tgt_table and src_field == tgt_field:
+                        continue
+                    if tgt_field.lower() in _RELATIONSHIP_IGNORE_FIELDS:
+                        continue
+                    if not tgt_vals:
+                        continue
+
+                    # Count how many source values exist in the target set
+                    matched = sum(1 for v in src_vals if v in tgt_vals)
+                    ratio = matched / len(src_vals)
+
+                    if ratio < 0.8:
+                        continue
+
+                    confidence = 'high' if ratio == 1.0 else 'medium'
+                    pct = int(ratio * 100)
+                    reason = (
+                        f"All {len(src_vals)} values in {src_table}.{src_field} exist in {tgt_table}.{tgt_field}"
+                        if ratio == 1.0
+                        else f"{matched}/{len(src_vals)} ({pct}%) values in {src_table}.{src_field} exist in {tgt_table}.{tgt_field}"
+                    )
+
+                    sample = sorted(src_vals)[:5]
+
+                    relationships.append({
+                        'source_table': src_table,
+                        'source_field': src_field,
+                        'target_table': tgt_table,
+                        'target_field': tgt_field,
+                        'confidence': confidence,
+                        'match_ratio': ratio,
+                        'source_distinct_values': len(src_vals),
+                        'reason': reason,
+                        'sample_values': sample,
+                    })
+
+    # Sort: high confidence first, then by source table/field
+    relationships.sort(key=lambda r: (0 if r['confidence'] == 'high' else 1, r['source_table'], r['source_field']))
+
+    return relationships
+
+
+@router.get("/api/transaction-snapshot/relationship-analysis")
+async def analyse_relationships():
+    """
+    Cross-table relationship detection across all library entries.
+
+    Reads every library entry and collects all values seen for each table.field
+    (from added_rows and modified_rows.after). Then checks if all (or 80%+) of
+    one field's values also appear in another table's field — which suggests a
+    foreign-key or validation relationship in Opera.
+
+    Only considers fields with 3+ distinct values. Ignores metadata fields,
+    boolean flags, and long free-text strings.
+    """
+    entries = _load_library_entries()
+
+    if not entries:
+        return {
+            'success': True,
+            'relationships': [],
+            'tables_analysed': 0,
+            'entries_analysed': 0,
+            'message': 'No library entries found.',
+        }
+
+    field_values = _collect_field_values(entries)
+    relationships = _detect_relationships(field_values)
+
+    return {
+        'success': True,
+        'relationships': relationships,
+        'tables_analysed': len(field_values),
+        'entries_analysed': len(entries),
+        'high_confidence_count': sum(1 for r in relationships if r['confidence'] == 'high'),
+        'medium_confidence_count': sum(1 for r in relationships if r['confidence'] == 'medium'),
     }
 
 
