@@ -2686,24 +2686,37 @@ def _format_currency(value) -> str:
 
 
 def _build_query_table(queried) -> str:
-    """Build an HTML table of queried statement lines."""
+    """Build an HTML table of queried statement lines with specific action per type."""
     if not queried:
         return ''
     rows = ''
     for l in queried:
         amt = l['debit'] if l['debit'] else l['credit']
         amt_str = _format_currency(amt)
-        doc_type = 'Invoice' if l['debit'] else 'Credit/Payment'
-        query_reason = (l['query_type'] or 'not_in_our_records').replace('_', ' ').title()
+        ref = l['reference'] or 'N/A'
+        doc_type_raw = (l.get('doc_type') or '').upper()
+
+        # Determine the specific action needed based on transaction type
+        if doc_type_raw in ('INV', 'INVOICE', 'I'):
+            doc_label = 'Invoice'
+            action = 'Please send a copy of this invoice.'
+        elif doc_type_raw in ('CN', 'CREDIT', 'CREDIT NOTE', 'CR', 'C'):
+            doc_label = 'Credit Note'
+            action = 'Please send a copy so we can apply it to your account.'
+        elif doc_type_raw in ('PMT', 'PAYMENT', 'PAY', 'P'):
+            doc_label = 'Payment'
+            action = 'We cannot trace this payment. Please provide further details.'
+        else:
+            doc_label = doc_type_raw or ('Invoice' if l['debit'] else 'Credit/Payment')
+            action = 'We require further information regarding this transaction.'
+
         rows += (
             f'<tr style="border-bottom:1px solid #eee;">'
             f'<td style="padding:6px 12px;">{l["line_date"] or ""}</td>'
-            f'<td style="padding:6px 12px;"><b>{l["reference"] or "N/A"}</b></td>'
-            f'<td style="padding:6px 12px;">{doc_type}</td>'
+            f'<td style="padding:6px 12px;"><b>{ref}</b></td>'
+            f'<td style="padding:6px 12px;">{doc_label}</td>'
             f'<td style="padding:6px 12px;text-align:right;">{amt_str}</td>'
-            f'<td style="padding:6px 12px;">'
-            f'<span style="background:#fff3cd;color:#856404;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:bold;">'
-            f'{query_reason}</span></td>'
+            f'<td style="padding:6px 12px;font-size:12px;color:#555;">{action}</td>'
             f'</tr>'
         )
     return (
@@ -2713,7 +2726,7 @@ def _build_query_table(queried) -> str:
         '<th style="padding:8px 12px;text-align:left;">Reference</th>'
         '<th style="padding:8px 12px;text-align:left;">Type</th>'
         '<th style="padding:8px 12px;text-align:right;">Amount</th>'
-        '<th style="padding:8px 12px;text-align:left;">Query</th>'
+        '<th style="padding:8px 12px;text-align:left;">Action Required</th>'
         '</tr>'
         + rows +
         '</table>'
@@ -2767,11 +2780,20 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items
         return ''
 
     try:
-        from sql_rag.supplier_data_provider import get_supplier_data_provider
-        provider = get_supplier_data_provider()
+        # Use sql_connector directly — provider may not be available outside API context
+        sc = sql_connector
+        if not sc:
+            from sql_rag.supplier_data_provider import get_supplier_data_provider
+            provider = get_supplier_data_provider()
+            sc = provider.sql if hasattr(provider, 'sql') else None
+        if not sc:
+            return ''
 
         # Check overall balance first — if in credit, no payment due
-        balance = provider.get_supplier_balance(supplier_code)
+        bal_df = sc.execute_query(
+            "SELECT pn_currbal FROM pname WITH (NOLOCK) WHERE pn_account = '%s'" % supplier_code
+        )
+        balance = float(bal_df.iloc[0]['pn_currbal']) if bal_df is not None and not bal_df.empty else None
         if balance is not None:
             if balance >= 0:
                 # pn_currbal >= 0 means we're in credit (they owe us) or clear
@@ -2785,8 +2807,10 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items
                     return ''  # Zero balance — nothing to say
 
             # Also check: do we have unallocated payments that cover the invoices?
-            inv_total = provider.get_outstanding_invoice_total(supplier_code)
-            pay_total = provider.get_unallocated_payment_total(supplier_code)
+            inv_df = sc.execute_query("SELECT SUM(pt_trbal) as t FROM ptran WITH (NOLOCK) WHERE pt_account = '%s' AND pt_trtype = 'I' AND pt_trbal > 0" % supplier_code)
+            pay_df = sc.execute_query("SELECT SUM(ABS(pt_trbal)) as t FROM ptran WITH (NOLOCK) WHERE pt_account = '%s' AND pt_trtype = 'P' AND pt_trbal < 0" % supplier_code)
+            inv_total = float(inv_df.iloc[0]['t'] or 0) if inv_df is not None and not inv_df.empty else 0
+            pay_total = float(pay_df.iloc[0]['t'] or 0) if pay_df is not None and not pay_df.empty else 0
 
             if pay_total >= inv_total and inv_total > 0:
                 return (
@@ -2796,12 +2820,17 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items
                 )
 
         # Get outstanding invoices with due dates on or before the next payment run
-        due_invoices = provider.get_outstanding_invoices_due_by(supplier_code, next_run)
-        if not due_invoices:
-            # Check if there are ANY outstanding invoices
-            all_outstanding = provider.get_outstanding_transactions(supplier_code)
-            has_any_invoices = any(t.type_code == 'I' and t.balance > 0 for t in all_outstanding)
-            if has_any_invoices:
+        df = sc.execute_query(
+            "SELECT RTRIM(pt_trref) as reference, pt_dueday, pt_trbal FROM ptran WITH (NOLOCK) "
+            "WHERE pt_account = '%s' AND pt_trtype = 'I' AND pt_trbal > 0 AND pt_dueday IS NOT NULL "
+            "AND pt_dueday <= '%s' ORDER BY pt_dueday" % (supplier_code, next_run)
+        )
+        if df is None or df.empty:
+            any_df = sc.execute_query(
+                "SELECT COUNT(*) as cnt FROM ptran WITH (NOLOCK) WHERE pt_account = '%s' AND pt_trtype = 'I' AND pt_trbal > 0" % supplier_code
+            )
+            has_any = any_df is not None and not any_df.empty and int(any_df.iloc[0]['cnt']) > 0
+            if has_any:
                 return (
                     f'<p style="margin-top:12px;"><b>Payment schedule:</b> Our next payment run is '
                     f'<b>{next_run}</b>. No invoices are currently due before this date.</p>'
@@ -2811,10 +2840,10 @@ def _build_payment_schedule(db, sql_connector, supplier_code: str, queried_items
         # Build table of invoices included in next payment run
         total = 0.0
         rows_html = ''
-        for inv in due_invoices:
-            ref = inv.reference
-            due = inv.due_date or ''
-            bal = inv.balance
+        for _, row in df.iterrows():
+            ref = str(row.get('reference', '')).strip()
+            due = str(row.get('pt_dueday', ''))[:10]
+            bal = float(row.get('pt_trbal', 0))
             total += bal
             due_parts = due.split('-')
             if len(due_parts) == 3 and len(due_parts[0]) == 4:
