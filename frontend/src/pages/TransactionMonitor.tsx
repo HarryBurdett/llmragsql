@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Activity, Server, Play, Square, RefreshCw, Plus, Trash2, CheckCircle,
-  XCircle, AlertTriangle, Eye, Settings, Wifi, WifiOff, Zap, Clock
+  XCircle, AlertTriangle, Eye, Wifi, WifiOff, Zap, Database, TestTube,
+  ChevronDown, ChevronRight, Pencil, Save
 } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert } from '../components/ui';
@@ -41,8 +42,12 @@ interface CapturedTransaction {
 export default function TransactionMonitor() {
   const queryClient = useQueryClient();
   const [showAddConnection, setShowAddConnection] = useState(false);
-  const [newConn, setNewConn] = useState({ name: '', server_host: '', server_port: '1433', database_name: '', username: '', password: '' });
-  const [testResult, setTestResult] = useState<any>(null);
+  const [newConnName, setNewConnName] = useState('');
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [editingNameId, setEditingNameId] = useState<number | null>(null);
+  const [editName, setEditName] = useState('');
+  const [form, setForm] = useState<{ server_host: string; server_port: string; database_name: string; username: string; password: string } | null>(null);
+  const [testResult, setTestResult] = useState<{ id: number; success: boolean; message?: string; error?: string; tables_found?: number; opera_users?: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [selectedTxn, setSelectedTxn] = useState<CapturedTransaction | null>(null);
@@ -76,22 +81,83 @@ export default function TransactionMonitor() {
   const coverage = coverageData?.checklist || [];
   const transactions: CapturedTransaction[] = txnsData?.transactions || [];
 
+  // Load form when expanding a connection
+  useEffect(() => {
+    if (expandedId) {
+      const conn = connections.find(c => c.id === expandedId);
+      if (conn) setForm({
+        server_host: conn.server_host || '',
+        server_port: String(conn.server_port || 1433),
+        database_name: conn.database_name || '',
+        username: conn.username || '',
+        password: '',
+      });
+    } else {
+      setForm(null);
+    }
+  }, [expandedId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const updateForm = (updates: Partial<NonNullable<typeof form>>) => {
+    if (form) setForm({ ...form, ...updates });
+  };
+
   // Mutations
   const addConnection = async () => {
+    if (!newConnName.trim()) return;
     setError(null);
     const res = await authFetch('/api/monitor/connections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newConn, server_port: parseInt(newConn.server_port) }),
+      body: JSON.stringify({ name: newConnName.trim(), server_host: '', database_name: '', username: '', password: '', server_port: 1433 }),
     });
     const data = await res.json();
     if (data.success) {
       setShowAddConnection(false);
-      setNewConn({ name: '', server_host: '', server_port: '1433', database_name: '', username: '', password: '' });
-      setSuccess('Connection saved');
+      setNewConnName('');
+      setSuccess(`"${newConnName.trim()}" created`);
+      queryClient.invalidateQueries({ queryKey: ['monitor-connections'] });
+      setTimeout(() => setExpandedId(data.connection_id), 100);
+    } else {
+      setError(data.error);
+    }
+  };
+
+  const saveConnection = async (conn: Connection) => {
+    if (!form) return;
+    setError(null);
+    const payload: any = {
+      server_host: form.server_host,
+      server_port: parseInt(form.server_port) || 1433,
+      database_name: form.database_name,
+      username: form.username,
+    };
+    if (form.password) payload.password = form.password;
+    const res = await authFetch(`/api/monitor/connections/${conn.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.success) {
+      setSuccess(`"${conn.name}" settings saved`);
       queryClient.invalidateQueries({ queryKey: ['monitor-connections'] });
     } else {
       setError(data.error);
+    }
+  };
+
+  const renameConnection = async (conn: Connection) => {
+    if (!editName.trim() || editName.trim() === conn.name) { setEditingNameId(null); return; }
+    const res = await authFetch(`/api/monitor/connections/${conn.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: editName.trim() }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      setEditingNameId(null);
+      setSuccess('Renamed');
+      queryClient.invalidateQueries({ queryKey: ['monitor-connections'] });
     }
   };
 
@@ -131,6 +197,7 @@ export default function TransactionMonitor() {
     const res = await authFetch(`/api/monitor/connections/${id}`, { method: 'DELETE' });
     const data = await res.json();
     if (data.success) {
+      if (expandedId === id) setExpandedId(null);
       queryClient.invalidateQueries({ queryKey: ['monitor-connections'] });
     }
   };
@@ -198,73 +265,239 @@ export default function TransactionMonitor() {
         </div>
       </Card>
 
-      {/* Connections */}
-      <Card>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">Connections</h2>
+      {/* Connections — mirrors Installations page pattern */}
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-lg font-semibold text-gray-900">Monitor Connections</h2>
+        {!showAddConnection && (
           <button
-            onClick={() => setShowAddConnection(!showAddConnection)}
+            onClick={() => setShowAddConnection(true)}
             className="px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-1 text-sm"
           >
             <Plus className="w-4 h-4" /> Add Connection
           </button>
-        </div>
-
-        {showAddConnection && (
-          <div className="mb-4 p-4 bg-gray-50 rounded-lg space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <input placeholder="Connection Name" value={newConn.name} onChange={e => setNewConn({...newConn, name: e.target.value})} className="px-3 py-2 border rounded-lg text-sm" />
-              <input placeholder="Server Host" value={newConn.server_host} onChange={e => setNewConn({...newConn, server_host: e.target.value})} className="px-3 py-2 border rounded-lg text-sm" />
-              <input placeholder="Database Name" value={newConn.database_name} onChange={e => setNewConn({...newConn, database_name: e.target.value})} className="px-3 py-2 border rounded-lg text-sm" />
-              <input placeholder="Port" value={newConn.server_port} onChange={e => setNewConn({...newConn, server_port: e.target.value})} className="px-3 py-2 border rounded-lg text-sm w-24" />
-              <input placeholder="Username" value={newConn.username} onChange={e => setNewConn({...newConn, username: e.target.value})} className="px-3 py-2 border rounded-lg text-sm" />
-              <input placeholder="Password" type="password" value={newConn.password} onChange={e => setNewConn({...newConn, password: e.target.value})} className="px-3 py-2 border rounded-lg text-sm" />
-            </div>
-            <div className="flex gap-2">
-              <button onClick={addConnection} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">Save</button>
-              <button onClick={() => setShowAddConnection(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300">Cancel</button>
-            </div>
-          </div>
         )}
+      </div>
 
-        {connections.length === 0 ? (
-          <p className="text-sm text-gray-500">No connections configured. Add a connection to start monitoring.</p>
-        ) : (
-          <div className="space-y-2">
-            {connections.map(conn => (
-              <div key={conn.id} className="flex items-center justify-between p-3 border rounded-lg">
-                <div>
-                  <div className="font-medium text-gray-900">{conn.name}</div>
-                  <div className="text-xs text-gray-500">{conn.server_host}:{conn.server_port} / {conn.database_name} (user: {conn.username})</div>
-                </div>
-                <div className="flex gap-2">
-                  <button onClick={() => testConnection(conn.id)} className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded text-xs hover:bg-gray-200">Test</button>
-                  <button onClick={() => scanNow(conn.id)} disabled={isRunning} className="px-3 py-1.5 bg-amber-100 text-amber-700 rounded text-xs hover:bg-amber-200 disabled:opacity-50" title="Single scan">
-                    <Zap className="w-3.5 h-3.5" />
-                  </button>
-                  {!isRunning ? (
-                    <button onClick={() => startMonitor(conn.id)} className="px-3 py-1.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 flex items-center gap-1">
-                      <Play className="w-3 h-3" /> Monitor
+      {showAddConnection && (
+        <Card className="mb-3">
+          <div className="flex items-center gap-3">
+            <input
+              type="text"
+              className="input flex-1"
+              placeholder="Connection name (e.g. Acme Ltd — Live)"
+              value={newConnName}
+              onChange={e => setNewConnName(e.target.value)}
+              autoFocus
+              onKeyDown={e => { if (e.key === 'Enter') addConnection(); if (e.key === 'Escape') setShowAddConnection(false); }}
+            />
+            <button onClick={addConnection} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700">Create</button>
+            <button onClick={() => setShowAddConnection(false)} className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300">Cancel</button>
+          </div>
+        </Card>
+      )}
+
+      {connections.length === 0 && !showAddConnection ? (
+        <Card>
+          <p className="text-sm text-gray-500 py-4 text-center">No monitor connections configured. Add a connection to start capturing transaction patterns.</p>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {connections.map(conn => {
+            const isExpanded = expandedId === conn.id;
+            const isMonitoring = isRunning && statusData?.connection_id === conn.id;
+            const isEditingName = editingNameId === conn.id;
+
+            return (
+              <Card key={conn.id} className={isMonitoring ? 'ring-2 ring-green-200' : ''}>
+                {/* Header row */}
+                <div className="flex items-center justify-between">
+                  <div
+                    className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+                    onClick={() => setExpandedId(isExpanded ? null : conn.id)}
+                  >
+                    {isExpanded
+                      ? <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                      : <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                    }
+                    <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isMonitoring ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`} />
+                    {isEditingName ? (
+                      <input
+                        type="text"
+                        className="input py-1 px-2 text-sm w-56"
+                        value={editName}
+                        onChange={e => setEditName(e.target.value)}
+                        autoFocus
+                        onClick={e => e.stopPropagation()}
+                        onBlur={() => renameConnection(conn)}
+                        onKeyDown={e => { if (e.key === 'Enter') renameConnection(conn); if (e.key === 'Escape') setEditingNameId(null); }}
+                      />
+                    ) : (
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-gray-900">{conn.name}</span>
+                          {isMonitoring && (
+                            <span className="text-xs text-green-700 font-medium bg-green-100 px-1.5 py-0.5 rounded">Monitoring</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-400">
+                          {conn.server_host && <span>{conn.server_host}:{conn.server_port}</span>}
+                          {conn.server_host && conn.database_name && <span className="text-gray-300">|</span>}
+                          {conn.database_name && <span>{conn.database_name}</span>}
+                          {!conn.server_host && !conn.database_name && <span className="text-amber-500">Not configured</span>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1 flex-shrink-0 ml-3">
+                    {!isRunning && conn.server_host && (
+                      <button
+                        onClick={() => startMonitor(conn.id)}
+                        className="px-2.5 py-1 text-xs font-medium text-green-600 bg-green-50 rounded-md hover:bg-green-100 transition-colors flex items-center gap-1"
+                      >
+                        <Play className="w-3 h-3" /> Monitor
+                      </button>
+                    )}
+                    {isMonitoring && (
+                      <button
+                        onClick={stopMonitor}
+                        className="px-2.5 py-1 text-xs font-medium text-red-600 bg-red-50 rounded-md hover:bg-red-100 transition-colors flex items-center gap-1"
+                      >
+                        <Square className="w-3 h-3" /> Stop
+                      </button>
+                    )}
+                    {!isRunning && conn.server_host && (
+                      <button
+                        onClick={() => scanNow(conn.id)}
+                        title="Single scan"
+                        className="p-1.5 rounded text-gray-400 hover:text-amber-500 hover:bg-amber-50 transition-colors"
+                      >
+                        <Zap className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { setEditingNameId(conn.id); setEditName(conn.name); }}
+                      title="Rename"
+                      className="p-1.5 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
                     </button>
-                  ) : statusData?.connection_id === conn.id ? (
-                    <button onClick={stopMonitor} className="px-3 py-1.5 bg-red-600 text-white rounded text-xs hover:bg-red-700 flex items-center gap-1">
-                      <Square className="w-3 h-3" /> Stop
-                    </button>
-                  ) : null}
-                  <button onClick={() => deleteConnection(conn.id)} className="px-2 py-1.5 text-red-400 hover:text-red-600">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                    {!isMonitoring && connections.length > 0 && (
+                      <button
+                        onClick={() => deleteConnection(conn.id)}
+                        title="Delete"
+                        className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                {testResult?.id === conn.id && (
-                  <div className={`absolute right-0 mt-16 mr-4 p-2 rounded text-xs ${testResult.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
-                    {testResult.success ? `Connected — ${testResult.tables_found} tables, ${testResult.opera_users || 0} users` : testResult.error}
+
+                {/* Expanded settings panel */}
+                {isExpanded && form && (
+                  <div className="mt-4 pt-4 border-t border-gray-100 space-y-5">
+                    <div className="space-y-3">
+                      <h4 className="text-sm font-medium text-gray-700 flex items-center gap-1.5">
+                        <Database className="h-4 w-4 text-gray-400" />
+                        SQL Server Connection
+                      </h4>
+                      <p className="text-xs text-gray-500">Read-only connection to the target Opera database. Requires a SQL login with db_datareader role.</p>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div className="col-span-2">
+                          <label className="label">Server</label>
+                          <input
+                            type="text"
+                            className="input"
+                            placeholder="IP address or hostname"
+                            value={form.server_host}
+                            onChange={e => updateForm({ server_host: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="label">Port</label>
+                          <input
+                            type="text"
+                            className="input"
+                            placeholder="1433"
+                            value={form.server_port}
+                            onChange={e => updateForm({ server_port: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="label">Database Name</label>
+                        <input
+                          type="text"
+                          className="input"
+                          placeholder="Opera3SECompany00X"
+                          value={form.database_name}
+                          onChange={e => updateForm({ database_name: e.target.value })}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="label">Username</label>
+                          <input
+                            type="text"
+                            className="input"
+                            placeholder="SQL login username"
+                            value={form.username}
+                            onChange={e => updateForm({ username: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="label">Password</label>
+                          <input
+                            type="password"
+                            className="input"
+                            placeholder="Password"
+                            value={form.password}
+                            onChange={e => updateForm({ password: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Test result */}
+                    {testResult?.id === conn.id && (
+                      <div className={`p-3 rounded-lg text-sm ${testResult.success ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+                        {testResult.success ? (
+                          <div className="flex items-center gap-2">
+                            <CheckCircle className="w-4 h-4 text-green-600" />
+                            <span>{testResult.message} — {testResult.opera_users || 0} Opera users found</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <XCircle className="w-4 h-4 text-red-600" />
+                            <span>{testResult.error}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-3 pt-2">
+                      <button
+                        onClick={() => saveConnection(conn)}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 flex items-center gap-2"
+                      >
+                        <Save className="w-4 h-4" /> Save Settings
+                      </button>
+                      <button
+                        onClick={() => testConnection(conn.id)}
+                        className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 flex items-center gap-2"
+                      >
+                        <TestTube className="w-4 h-4" /> Test Connection
+                      </button>
+                    </div>
                   </div>
                 )}
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
+              </Card>
+            );
+          })}
+        </div>
+      )}
 
       {/* Coverage Dashboard */}
       <Card>
