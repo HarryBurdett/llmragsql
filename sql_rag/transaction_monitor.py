@@ -207,11 +207,11 @@ class OperaMonitorConnection:
                 pass
         return watermarks
 
-    def snapshot_all_tables(self) -> Dict[str, List[Dict]]:
+    def snapshot_small_tables(self) -> Dict[str, List[Dict]]:
         """
-        Take a complete snapshot of ALL tables in the database.
-        Used to detect UPDATEs on existing rows (not just INSERTs).
-        Only snapshots tables small enough to be practical (< 50,000 rows).
+        Snapshot small config/parameter tables (< 1000 rows) in full.
+        These are tables like nparm, atype, nbank where Opera updates counters
+        and balances. Small enough to snapshot every poll cycle.
         """
         tables = self.execute_query("""
             SELECT t.TABLE_NAME, p.rows as row_count
@@ -225,11 +225,42 @@ class OperaMonitorConnection:
         for t in tables:
             table_name = t['TABLE_NAME']
             row_count = t.get('row_count', 0) or 0
-            if row_count > 50000:
-                continue  # Skip very large tables — too slow to snapshot every cycle
+            if row_count > 1000:
+                continue  # Large tables use targeted reads instead
             try:
                 rows = self.execute_query(f"SELECT * FROM [{table_name}] WITH (NOLOCK)")
                 snapshots[table_name] = rows
+            except Exception:
+                pass
+        return snapshots
+
+    def snapshot_targeted_rows(self, accounts: Dict[str, set]) -> Dict[str, List[Dict]]:
+        """
+        Snapshot specific rows from large tables, targeted by the accounts/keys
+        found in newly detected transactions.
+
+        Args:
+            accounts: {table_name: set of key values to read}
+                e.g. {"sname": {"SMIT001", "JONE002"}, "nacnt": {"1200", "4000"}}
+        """
+        # Map table → primary key column
+        key_columns = {
+            'sname': 'sn_account', 'pname': 'pn_account', 'nacnt': 'na_acnt',
+            'stran': 'id', 'ptran': 'id', 'ntran': 'id',
+            'nhist': 'id', 'stitem': 'st_ref',
+        }
+        snapshots = {}
+        for table, keys in accounts.items():
+            if not keys:
+                continue
+            key_col = key_columns.get(table, 'id')
+            key_list = ','.join(f"'{str(k).strip()}'" for k in keys)
+            try:
+                rows = self.execute_query(
+                    f"SELECT * FROM [{table}] WITH (NOLOCK) WHERE [{key_col}] IN ({key_list})"
+                )
+                if rows:
+                    snapshots[table] = rows
             except Exception:
                 pass
         return snapshots
@@ -310,7 +341,8 @@ class TransactionMonitor:
         self._poll_interval: float = 5.0
         self._pending_groups: Dict[str, Dict] = {}  # Incomplete transaction groups
         self._opera_users: Set[str] = set()
-        self._last_snapshot: Optional[Dict[str, List[Dict]]] = None  # For UPDATE detection
+        self._last_snapshot: Optional[Dict[str, List[Dict]]] = None  # Small tables snapshot
+        self._last_targeted: Dict[str, List[Dict]] = {}  # Large tables targeted snapshot
         self._stats = {
             "started_at": None,
             "total_captured": 0,
@@ -407,10 +439,12 @@ class TransactionMonitor:
                                               last_connected_at=datetime.now().isoformat(),
                                               is_active=1)
 
-                    # Take initial snapshot of all tables for UPDATE detection
-                    logger.info("Taking initial snapshot of all tables for change detection...")
-                    self._last_snapshot = self._connection.snapshot_all_tables()
-                    logger.info(f"Snapshotted {len(self._last_snapshot)} tables")
+                    # Take initial snapshot of small tables for UPDATE detection
+                    logger.info("Taking initial snapshot of small tables for change detection...")
+                    self._last_snapshot = self._connection.snapshot_small_tables()
+                    logger.info(f"Snapshotted {len(self._last_snapshot)} small tables")
+                    # Targeted snapshots for large tables are taken per-poll based on detected transactions
+                    self._last_targeted: Dict[str, List[Dict]] = {}
 
                 # Poll for new rows (INSERTs) AND detect field changes (UPDATEs)
                 self._poll_once()
@@ -449,13 +483,27 @@ class TransactionMonitor:
             except Exception:
                 pass  # Table may not be readable, skip silently
 
-        # Detect UPDATE changes by comparing full table snapshots
+        # Detect UPDATE changes using two-tier approach:
+        # 1. Small tables (< 1000 rows): full snapshot diff every cycle
+        # 2. Large tables: targeted reads based on accounts found in new rows
         update_changes: Dict[str, List[Dict]] = {}
         if self._last_snapshot is not None:
             try:
-                current_snapshot = self._connection.snapshot_all_tables()
-                update_changes = self._connection.diff_snapshots(self._last_snapshot, current_snapshot)
-                self._last_snapshot = current_snapshot
+                # Tier 1: Small tables — full snapshot diff
+                current_small = self._connection.snapshot_small_tables()
+                small_changes = self._connection.diff_snapshots(self._last_snapshot, current_small)
+                update_changes.update(small_changes)
+                self._last_snapshot = current_small
+
+                # Tier 2: Large tables — targeted reads based on detected new rows
+                if new_rows_by_table:
+                    targeted_keys = self._extract_account_keys(new_rows_by_table)
+                    if targeted_keys:
+                        current_targeted = self._connection.snapshot_targeted_rows(targeted_keys)
+                        if self._last_targeted:
+                            targeted_changes = self._connection.diff_snapshots(self._last_targeted, current_targeted)
+                            update_changes.update(targeted_changes)
+                        self._last_targeted = current_targeted
             except Exception as e:
                 logger.warning(f"Snapshot diff error: {e}")
 
@@ -653,6 +701,36 @@ class TransactionMonitor:
                         break
 
         return matched
+
+    def _extract_account_keys(self, new_rows_by_table: Dict[str, List[Dict]]) -> Dict[str, set]:
+        """
+        Extract account/key values from new rows to target large table reads.
+        E.g. new atran for customer SMIT001 → read sname row for SMIT001.
+        """
+        keys: Dict[str, set] = defaultdict(set)
+        for tbl, rows in new_rows_by_table.items():
+            for r in rows:
+                # Customer accounts → sname
+                for field in ['st_account', 'at_account']:
+                    val = r.get(field)
+                    if val and str(val).strip():
+                        keys['sname'].add(str(val).strip())
+                # Supplier accounts → pname
+                for field in ['pt_account']:
+                    val = r.get(field)
+                    if val and str(val).strip():
+                        keys['pname'].add(str(val).strip())
+                # Nominal accounts → nacnt
+                for field in ['nt_acnt', 'at_acnt', 'ae_acnt']:
+                    val = r.get(field)
+                    if val and str(val).strip():
+                        keys['nacnt'].add(str(val).strip())
+                # Stock items → stitem
+                for field in ['st_ref', 'ol_stock', 'il_stock']:
+                    val = r.get(field)
+                    if val and str(val).strip():
+                        keys['stitem'].add(str(val).strip())
+        return dict(keys)
 
     def _finalize_stale_groups(self):
         """Finalize pending groups older than 30 seconds."""
