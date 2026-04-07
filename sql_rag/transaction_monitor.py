@@ -207,6 +207,90 @@ class OperaMonitorConnection:
                 pass
         return watermarks
 
+    def snapshot_all_tables(self) -> Dict[str, List[Dict]]:
+        """
+        Take a complete snapshot of ALL tables in the database.
+        Used to detect UPDATEs on existing rows (not just INSERTs).
+        Only snapshots tables small enough to be practical (< 50,000 rows).
+        """
+        tables = self.execute_query("""
+            SELECT t.TABLE_NAME, p.rows as row_count
+            FROM INFORMATION_SCHEMA.TABLES t
+            JOIN sys.partitions p ON p.object_id = OBJECT_ID(t.TABLE_SCHEMA + '.' + t.TABLE_NAME)
+                AND p.index_id IN (0, 1)
+            WHERE t.TABLE_TYPE = 'BASE TABLE'
+            ORDER BY t.TABLE_NAME
+        """)
+        snapshots = {}
+        for t in tables:
+            table_name = t['TABLE_NAME']
+            row_count = t.get('row_count', 0) or 0
+            if row_count > 50000:
+                continue  # Skip very large tables — too slow to snapshot every cycle
+            try:
+                rows = self.execute_query(f"SELECT * FROM [{table_name}] WITH (NOLOCK)")
+                snapshots[table_name] = rows
+            except Exception:
+                pass
+        return snapshots
+
+    def diff_snapshots(self, before: Dict[str, List[Dict]],
+                       after: Dict[str, List[Dict]]) -> Dict[str, List[Dict]]:
+        """
+        Compare two full snapshots and return all changed rows across ALL tables.
+        Detects field-level changes on existing rows (UPDATEs).
+        New rows (INSERTs) are handled separately by watermark polling.
+
+        Returns {table_name: [{"row_key": k, "changes": [{field, before, after}], "full_row_after": row}, ...]}
+        """
+        all_changes = {}
+        for table in before:
+            if table not in after:
+                continue
+            before_rows = before[table]
+            after_rows = after[table]
+            if not before_rows or not after_rows:
+                continue
+
+            # Use 'id' as primary key if available, otherwise first column
+            key_col = 'id' if 'id' in before_rows[0] else list(before_rows[0].keys())[0]
+
+            before_by_key = {}
+            for r in before_rows:
+                k = r.get(key_col)
+                if k is not None:
+                    before_by_key[str(k).strip()] = r
+
+            for r in after_rows:
+                k = r.get(key_col)
+                if k is None:
+                    continue
+                key_str = str(k).strip()
+                old = before_by_key.get(key_str)
+                if old is None:
+                    continue  # New row — handled by watermark polling
+
+                # Compare every field
+                row_changes = []
+                for field in r:
+                    old_val = old.get(field)
+                    new_val = r[field]
+                    if old_val != new_val:
+                        row_changes.append({
+                            "field": field,
+                            "before": old_val,
+                            "after": new_val,
+                        })
+                if row_changes:
+                    if table not in all_changes:
+                        all_changes[table] = []
+                    all_changes[table].append({
+                        "row_key": key_str,
+                        "changes": row_changes,
+                        "full_row_after": r,
+                    })
+        return all_changes
+
 
 class TransactionMonitor:
     """
@@ -226,6 +310,7 @@ class TransactionMonitor:
         self._poll_interval: float = 5.0
         self._pending_groups: Dict[str, Dict] = {}  # Incomplete transaction groups
         self._opera_users: Set[str] = set()
+        self._last_snapshot: Optional[Dict[str, List[Dict]]] = None  # For UPDATE detection
         self._stats = {
             "started_at": None,
             "total_captured": 0,
@@ -322,7 +407,12 @@ class TransactionMonitor:
                                               last_connected_at=datetime.now().isoformat(),
                                               is_active=1)
 
-                # Poll for new rows
+                    # Take initial snapshot of all tables for UPDATE detection
+                    logger.info("Taking initial snapshot of all tables for change detection...")
+                    self._last_snapshot = self._connection.snapshot_all_tables()
+                    logger.info(f"Snapshotted {len(self._last_snapshot)} tables")
+
+                # Poll for new rows (INSERTs) AND detect field changes (UPDATEs)
                 self._poll_once()
                 self._stats["polls"] += 1
 
@@ -359,16 +449,38 @@ class TransactionMonitor:
             except Exception:
                 pass  # Table may not be readable, skip silently
 
-        if new_rows_by_table:
-            self._process_new_rows(new_rows_by_table)
+        # Detect UPDATE changes by comparing full table snapshots
+        update_changes: Dict[str, List[Dict]] = {}
+        if self._last_snapshot is not None:
+            try:
+                current_snapshot = self._connection.snapshot_all_tables()
+                update_changes = self._connection.diff_snapshots(self._last_snapshot, current_snapshot)
+                self._last_snapshot = current_snapshot
+            except Exception as e:
+                logger.warning(f"Snapshot diff error: {e}")
+
+        if new_rows_by_table or update_changes:
+            self._process_new_rows(new_rows_by_table, update_changes)
 
         # Finalize any pending groups older than 30 seconds
         self._finalize_stale_groups()
 
-    def _process_new_rows(self, new_rows_by_table: Dict[str, List[Dict]]):
-        """Group new rows into transactions and save."""
-        # Try to form transaction groups from the new rows
+    def _process_new_rows(self, new_rows_by_table: Dict[str, List[Dict]],
+                          update_changes: Dict[str, List[Dict]] = None):
+        """Group new rows into transactions, attach any UPDATE changes, and save."""
         groups = self._group_rows(new_rows_by_table)
+
+        # Attach UPDATE changes to relevant groups (or create standalone change records)
+        if update_changes:
+            for group in groups:
+                group["field_changes"] = update_changes  # All changes from this poll cycle
+            # If there are UPDATE changes but no new rows, still record the changes
+            if not groups and update_changes:
+                groups.append({
+                    "tables": {},
+                    "timestamp": datetime.now().isoformat(),
+                    "field_changes": update_changes,
+                })
 
         for group in groups:
             self._save_group(group)
@@ -549,11 +661,18 @@ class TransactionMonitor:
         pass
 
     def _save_group(self, group: Dict):
-        """Classify and save a transaction group."""
+        """Classify and save a transaction group with both INSERTs and UPDATEs."""
         tables_present = set(group["tables"].keys())
         all_rows = {}
         for tbl, rows in group["tables"].items():
             all_rows[tbl] = rows
+
+        # Include field changes (UPDATEs on existing rows) — same detail as transaction snapshot tool
+        field_changes = group.get("field_changes", {})
+        if field_changes:
+            tables_present.update(field_changes.keys())
+            # Store changes alongside inserted rows so the full picture is captured
+            all_rows["_field_changes"] = field_changes
 
         # Classify
         classification = self._classify(tables_present, all_rows)
@@ -581,6 +700,15 @@ class TransactionMonitor:
             else:
                 suspicious_reason = f"input_by '{input_by}' not in Opera user list"
 
+        # Build field summary — which fields were populated on new rows, which changed on existing
+        field_summary = {
+            "inserted_tables": {tbl: list(rows[0].keys()) if rows else [] for tbl, rows in group["tables"].items()},
+            "updated_tables": {tbl: [
+                {"row_key": c["row_key"], "fields_changed": [ch["field"] for ch in c["changes"]]}
+                for c in changes
+            ] for tbl, changes in field_changes.items()},
+        }
+
         # Save
         self.db.save_transaction(
             connection_id=self._connection_id,
@@ -592,6 +720,7 @@ class TransactionMonitor:
             input_by=input_by,
             tables=list(tables_present),
             rows=all_rows,
+            field_summary=field_summary,
         )
 
         self._stats["total_captured"] += 1
