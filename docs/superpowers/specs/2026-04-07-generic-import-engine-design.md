@@ -2,11 +2,20 @@
 
 ## Goal
 
-Build a generic data integration engine that lets users import transactions into Opera (and eventually other systems) from any external source — CSV, Excel, API, or email. Users map their data to the target system's fields using reusable templates. Every import is fully validated with plain-English error messages and audited before anything is posted.
+Build a generic integration engine that connects any external application to Opera's tables. Any system that produces data — HR, payroll, ecommerce, stock management, CRM, expenses — should be connectable to Opera without bespoke development. Users map external data to Opera fields using reusable templates. Every import is fully validated with plain-English error messages and audited before anything is posted.
 
 ## Problem
 
-Currently, each import pathway (GoCardless, bank statements, supplier statements) is a bespoke implementation. When a user needs to import data from a new source (payroll, stock system, expenses), there's no framework — it requires developer work every time. Users have spreadsheets of transactions they can't get into Opera without manual data entry.
+Currently, each integration (GoCardless, bank statements, supplier statements) is a bespoke implementation. Businesses run dozens of systems that need to flow into Opera:
+
+- **HR / Payroll** → salary journals, pension postings, employee master records into the Nominal Ledger
+- **Ecommerce** (Shopify, WooCommerce, Amazon) → sales orders, stock adjustments, customer creation, invoice/receipt posting
+- **Stock / Warehouse** → stock movements, counts, transfers, purchase orders
+- **CRM** → new customer/supplier creation, contact updates
+- **Expenses** (Dext, Concur) → purchase invoices, employee reimbursements
+- **Ad-hoc spreadsheets** → bulk journal entries, opening balances, data corrections
+
+Each of these currently requires developer work. The goal is: **define the mapping once, import forever**.
 
 ## Approach
 
@@ -82,6 +91,46 @@ Snapshots inform what fields matter. The registry codifies what the user provide
 - Stock: Adjustment, Transfer
 
 Types without an existing import method (e.g. Payroll) are not available until one is built. The registry enforces this — no method, no entry.
+
+### Composite Transaction Types
+
+Some integrations require a chain of related Opera postings from a single source row. For example:
+
+| Source | Opera Postings Required |
+|--------|------------------------|
+| Ecommerce order (Shopify) | Create customer (if new) → Sales order → Stock adjustment → Sales invoice → Receipt when paid |
+| Payroll journal (Sage) | Multiple nominal journal lines (salary, NI, pension, PAYE) per employee |
+| Expense claim (Dext) | Purchase invoice → Nominal posting → VAT record |
+| Stock receipt (warehouse system) | Purchase order receipt → Stock adjustment → GRN |
+
+A composite type is defined as an ordered sequence of registry entries:
+
+```
+{
+  "type_id": "ecommerce_order",
+  "label": "Ecommerce Order (Full Cycle)",
+  "steps": [
+    {"type": "customer_create", "condition": "if_not_exists"},
+    {"type": "sales_invoice", "required": true},
+    {"type": "stock_adjustment", "required": true},
+    {"type": "sales_receipt", "condition": "if_paid"}
+  ]
+}
+```
+
+Each step uses the same row data but maps different fields. Conditions control which steps execute. The pipeline validates the entire chain before posting any step.
+
+This is a Phase 2+ feature — Phase 1 handles single transaction types only. But the registry schema accommodates it from day one.
+
+### Template Library Strategy
+
+Pre-built templates are created by researching third-party system export formats:
+
+- **Web research**: export file layouts, API documentation, CSV column schemas for common systems (Sage, Xero, Shopify, QuickBooks, WooCommerce, Dext, etc.)
+- **Community knowledge**: common integration patterns documented by accountants and bookkeepers
+- **User contributions**: successful custom templates can be promoted to the shared library
+
+The library ships with the system. Users pick their source system from a list, upload their file, and import — no mapping required. For systems not in the library, the template builder handles it.
 
 ---
 
@@ -333,17 +382,34 @@ Optional enhancement on top of the template engine. AI suggests, user confirms.
 - Opera SE adapter wrapping existing import methods
 - **Opera 3 parity**: Phase 1 is SE-only by design. The core engine (templates, pipeline, UI) is adapter-agnostic — the Opera 3 adapter is added in Phase 3 via the write agent. This is acknowledged as a deliberate exception to the SE/Opera 3 parity rule, as the write agent must exist first.
 
-### Phase 2 — API & Email Ingestion
-- REST API endpoint for programmatic imports
+### Phase 2 — API Ingestion, Email & Composite Types
+- REST API endpoint for programmatic imports (third-party systems push data)
 - Email attachment monitoring and auto-ingestion
 - Auto-approve setting for trusted sources
 - API key authentication per integration
+- Composite transaction types (e.g. ecommerce order → invoice + stock + receipt)
 
-### Phase 3 — AI Assist & Additional Adapters
+### Phase 3 — AI Assist, Template Library & Additional Adapters
 - AI-assisted column mapping suggestions
 - AI data quality suggestions during validation
+- Pre-built template library from web research (Sage, Xero, Shopify, QuickBooks, WooCommerce, Dext, etc.)
 - Opera 3 adapter (via write agent)
 - Additional target system adapters as needed
+
+### Integration Roadmap (informs template library priorities)
+
+| Source System | Opera Module | Transaction Types |
+|--------------|-------------|-------------------|
+| Sage Payroll | Nominal Ledger | Salary journals, NI, pension, PAYE |
+| Shopify / WooCommerce | SOP + Stock + SL | Orders, stock adjust, invoices, receipts |
+| Amazon Seller | SOP + Stock + SL | Orders, FBA stock, settlement reports |
+| Dext / Concur | Purchase Ledger | Purchase invoices, expense claims |
+| Xero | All ledgers | Journals, invoices, payments, receipts |
+| Warehouse WMS | Stock | Stock movements, counts, transfers |
+| CRM (HubSpot etc.) | SL / PL master | Customer/supplier creation and updates |
+| Stripe / PayPal | Cashbook | Receipt posting with fee splitting |
+
+Priority is driven by user demand — the engine handles any of these once the template exists.
 
 ---
 
