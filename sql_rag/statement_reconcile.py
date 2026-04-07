@@ -504,9 +504,14 @@ Bank statements vary in layout — apply this logic:
 2. DATES: Find the statement date or period dates. May be labelled "Statement period", "From/To", or similar.
 
 3. OPENING BALANCE: Apply in order:
-   a) If labelled ("Balance brought forward", "Opening balance", "Previous balance") — use it
+   a) If explicitly labelled ("Balance brought forward", "Opening balance", "Previous balance") — use it
    b) If there is a summary section showing starting balance — use it
-   c) If neither, find the first transaction's running balance and reverse it: opening = balance - money_in + money_out
+   c) If NEITHER of the above, you MUST calculate it from the first transaction:
+      - Find the first transaction's running balance, money_in, and money_out
+      - opening = running_balance - money_in + money_out
+      - Example: if first transaction balance is £5000, money_out is £100, opening = £5000 + £100 = £5100
+      - The running balance AFTER a transaction is NOT the opening balance — you must reverse the transaction
+   CRITICAL: Do NOT use the first running balance as the opening balance unless it is explicitly labelled as such
 
 4. CLOSING BALANCE: Apply in order:
    a) If labelled ("Balance carried forward", "Closing balance") — use it
@@ -744,6 +749,30 @@ A typical business bank statement has 20-100+ transactions.
         closing_bal_raw = info_data.get('closing_balance')
         opening_balance = _safe_float(opening_bal_raw)
         closing_balance = _safe_float(closing_bal_raw)
+
+        # Verify opening balance by calculating from first transaction.
+        # Many banks (e.g. Monzo) don't show an explicit opening balance —
+        # the AI may incorrectly use the first running balance instead of
+        # reversing it. Always recalculate: opening = first_balance - money_in + money_out
+        if raw_transactions and len(raw_transactions) > 0:
+            first_txn = raw_transactions[0]
+            first_bal = _safe_float(first_txn.get('balance'))
+            first_in = abs(_safe_float(first_txn.get('money_in')) or 0)
+            first_out = abs(_safe_float(first_txn.get('money_out')) or 0)
+            if first_bal is not None and (first_in > 0 or first_out > 0):
+                calculated_opening = round(first_bal - first_in + first_out, 2)
+                if opening_balance is not None and abs(opening_balance - calculated_opening) > 0.01:
+                    logger.info(
+                        f"Opening balance corrected: AI extracted £{opening_balance:,.2f}, "
+                        f"calculated from first transaction £{calculated_opening:,.2f} "
+                        f"(first_bal={first_bal}, in={first_in}, out={first_out})"
+                    )
+                    opening_balance = calculated_opening
+                    info_data['opening_balance'] = calculated_opening
+                elif opening_balance is None:
+                    opening_balance = calculated_opening
+                    info_data['opening_balance'] = calculated_opening
+                    logger.info(f"Opening balance calculated from first transaction: £{calculated_opening:,.2f}")
 
         # Validate opening and closing balances using the transaction chain.
         # Walk from opening balance, finding each next transaction where
