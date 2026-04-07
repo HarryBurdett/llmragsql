@@ -28,7 +28,8 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / 'config.ini'
 from sql_rag.statement_reconcile import (
     StatementTransaction,
     ReconciliationMatch,
-    StatementInfo
+    StatementInfo,
+    _safe_float
 )
 
 
@@ -379,49 +380,86 @@ IMPORTANT: Return actual values from this document, not examples. Return ONLY va
                 return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
 
         # Use Gemini to extract transactions
-        extraction_prompt = """Analyze this bank statement PDF and extract ALL transactions and statement details.
+        extraction_prompt = """You are extracting data from a bank statement PDF. Process ALL pages.
 
-CRITICAL INSTRUCTIONS:
-1. Extract the ACTUAL values from this specific PDF document
-2. Do NOT use example/placeholder values like "2024-01-01" or 1000.00
-3. Look carefully at the statement header area for account details and balances
+STEP 1 — IDENTIFY STATEMENT FORMAT:
+Scan the entire document FIRST before extracting anything. Determine:
 
-Return a JSON object with this structure:
+a) FORMAT — how balances are presented:
+   - "running_balance": Each transaction line has a running balance column
+   - "summary_and_transactions": A summary section (opening/closing/totals) PLUS transaction list with balances
+   - "summary_only": Only summary totals, no individual transactions with balances
+   - "no_balance": Transactions have amounts but no running balance column and no summary
+
+b) TRANSACTION ORDER — are transactions listed:
+   - "oldest_first": Earliest date at top (most common)
+   - "newest_first": Latest date at top (some online/fintech banks)
+
+c) SUMMARY — if there is a summary section on the statement showing any of:
+   opening balance, closing balance, total money in, total money out
+
+STEP 2 — EXTRACT ACCOUNT DETAILS:
+Find these wherever they appear in the document:
+- Bank name (logo, header, or watermark)
+- Account number and sort code
+- Statement date or period dates
+
+STEP 3 — EXTRACT EVERY TRANSACTION:
+Go through every page systematically and extract every transaction row.
+Each transaction has: date, description, amount (in or out), and possibly a running balance.
+Do NOT stop after the first page. Continue until no more transactions remain.
+
+STEP 4 — REPORT BALANCES (DO NOT CALCULATE):
+- opening_balance: ONLY set this if the statement EXPLICITLY labels an opening balance
+  (e.g. "Balance brought forward", "Opening balance", "Previous balance").
+  If no explicit label exists, set to null — the code will calculate it.
+- closing_balance: If labelled ("Balance carried forward", "Closing balance") use it.
+  Otherwise use the running balance on the very last transaction.
+- summary: If a summary section exists, report its values. Otherwise set all to null.
+
+Return this JSON structure:
 {
     "statement_info": {
-        "bank_name": "The bank name shown on the statement (e.g., NatWest, Barclays, HSBC, Lloyds)",
-        "account_number": "The actual account number from the statement",
-        "sort_code": "The actual sort code (e.g., 12-34-56)",
-        "statement_date": "The date of the statement in YYYY-MM-DD format",
-        "period_start": "The period FROM date in YYYY-MM-DD format (often shown as 'Statement period: DD Mon YYYY to DD Mon YYYY')",
-        "period_end": "The period TO date in YYYY-MM-DD format",
-        "opening_balance": "The OPENING/BROUGHT FORWARD balance as a decimal number (e.g., 12345.67)",
-        "closing_balance": "The CLOSING/CARRIED FORWARD balance as a decimal number"
+        "bank_name": "Bank name",
+        "account_number": "Account number",
+        "sort_code": "Sort code",
+        "statement_date": "YYYY-MM-DD",
+        "period_start": "YYYY-MM-DD",
+        "period_end": "YYYY-MM-DD",
+        "format": "running_balance",
+        "transaction_order": "oldest_first",
+        "summary": {
+            "opening_balance": null,
+            "closing_balance": null,
+            "total_in": null,
+            "total_out": null
+        },
+        "opening_balance": null,
+        "closing_balance": 12345.67
     },
     "transactions": [
         {
             "date": "YYYY-MM-DD",
-            "description": "Full description text from statement",
-            "money_out": null or amount,
-            "money_in": null or amount,
-            "balance": null or running balance,
-            "type": "DD|STO|Giro|Card|Transfer|Other",
-            "reference": "Any reference number if present"
+            "description": "Full description text",
+            "money_out": null,
+            "money_in": null,
+            "balance": null,
+            "type": "DD|STO|Giro|Card|FP|BGC|Transfer|BACS|CHQ|Other",
+            "reference": null
         }
     ]
 }
 
-IMPORTANT EXTRACTION RULES:
-- opening_balance: Look for "Balance brought forward", "Opening balance", "Previous balance", "Money in/out" summary start balance, or the balance at the very start of the period. For Monzo/fintech: check the summary section showing starting balance
-- closing_balance: Look for "Balance carried forward", "Closing balance", end balance, or the balance at the very end of the period
-- Extract EVERY transaction — do not skip any. Include ALL pages of the statement
-- For UK bank statements, balances are typically in GBP (£) - extract just the number
-- period_start and period_end: Usually shown near the top as "Statement period" or similar
-- Extract EVERY transaction row, including DD (Direct Debit), STO (Standing Order), Giro credits, card payments
-- Use the year from the statement period for transaction dates if only day/month shown
-- money_out = payments/debits (money leaving the account)
-- money_in = receipts/credits (money entering the account)
-- Return ONLY valid JSON, no other text or explanation"""
+RULES:
+- Extract ACTUAL values from this document — never use placeholder values
+- opening_balance in statement_info: ONLY if explicitly labelled on statement, otherwise null
+- summary: report what the statement shows, null for anything not present
+- money_out = payments/debits leaving the account, money_in = receipts/credits entering
+- Amounts as numbers without currency symbols (e.g. 1234.56 not £1,234.56)
+- Use the year from the statement period if transaction dates show only day/month
+- Include running balance for each transaction if shown on the statement
+- Return ONLY valid JSON — no other text
+- CRITICAL: Extract EVERY transaction from EVERY page. Do not truncate or summarise."""
 
         # Create the file part for Gemini
         file_part = {
@@ -464,6 +502,103 @@ IMPORTANT EXTRACTION RULES:
 
         return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
 
+    def _calculate_opening_balance(self, transactions, closing_balance, info_data):
+        """
+        Calculate opening balance from transactions using dual-interpretation chain validation.
+
+        Try both interpretations of the first transaction's balance:
+        1. Balance INCLUDES the transaction (reverse it to get opening)
+        2. Balance IS the opening (transaction not yet applied)
+
+        Whichever chains to the closing balance is correct.
+        """
+        if not transactions:
+            return None
+
+        # Sort by date chronologically (earliest first)
+        sorted_txns = sorted(transactions, key=lambda t: t.get('date') or '9999')
+
+        # Find first real transaction (has amount AND balance)
+        first_real = None
+        first_idx = 0
+        for i, t in enumerate(sorted_txns):
+            mi = abs(_safe_float(t.get('money_in')) or 0)
+            mo = abs(_safe_float(t.get('money_out')) or 0)
+            bal = _safe_float(t.get('balance'))
+            if bal is not None and (mi > 0 or mo > 0):
+                first_real = t
+                first_idx = i
+                break
+
+        if first_real is None:
+            # No transaction with both amount and balance
+            # Try first line with a balance as opening
+            for t in sorted_txns:
+                bal = _safe_float(t.get('balance'))
+                if bal is not None:
+                    logger.info(f"Opening balance: no real transactions with balance, using first balance line = {bal}")
+                    return bal
+            return None
+
+        first_bal = _safe_float(first_real.get('balance'))
+        first_in = abs(_safe_float(first_real.get('money_in')) or 0)
+        first_out = abs(_safe_float(first_real.get('money_out')) or 0)
+
+        # Interpretation A: balance INCLUDES the transaction
+        opening_a = round(first_bal + first_out - first_in, 2)
+
+        # Interpretation B: balance IS the opening (transaction on next line)
+        opening_b = first_bal
+
+        logger.info(f"Opening balance candidates: A (includes txn) = {opening_a}, B (is opening) = {opening_b}")
+        logger.info(f"  First real txn: bal={first_bal}, in={first_in}, out={first_out}")
+
+        # Chain validate both interpretations
+        def _chain_validates(opening, txns):
+            current = opening
+            for t in txns:
+                mi = abs(_safe_float(t.get('money_in')) or 0)
+                mo = abs(_safe_float(t.get('money_out')) or 0)
+                bal = _safe_float(t.get('balance'))
+                if bal is None:
+                    continue
+                if mi == 0 and mo == 0:
+                    continue  # Balance-only line
+                expected = round(current + mi - mo, 2)
+                if abs(expected - bal) > 0.02:
+                    return False
+                current = bal
+            # Check final balance matches closing
+            if closing_balance is not None:
+                return abs(current - closing_balance) < 0.02
+            return True  # No closing to check against
+
+        # Test from the first real transaction onwards
+        test_txns = sorted_txns[first_idx:]
+
+        a_valid = _chain_validates(opening_a, test_txns)
+        b_valid = _chain_validates(opening_b, test_txns)
+
+        if a_valid and not b_valid:
+            logger.info(f"Opening balance: interpretation A (includes txn) = {opening_a}")
+            return opening_a
+        elif b_valid and not a_valid:
+            logger.info(f"Opening balance: interpretation B (is opening) = {opening_b}")
+            return opening_b
+        elif a_valid and b_valid:
+            # Both work — use A (more common pattern)
+            logger.info(f"Opening balance: both interpretations valid, using A = {opening_a}")
+            return opening_a
+        else:
+            logger.warning(f"Opening balance: neither interpretation chains. A={opening_a}, B={opening_b}")
+            # Return whichever is closer to any summary opening
+            summary = info_data.get('summary') or {}
+            summary_opening = _safe_float(summary.get('opening_balance'))
+            if summary_opening is not None:
+                logger.info(f"Opening balance: falling back to summary opening = {summary_opening}")
+                return summary_opening
+            return opening_a  # Best guess
+
     def _parse_extraction_result(
         self,
         info_data: Dict[str, Any],
@@ -481,19 +616,23 @@ IMPORTANT EXTRACTION RULES:
         Returns:
             Tuple of (StatementInfo, list of StatementTransaction)
         """
-        # Parse balance values - Gemini may return them as strings (possibly with commas)
-        def _safe_float(val):
-            if val is None: return None
-            if isinstance(val, (int, float)): return float(val)
-            s = str(val).replace(',', '').replace('£', '').replace('$', '').strip()
-            return float(s) if s else None
-
         opening_bal_raw = info_data.get('opening_balance')
         closing_bal_raw = info_data.get('closing_balance')
         opening_balance = _safe_float(opening_bal_raw)
         closing_balance = _safe_float(closing_bal_raw)
 
-        # Validate closing balance using transaction chain from opening.
+        # Calculate opening balance from transactions — never trust AI's opening balance.
+        # Uses dual-interpretation chain validation to determine the correct value.
+        calculated_opening = self._calculate_opening_balance(raw_transactions, closing_balance, info_data)
+        if calculated_opening is not None:
+            if opening_balance is not None and abs(opening_balance - calculated_opening) > 0.01:
+                logger.info(f"Opening balance overridden: AI={opening_balance}, calculated={calculated_opening}")
+            elif opening_balance is None:
+                logger.info(f"Opening balance calculated (AI had none): {calculated_opening}")
+            opening_balance = calculated_opening
+            info_data['opening_balance'] = calculated_opening
+
+        # Validate closing balance using the transaction chain from the calculated opening.
         if raw_transactions and opening_balance is not None:
             try:
                 remaining = list(range(len(raw_transactions)))
@@ -505,8 +644,8 @@ IMPORTANT EXTRACTION RULES:
                         if idx in chain_used:
                             continue
                         t = raw_transactions[idx]
-                        mi = _safe_float(t.get('money_in')) or 0
-                        mo = _safe_float(t.get('money_out')) or 0
+                        mi = abs(_safe_float(t.get('money_in')) or 0)
+                        mo = abs(_safe_float(t.get('money_out')) or 0)
                         txn_bal = _safe_float(t.get('balance'))
                         if txn_bal is None:
                             continue
@@ -520,8 +659,14 @@ IMPORTANT EXTRACTION RULES:
                         break
                 if chain_used:
                     closing_balance = current_bal
-            except Exception:
-                pass
+                    excluded = len(raw_transactions) - len(chain_used)
+                    if excluded > 0:
+                        logger.info(f"Balance chain: {len(chain_used)}/{len(raw_transactions)} transactions chained, "
+                                    f"{excluded} excluded (wrong account?), closing=£{closing_balance:,.2f}")
+                    else:
+                        logger.info(f"Balance chain: all {len(chain_used)} transactions chained, closing=£{closing_balance:,.2f}")
+            except Exception as chain_err:
+                logger.warning(f"Balance chain validation failed: {chain_err}")
 
         statement_info = StatementInfo(
             bank_name=info_data.get('bank_name', 'Unknown'),

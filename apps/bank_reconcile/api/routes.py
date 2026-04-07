@@ -1731,11 +1731,6 @@ async def get_imported_statements_for_reconciliation(
                         rec_bal = rec_balances.get(bc)
                         if rec_bal is not None:
                             stmt['opera_reconciled_balance'] = rec_bal
-                            # Override AI opening balance with Opera reconciled balance
-                            # The AI extraction is unreliable for banks like Monzo
-                            # that don't have an explicit opening balance line.
-                            # Opera's nk_recbal is the authoritative opening balance.
-                            stmt['opening_balance'] = rec_bal
                             # If closing balance matches Opera reconciled balance, statement is complete
                             closing = stmt.get('closing_balance')
                             if closing is not None and abs(float(closing) - rec_bal) < 0.02:
@@ -4814,16 +4809,25 @@ async def scan_folder_for_bank_statements(
                     else:
                         # Cache miss — run lightweight extraction to get balances/bank info
                         # This uses Gemini but only asks for header info, not transactions
-                        logger.info(f"Scan cache MISS for {filename} — running lightweight extraction")
+                        logger.info(f"Scan cache MISS for {filename} — running full extraction")
                         try:
                             from sql_rag.statement_reconcile import StatementReconciler
                             reconciler = StatementReconciler(
                                 sql_connector,
                                 gemini_api_key=_load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
                             )
-                            info_data = reconciler.extract_statement_info_only(str(file_path))
+                            stmt_info_result, _ = reconciler.extract_transactions_from_pdf(str(file_path))
+                            info_data = {
+                                'opening_balance': stmt_info_result.opening_balance,
+                                'closing_balance': stmt_info_result.closing_balance,
+                                'period_start': stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None,
+                                'period_end': stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None,
+                                'bank_name': stmt_info_result.bank_name,
+                                'account_number': stmt_info_result.account_number,
+                                'sort_code': stmt_info_result.sort_code,
+                            }
                         except Exception as ex:
-                            logger.warning(f"Lightweight extraction failed for {filename}: {ex}")
+                            logger.warning(f"Full extraction failed for {filename}: {ex}")
 
                     if info_data:
                         stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
@@ -5488,8 +5492,8 @@ async def scan_emails_for_bank_statements(
                                                         except:
                                                             pass
                                         else:
-                                            # Cache miss — run lightweight extraction to get balances
-                                            logger.info(f"Scan cache MISS for {att['filename']} — running lightweight extraction")
+                                            # Cache miss — run full extraction to get balances
+                                            logger.info(f"Scan cache MISS for {att['filename']} — running full extraction")
                                             try:
                                                 import tempfile
                                                 from sql_rag.statement_reconcile import StatementReconciler
@@ -5499,21 +5503,20 @@ async def scan_emails_for_bank_statements(
                                                 try:
                                                     _api_key = _load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
                                                     reconciler = StatementReconciler(sql_connector, gemini_api_key=_api_key)
-                                                    info_data = reconciler.extract_statement_info_only(tmp_path)
-                                                    if info_data:
-                                                        att['period_start'] = info_data.get('period_start')
-                                                        att['period_end'] = info_data.get('period_end')
-                                                        att['bank_name'] = info_data.get('bank_name')
-                                                        att['account_number'] = info_data.get('account_number')
-                                                        att['sort_code'] = info_data.get('sort_code')
-                                                        att['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
-                                                        if info_data.get('opening_balance') is not None:
-                                                            statement_opening_balance = float(info_data['opening_balance'])
-                                                            att['opening_balance'] = statement_opening_balance
+                                                    stmt_info_result, _ = reconciler.extract_transactions_from_pdf(tmp_path)
+                                                    att['period_start'] = stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None
+                                                    att['period_end'] = stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None
+                                                    att['bank_name'] = stmt_info_result.bank_name
+                                                    att['account_number'] = stmt_info_result.account_number
+                                                    att['sort_code'] = stmt_info_result.sort_code
+                                                    att['closing_balance'] = stmt_info_result.closing_balance
+                                                    if stmt_info_result.opening_balance is not None:
+                                                        statement_opening_balance = stmt_info_result.opening_balance
+                                                        att['opening_balance'] = statement_opening_balance
                                                 finally:
                                                     os.unlink(tmp_path)
                                             except Exception as ex:
-                                                logger.warning(f"Lightweight extraction failed for {att['filename']}: {ex}")
+                                                logger.warning(f"Full extraction failed for {att['filename']}: {ex}")
                             except Exception as e:
                                 logger.warning(f"Could not validate PDF statement info: {e}")
                                 pass
@@ -6206,8 +6209,8 @@ async def scan_all_banks_for_statements(
 
                                         pdf_extracted = True
                                     else:
-                                        # Cache miss — lightweight AI extraction for balances only
-                                        logger.info(f"Scan-all: cache MISS for {filename} — extracting statement info")
+                                        # Cache miss — full AI extraction for balances and transactions
+                                        logger.info(f"Scan-all: cache MISS for {filename} — running full extraction")
                                         try:
                                             import tempfile
                                             with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
@@ -6216,25 +6219,24 @@ async def scan_all_banks_for_statements(
                                             try:
                                                 from sql_rag.statement_reconcile import StatementReconciler
                                                 reconciler = StatementReconciler(sql_connector, config=config)
-                                                info_data = reconciler.extract_statement_info_only(tmp_path)
-                                                if info_data:
-                                                    opening = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
-                                                    closing = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
-                                                    stmt_entry['opening_balance'] = opening
-                                                    stmt_entry['closing_balance'] = closing
-                                                    stmt_entry['period_start'] = info_data.get('period_start')
-                                                    stmt_entry['period_end'] = info_data.get('period_end')
-                                                    stmt_entry['bank_name'] = info_data.get('bank_name')
-                                                    stmt_entry['account_number'] = info_data.get('account_number')
-                                                    stmt_entry['sort_code'] = info_data.get('sort_code')
+                                                stmt_info_result, _ = reconciler.extract_transactions_from_pdf(tmp_path)
+                                                opening = stmt_info_result.opening_balance
+                                                closing = stmt_info_result.closing_balance
+                                                stmt_entry['opening_balance'] = opening
+                                                stmt_entry['closing_balance'] = closing
+                                                stmt_entry['period_start'] = stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None
+                                                stmt_entry['period_end'] = stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None
+                                                stmt_entry['bank_name'] = stmt_info_result.bank_name
+                                                stmt_entry['account_number'] = stmt_info_result.account_number
+                                                stmt_entry['sort_code'] = stmt_info_result.sort_code
 
-                                                    stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
-                                                    stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
-                                                    if stmt_sort and stmt_acct:
-                                                        matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct)) or matched_bank_code
+                                                stmt_sort = (stmt_info_result.sort_code or '').replace('-', '').replace(' ', '').strip()
+                                                stmt_acct = (stmt_info_result.account_number or '').replace('-', '').replace(' ', '').strip()
+                                                if stmt_sort and stmt_acct:
+                                                    matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct)) or matched_bank_code
 
-                                                    pdf_extracted = True
-                                                    logger.info(f"Scan-all: extracted {filename} — open={opening} close={closing}")
+                                                pdf_extracted = True
+                                                logger.info(f"Scan-all: extracted {filename} — open={opening} close={closing}")
                                             finally:
                                                 import os as _os2
                                                 try:
@@ -10988,8 +10990,8 @@ async def opera3_scan_emails_for_bank_statements(
                                                     except:
                                                         pass
                                         else:
-                                            # Cache miss — run lightweight extraction to get balances
-                                            logger.info(f"Opera 3 scan cache MISS for {att['filename']} — running lightweight extraction")
+                                            # Cache miss — run full extraction to get balances
+                                            logger.info(f"Opera 3 scan cache MISS for {att['filename']} — running full extraction")
                                             try:
                                                 import tempfile
                                                 from sql_rag.statement_reconcile import StatementReconciler
@@ -10999,21 +11001,20 @@ async def opera3_scan_emails_for_bank_statements(
                                                 try:
                                                     _api_key = _load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
                                                     reconciler = StatementReconciler(sql_connector, gemini_api_key=_api_key)
-                                                    info_data = reconciler.extract_statement_info_only(tmp_path)
-                                                    if info_data:
-                                                        att['period_start'] = info_data.get('period_start')
-                                                        att['period_end'] = info_data.get('period_end')
-                                                        att['bank_name'] = info_data.get('bank_name')
-                                                        att['account_number'] = info_data.get('account_number')
-                                                        att['sort_code'] = info_data.get('sort_code')
-                                                        att['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
-                                                        if info_data.get('opening_balance') is not None:
-                                                            statement_opening_balance = float(info_data['opening_balance'])
-                                                            att['opening_balance'] = statement_opening_balance
+                                                    stmt_info_result, _ = reconciler.extract_transactions_from_pdf(tmp_path)
+                                                    att['period_start'] = stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None
+                                                    att['period_end'] = stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None
+                                                    att['bank_name'] = stmt_info_result.bank_name
+                                                    att['account_number'] = stmt_info_result.account_number
+                                                    att['sort_code'] = stmt_info_result.sort_code
+                                                    att['closing_balance'] = stmt_info_result.closing_balance
+                                                    if stmt_info_result.opening_balance is not None:
+                                                        statement_opening_balance = stmt_info_result.opening_balance
+                                                        att['opening_balance'] = statement_opening_balance
                                                 finally:
                                                     os.unlink(tmp_path)
                                             except Exception as ex:
-                                                logger.warning(f"Opera 3 lightweight extraction failed for {att['filename']}: {ex}")
+                                                logger.warning(f"Opera 3 full extraction failed for {att['filename']}: {ex}")
                             except Exception as e:
                                 logger.warning(f"Opera 3: Could not validate statement balance: {e}")
                                 pass
