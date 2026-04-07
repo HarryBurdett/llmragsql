@@ -92,6 +92,26 @@ Snapshots inform what fields matter. The registry codifies what the user provide
 
 Types without an existing import method (e.g. Payroll) are not available until one is built. The registry enforces this — no method, no entry.
 
+### Conditional Field Requirements
+
+Some fields are only mandatory depending on the target account's configuration in Opera. For example:
+
+- **Department code**: mandatory for some nominal accounts (`nacnt` analysis settings), optional for others
+- **Project code**: same — account-specific
+- **VAT code**: required for purchase/sales invoices, not for bank transfers
+
+These cannot be expressed as simple required/optional in the registry. Instead, the field is marked as `conditionally_required` and the adapter checks the actual Opera account at validation time:
+
+```
+{"name": "department_code", "label": "Department", "required": "conditional",
+ "condition": "Check nacnt analysis settings for the target nominal account"}
+```
+
+The adapter resolves this during dry-run validation and returns a plain-English message:
+"Row 3: Account 7100 (Motor Expenses) requires a department code — add a Department column or set a default in the template."
+
+This is a key reason snapshots are essential — only by observing real transactions to different accounts can we discover which conditions apply.
+
 ### Composite Transaction Types
 
 Some integrations require a chain of related Opera postings from a single source row. For example:
