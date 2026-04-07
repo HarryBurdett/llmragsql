@@ -7616,8 +7616,8 @@ async def get_gocardless_due_invoices(
         mandate_lookup = {m['opera_account'].strip(): m for m in mandates if m.get('opera_account')}
 
         # Build lookup of invoices that already have active payment requests
-        # (pending, pending_submission, submitted, confirmed — i.e. not yet paid/failed/cancelled)
-        active_statuses = ('pending', 'pending_submission', 'submitted', 'confirmed')
+        # Block anything not cancelled/failed — including paid_out (collected but not posted)
+        active_statuses = ('pending', 'pending_submission', 'submitted', 'confirmed', 'paid_out', 'posted')
         pending_invoice_requests: Dict[str, Dict] = {}  # invoice_ref -> request info
         try:
             all_requests = payments_db.list_payment_requests()
