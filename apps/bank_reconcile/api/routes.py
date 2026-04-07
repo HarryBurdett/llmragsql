@@ -6533,6 +6533,27 @@ async def scan_all_banks_for_statements(
                         stmt_entry['account_number'] = bank_info_ref['account_number']
                         logger.info(f"Matched {filename} to {matched_bank_code} via folder name '{folder_name}'")
 
+                        # If matched by folder but no extraction data, extract from the local file
+                        if stmt_entry.get('opening_balance') is None and validate_balances:
+                            try:
+                                from sql_rag.statement_reconcile import StatementReconciler
+                                reconciler = StatementReconciler(
+                                    sql_connector,
+                                    gemini_api_key=_load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
+                                )
+                                logger.info(f"Folder match: extracting {filename} for balance data")
+                                stmt_info_result, _ = reconciler.extract_transactions_from_pdf(str(file_path))
+                                stmt_entry['opening_balance'] = stmt_info_result.opening_balance
+                                stmt_entry['closing_balance'] = stmt_info_result.closing_balance
+                                stmt_entry['period_start'] = stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None
+                                stmt_entry['period_end'] = stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None
+                                stmt_entry['bank_name'] = stmt_info_result.bank_name
+                                stmt_entry['account_number'] = stmt_info_result.account_number
+                                stmt_entry['sort_code'] = stmt_info_result.sort_code
+                                logger.info(f"Folder match: {filename} extracted open={stmt_info_result.opening_balance} close={stmt_info_result.closing_balance}")
+                            except Exception as ex:
+                                logger.warning(f"Folder match: extraction failed for {filename}: {ex}")
+
                 # Assign to matched bank, non-current, or not_classified
                 cat = stmt_entry.get('category')
                 if matched_bank_code and cat in ('already_processed', 'old_statement'):
