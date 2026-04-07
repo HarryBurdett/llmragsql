@@ -1731,6 +1731,11 @@ async def get_imported_statements_for_reconciliation(
                         rec_bal = rec_balances.get(bc)
                         if rec_bal is not None:
                             stmt['opera_reconciled_balance'] = rec_bal
+                            # Override AI opening balance with Opera reconciled balance
+                            # The AI extraction is unreliable for banks like Monzo
+                            # that don't have an explicit opening balance line.
+                            # Opera's nk_recbal is the authoritative opening balance.
+                            stmt['opening_balance'] = rec_bal
                             # If closing balance matches Opera reconciled balance, statement is complete
                             closing = stmt.get('closing_balance')
                             if closing is not None and abs(float(closing) - rec_bal) < 0.02:
