@@ -7452,6 +7452,29 @@ async def get_collectable_invoices(
         total_collectable = 0
         total_with_mandate = 0
 
+        # Build lookup for invoices that already have active payment requests
+        # Prevents duplicate GoCardless collections
+        already_requested_invoices = set()
+        try:
+            gc_db = sqlite3.connect(str(payments_db.db_path))
+            gc_c = gc_db.cursor()
+            gc_c.execute("""
+                SELECT invoice_refs FROM gocardless_payment_requests
+                WHERE status NOT IN ('cancelled', 'failed', 'charged_back')
+            """)
+            for row in gc_c.fetchall():
+                refs = row[0]
+                if refs:
+                    import json as _json
+                    try:
+                        for ref in _json.loads(refs):
+                            already_requested_invoices.add(str(ref).strip())
+                    except (ValueError, TypeError):
+                        pass
+            gc_db.close()
+        except Exception as e:
+            logger.warning(f"Could not check existing payment requests: {e}")
+
         # Build lookup for subscription source docs
         sub_account_docs = {}
         all_subs = payments_db.list_subscriptions()
@@ -7507,6 +7530,7 @@ async def get_collectable_invoices(
                     'trans_type': 'Invoice' if trans_type == 1 else 'Credit Note',
                     'is_subscription': is_subscription,
                     'source_doc': source_doc,
+                    'payment_requested': invoice_ref in already_requested_invoices,
                 }
 
                 invoices.append(invoice_data)
@@ -7871,6 +7895,35 @@ async def request_gocardless_payment(
     """
     try:
         payments_db = get_payments_db()
+
+        # Check for duplicate payment requests — prevent collecting the same invoice twice
+        if invoices:
+            try:
+                gc_db = sqlite3.connect(str(payments_db.db_path))
+                gc_c = gc_db.cursor()
+                gc_c.execute("""
+                    SELECT invoice_refs, status, payment_id FROM gocardless_payment_requests
+                    WHERE opera_account = ? AND status NOT IN ('cancelled', 'failed', 'charged_back')
+                """, (opera_account,))
+                import json as _json
+                for row in gc_c.fetchall():
+                    existing_refs = []
+                    try:
+                        existing_refs = _json.loads(row[0]) if row[0] else []
+                    except (ValueError, TypeError):
+                        pass
+                    overlap = set(invoices) & set(existing_refs)
+                    if overlap:
+                        gc_db.close()
+                        return {
+                            "success": False,
+                            "error": f"Payment already requested for invoice(s): {', '.join(overlap)}. "
+                                     f"Existing request status: {row[1]}. "
+                                     f"Cancel the existing request first to avoid duplicate collection."
+                        }
+                gc_db.close()
+            except Exception as dup_err:
+                logger.warning(f"Could not check for duplicate payment requests: {dup_err}")
 
         # Get mandate for customer
         mandate = payments_db.get_mandate_for_customer(opera_account)
