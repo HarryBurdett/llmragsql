@@ -86,6 +86,9 @@ export function TransactionSnapshot() {
         setPhase('idle');
         setResult(data);
         setError(null);
+        setModule('');
+        setName('');
+        setDescription('');
         refetchLibrary();
       } else {
         setError(data.error || 'Failed to take after snapshot');
