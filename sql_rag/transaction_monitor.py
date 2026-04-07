@@ -69,8 +69,19 @@ class OperaMonitorConnection:
 
     def connect(self):
         import pyodbc
+        # Auto-detect available SQL Server ODBC driver (same logic as sql_connector.py)
+        driver = "ODBC Driver 17 for SQL Server"
+        try:
+            drivers = pyodbc.drivers()
+            for d in drivers:
+                if 'SQL Server' in d:
+                    driver = d
+                    break
+        except Exception:
+            pass
+
         conn_str = (
-            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+            f"DRIVER={{{driver}}};"
             f"SERVER={self.server_host},{self.server_port};"
             f"DATABASE={self.database_name};"
             f"UID={self.username};"
