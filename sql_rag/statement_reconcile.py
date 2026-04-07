@@ -550,29 +550,11 @@ RULES:
                 return None
             info_data = json.loads(json_match.group())
 
-            # Verify opening balance using first transaction data
-            # If the AI didn't label it and we have first transaction, recalculate
-            if not info_data.get('opening_balance_labelled', True):
-                first_txn = info_data.get('first_transaction', {})
-                if first_txn:
-                    def _sf(v):
-                        if v is None: return 0.0
-                        if isinstance(v, (int, float)): return float(v)
-                        s = str(v).replace(',', '').replace('£', '').strip()
-                        return float(s) if s else 0.0
-                    fb = _sf(first_txn.get('balance'))
-                    fi = abs(_sf(first_txn.get('money_in')))
-                    fo = abs(_sf(first_txn.get('money_out')))
-                    if fb and (fi > 0 or fo > 0):
-                        calculated = round(fb - fi + fo, 2)
-                        ai_opening = _sf(info_data.get('opening_balance'))
-                        if abs(calculated - ai_opening) > 0.01:
-                            logger.info(
-                                f"Opening balance corrected during scan: "
-                                f"AI={ai_opening:,.2f}, calculated={calculated:,.2f} "
-                                f"(first_bal={fb}, in={fi}, out={fo})"
-                            )
-                            info_data['opening_balance'] = calculated
+            # Log the AI's first transaction data for debugging
+            first_txn = info_data.pop('first_transaction', None)
+            info_data.pop('opening_balance_labelled', None)
+            if first_txn:
+                logger.info(f"AI first_transaction: {first_txn}")
 
             # Mark as info-only so full extraction knows to re-extract
             info_data['_info_only'] = True
@@ -786,12 +768,22 @@ A typical business bank statement has 20-100+ transactions.
         opening_balance = _safe_float(opening_bal_raw)
         closing_balance = _safe_float(closing_bal_raw)
 
-        # Verify opening balance by calculating from first transaction.
-        # Many banks (e.g. Monzo) don't show an explicit opening balance —
-        # the AI may incorrectly use the first running balance instead of
-        # reversing it. Always recalculate: opening = first_balance - money_in + money_out
+        # Verify opening balance by calculating from first transaction (in date order).
+        # Many banks don't show an explicit opening balance — the AI may use the
+        # first running balance instead of reversing it.
+        # Recalculate: opening = first_balance - money_in + money_out
         if raw_transactions and len(raw_transactions) > 0:
-            first_txn = raw_transactions[0]
+            # Find the first transaction that has a balance and an amount
+            # (skip "Start Balance" or balance-only lines)
+            first_txn = None
+            for t in raw_transactions:
+                mi = abs(_safe_float(t.get('money_in')) or 0)
+                mo = abs(_safe_float(t.get('money_out')) or 0)
+                if (mi > 0 or mo > 0) and _safe_float(t.get('balance')) is not None:
+                    first_txn = t
+                    break
+            if first_txn is None:
+                first_txn = raw_transactions[0]
             first_bal = _safe_float(first_txn.get('balance'))
             first_in = abs(_safe_float(first_txn.get('money_in')) or 0)
             first_out = abs(_safe_float(first_txn.get('money_out')) or 0)
