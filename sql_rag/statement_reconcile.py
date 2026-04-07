@@ -526,10 +526,21 @@ Return ONLY this JSON:
     "period_start": "YYYY-MM-DD",
     "period_end": "YYYY-MM-DD",
     "opening_balance": 12345.67,
-    "closing_balance": 12345.67
+    "closing_balance": 12345.67,
+    "opening_balance_labelled": true,
+    "first_transaction": {
+        "balance": 12345.67,
+        "money_in": null,
+        "money_out": 100.00
+    }
 }
 
-IMPORTANT: Return actual values from this document, not examples. Amounts as numbers without currency symbols. Return ONLY valid JSON."""
+RULES:
+- "opening_balance_labelled": true if the opening balance was explicitly shown on the statement, false if you calculated it
+- "first_transaction": the first transaction line — its running balance, money_in, and money_out. This lets us verify the opening balance calculation.
+- Return actual values from this document, not examples
+- Amounts as numbers without currency symbols
+- Return ONLY valid JSON"""
 
         try:
             file_part = {"mime_type": "application/pdf", "data": pdf_bytes}
@@ -538,6 +549,31 @@ IMPORTANT: Return actual values from this document, not examples. Amounts as num
             if not json_match:
                 return None
             info_data = json.loads(json_match.group())
+
+            # Verify opening balance using first transaction data
+            # If the AI didn't label it and we have first transaction, recalculate
+            if not info_data.get('opening_balance_labelled', True):
+                first_txn = info_data.get('first_transaction', {})
+                if first_txn:
+                    def _sf(v):
+                        if v is None: return 0.0
+                        if isinstance(v, (int, float)): return float(v)
+                        s = str(v).replace(',', '').replace('£', '').strip()
+                        return float(s) if s else 0.0
+                    fb = _sf(first_txn.get('balance'))
+                    fi = abs(_sf(first_txn.get('money_in')))
+                    fo = abs(_sf(first_txn.get('money_out')))
+                    if fb and (fi > 0 or fo > 0):
+                        calculated = round(fb - fi + fo, 2)
+                        ai_opening = _sf(info_data.get('opening_balance'))
+                        if abs(calculated - ai_opening) > 0.01:
+                            logger.info(
+                                f"Opening balance corrected during scan: "
+                                f"AI={ai_opening:,.2f}, calculated={calculated:,.2f} "
+                                f"(first_bal={fb}, in={fi}, out={fo})"
+                            )
+                            info_data['opening_balance'] = calculated
+
             # Mark as info-only so full extraction knows to re-extract
             info_data['_info_only'] = True
             cache.put(pdf_hash, info_data, [])
