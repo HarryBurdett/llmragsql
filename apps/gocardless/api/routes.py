@@ -7472,22 +7472,21 @@ async def get_collectable_invoices(
         # Prevents duplicate GoCardless collections
         already_requested_invoices = set()
         try:
-            gc_db = sqlite3.connect(str(payments_db.db_path))
-            gc_c = gc_db.cursor()
-            gc_c.execute("""
-                SELECT invoice_refs FROM gocardless_payment_requests
-                WHERE status NOT IN ('cancelled', 'failed', 'charged_back')
-            """)
-            for row in gc_c.fetchall():
-                refs = row[0]
+            all_requests = payments_db.list_payment_requests()
+            import json as _json
+            for req in all_requests:
+                if req.get('status') in ('cancelled', 'failed', 'charged_back'):
+                    continue
+                refs = req.get('invoice_refs')
                 if refs:
-                    import json as _json
-                    try:
-                        for ref in _json.loads(refs):
-                            already_requested_invoices.add(str(ref).strip())
-                    except (ValueError, TypeError):
-                        pass
-            gc_db.close()
+                    if isinstance(refs, str):
+                        try:
+                            refs = _json.loads(refs)
+                        except (ValueError, TypeError):
+                            refs = []
+                    for ref in refs:
+                        already_requested_invoices.add(str(ref).strip())
+            logger.info(f"Already requested invoices: {len(already_requested_invoices)} — {already_requested_invoices}")
         except Exception as e:
             logger.warning(f"Could not check existing payment requests: {e}")
 
@@ -7506,10 +7505,22 @@ async def get_collectable_invoices(
                 account = row[0].strip() if row[0] else ''
                 customer_name = row[1].strip() if row[1] else ''
                 invoice_ref = row[2].strip() if row[2] else ''
-                invoice_date = row[3]
-                due_date = row[4]
+                invoice_date_raw = row[3]
+                due_date_raw = row[4]
                 trans_type = row[5]
                 amount = float(row[6]) if row[6] else 0
+
+                # Normalise dates — SQL Server returns datetime, need date
+                def _to_date(v):
+                    if v is None: return None
+                    if isinstance(v, str):
+                        try: return datetime.strptime(v[:10], '%Y-%m-%d').date()
+                        except: return None
+                    if hasattr(v, 'date'): return v.date()
+                    return v
+
+                invoice_date = _to_date(invoice_date_raw)
+                due_date = _to_date(due_date_raw)
 
                 is_subscription = bool(row[7])
                 source_doc = sub_account_docs.get(account) if is_subscription else None
@@ -7517,8 +7528,6 @@ async def get_collectable_invoices(
                 # Calculate days overdue
                 days_overdue = 0
                 if due_date:
-                    if isinstance(due_date, str):
-                        due_date = datetime.strptime(due_date, '%Y-%m-%d').date()
                     days_overdue = (date.today() - due_date).days
 
                 # Skip if filtering for overdue only
@@ -7914,29 +7923,23 @@ async def request_gocardless_payment(
         # Check for duplicate payment requests — prevent collecting the same invoice twice
         if invoices:
             try:
-                gc_db = sqlite3.connect(str(payments_db.db_path))
-                gc_c = gc_db.cursor()
-                gc_c.execute("""
-                    SELECT invoice_refs, status, payment_id FROM gocardless_payment_requests
-                    WHERE opera_account = ? AND status NOT IN ('cancelled', 'failed', 'charged_back')
-                """, (opera_account,))
-                import json as _json
-                for row in gc_c.fetchall():
-                    existing_refs = []
-                    try:
-                        existing_refs = _json.loads(row[0]) if row[0] else []
-                    except (ValueError, TypeError):
-                        pass
+                all_reqs = payments_db.list_payment_requests(opera_account=opera_account)
+                import json as _json2
+                for req in all_reqs:
+                    if req.get('status') in ('cancelled', 'failed', 'charged_back'):
+                        continue
+                    existing_refs = req.get('invoice_refs', [])
+                    if isinstance(existing_refs, str):
+                        try: existing_refs = _json2.loads(existing_refs)
+                        except: existing_refs = []
                     overlap = set(invoices) & set(existing_refs)
                     if overlap:
-                        gc_db.close()
                         return {
                             "success": False,
                             "error": f"Payment already requested for invoice(s): {', '.join(overlap)}. "
-                                     f"Existing request status: {row[1]}. "
+                                     f"Existing request status: {req.get('status')}. "
                                      f"Cancel the existing request first to avoid duplicate collection."
                         }
-                gc_db.close()
             except Exception as dup_err:
                 logger.warning(f"Could not check for duplicate payment requests: {dup_err}")
 
