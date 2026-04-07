@@ -459,7 +459,18 @@ RULES:
 - Use the year from the statement period if transaction dates show only day/month
 - Include running balance for each transaction if shown on the statement
 - Return ONLY valid JSON — no other text
-- CRITICAL: Extract EVERY transaction from EVERY page. Do not truncate or summarise."""
+- CRITICAL: Extract EVERY transaction from EVERY page. Do not truncate or summarise.
+
+MULTI-ACCOUNT STATEMENTS (IMPORTANT):
+Some banks (e.g. Monzo, Starling) include MULTIPLE accounts on one PDF — current account,
+savings pots, fixed savings etc. Each account has its own section with its own transactions
+and balances. You MUST:
+- Extract transactions ONLY from the MAIN CURRENT ACCOUNT section
+- IGNORE savings accounts, pots, fixed savings, or any other account sections
+- The account_number and sort_code refer to the main current account only
+- The closing_balance must be for the main current account ONLY, not a combined total
+- If the statement shows a total across all accounts, DO NOT use that as closing_balance
+- Look for section headers like "Current account", "Account transactions" to identify the right section"""
 
         # Create the file part for Gemini
         file_part = {
