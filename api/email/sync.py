@@ -82,6 +82,8 @@ class EmailSyncManager:
 
     async def _sync_loop(self, interval_minutes: int):
         """Main sync loop."""
+        # Wait before first sync so the API is responsive immediately on startup
+        await asyncio.sleep(60)
         while self._running:
             try:
                 await self.sync_all_providers()
