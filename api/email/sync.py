@@ -81,16 +81,20 @@ class EmailSyncManager:
         logger.info("Stopped periodic email sync")
 
     async def _sync_loop(self, interval_minutes: int):
-        """Main sync loop."""
+        """Main sync loop — runs sync and callbacks without blocking the API event loop."""
         # Wait before first sync so the API is responsive immediately on startup
         await asyncio.sleep(60)
         while self._running:
+            # Run the entire sync in a thread pool so it never blocks API requests.
+            # The sync includes Gemini API calls (~30s each) and IMAP operations
+            # which are all synchronous/blocking.
+            loop = asyncio.get_event_loop()
             try:
-                await self.sync_all_providers()
+                await loop.run_in_executor(None, self._sync_all_blocking)
             except Exception as e:
                 logger.error(f"Error in sync loop: {e}")
 
-            # Run post-sync callbacks (e.g. supplier statement auto-processing)
+            # Run post-sync callbacks in the event loop (they're async)
             for callback in self._post_sync_callbacks:
                 try:
                     await callback(self.storage, self.providers)
@@ -99,6 +103,14 @@ class EmailSyncManager:
 
             # Wait for next sync
             await asyncio.sleep(interval_minutes * 60)
+
+    def _sync_all_blocking(self):
+        """Synchronous wrapper for sync — runs in thread pool to avoid blocking event loop."""
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self.sync_all_providers())
+        finally:
+            loop.close()
 
     async def sync_all_providers(self) -> Dict[str, Any]:
         """
