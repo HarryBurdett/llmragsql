@@ -7428,23 +7428,39 @@ async def get_collectable_invoices(
         query = """
             SELECT
                 st_account,
-                sn_name,
-                st_ref,
-                st_date,
-                st_duedate,
-                st_type,
-                st_ovalue,
-                CASE WHEN EXISTS (
-                    SELECT 1 FROM ihead WHERE ih_invoice = st_ref AND ih_docstat = 'I' AND RTRIM(ih_analsys) = :sub_tag
-                ) THEN 1 ELSE 0 END AS is_sub
-            FROM stran
+                RTRIM(sn_name) as sn_name,
+                RTRIM(st_trref) as st_trref,
+                st_trdate,
+                st_dueday,
+                st_trtype,
+                st_trbal,
+                0 AS is_sub
+            FROM ptran WITH (NOLOCK)
+            JOIN pname WITH (NOLOCK) ON st_account = pn_account
+            WHERE st_trbal > 0
+              AND st_trtype IN ('I')
+        """
+
+        # Actually this should be SALES ledger (stran/sname), not purchase ledger
+        # GoCardless collects from CUSTOMERS
+        query = """
+            SELECT
+                st_account,
+                RTRIM(sn_name) as sn_name,
+                RTRIM(st_trref) as st_trref,
+                st_trdate,
+                st_dueday,
+                st_trtype,
+                st_trbal,
+                0 AS is_sub
+            FROM stran WITH (NOLOCK)
             JOIN sname WITH (NOLOCK) ON st_account = sn_account
-            WHERE st_ovalue > 0
-              AND st_type IN (1, 2)  -- Invoices and credit notes
+            WHERE st_trbal > 0
+              AND st_trtype = 'I'
         """
 
         if min_amount > 0:
-            query += f" AND st_ovalue >= {min_amount}"
+            query += f" AND st_trbal >= {min_amount}"
 
         query += " ORDER BY st_account, st_date"
 
@@ -7484,7 +7500,7 @@ async def get_collectable_invoices(
 
         from sqlalchemy import text as sa_text
         with sql_connector.engine.connect() as conn:
-            result = conn.execute(sa_text(query), {'sub_tag': sub_tag})
+            result = conn.execute(sa_text(query))
 
             for row in result:
                 account = row[0].strip() if row[0] else ''
@@ -7495,7 +7511,6 @@ async def get_collectable_invoices(
                 trans_type = row[5]
                 amount = float(row[6]) if row[6] else 0
 
-                # Detect subscription invoices via sanal/hsanal sa_cusanal='SUB'
                 is_subscription = bool(row[7])
                 source_doc = sub_account_docs.get(account) if is_subscription else None
 
@@ -7527,7 +7542,7 @@ async def get_collectable_invoices(
                     'has_mandate': has_mandate,
                     'mandate_id': mandate['mandate_id'] if mandate else None,
                     'mandate_status': mandate['mandate_status'] if mandate else None,
-                    'trans_type': 'Invoice' if trans_type == 1 else 'Credit Note',
+                    'trans_type': 'Invoice' if trans_type in (1, 'I') else 'Credit Note',
                     'is_subscription': is_subscription,
                     'source_doc': source_doc,
                     'payment_requested': invoice_ref in already_requested_invoices,
@@ -7943,8 +7958,8 @@ async def request_gocardless_payment(
             inv_params = {f'inv{i}': v for i, v in enumerate(invoices)}
             inv_placeholders = ','.join([f':inv{i}' for i in range(len(invoices))])
             query = f"""
-                SELECT SUM(st_ovalue) FROM stran
-                WHERE st_account = :account AND st_ref IN ({inv_placeholders})
+                SELECT SUM(st_trbal) FROM stran WITH (NOLOCK)
+                WHERE st_account = :account AND st_trref IN ({inv_placeholders})
             """
             with sql_connector.engine.connect() as conn:
                 result = conn.execute(sa_text(query), {**inv_params, 'account': opera_account})
