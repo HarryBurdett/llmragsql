@@ -341,8 +341,7 @@ class TransactionMonitor:
         self._poll_interval: float = 5.0
         self._pending_groups: Dict[str, Dict] = {}  # Incomplete transaction groups
         self._opera_users: Set[str] = set()
-        self._last_snapshot: Optional[Dict[str, List[Dict]]] = None  # Small tables snapshot
-        self._last_targeted: Dict[str, List[Dict]] = {}  # Large tables targeted snapshot
+        self._last_targeted: Dict[str, List[Dict]] = {}  # Reserved for future use
         self._stats = {
             "started_at": None,
             "total_captured": 0,
@@ -439,12 +438,7 @@ class TransactionMonitor:
                                               last_connected_at=datetime.now().isoformat(),
                                               is_active=1)
 
-                    # Take initial snapshot of small tables for UPDATE detection
-                    logger.info("Taking initial snapshot of small tables for change detection...")
-                    self._last_snapshot = self._connection.snapshot_small_tables()
-                    logger.info(f"Snapshotted {len(self._last_snapshot)} small tables")
-                    # Targeted snapshots for large tables are taken per-poll based on detected transactions
-                    self._last_targeted: Dict[str, List[Dict]] = {}
+                    logger.info("Monitor connected — tracking new rows (INSERTs). Use Snapshot tool for full field-level change analysis.")
 
                 # Poll for new rows (INSERTs) AND detect field changes (UPDATEs)
                 self._poll_once()
@@ -483,53 +477,15 @@ class TransactionMonitor:
             except Exception:
                 pass  # Table may not be readable, skip silently
 
-        # Detect UPDATE changes using two-tier approach:
-        # 1. Small tables (< 1000 rows): full snapshot diff every cycle
-        # 2. Large tables: targeted reads based on accounts found in new rows
-        update_changes: Dict[str, List[Dict]] = {}
-        if self._last_snapshot is not None:
-            try:
-                # Tier 1: Small tables — full snapshot diff
-                current_small = self._connection.snapshot_small_tables()
-                small_changes = self._connection.diff_snapshots(self._last_snapshot, current_small)
-                update_changes.update(small_changes)
-                self._last_snapshot = current_small
-
-                # Tier 2: Large tables — targeted reads based on detected new rows
-                if new_rows_by_table:
-                    targeted_keys = self._extract_account_keys(new_rows_by_table)
-                    if targeted_keys:
-                        current_targeted = self._connection.snapshot_targeted_rows(targeted_keys)
-                        if self._last_targeted:
-                            targeted_changes = self._connection.diff_snapshots(self._last_targeted, current_targeted)
-                            update_changes.update(targeted_changes)
-                        self._last_targeted = current_targeted
-            except Exception as e:
-                logger.warning(f"Snapshot diff error: {e}")
-
-        if new_rows_by_table or update_changes:
-            self._process_new_rows(new_rows_by_table, update_changes)
+        if new_rows_by_table:
+            self._process_new_rows(new_rows_by_table)
 
         # Finalize any pending groups older than 30 seconds
         self._finalize_stale_groups()
 
-    def _process_new_rows(self, new_rows_by_table: Dict[str, List[Dict]],
-                          update_changes: Dict[str, List[Dict]] = None):
-        """Group new rows into transactions, attach any UPDATE changes, and save."""
+    def _process_new_rows(self, new_rows_by_table: Dict[str, List[Dict]]):
+        """Group new rows into transactions and save."""
         groups = self._group_rows(new_rows_by_table)
-
-        # Attach UPDATE changes to relevant groups (or create standalone change records)
-        if update_changes:
-            for group in groups:
-                group["field_changes"] = update_changes  # All changes from this poll cycle
-            # If there are UPDATE changes but no new rows, still record the changes
-            if not groups and update_changes:
-                groups.append({
-                    "tables": {},
-                    "timestamp": datetime.now().isoformat(),
-                    "field_changes": update_changes,
-                })
-
         for group in groups:
             self._save_group(group)
 
@@ -739,18 +695,11 @@ class TransactionMonitor:
         pass
 
     def _save_group(self, group: Dict):
-        """Classify and save a transaction group with both INSERTs and UPDATEs."""
+        """Classify and save a transaction group (new rows / INSERTs only)."""
         tables_present = set(group["tables"].keys())
         all_rows = {}
         for tbl, rows in group["tables"].items():
             all_rows[tbl] = rows
-
-        # Include field changes (UPDATEs on existing rows) — same detail as transaction snapshot tool
-        field_changes = group.get("field_changes", {})
-        if field_changes:
-            tables_present.update(field_changes.keys())
-            # Store changes alongside inserted rows so the full picture is captured
-            all_rows["_field_changes"] = field_changes
 
         # Classify
         classification = self._classify(tables_present, all_rows)
@@ -778,15 +727,6 @@ class TransactionMonitor:
             else:
                 suspicious_reason = f"input_by '{input_by}' not in Opera user list"
 
-        # Build field summary — which fields were populated on new rows, which changed on existing
-        field_summary = {
-            "inserted_tables": {tbl: list(rows[0].keys()) if rows else [] for tbl, rows in group["tables"].items()},
-            "updated_tables": {tbl: [
-                {"row_key": c["row_key"], "fields_changed": [ch["field"] for ch in c["changes"]]}
-                for c in changes
-            ] for tbl, changes in field_changes.items()},
-        }
-
         # Save
         self.db.save_transaction(
             connection_id=self._connection_id,
@@ -798,7 +738,6 @@ class TransactionMonitor:
             input_by=input_by,
             tables=list(tables_present),
             rows=all_rows,
-            field_summary=field_summary,
         )
 
         self._stats["total_captured"] += 1
