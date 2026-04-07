@@ -2329,7 +2329,7 @@ class OperaSQLImport:
                 ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
                 # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_method}" for ledger transactions
-                ax_comment_ledger = f"{customer_name[:30]:<30}{payment_method}".replace("'", "''")
+                ax_comment_ledger = f"{customer_name[:30]:<30}{payment_method}"[:40].replace("'", "''")
 
                 if posting_decision.post_to_nominal:
                     # Look up nominal account types before ntran INSERTs
@@ -2842,7 +2842,7 @@ class OperaSQLImport:
                 ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
                 ntran_trnref = f"{customer_name[:30]:<30}BACS       (RT)     "
                 # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_method}" for ledger transactions
-                ax_comment_ledger = f"{customer_name[:30]:<30}Refund".replace("'", "''")
+                ax_comment_ledger = f"{customer_name[:30]:<30}Refund"[:40].replace("'", "''")
 
                 if posting_decision.post_to_nominal:
                     # Look up nominal account types before ntran INSERTs
@@ -3224,7 +3224,7 @@ class OperaSQLImport:
             ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
             # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_type}" for ledger transactions
-            ax_comment_ledger = f"{supplier_name[:30]:<30}{payment_type}".replace("'", "''")
+            ax_comment_ledger = f"{supplier_name[:30]:<30}{payment_type}"[:40].replace("'", "''")
 
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
@@ -4846,7 +4846,7 @@ class OperaSQLImport:
             ntran_comment = f"{(safe_comment or reference)[:50]:<50}"
             ntran_trnref = f"{supplier_name[:30]:<30}{payment_type:<10}(RT)     "
             # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_type}" for ledger transactions
-            ax_comment_ledger = f"{supplier_name[:30]:<30}Refund".replace("'", "''")
+            ax_comment_ledger = f"{supplier_name[:30]:<30}Refund"[:40].replace("'", "''")
 
             # ae_complet should only be 1 if we're posting to nominal ledger
             ae_complet_flag = 1  # Always complete — NL transfer via anoml when real-time update is off
@@ -6416,7 +6416,7 @@ class OperaSQLImport:
                         # anoml Bank account - ax_done flag from posting decision
                         done_flag = posting_decision.transfer_file_done_flag
                         # anoml ax_comment: Opera format is "{name[:30]:<30}{payment_type}" for ledger transactions
-                        gc_ax_comment = f"{customer_name[:30]:<30}{cbtype_desc}".replace("'", "''")
+                        gc_ax_comment = f"{customer_name[:30]:<30}{cbtype_desc}"[:40].replace("'", "''")
                         anoml_bank_sql = f"""
                             INSERT INTO anoml (
                                 id, ax_nacnt, ax_ncntr, ax_source, ax_date, ax_value, ax_tref,
