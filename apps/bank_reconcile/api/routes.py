@@ -6702,6 +6702,34 @@ async def scan_all_banks_for_statements(
                 key=lambda s: (s.get('period_start') or '9999', s.get('opening_balance') or 0))
 
         # --- Step 5: Sort and finalize each bank's statements ---
+        # First: fill in missing opening balances from cache for any statement
+        # that was matched by folder name but not extracted
+        for code, bank in all_banks.items():
+            for stmt in bank.get('statements', []):
+                if stmt.get('opening_balance') is None and stmt.get('file_path'):
+                    try:
+                        from sql_rag.pdf_extraction_cache import get_extraction_cache
+                        import hashlib
+                        fp = Path(stmt['file_path'])
+                        if fp.exists():
+                            content = fp.read_bytes()
+                            ph = hashlib.sha256(content).hexdigest()
+                            cache = get_extraction_cache()
+                            cached = cache.get(ph)
+                            if cached:
+                                ci, _ = cached
+                                if ci.get('opening_balance') is not None:
+                                    stmt['opening_balance'] = float(ci['opening_balance']) if ci['opening_balance'] else None
+                                if ci.get('closing_balance') is not None:
+                                    stmt['closing_balance'] = float(ci['closing_balance']) if ci['closing_balance'] else None
+                                if ci.get('period_start'):
+                                    stmt['period_start'] = ci['period_start']
+                                if ci.get('period_end'):
+                                    stmt['period_end'] = ci['period_end']
+                                logger.info(f"Step 5: filled missing data from cache for {stmt.get('filename')} — open={stmt.get('opening_balance')}")
+                    except Exception as e:
+                        logger.debug(f"Step 5: cache lookup failed for {stmt.get('filename')}: {e}")
+
         banks_with_statements = {}
         total_statements = 0
 
