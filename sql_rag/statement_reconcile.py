@@ -772,11 +772,21 @@ A typical business bank statement has 20-100+ transactions.
         raw_transactions = data.get('transactions', [])
         logger.info(f"Extracted {len(raw_transactions)} raw transactions from PDF")
 
-        # Cache the raw extraction result for future use
+        # Parse the result — this calculates the correct opening balance
+        result = self._parse_extraction_result(info_data, raw_transactions, pdf_path)
+
+        # Update info_data with the calculated opening balance BEFORE caching
+        # so the cache has the correct value for future lookups
+        if result[0].opening_balance is not None:
+            info_data['opening_balance'] = result[0].opening_balance
+        if result[0].closing_balance is not None:
+            info_data['closing_balance'] = result[0].closing_balance
+
+        # Cache with corrected balances
         cache.put(pdf_hash, info_data, raw_transactions,
                   model_name=self.model_name, file_size=len(pdf_bytes))
 
-        return self._parse_extraction_result(info_data, raw_transactions, pdf_path)
+        return result
 
     def _calculate_opening_balance(self, transactions, closing_balance, info_data):
         """
