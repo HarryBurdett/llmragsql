@@ -214,16 +214,27 @@ export function TransactionSnapshot() {
                 className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
               >
                 <Play className="w-4 h-4" />
-                {beforeMutation.isPending ? 'Scanning all tables...' : 'Take Before Snapshot'}
+                {beforeMutation.isPending ? 'Take Before Snapshot' : 'Take Before Snapshot'}
               </button>
+              {beforeMutation.isPending && (
+                <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-3">
+                  <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  <div>
+                    <p className="text-blue-800 font-medium text-sm">Scanning all Opera tables...</p>
+                    <p className="text-blue-600 text-xs mt-0.5">
+                      Capturing: <b>{module}/{name}</b> {description ? `— ${description}` : ''}
+                    </p>
+                  </div>
+                </div>
+              )}
             </>
           )}
 
           {phase === 'before_taken' && (
             <div className="space-y-3">
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                <p className="text-amber-800 font-medium">Now enter the transaction/record in Opera</p>
-                <p className="text-amber-700 text-sm mt-1">When done, click "Take After Snapshot" to capture the changes.</p>
+              <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
+                <p className="text-green-800 font-medium">Before snapshot taken for: <b>{module}/{name}</b></p>
+                <p className="text-green-700 text-sm mt-1">Now enter the transaction/record in Opera. When done, click "Take After Snapshot".</p>
               </div>
               <div className="flex gap-3">
                 <button
@@ -232,7 +243,7 @@ export function TransactionSnapshot() {
                   className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
                 >
                   <Camera className="w-4 h-4" />
-                  {afterMutation.isPending ? 'Scanning and comparing...' : 'Take After Snapshot'}
+                  Take After Snapshot
                 </button>
                 <button
                   onClick={() => cancelMutation.mutate()}
@@ -241,6 +252,12 @@ export function TransactionSnapshot() {
                   <Square className="w-4 h-4" />
                   Cancel
                 </button>
+                {afterMutation.isPending && (
+                  <div className="flex items-center gap-3 ml-2">
+                    <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin" />
+                    <span className="text-green-700 text-sm font-medium">Scanning and comparing all tables...</span>
+                  </div>
+                )}
               </div>
             </div>
           )}
