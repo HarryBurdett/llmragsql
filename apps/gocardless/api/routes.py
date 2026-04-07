@@ -7462,7 +7462,7 @@ async def get_collectable_invoices(
         if min_amount > 0:
             query += f" AND st_trbal >= {min_amount}"
 
-        query += " ORDER BY st_account, st_date"
+        query += " ORDER BY st_account, st_trdate"
 
         invoices = []
         total_collectable = 0
