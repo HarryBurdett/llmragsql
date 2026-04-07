@@ -118,6 +118,7 @@ const utilitiesMenu: TopLevelMenu = {
       heading: 'Developer Tools',
       items: [
         { path: '/utilities/transaction-snapshot', label: 'Transaction Snapshot', icon: Database, description: 'Capture Opera posting patterns', color: 'indigo' },
+        { path: '/utilities/transaction-monitor', label: 'Transaction Monitor', icon: Activity, description: 'Monitor live Opera systems', color: 'green' },
       ],
     },
   ],

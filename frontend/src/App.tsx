@@ -44,6 +44,7 @@ import SupplierStatementDetail from './pages/SupplierStatementDetail';
 import SupplierAccountDetail from './pages/SupplierAccountDetail';
 import { UserActivity } from './pages/UserActivity';
 import { TransactionSnapshot } from './pages/TransactionSnapshot';
+import TransactionMonitor from './pages/TransactionMonitor';
 import { PensionExport } from './pages/PensionExport';
 import { PayrollSettings } from './pages/PayrollSettings';
 import { Projects } from './pages/Projects';
@@ -206,6 +207,7 @@ function AppRoutes() {
                   {/* Utilities routes */}
                   <Route path="/utilities/user-activity" element={<UserActivity />} />
                   <Route path="/utilities/transaction-snapshot" element={<TransactionSnapshot />} />
+                  <Route path="/utilities/transaction-monitor" element={<TransactionMonitor />} />
 
                   {/* Payroll routes */}
                   <Route path="/payroll/pension-export" element={<PensionExport />} />
