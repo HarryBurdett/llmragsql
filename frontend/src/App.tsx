@@ -45,6 +45,7 @@ import SupplierAccountDetail from './pages/SupplierAccountDetail';
 import { UserActivity } from './pages/UserActivity';
 import { TransactionSnapshot } from './pages/TransactionSnapshot';
 import TransactionMonitor from './pages/TransactionMonitor';
+import SOPBatchProcessing from './pages/SOPBatchProcessing';
 import { PensionExport } from './pages/PensionExport';
 import { PayrollSettings } from './pages/PayrollSettings';
 import { Projects } from './pages/Projects';
@@ -208,6 +209,7 @@ function AppRoutes() {
                   <Route path="/utilities/user-activity" element={<UserActivity />} />
                   <Route path="/utilities/transaction-snapshot" element={<TransactionSnapshot />} />
                   <Route path="/utilities/transaction-monitor" element={<TransactionMonitor />} />
+                  <Route path="/sop/batch-processing" element={<SOPBatchProcessing />} />
 
                   {/* Payroll routes */}
                   <Route path="/payroll/pension-export" element={<PensionExport />} />

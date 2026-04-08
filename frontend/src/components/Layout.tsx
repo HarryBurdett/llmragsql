@@ -155,7 +155,7 @@ const getAdminMenu = (isAdmin: boolean): TopLevelMenu => ({
         { path: '/payroll/pension-export', label: 'Pension Export', icon: FileText, description: 'Generate pension submissions', color: 'indigo' },
         { path: '/payroll/settings', label: 'Payroll Parameters', icon: Briefcase, description: 'Payroll configuration', color: 'slate' },
         { path: '/stock', label: 'Stock', icon: Package, description: 'Stock control & movements', color: 'emerald' },
-        { path: '/sop', label: 'Sales Orders', icon: ShoppingCart, description: 'Sales order processing', color: 'blue' },
+        { path: '/sop/batch-processing', label: 'SOP Batch Processing', icon: ShoppingCart, description: 'Progress documents through stages', color: 'blue' },
         { path: '/pop', label: 'Purchase Orders', icon: ClipboardList, description: 'Purchase order processing', color: 'amber' },
         { path: '/bom', label: 'Works Orders', icon: Cog, description: 'Bill of materials & works', color: 'purple' },
         { path: '/admin/system-dashboard', label: 'System Dashboard', icon: Activity, description: 'System health & status', color: 'emerald' },
