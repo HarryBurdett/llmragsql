@@ -1,0 +1,29 @@
+{
+  "type_id": "nominal_payment",
+  "label": "Nominal Payment",
+  "category": "cashbook",
+  "import_method": "import_nominal_entry",
+  "description": "Payment direct to nominal account (no ledger). Creates: aentry, atran (at_type=1), 2x ntran (bank CR, nominal DR), 2x anoml (ax_source=A). Updates: nbank.nk_curbal, nacnt, nhist, atype.ay_entry. Optional VAT creates zvtran + nvat.",
+  "user_fields": [
+    {"name": "nominal_account", "label": "Nominal Code", "required": true, "field_type": "string", "lookup_table": "nacnt"},
+    {"name": "amount_pounds", "label": "Amount (£)", "required": true, "field_type": "decimal"},
+    {"name": "post_date", "label": "Date", "required": true, "field_type": "date"},
+    {"name": "reference", "label": "Reference", "required": false, "field_type": "string", "max_length": 30},
+    {"name": "description", "label": "Description", "required": false, "field_type": "string"}
+  ],
+  "default_fields": [
+    {"name": "bank_account", "label": "Bank Account", "required": true, "field_type": "string", "source": "template", "lookup_table": "nbank"},
+    {"name": "cbtype", "label": "Cashbook Type Code", "required": false, "field_type": "string", "source": "template"},
+    {"name": "is_receipt", "label": "Is Receipt", "required": false, "field_type": "string", "default": "false"},
+    {"name": "vat_code", "label": "VAT Code", "required": "conditional", "field_type": "string", "condition": "Required if transaction has VAT"},
+    {"name": "project_code", "label": "Project Code", "required": "conditional", "field_type": "string", "condition": "Check nacnt analysis settings for target nominal account"},
+    {"name": "department_code", "label": "Department Code", "required": "conditional", "field_type": "string", "condition": "Check nacnt analysis settings for target nominal account"},
+    {"name": "input_by", "label": "Input By", "required": false, "field_type": "string", "default": "IMPORT"}
+  ],
+  "auto_fields": ["entry_number", "journal_number", "unique_id", "row_id"],
+  "tables_written": ["aentry", "atran", "ntran", "anoml"],
+  "tables_written_conditional": ["zvtran", "nvat"],
+  "tables_updated": ["nbank", "nacnt", "nhist", "atype"],
+  "duplicate_detection": {"match_on": ["nominal_account", "amount_pounds", "post_date"], "date_range_days": 7},
+  "validate_only_supported": true
+}

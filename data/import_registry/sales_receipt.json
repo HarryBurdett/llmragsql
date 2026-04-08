@@ -1,0 +1,25 @@
+{
+  "type_id": "sales_receipt",
+  "label": "Sales Receipt",
+  "category": "cashbook",
+  "import_method": "import_sales_receipt",
+  "description": "Receipt from customer. Creates: aentry, atran (at_type=4), stran (st_trtype=R), 2x ntran (bank DR, debtors control CR), 2x anoml (ax_source=S). Updates: sname.sn_currbal, nbank.nk_curbal, nacnt, nhist, atype.ay_entry.",
+  "user_fields": [
+    {"name": "customer_account", "label": "Customer Code", "required": true, "field_type": "string", "lookup_table": "sname"},
+    {"name": "amount_pounds", "label": "Amount (£)", "required": true, "field_type": "decimal"},
+    {"name": "post_date", "label": "Date", "required": true, "field_type": "date"},
+    {"name": "reference", "label": "Reference", "required": false, "field_type": "string", "max_length": 30}
+  ],
+  "default_fields": [
+    {"name": "bank_account", "label": "Bank Account", "required": true, "field_type": "string", "source": "template", "lookup_table": "nbank"},
+    {"name": "cbtype", "label": "Cashbook Type Code", "required": false, "field_type": "string", "source": "template"},
+    {"name": "payment_method", "label": "Payment Method", "required": false, "field_type": "string", "source": "template", "default": "BACS"},
+    {"name": "input_by", "label": "Input By", "required": false, "field_type": "string", "default": "IMPORT"},
+    {"name": "comment", "label": "Comment", "required": false, "field_type": "string", "max_length": 40}
+  ],
+  "auto_fields": ["entry_number", "journal_number", "unique_id", "row_id", "control_account"],
+  "tables_written": ["aentry", "atran", "stran", "ntran", "anoml"],
+  "tables_updated": ["sname", "nbank", "nacnt", "nhist", "atype"],
+  "duplicate_detection": {"match_on": ["customer_account", "amount_pounds", "post_date"], "date_range_days": 7},
+  "validate_only_supported": true
+}

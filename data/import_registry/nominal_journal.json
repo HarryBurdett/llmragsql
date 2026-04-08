@@ -1,0 +1,27 @@
+{
+  "type_id": "nominal_journal",
+  "label": "Nominal Journal",
+  "category": "nominal",
+  "import_method": "import_nominal_journal",
+  "description": "Double-entry nominal journal. Creates: multiple ntran rows (debits and credits must balance). No cashbook involvement. Updates: nacnt, nhist. Used for payroll journals, accruals, prepayments, corrections.",
+  "user_fields": [
+    {"name": "nominal_account", "label": "Nominal Code", "required": true, "field_type": "string", "lookup_table": "nacnt"},
+    {"name": "debit", "label": "Debit (£)", "required": false, "field_type": "decimal"},
+    {"name": "credit", "label": "Credit (£)", "required": false, "field_type": "decimal"},
+    {"name": "post_date", "label": "Date", "required": true, "field_type": "date"},
+    {"name": "reference", "label": "Reference", "required": true, "field_type": "string", "max_length": 30},
+    {"name": "description", "label": "Description", "required": false, "field_type": "string"},
+    {"name": "department_code", "label": "Department", "required": "conditional", "field_type": "string", "condition": "Check nacnt analysis settings for target nominal account"},
+    {"name": "project_code", "label": "Project", "required": "conditional", "field_type": "string", "condition": "Check nacnt analysis settings for target nominal account"}
+  ],
+  "default_fields": [
+    {"name": "input_by", "label": "Input By", "required": false, "field_type": "string", "default": "IMPORT"}
+  ],
+  "auto_fields": ["journal_number", "unique_id", "row_id"],
+  "tables_written": ["ntran"],
+  "tables_updated": ["nacnt", "nhist", "nparm"],
+  "validation_rules": ["Total debits must equal total credits"],
+  "multi_line": true,
+  "duplicate_detection": {"match_on": ["reference", "post_date"], "date_range_days": 7},
+  "validate_only_supported": true
+}

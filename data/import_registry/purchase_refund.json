@@ -1,0 +1,24 @@
+{
+  "type_id": "purchase_refund",
+  "label": "Purchase Refund",
+  "category": "cashbook",
+  "import_method": "import_purchase_refund",
+  "description": "Refund from supplier. Creates: aentry, atran (at_type=6), ptran (pt_trtype=F), 2x ntran (bank DR, creditors control CR), 2x anoml (ax_source=P). Updates: pname.pn_currbal, nbank.nk_curbal, nacnt, nhist, atype.ay_entry.",
+  "user_fields": [
+    {"name": "supplier_account", "label": "Supplier Code", "required": true, "field_type": "string", "lookup_table": "pname"},
+    {"name": "amount_pounds", "label": "Amount (£)", "required": true, "field_type": "decimal"},
+    {"name": "post_date", "label": "Date", "required": true, "field_type": "date"},
+    {"name": "reference", "label": "Reference", "required": false, "field_type": "string", "max_length": 30}
+  ],
+  "default_fields": [
+    {"name": "bank_account", "label": "Bank Account", "required": true, "field_type": "string", "source": "template", "lookup_table": "nbank"},
+    {"name": "cbtype", "label": "Cashbook Type Code", "required": false, "field_type": "string", "source": "template"},
+    {"name": "input_by", "label": "Input By", "required": false, "field_type": "string", "default": "IMPORT"},
+    {"name": "comment", "label": "Comment", "required": false, "field_type": "string", "max_length": 40}
+  ],
+  "auto_fields": ["entry_number", "journal_number", "unique_id", "row_id", "control_account"],
+  "tables_written": ["aentry", "atran", "ptran", "ntran", "anoml"],
+  "tables_updated": ["pname", "nbank", "nacnt", "nhist", "atype"],
+  "duplicate_detection": {"match_on": ["supplier_account", "amount_pounds", "post_date"], "date_range_days": 7},
+  "validate_only_supported": true
+}

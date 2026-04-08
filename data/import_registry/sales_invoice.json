@@ -1,0 +1,28 @@
+{
+  "type_id": "sales_invoice",
+  "label": "Sales Invoice",
+  "category": "sales_ledger",
+  "import_method": "import_sales_invoice",
+  "description": "Sales invoice posting. Creates: stran (st_trtype=I), snoml, ntran (debtors control DR, sales nominal CR), nacnt updates. Optional VAT creates zvtran + nvat. Updates: sname.sn_currbal.",
+  "user_fields": [
+    {"name": "customer_account", "label": "Customer Code", "required": true, "field_type": "string", "lookup_table": "sname"},
+    {"name": "invoice_number", "label": "Invoice Number", "required": true, "field_type": "string", "max_length": 30},
+    {"name": "net_amount", "label": "Net Amount (£)", "required": true, "field_type": "decimal"},
+    {"name": "vat_amount", "label": "VAT Amount (£)", "required": false, "field_type": "decimal"},
+    {"name": "post_date", "label": "Date", "required": true, "field_type": "date"},
+    {"name": "due_date", "label": "Due Date", "required": false, "field_type": "date"},
+    {"name": "description", "label": "Description", "required": false, "field_type": "string"}
+  ],
+  "default_fields": [
+    {"name": "sales_nominal", "label": "Sales Nominal Code", "required": true, "field_type": "string", "source": "template", "lookup_table": "nacnt"},
+    {"name": "vat_code", "label": "VAT Code", "required": "conditional", "field_type": "string", "condition": "Required if vat_amount > 0"},
+    {"name": "vat_nominal", "label": "VAT Nominal Code", "required": "conditional", "field_type": "string", "source": "template", "lookup_table": "nacnt", "condition": "Required if vat_amount > 0"},
+    {"name": "input_by", "label": "Input By", "required": false, "field_type": "string", "default": "IMPORT"}
+  ],
+  "auto_fields": ["journal_number", "unique_id", "row_id", "control_account"],
+  "tables_written": ["stran", "snoml", "ntran"],
+  "tables_written_conditional": ["zvtran", "nvat"],
+  "tables_updated": ["sname", "nacnt", "nhist", "nparm"],
+  "duplicate_detection": {"match_on": ["customer_account", "invoice_number"], "date_range_days": 30},
+  "validate_only_supported": true
+}
