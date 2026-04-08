@@ -368,8 +368,10 @@ def diff_snapshots(before: Dict, after: Dict, sql_connector=None) -> Dict[str, A
             before_check = before_table.get('checksum', 0)
             after_check = after_table.get('checksum', 0)
 
-            # Skip unchanged tables
-            if before_count == after_count and before_check == after_check:
+            # Quick skip: if row count AND checksum both match AND no full row data to compare, skip
+            # If we have full row data, always do the detailed comparison — checksums can collide
+            has_row_data = before_table.get('rows') is not None and after_table.get('rows') is not None
+            if before_count == after_count and before_check == after_check and not has_row_data:
                 continue
 
             changes['tables_changed'] += 1
