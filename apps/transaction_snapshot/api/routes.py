@@ -106,14 +106,15 @@ def _get_snapshot_path():
 # Snapshot Engine — Scans ALL tables
 # ============================================================================
 
-def take_snapshot_se(sql_connector, max_rows_for_full_data: int = 5000) -> Dict[str, Any]:
+def take_snapshot_se(sql_connector, max_rows_for_full_data: int = 500000) -> Dict[str, Any]:
     """
     Take a snapshot of ALL tables in both the company and system databases.
 
     Strategy: Get row counts for all tables via sys.partitions (instant).
-    Get checksums for all tables (fast). Read full row data only for
-    tables with <= max_rows_for_full_data rows. Large tables (reports,
-    audit logs) get checksum-only — changes detected but not diffed.
+    Get checksums for all tables (fast). Read full row data for tables
+    up to 500k rows — this is a manual tool, not continuous polling,
+    so reading large tables is acceptable for accuracy. Only truly
+    massive tables (audit logs, history) get checksum-only.
     """
     snapshot = {
         'timestamp': datetime.now().isoformat(),
