@@ -273,10 +273,48 @@ SELECT pn_name FROM pname WHERE pn_account = 'A001'
    - Minimizes lock scope to single row
    - Other users can update different customers simultaneously
 
+5. **Application-Level Import Lock** - Per bank account:
+   - Acquire before any cashbook posting — prevents concurrent imports to the same bank
+   - Stored in local SQLite (not Opera) — thread-safe, 5-minute expiry
+   - Always release in finally block
+   - Pattern: `acquire_import_lock(key) → post → release_import_lock(key)`
+
+6. **Deadlock Retry** - Wrap ALL write operations:
+   ```python
+   execute_with_deadlock_retry(
+       engine, lambda conn: do_writes(conn),
+       operation_name="import_sales_receipt"
+   )
+   ```
+   - 3 attempts, exponential backoff (0.1s, 0.5s, 1.5s)
+   - Detects SQL error 1205 (deadlock) and 40001
+   - MANDATORY for every import method that writes to Opera
+
+7. **Transaction Boundaries** - Keep short:
+   - All reads (validation, lookups) BEFORE the transaction
+   - Transaction covers only the writes
+   - Commit immediately — never hold transactions open waiting for user input or external APIs
+
+**Complete Locking Pattern for ANY Opera Write:**
+```
+1. Validate inputs (SELECT WITH NOLOCK)
+2. Acquire application-level import lock
+3. Begin transaction
+4. Allocate sequences (SELECT WITH UPDLOCK, ROWLOCK → UPDATE WITH ROWLOCK)
+5. INSERT new records
+6. UPDATE balances (WITH ROWLOCK)
+7. Commit transaction
+8. Release import lock (in finally block)
+```
+Wrap steps 3-7 in `execute_with_deadlock_retry()`.
+
 **Avoid:**
 - `HOLDLOCK` on large tables (causes table-level serialization)
 - Long-running transactions (hold locks for minimum time)
 - Table scans in transactional queries
+- Any UPDATE or INSERT without ROWLOCK hint
+- Any SELECT from Opera without WITH (NOLOCK)
+- Any write method without deadlock retry wrapper
 
 ## Variance Analysis (Creditors Reconciliation)
 

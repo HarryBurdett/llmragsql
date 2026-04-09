@@ -1,0 +1,107 @@
+<html><head><style>
+body { font-family: Arial, sans-serif; font-size: 14px; color: #333; line-height: 1.6; max-width: 900px; margin: 0 auto; }
+h1 { color: #1a365d; border-bottom: 2px solid #c53030; padding-bottom: 8px; }
+h2 { color: #c53030; margin-top: 30px; }
+h3 { color: #4a5568; margin-top: 20px; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+th { background: #fff5f5; text-align: left; padding: 8px 12px; border: 1px solid #fed7d7; font-size: 13px; color: #c53030; }
+td { padding: 8px 12px; border: 1px solid #e2e8f0; font-size: 13px; }
+.critical { background: #fff5f5; border-left: 4px solid #c53030; padding: 12px; margin: 10px 0; }
+.correct { background: #f0fff4; border-left: 4px solid #38a169; padding: 12px; margin: 10px 0; }
+.rule { background: #ebf8ff; border-left: 4px solid #3182ce; padding: 12px; margin: 10px 0; }
+code { background: #edf2f7; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+pre { background: #2d3748; color: #e2e8f0; padding: 15px; border-radius: 6px; font-size: 12px; overflow-x: auto; }
+.footer { margin-top: 40px; padding-top: 15px; border-top: 1px solid #e2e8f0; color: #a0aec0; font-size: 12px; }
+</style></head><body>
+<h1>Opera Database Locking Rules — Complete Reference</h1>
+<p>Generated: 09/04/2026 09:50</p>
+<p>These rules are MANDATORY for every application that writes to Opera SE or Opera 3 databases. Failure to follow them will cause data corruption, deadlocks, and blocked users.</p>
+
+<h2>Golden Rules</h2>
+
+<div class="critical">
+<strong>RULE 1: Every SELECT from an Opera table MUST include WITH (NOLOCK)</strong><br>
+Without it, SQL Server takes shared locks that block Opera users from editing records. No exceptions.
+</div>
+
+<div class="critical">
+<strong>RULE 2: Every UPDATE must include WITH (ROWLOCK)</strong><br>
+Prevents table-level locks. Other users can update different rows simultaneously.
+</div>
+
+<div class="critical">
+<strong>RULE 3: Every write method must be wrapped in deadlock retry</strong><br>
+3 attempts, exponential backoff (0.1s, 0.5s, 1.5s). SQL error 1205 = deadlock victim, retry is safe.
+</div>
+
+<div class="critical">
+<strong>RULE 4: Sequence allocation uses UPDLOCK, ROWLOCK on the SELECT</strong><br>
+Prevents two processes getting the same journal/entry number. Lock the row BEFORE reading it.
+</div>
+
+<div class="critical">
+<strong>RULE 5: Application-level import lock per bank account</strong><br>
+Prevents concurrent imports posting to the same bank. Acquired before any cashbook write, released in finally block.
+</div>
+
+<h2>Complete Write Pattern</h2>
+<pre>
+1. VALIDATE — SELECT WITH (NOLOCK) to check accounts exist, not dormant, period open
+2. ACQUIRE import lock (if cashbook posting)
+3. BEGIN TRANSACTION (inside deadlock retry wrapper)
+4. ALLOCATE sequences:
+   - Journal: SELECT np_nexjrnl FROM nparm WITH (UPDLOCK, ROWLOCK)
+              UPDATE nparm WITH (ROWLOCK) SET np_nexjrnl = np_nexjrnl + 1
+   - Entry:  SELECT ay_entry FROM atype WITH (UPDLOCK, ROWLOCK) WHERE ay_code = cbtype
+              UPDATE atype WITH (ROWLOCK) SET ay_entry = ay_entry + 1
+   - Row ID: SELECT nextid FROM nextid WITH (UPDLOCK, ROWLOCK) WHERE tablename = 'table'
+              UPDATE nextid WITH (ROWLOCK) SET nextid = nextid + 1
+5. INSERT new records (aentry, atran, stran/ptran, ntran, anoml)
+6. UPDATE balances WITH (ROWLOCK):
+   - nbank.nk_curbal (bank balance, in pence)
+   - sname.sn_currbal / pname.pn_currbal (customer/supplier balance)
+   - nacnt period/YTD balances
+   - nhist nominal history
+7. COMMIT TRANSACTION
+8. RELEASE import lock (in finally block — always executes)
+</pre>
+
+<h2>Locking by Module</h2>
+<h3>Bank Statement Reconciliation</h3><p><strong>Files:</strong> <code>apps/bank_reconcile/api/routes.py + sql_rag/statement_reconcile.py</code></p><p><strong>Writes to:</strong> aentry (reconciliation marks), nbank (reconciled balance), plus full cashbook posting via OperaSQLImport</p><table><tr><th>Lock</th><th>Implementation</th><th>Status</th></tr><tr><td><strong>Import lock per bank</strong></td><td>acquire_import_lock() before any posting</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Cashbook posting</strong></td><td>Delegates to OperaSQLImport which handles all locking</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Reconciliation UPDATE aentry</strong></td><td>UPDATE aentry WITH (ROWLOCK)</td><td style="color:#c53030;font-weight:bold">FIXED TODAY</td></tr><tr><td><strong>Reconciliation UPDATE nbank</strong></td><td>UPDATE nbank WITH (ROWLOCK)</td><td style="color:#c53030;font-weight:bold">FIXED TODAY</td></tr><tr><td><strong>All SELECT queries</strong></td><td>WITH (NOLOCK) on every Opera table</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Deadlock retry</strong></td><td>Via OperaSQLImport for posting methods</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr></table><h3>GoCardless Direct Debit Import</h3><p><strong>Files:</strong> <code>apps/gocardless/api/routes.py</code></p><p><strong>Writes to:</strong> aentry, atran, stran, ntran, anoml, sname, nbank, nacnt, nhist, zvtran, nvat, salloc, nextid, atype</p><table><tr><th>Lock</th><th>Implementation</th><th>Status</th></tr><tr><td><strong>Import lock per bank</strong></td><td>acquire_import_lock() before batch posting</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Sequence allocation</strong></td><td>UPDLOCK, ROWLOCK on nparm, atype, nextid</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Balance updates</strong></td><td>ROWLOCK on nbank, sname, nacnt</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>All SELECT queries</strong></td><td>WITH (NOLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Deadlock retry</strong></td><td>execute_with_deadlock_retry on receipt/payment methods</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Duplicate prevention</strong></td><td>Check local DB + GoCardless API + Opera cashbook before creating payment</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Unallocated credit check</strong></td><td>Block collection if customer has unallocated credit in Opera</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr></table><h3>Supplier Statement Reconciliation</h3><p><strong>Files:</strong> <code>apps/suppliers/api/routes.py</code></p><p><strong>Writes to:</strong> LOCAL SQLite only — does NOT write to Opera</p><table><tr><th>Lock</th><th>Implementation</th><th>Status</th></tr><tr><td><strong>Opera access</strong></td><td>READ-ONLY — all queries WITH (NOLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Local SQLite</strong></td><td>WAL mode for concurrent read/write</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Deduplication</strong></td><td>Unique index on supplier_code + statement_date</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr></table><h3>SOP Batch Processing</h3><p><strong>Files:</strong> <code>sql_rag/sop_batch_processor.py</code></p><p><strong>Writes to:</strong> ihead, itran, iparm, sname, cname, cstwh, nextid, zpool</p><table><tr><th>Lock</th><th>Implementation</th><th>Status</th></tr><tr><td><strong>Sequence allocation (iparm)</strong></td><td>SELECT ip_profno/ip_orderno FROM iparm WITH (UPDLOCK, ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Sequence allocation (nextid)</strong></td><td>SELECT FROM nextid WITH (UPDLOCK, ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Document update</strong></td><td>UPDATE ihead/itran WITH (ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Balance update</strong></td><td>UPDATE sname WITH (ROWLOCK) for sn_ordrbal</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Stock flags</strong></td><td>UPDATE cname/cstwh WITH (ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Transaction scope</strong></td><td>engine.begin() wraps all writes per document</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>All reads</strong></td><td>WITH (NOLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr></table><h3>Core Import Engine (OperaSQLImport)</h3><p><strong>Files:</strong> <code>sql_rag/opera_sql_import.py</code></p><p><strong>Writes to:</strong> ALL Opera transaction tables</p><table><tr><th>Lock</th><th>Implementation</th><th>Status</th></tr><tr><td><strong>Journal allocation</strong></td><td>SELECT FROM nparm WITH (UPDLOCK, ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Entry number allocation</strong></td><td>SELECT FROM atype WITH (UPDLOCK, ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Row ID allocation</strong></td><td>SELECT FROM nextid WITH (UPDLOCK, ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Bank balance</strong></td><td>UPDATE nbank WITH (ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Customer balance</strong></td><td>UPDATE sname WITH (ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Supplier balance</strong></td><td>UPDATE pname WITH (ROWLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Nominal balances</strong></td><td>UPDATE nacnt WITH (ROWLOCK) via update_nacnt_balance()</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr><tr><td><strong>Deadlock retry</strong></td><td>execute_with_deadlock_retry on cashbook methods (receipt, payment, refund, transfer)</td><td style="color:#dd6b20;font-weight:bold">PARTIAL — NEEDS ADDING TO INVOICE, JOURNAL, STOCK METHODS</td></tr><tr><td><strong>All validation reads</strong></td><td>WITH (NOLOCK)</td><td style="color:#38a169;font-weight:bold">CORRECT</td></tr></table>
+<h2>Opera 3 (FoxPro) Locking Rules</h2>
+<div class="rule">
+<p>Opera 3 uses FoxPro DBF files, not SQL Server. Different locking mechanism:</p>
+<ul>
+<li><strong>Record lock:</strong> RLOCK() before updating a single record, UNLOCK immediately after</li>
+<li><strong>File lock:</strong> FLOCK() only when absolutely necessary (e.g. appending), release immediately</li>
+<li><strong>Shared access:</strong> DBF files on SMB share — multiple readers, single writer per record</li>
+<li><strong>Write Agent:</strong> All Opera 3 writes must go through the Write Agent service on the server (proper FoxPro locking)</li>
+<li><strong>Never hold locks:</strong> Open file → lock record → write → unlock → close. No held locks between operations.</li>
+</ul>
+</div>
+
+<h2>Audit Results — Issues Found & Fixed</h2>
+
+<div class="correct">
+<strong>FIXED TODAY:</strong> statement_reconcile.py — Added WITH (ROWLOCK) to both UPDATE statements (aentry reconciliation marks, nbank reconciled balance). Previously unprotected.
+</div>
+
+<div class="critical">
+<strong>OUTSTANDING:</strong> 16 import methods in opera_sql_import.py lack deadlock retry wrapper. The 7 cashbook methods (receipt, payment, refund, transfer) are protected. Invoice, journal, stock, and SOP import methods need adding. Risk: if a deadlock occurs during these operations, the transaction fails without retry.
+</div>
+
+<h2>Mandatory Locking Checklist (For Every New Development)</h2>
+<table>
+<tr><th>#</th><th>Check</th><th>Rule</th></tr>
+<tr><td>1</td><td>Every SELECT from Opera</td><td>Must include WITH (NOLOCK)</td></tr>
+<tr><td>2</td><td>Every UPDATE to Opera</td><td>Must include WITH (ROWLOCK)</td></tr>
+<tr><td>3</td><td>Every INSERT to Opera</td><td>Must be within a transaction</td></tr>
+<tr><td>4</td><td>Sequence allocation</td><td>UPDLOCK, ROWLOCK on SELECT before incrementing</td></tr>
+<tr><td>5</td><td>Write methods</td><td>Wrapped in execute_with_deadlock_retry()</td></tr>
+<tr><td>6</td><td>Cashbook posting</td><td>Acquire import_lock per bank account first</td></tr>
+<tr><td>7</td><td>Balance updates</td><td>ROWLOCK on nbank, sname, pname, nacnt</td></tr>
+<tr><td>8</td><td>Transaction duration</td><td>Keep as short as possible — reads before, writes inside</td></tr>
+<tr><td>9</td><td>Lock release</td><td>Always in finally block — never left held on error</td></tr>
+<tr><td>10</td><td>No table locks</td><td>Never use HOLDLOCK or TABLOCKX on Opera tables</td></tr>
+</table>
+<div class="footer"><p>Generated 09/04/2026 09:50 — from locking audit of all application modules.</p></div></body></html>

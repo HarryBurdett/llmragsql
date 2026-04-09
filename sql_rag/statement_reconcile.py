@@ -1345,7 +1345,7 @@ A typical business bank statement has 20-100+ transactions.
             line_number = (i + 1) * 10  # 10, 20, 30, etc.
 
             update_query = f"""
-                UPDATE aentry
+                UPDATE aentry WITH (ROWLOCK)
                 SET ae_reclnum = {next_batch},
                     ae_statln = {line_number},
                     ae_recdate = '{statement_date.strftime('%Y-%m-%d')}',
@@ -1362,7 +1362,7 @@ A typical business bank statement has 20-100+ transactions.
         # Update nbank with new reconciled balance
         if reconciled_count > 0:
             nbank_update = f"""
-                UPDATE nbank
+                UPDATE nbank WITH (ROWLOCK)
                 SET nk_recbal = {int(statement_balance * 100)},
                     nk_lstrecl = {next_batch},
                     nk_lststno = nk_lststno + 1,
