@@ -2181,6 +2181,9 @@ async def get_gocardless_api_payouts(
                 filter_stats["error_details"].append(f"{payout.id}: {str(e)[:200]}")
                 logger.warning(f"Error processing payout {payout.id}: {e}")
 
+        # Log filter stats for diagnostics
+        logger.info(f"GoCardless fetch payouts: {filter_stats}")
+
         return {
             "success": True,
             "source": "api",
@@ -4840,7 +4843,8 @@ async def opera3_get_due_invoices(
                 sub_account_docs[s['opera_account']] = s['source_doc']
 
         # Build lookup of invoices with active payment requests
-        active_statuses = ('pending', 'pending_submission', 'submitted', 'confirmed')
+        # Block anything not cancelled/failed — including paid_out (collected but not posted)
+        active_statuses = ('pending', 'pending_submission', 'submitted', 'confirmed', 'paid_out', 'posted')
         pending_invoice_requests: Dict[str, Dict] = {}
         try:
             all_requests = payments_db.list_payment_requests()
@@ -4902,6 +4906,16 @@ async def opera3_get_due_invoices(
                     sub_invoice_refs.add(_o3_get_str(r, 'ih_invoice'))
         except Exception:
             pass
+
+        # Check for unallocated credit per customer (receipts/credit notes not allocated)
+        unallocated_credit: Dict[str, float] = {}
+        for r in stran_records:
+            account = _o3_get_str(r, 'st_account')
+            if account not in mandated_accounts:
+                continue
+            trbal = _o3_get_num(r, 'st_trbal')
+            if trbal < 0:
+                unallocated_credit[account] = unallocated_credit.get(account, 0) + abs(trbal)
 
         invoices = []
         customers_data = {}
@@ -4981,6 +4995,7 @@ async def opera3_get_due_invoices(
                 collectable_amount += trbal
 
             if account not in customers_data:
+                credit = unallocated_credit.get(account, 0)
                 customers_data[account] = {
                     'account': account,
                     'name': customer_name,
@@ -4989,7 +5004,9 @@ async def opera3_get_due_invoices(
                     'mandate_id': mandate['mandate_id'] if mandate else None,
                     'invoices': [],
                     'total_due': 0,
-                    'invoice_count': 0
+                    'invoice_count': 0,
+                    'unallocated_credit': credit,
+                    'unallocated_credit_formatted': f"£{credit:,.2f}" if credit >= 0.01 else None,
                 }
 
             customers_data[account]['invoices'].append(invoice_data)
@@ -6018,10 +6035,23 @@ async def get_unposted_gocardless_payments():
             if req.get('status') not in ('confirmed', 'paid_out'):
                 continue
 
-            # Check if this payment has been posted to Opera by looking at stran
-            # If the invoice st_trbal is 0 (fully paid), it's been posted
             already_posted = False
-            if sql_connector and req.get('invoice_refs'):
+
+            # Check 1: If this payment's payout has been imported (recorded in import history)
+            # This catches receipts posted to cashbook but not yet allocated to invoices
+            if not already_posted and email_storage and req.get('payout_id'):
+                try:
+                    if email_storage.is_gocardless_payout_imported(req['payout_id']):
+                        already_posted = True
+                        try:
+                            payments_db.update_payment_request(req['id'], status='posted')
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            # Check 2: If the invoice has been fully paid (st_trbal = 0)
+            if not already_posted and sql_connector and req.get('invoice_refs'):
                 try:
                     import json as _json
                     refs = req['invoice_refs']
@@ -6031,8 +6061,7 @@ async def get_unposted_gocardless_payments():
                         except Exception:
                             refs = [refs]
                     if refs:
-                        # Check if any of the invoice refs have been paid (st_trbal = 0)
-                        for ref in refs[:3]:  # Check first few
+                        for ref in refs[:3]:
                             ref_clean = str(ref).strip().replace("'", "''")
                             df = sql_connector.execute_query(f"""
                                 SELECT st_trbal FROM stran WITH (NOLOCK)
@@ -6041,12 +6070,34 @@ async def get_unposted_gocardless_payments():
                             """)
                             if df is not None and len(df) > 0:
                                 already_posted = True
-                                # Update the status to 'posted' so we don't check again
                                 try:
                                     payments_db.update_payment_request(req['id'], status='posted')
                                 except Exception:
                                     pass
                                 break
+                except Exception:
+                    pass
+
+            # Check 3: Look for a matching receipt in the Opera cashbook by amount and customer
+            if not already_posted and sql_connector and req.get('opera_account') and req.get('amount_pence'):
+                try:
+                    amount_pence = int(req['amount_pence'])
+                    account = str(req['opera_account']).strip().replace("'", "''")
+                    df = sql_connector.execute_query(f"""
+                        SELECT TOP 1 ae_entry FROM aentry WITH (NOLOCK)
+                        JOIN atran WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
+                            AND ae_cbtype = at_cbtype AND ae_entry = at_entry
+                        WHERE at_type = 4
+                          AND RTRIM(ae_comment) LIKE '%{account}%'
+                          AND ABS(ae_value - {amount_pence}) <= 1
+                          AND ae_input = 'GOCARDLS'
+                    """)
+                    if df is not None and len(df) > 0:
+                        already_posted = True
+                        try:
+                            payments_db.update_payment_request(req['id'], status='posted')
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -7700,6 +7751,28 @@ async def get_gocardless_due_invoices(
                 sub_account_docs[s['opera_account']] = s['source_doc']
 
         placeholders = ', '.join(f"'{a}'" for a in mandated_accounts)
+
+        # Check for unallocated credit on each customer's account (receipts/credit notes not allocated to invoices)
+        # This catches money already received but not allocated — prevents collecting twice
+        unallocated_credit: Dict[str, float] = {}
+        try:
+            credit_query = f"""
+                SELECT st_account, SUM(st_trbal) as unallocated_credit
+                FROM stran WITH (NOLOCK)
+                WHERE st_trbal < 0
+                  AND RTRIM(st_account) IN ({placeholders})
+                GROUP BY st_account
+            """
+            credit_result = sql_connector.execute_query(credit_query)
+            if credit_result is not None and not credit_result.empty:
+                for _, crow in credit_result.iterrows():
+                    acct = crow['st_account'].strip()
+                    credit = abs(float(crow['unallocated_credit']))
+                    if credit >= 0.01:
+                        unallocated_credit[acct] = credit
+        except Exception as e:
+            logger.warning(f"Could not check unallocated credit: {e}")
+
         query = f"""
             SELECT
                 st_account,
@@ -7826,6 +7899,7 @@ async def get_gocardless_due_invoices(
 
             # Group by customer
             if account not in customers_data:
+                credit = unallocated_credit.get(account, 0)
                 customers_data[account] = {
                     'account': account,
                     'name': customer_name,
@@ -7834,7 +7908,9 @@ async def get_gocardless_due_invoices(
                     'mandate_id': mandate['mandate_id'] if mandate else None,
                     'invoices': [],
                     'total_due': 0,
-                    'invoice_count': 0
+                    'invoice_count': 0,
+                    'unallocated_credit': credit,
+                    'unallocated_credit_formatted': f"£{credit:,.2f}" if credit >= 0.01 else None,
                 }
 
             customers_data[account]['invoices'].append(invoice_data)
@@ -7975,6 +8051,28 @@ async def request_gocardless_payment(
         if amount <= 0:
             return {"success": False, "error": "Amount must be greater than zero"}
 
+        # Safety check: warn if customer has unallocated credit in Opera
+        # This catches money already received (e.g. imported GoCardless payout) but not yet allocated
+        if sql_connector:
+            try:
+                credit_df = sql_connector.execute_query(f"""
+                    SELECT SUM(st_trbal) as credit
+                    FROM stran WITH (NOLOCK)
+                    WHERE st_account = '{opera_account.strip().replace("'", "''")}'
+                      AND st_trbal < 0
+                """)
+                if credit_df is not None and len(credit_df) > 0 and credit_df.iloc[0]['credit'] is not None:
+                    unallocated = abs(float(credit_df.iloc[0]['credit']))
+                    if unallocated >= 0.01:
+                        return {
+                            "success": False,
+                            "error": f"Customer {opera_account} has £{unallocated:,.2f} unallocated credit on their account. "
+                                     f"This may be a previous GoCardless payment not yet allocated to invoices. "
+                                     f"Please allocate existing receipts before requesting a new payment to avoid duplicate collection."
+                        }
+            except Exception as e:
+                logger.warning(f"Could not check unallocated credit for {opera_account}: {e}")
+
         # Get API settings
         settings = _load_gocardless_settings()
 
@@ -8001,8 +8099,20 @@ async def request_gocardless_payment(
         sandbox = settings.get("api_sandbox", False)
         client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
 
+        # If charge_date is in the past, drop it — GoCardless will use earliest possible date
+        from datetime import date as date_type
+        if charge_date:
+            try:
+                cd = datetime.strptime(charge_date, '%Y-%m-%d').date() if isinstance(charge_date, str) else charge_date
+                if cd < date_type.today():
+                    logger.info(f"Charge date {charge_date} is in the past — letting GoCardless use earliest possible date")
+                    charge_date = None
+            except (ValueError, TypeError):
+                pass
+
         # Create payment in GoCardless
         try:
+            logger.info(f"GoCardless create_payment: account={opera_account}, invoices={invoices}, amount={amount}p, mandate={mandate['mandate_id']}, charge_date={charge_date}")
             gc_payment = client.create_payment(
                 amount_pence=amount,
                 mandate_id=mandate['mandate_id'],
@@ -8013,7 +8123,9 @@ async def request_gocardless_payment(
                     "invoices": ",".join(invoices)
                 }
             )
+            logger.info(f"GoCardless payment created: {gc_payment.get('id')}, status={gc_payment.get('status')}")
         except Exception as gc_err:
+            logger.error(f"GoCardless create_payment FAILED for {opera_account} / {invoices}: {gc_err}")
             return {"success": False, "error": f"GoCardless API error: {str(gc_err)}"}
 
         # Record in local database

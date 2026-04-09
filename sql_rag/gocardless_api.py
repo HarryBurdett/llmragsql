@@ -135,8 +135,16 @@ class GoCardlessClient:
 
             if response.status_code >= 400:
                 error_data = response.json().get("error", {})
+                # Build detailed error message including field-level validation errors
+                message = error_data.get("message", f"API error: {response.status_code}")
+                errors = error_data.get("errors", [])
+                if errors:
+                    details = "; ".join(
+                        f"{e.get('field', 'unknown')}: {e.get('message', '')}" for e in errors
+                    )
+                    message = f"{message} — {details}"
                 raise GoCardlessAPIError(
-                    error_data.get("message", f"API error: {response.status_code}"),
+                    message,
                     response.status_code,
                     error_data.get("type")
                 )
