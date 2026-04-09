@@ -4324,11 +4324,9 @@ class OperaSQLImport:
             time_str = now.strftime('%H:%M:%S')
 
             # =====================
-            # INSERT/UPDATE WITHIN TRANSACTION
+            # INSERT/UPDATE WITHIN TRANSACTION (with deadlock retry)
             # =====================
-            with self.sql.engine.begin() as conn:
-                conn.execute(text(get_lock_timeout_sql()))
-
+            def _do_stock_adjustment(conn):
                 # 1. CREATE CTRAN RECORD (Stock Transaction)
                 ctran_sql = f"""
                     INSERT INTO ctran (
@@ -4375,6 +4373,11 @@ class OperaSQLImport:
                     WHERE RTRIM(cn_ref) = '{stock_ref}'
                 """
                 conn.execute(text(cname_sql))
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_stock_adjustment,
+                f"stock_adjustment({stock_ref}, {warehouse}, {quantity:+.2f})"
+            )
 
             logger.info(f"Stock adjustment: {stock_ref} in {warehouse} by {quantity:+.2f} (reason: {reason})")
 
@@ -4545,11 +4548,9 @@ class OperaSQLImport:
             time_str = now.strftime('%H:%M:%S')
 
             # =====================
-            # INSERT/UPDATE WITHIN TRANSACTION
+            # INSERT/UPDATE WITHIN TRANSACTION (with deadlock retry)
             # =====================
-            with self.sql.engine.begin() as conn:
-                conn.execute(text(get_lock_timeout_sql()))
-
+            def _do_stock_transfer(conn):
                 # 1. CTRAN - Issue from source (negative)
                 ctran_out_sql = f"""
                     INSERT INTO ctran (
@@ -4610,6 +4611,11 @@ class OperaSQLImport:
                 conn.execute(text(cstwh_dest_sql))
 
                 # Note: cname totals not updated - transfer doesn't change overall company stock
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_stock_transfer,
+                f"stock_transfer({stock_ref}, {from_warehouse}->{to_warehouse}, {quantity:.2f})"
+            )
 
             logger.info(f"Stock transfer: {stock_ref} x{quantity:.2f} from {from_warehouse} to {to_warehouse}")
 
@@ -5268,10 +5274,9 @@ class OperaSQLImport:
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
-            with self.sql.engine.begin() as conn:
-                # Set lock timeout to prevent indefinite blocking of other users
-                conn.execute(text(get_lock_timeout_sql()))
+            result_data = {}
 
+            def _do_sales_invoice(conn):
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
@@ -5468,6 +5473,14 @@ class OperaSQLImport:
                 """
                 conn.execute(text(sname_update_sql))
 
+                result_data['next_journal'] = next_journal
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_sales_invoice,
+                f"sales_invoice({customer_account}, {invoice_number}, £{gross_amount:.2f})"
+            )
+            next_journal = result_data['next_journal']
+
             logger.info(f"Successfully imported sales invoice: {invoice_number} for £{gross_amount:.2f}")
 
             return ImportResult(
@@ -5630,10 +5643,9 @@ class OperaSQLImport:
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
-            with self.sql.engine.begin() as conn:
-                # Set lock timeout to prevent indefinite blocking of other users
-                conn.execute(text(get_lock_timeout_sql()))
+            result_data = {}
 
+            def _do_purchase_invoice_posting(conn):
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
@@ -5768,6 +5780,14 @@ class OperaSQLImport:
                         )
                     """
                     conn.execute(text(nvat_sql))
+
+                result_data['next_journal'] = next_journal
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_purchase_invoice_posting,
+                f"purchase_invoice_posting({supplier_account}, {invoice_number}, £{gross_amount:.2f})"
+            )
+            next_journal = result_data['next_journal']
 
             logger.info(f"Successfully imported purchase invoice posting: {invoice_number} for £{gross_amount:.2f}")
 
@@ -5904,10 +5924,9 @@ class OperaSQLImport:
             # =====================
             # EXECUTE ALL OPERATIONS IN A SINGLE TRANSACTION WITH LOCKING
             # =====================
-            with self.sql.engine.begin() as conn:
-                # Set lock timeout to prevent indefinite blocking of other users
-                conn.execute(text(get_lock_timeout_sql()))
+            result_data = {}
 
+            def _do_nominal_journal(conn):
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
@@ -5949,6 +5968,14 @@ class OperaSQLImport:
 
                 # Insert journal memo for this NL posting
                 self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
+
+                result_data['next_journal'] = next_journal
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_nominal_journal,
+                f"nominal_journal({reference}, {len(lines)} lines)"
+            )
+            next_journal = result_data['next_journal']
 
             total_debits = sum(float(l['amount']) for l in lines if float(l['amount']) > 0)
             logger.info(f"Successfully imported nominal journal: {reference} with {len(lines)} lines, £{total_debits:.2f}")
@@ -10594,7 +10621,7 @@ class SalesInvoiceFileImport:
             stran_memo = f"Analysis of Invoice {invoice_number[:20]} Dated {post_date.strftime('%d/%m/%Y')}"
 
             # Execute all inserts
-            with self.sql.engine.begin() as conn:
+            def _do_sales_invoice_file(conn):
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
@@ -10783,6 +10810,11 @@ class SalesInvoiceFileImport:
                     WHERE RTRIM(sn_account) = '{customer_account}'
                 """
                 conn.execute(text(sname_update_sql))
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_sales_invoice_file,
+                f"sales_invoice_file({customer_account}, {invoice_number}, £{gross_amount:.2f})"
+            )
 
             return ImportResult(
                 success=True,
@@ -11030,7 +11062,7 @@ class PurchaseInvoiceFileImport:
             ntran_trnref = f"{supplier_name[:30]:<30}Invoice             "
 
             # Execute all inserts
-            with self.sql.engine.begin() as conn:
+            def _do_purchase_invoice_file(conn):
                 # Get next journal number from nparm
                 next_journal = self._get_next_journal(conn)
 
@@ -11213,6 +11245,11 @@ class PurchaseInvoiceFileImport:
                     WHERE RTRIM(pn_account) = '{supplier_account}'
                 """
                 conn.execute(text(pname_update_sql))
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_purchase_invoice_file,
+                f"purchase_invoice_file({supplier_account}, {invoice_number}, £{gross_amount:.2f})"
+            )
 
             return ImportResult(
                 success=True,
@@ -11544,9 +11581,9 @@ class PurchaseInvoiceFileImport:
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
             expiry_date = quote_date + __import__('datetime').timedelta(days=expiry_days)
 
-            with self.sql.engine.begin() as conn:
-                conn.execute(text(get_lock_timeout_sql()))
+            result_data = {}
 
+            def _do_sales_quote(conn):
                 # Get and increment document numbers
                 num_result = conn.execute(text("""
                     SELECT ip_docno, ip_quotno FROM iparm WITH (UPDLOCK, ROWLOCK)
@@ -11609,6 +11646,16 @@ class PurchaseInvoiceFileImport:
                         )
                     """
                     conn.execute(text(itran_sql))
+
+                result_data['doc_no'] = doc_no
+                result_data['quot_no'] = quot_no
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_sales_quote,
+                f"sales_quote({customer_account}, {len(validated_lines)} lines)"
+            )
+            doc_no = result_data['doc_no']
+            quot_no = result_data['quot_no']
 
             logger.info(f"Created quote {quot_no} (doc {doc_no}) for {customer_account}: £{total_ex_vat:.2f} + VAT")
 
@@ -11927,9 +11974,9 @@ class PurchaseInvoiceFileImport:
             now = datetime.now()
             now_str = now.strftime('%Y-%m-%d %H:%M:%S')
 
-            with self.sql.engine.begin() as conn:
-                conn.execute(text(get_lock_timeout_sql()))
+            result_data = {}
 
+            def _do_sales_order(conn):
                 # Get and increment document numbers
                 num_result = conn.execute(text("""
                     SELECT ip_docno, ip_orderno FROM iparm WITH (UPDLOCK, ROWLOCK)
@@ -12018,6 +12065,16 @@ class PurchaseInvoiceFileImport:
                                 datemodified = '{now_str}'
                             WHERE RTRIM(cn_ref) = '{line['stock_ref']}'
                         """))
+
+                result_data['doc_no'] = doc_no
+                result_data['ord_no'] = ord_no
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_sales_order,
+                f"sales_order({customer_account}, {len(validated_lines)} lines)"
+            )
+            doc_no = result_data['doc_no']
+            ord_no = result_data['ord_no']
 
             logger.info(f"Created order {ord_no} (doc {doc_no}) for {customer_account}: £{total_ex_vat:.2f} + VAT")
 
@@ -12930,9 +12987,9 @@ class PurchaseInvoiceFileImport:
                 total_value += line_value
 
             # Start transaction
-            with self.sql.engine.begin() as conn:
-                conn.execute(text(get_lock_timeout_sql()))
+            result_data = {}
 
+            def _do_purchase_order(conn):
                 # Get next PO number from dparm.dp_dcref
                 po_result = conn.execute(text("""
                     SELECT dp_dcref FROM dparm WITH (UPDLOCK, ROWLOCK)
@@ -13025,6 +13082,16 @@ class PurchaseInvoiceFileImport:
                                 datemodified = '{now_str}'
                             WHERE RTRIM(cn_ref) = '{stock_ref}'
                         """))
+
+                result_data['po_ref'] = po_ref
+                result_data['line_no'] = line_no
+
+            execute_with_deadlock_retry(
+                self.sql.engine, _do_purchase_order,
+                f"purchase_order({supplier_account}, {len(lines)} lines)"
+            )
+            po_ref = result_data['po_ref']
+            line_no = result_data['line_no']
 
             logger.info(f"Created PO {po_ref} for {supplier_account} ({supplier_name}): "
                        f"£{total_value:.2f} with {line_no} lines")
