@@ -1713,6 +1713,42 @@ async def delete_user(request: Request, user_id: int):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.post("/api/auth/force-clear-session")
+async def force_clear_session(request: Request):
+    """
+    Clear your own stuck session before logging in.
+    No auth required — uses username/password to verify identity.
+    This is the escape hatch when admin is locked out of their own account.
+    """
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+    try:
+        body = await request.json()
+        username = body.get("username", "").strip()
+        password = body.get("password", "").strip()
+        if not username or not password:
+            return {"success": False, "error": "Username and password required"}
+
+        user = user_auth.authenticate(username, password)
+        if not user:
+            return {"success": False, "error": "Invalid credentials"}
+
+        if not user.get('is_admin'):
+            return {"success": False, "error": "Only admin users can clear sessions"}
+
+        import sqlite3
+        conn = sqlite3.connect(user_auth.DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM sessions WHERE user_id = ?", (user['id'],))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        logger.info(f"Force-cleared {deleted} session(s) for {username} via login page")
+        return {"success": True, "message": f"Session cleared for {username}. You can now log in."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/admin/sessions")
 async def list_active_sessions(request: Request):
     """List all active user sessions. Admin only."""

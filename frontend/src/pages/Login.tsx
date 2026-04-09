@@ -41,6 +41,8 @@ export function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [showClearSession, setShowClearSession] = useState(false);
+  const [clearingSession, setClearingSession] = useState(false);
 
   // License/Client selection state
   const [licenses, setLicenses] = useState<License[]>([]);
@@ -180,9 +182,17 @@ export function Login() {
         // Navigate to home
         navigate('/', { replace: true });
       } else {
-        setError(friendlyLoginError(result.error || 'Login failed'));
+        const rawError = result.error || 'Login failed';
+        if (rawError.toLowerCase().includes('already logged in')) {
+          setShowClearSession(true);
+          setError(`${username} is already logged in. Do you want to clear the other session?`);
+        } else {
+          setShowClearSession(false);
+          setError(friendlyLoginError(rawError));
+        }
       }
     } catch (err: any) {
+      setShowClearSession(false);
       setError(friendlyLoginError(err?.message || 'Cannot reach the server. Please check your connection and try again.'));
     } finally {
       setIsLoading(false);
@@ -346,12 +356,47 @@ export function Login() {
             </div>
 
             {error && (
-              <div className="p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2.5">
-                <AlertCircle className="h-4.5 w-4.5 text-red-500 flex-shrink-0 mt-0.5" />
-                <p className="text-sm text-red-700 flex-1 leading-snug">{error}</p>
-                <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 flex-shrink-0">
-                  <X className="h-4 w-4" />
-                </button>
+              <div className={`p-3 ${showClearSession ? 'bg-amber-50 border-amber-200' : 'bg-red-50 border-red-200'} border rounded-lg`}>
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className={`h-4.5 w-4.5 ${showClearSession ? 'text-amber-500' : 'text-red-500'} flex-shrink-0 mt-0.5`} />
+                  <p className={`text-sm ${showClearSession ? 'text-amber-800' : 'text-red-700'} flex-1 leading-snug`}>{error}</p>
+                  <button onClick={() => { setError(null); setShowClearSession(false); }} className="text-gray-400 hover:text-gray-600 flex-shrink-0">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                {showClearSession && (
+                  <button
+                    onClick={async () => {
+                      setClearingSession(true);
+                      try {
+                        const res = await fetch('http://localhost:8000/api/auth/force-clear-session', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ username, password }),
+                        });
+                        const data = await res.json();
+                        if (data.success) {
+                          setError(null);
+                          setShowClearSession(false);
+                          // Auto-retry login
+                          handleSubmit(new Event('submit') as any);
+                        } else {
+                          setError(data.error || 'Failed to clear session');
+                          setShowClearSession(false);
+                        }
+                      } catch {
+                        setError('Failed to clear session');
+                        setShowClearSession(false);
+                      } finally {
+                        setClearingSession(false);
+                      }
+                    }}
+                    disabled={clearingSession}
+                    className="mt-2 w-full py-2 px-3 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                  >
+                    {clearingSession ? 'Clearing...' : 'Clear Other Session & Log In'}
+                  </button>
+                )}
               </div>
             )}
 
