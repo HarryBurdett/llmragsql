@@ -72,6 +72,8 @@ export function UserManagement() {
   const [revealedPassword, setRevealedPassword] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
 
   // Company access modal state
   const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
@@ -128,10 +130,37 @@ export function UserManagement() {
     }
   };
 
+  const fetchSessions = async () => {
+    setSessionsLoading(true);
+    try {
+      const response = await api.get('/admin/sessions');
+      if (response.data.success) {
+        setSessions(response.data.sessions || []);
+      }
+    } catch {
+      // Ignore — sessions panel is supplementary
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
+
+  const clearSession = async (userId: number, username: string) => {
+    try {
+      const response = await api.delete(`/admin/sessions/${userId}`);
+      if (response.data.success) {
+        setSyncMessage(`Session cleared for ${username}`);
+        fetchSessions();
+      }
+    } catch {
+      setError(`Failed to clear session for ${username}`);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
     fetchCompanies();
     fetchSystems();
+    fetchSessions();
   }, []);
 
   // Sync users from Opera
@@ -477,6 +506,40 @@ export function UserManagement() {
         <Alert variant="error" title="Error" onDismiss={() => setError(null)}>
           {error}
         </Alert>
+      )}
+
+      {/* Active Sessions */}
+      {sessions.length > 0 && (
+        <Card>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <Monitor className="h-4 w-4" />
+              Active Sessions ({sessions.length})
+            </h2>
+            <button onClick={fetchSessions} className="text-gray-400 hover:text-gray-600">
+              <RefreshCw className={`h-3.5 w-3.5 ${sessionsLoading ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+          <div className="space-y-2">
+            {sessions.map((s: any) => (
+              <div key={s.session_id} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+                <div>
+                  <span className="text-sm font-medium text-gray-900">{s.display_name || s.username}</span>
+                  <span className="text-xs text-gray-400 ml-2">({s.username})</span>
+                  <span className="text-xs text-gray-400 ml-3">expires {new Date(s.expires_at).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+                {s.user_id !== currentUser?.id && (
+                  <button
+                    onClick={() => clearSession(s.user_id, s.username)}
+                    className="px-2 py-1 text-xs text-red-600 bg-red-50 rounded hover:bg-red-100"
+                  >
+                    Clear Session
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
       )}
 
       {/* Users table */}

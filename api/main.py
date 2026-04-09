@@ -1713,6 +1713,67 @@ async def delete_user(request: Request, user_id: int):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.get("/api/admin/sessions")
+async def list_active_sessions(request: Request):
+    """List all active user sessions. Admin only."""
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+    user = getattr(request.state, 'user', None)
+    if not user or not user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        import sqlite3
+        conn = sqlite3.connect(user_auth.DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        # Clean up expired first
+        cursor.execute("DELETE FROM sessions WHERE expires_at <= datetime('now')")
+        conn.commit()
+        # Get active sessions with user details
+        cursor.execute("""
+            SELECT s.id as session_id, s.user_id, u.username, u.display_name,
+                   s.created_at, s.expires_at
+            FROM sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.expires_at > datetime('now')
+            ORDER BY u.username
+        """)
+        sessions = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        return {"success": True, "sessions": sessions, "count": len(sessions)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/admin/sessions/{user_id}")
+async def clear_user_session(request: Request, user_id: int):
+    """Clear all sessions for a specific user. Admin only."""
+    if not user_auth:
+        raise HTTPException(status_code=500, detail="Authentication system not initialized")
+    current_user = getattr(request.state, 'user', None)
+    if not current_user or not current_user.get('is_admin'):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        import sqlite3
+        conn = sqlite3.connect(user_auth.DB_PATH)
+        cursor = conn.cursor()
+        # Get username for the message
+        cursor.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+        row = cursor.fetchone()
+        username = row[0] if row else str(user_id)
+        # Delete sessions
+        cursor.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        logger.info(f"Admin cleared {deleted} session(s) for user {username} (id={user_id})")
+        return {"success": True, "message": f"Cleared {deleted} session(s) for {username}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/admin/users/{user_id}/password")
 async def get_user_password(request: Request, user_id: int):
     """
