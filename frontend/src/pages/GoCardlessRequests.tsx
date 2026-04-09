@@ -858,14 +858,33 @@ function GoCardlessRequestsInner() {
     },
     onSuccess: (data) => {
       if (data.success || data.summary?.succeeded > 0) {
-        setSuccess(`Payment requested for ${data.summary?.succeeded || 0} customers`);
+        // Build detailed confirmation message
+        const results = data.results || [];
+        const succeeded = results.filter((r: any) => r.success);
+        const failed = results.filter((r: any) => !r.success);
+        let msg = `${succeeded.length} payment(s) requested successfully`;
+        if (succeeded.length > 0) {
+          const details = succeeded.map((r: any) => {
+            const amount = r.amount ? `£${(r.amount / 100).toFixed(2)}` : '';
+            return `${r.opera_account} ${amount}`;
+          }).join(', ');
+          msg += `: ${details}`;
+        }
+        if (failed.length > 0) {
+          msg += `. ${failed.length} failed: ${failed.map((r: any) => `${r.opera_account}: ${r.error}`).join('; ')}`;
+        }
+        setSuccess(msg);
         setSelectedInvoices(new Set());
         setShowSummary(false);
         queryClient.invalidateQueries({ queryKey: ['gocardless-payment-requests'] });
         queryClient.invalidateQueries({ queryKey: ['gocardless-payment-stats'] });
+        queryClient.invalidateQueries({ queryKey: ['gocardless-unposted'] });
         refetchDueInvoices();
       } else {
-        setError(data.error || 'Failed to request payments');
+        // Show detailed error from API
+        const results = data.results || [];
+        const errors = results.filter((r: any) => !r.success).map((r: any) => `${r.opera_account}: ${r.error}`);
+        setError(errors.length > 0 ? errors.join('; ') : data.error || 'Failed to request payments');
       }
     },
     onError: (err: Error) => setError(err.message)
@@ -1404,6 +1423,17 @@ function GoCardlessRequestsInner() {
                             )}
                           </div>
                         </div>
+
+                        {/* Unallocated credit warning */}
+                        {customer.unallocated_credit > 0 && (
+                          <div className="mx-3 mt-2 mb-1 p-2 bg-amber-50 border border-amber-200 rounded flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                            <span className="text-xs text-amber-800">
+                              <strong>{customer.unallocated_credit_formatted}</strong> unallocated credit on account — may be a previous payment not yet allocated to invoices.
+                              Allocate in Opera before collecting to avoid duplicate payment.
+                            </span>
+                          </div>
+                        )}
 
                         {/* Invoices Table */}
                         <div className="border-t border-gray-200">
