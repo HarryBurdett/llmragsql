@@ -1,0 +1,57 @@
+{
+  "module_id": "bank_reconcile",
+  "name": "Bank Statement Reconciliation",
+  "version": "1.0",
+  "description": "Import bank statements from PDF (email or file), AI-extract transactions, auto-match to cashbook, post unmatched entries, reconcile.",
+  "dependencies": {
+    "accounting_system": {
+      "type": "sql_connection",
+      "access": "read_write",
+      "tables_read": ["nbank", "aentry", "atran", "sname", "pname", "nacnt", "nparm", "atype", "arhead", "arline", "sprfls", "pprfls"],
+      "tables_write": ["aentry", "atran", "stran", "ptran", "ntran", "anoml", "sname", "pname", "nbank", "nacnt", "nhist", "salloc", "palloc", "nextid", "atype"],
+      "description": "Connection to Opera SQL SE or equivalent accounting database"
+    },
+    "email": {
+      "type": "imap_smtp",
+      "purpose": "Scan inbox for bank statement PDFs, archive processed emails",
+      "required": false,
+      "description": "IMAP for receiving statements by email"
+    },
+    "ai_extraction": {
+      "type": "rest_api",
+      "provider": "google_gemini",
+      "purpose": "Extract transactions from bank statement PDFs",
+      "required": true,
+      "description": "Gemini Vision API for PDF text extraction and transaction parsing"
+    }
+  },
+  "settings": [
+    {"key": "gemini_api_key", "label": "Gemini API Key", "type": "secret", "required": true},
+    {"key": "statement_folder", "label": "Statement Folder Path", "type": "path", "required": false, "description": "Local folder to scan for bank statement PDFs"}
+  ],
+  "data_stores": [
+    {"file": "bank_aliases.db", "type": "sqlite", "scope": "company", "description": "Learned payee name to Opera account mappings"},
+    {"file": "bank_patterns.db", "type": "sqlite", "scope": "company", "description": "Pattern learning from successful imports"},
+    {"file": "pdf_extraction_cache.db", "type": "sqlite", "scope": "company", "description": "Cached PDF extraction results by content hash"},
+    {"file": "bank_statement_imports.db", "type": "sqlite", "scope": "company", "description": "Import history and duplicate tracking"}
+  ],
+  "locking_rules": {
+    "bank_import_lock": "Application-level lock per bank account — prevents concurrent imports to same bank",
+    "sequence_allocation": "UPDLOCK, ROWLOCK on nparm, atype, nextid when posting transactions",
+    "balance_update": "ROWLOCK on nbank, sname, pname, nacnt when updating balances",
+    "deadlock_retry": "All posting wrapped in execute_with_deadlock_retry (3 attempts)",
+    "read_queries": "All SELECT queries use WITH (NOLOCK)",
+    "record_lock_check": "Checks for Opera application-level locks before posting (prevents conflict with Opera users)",
+    "duplicate_detection": "ABS(ABS(at_value) - amount) with date range check before posting"
+  },
+  "api_endpoints": [
+    "/api/bank-reconcile/scan-statements",
+    "/api/bank-reconcile/extract",
+    "/api/bank-reconcile/match",
+    "/api/bank-reconcile/import",
+    "/api/bank-reconcile/reconcile"
+  ],
+  "frontend_pages": [
+    {"path": "/cashbook/statement-reconcile", "label": "Bank Statement Reconciliation"}
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "module_id": "sop",
+  "name": "Sales Order Processing",
+  "version": "1.0",
+  "description": "Batch processing for SOP documents — progress quotes through proformas, orders, deliveries, and invoices. Replicates Opera's batch progression.",
+  "dependencies": {
+    "accounting_system": {
+      "type": "sql_connection",
+      "access": "read_write",
+      "tables_read": ["ihead", "itran", "iparm", "sname", "cname", "cstwh", "nextid"],
+      "tables_write": ["ihead", "itran", "iparm", "sname", "cname", "cstwh", "nextid", "zpool", "stran", "ntran", "snoml", "nacnt", "nhist", "ctran", "cnoml"],
+      "description": "Full SOP table access — reads config from iparm, writes document progressions"
+    }
+  },
+  "settings": [],
+  "config_source": "iparm",
+  "config_description": "All SOP configuration is read directly from Opera's iparm table — no local settings needed. Key parameters: ip_delivry (delivery enabled), ip_updst (stock update stage), ip_cnor2in (skip delivery), sequence counters.",
+  "locking_rules": {
+    "sequence_allocation": "UPDLOCK, ROWLOCK on iparm and nextid when allocating document numbers",
+    "document_update": "ROWLOCK on ihead, itran when progressing documents",
+    "balance_update": "ROWLOCK on sname when updating order balance",
+    "stock_update": "ROWLOCK on cname, cstwh when updating stock flags",
+    "concurrency": "Each document progressed in its own transaction with deadlock retry"
+  },
+  "data_stores": [],
+  "api_endpoints": [
+    "/api/sop/config",
+    "/api/sop/documents",
+    "/api/sop/document/*/lines",
+    "/api/sop/progress"
+  ],
+  "frontend_pages": [
+    {"path": "/sop/batch-processing", "label": "SOP Batch Processing"}
+  ]
+}

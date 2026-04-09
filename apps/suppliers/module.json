@@ -1,0 +1,67 @@
+{
+  "module_id": "suppliers",
+  "name": "Supplier Statement Reconciliation",
+  "version": "1.0",
+  "description": "Receive supplier statements by email, auto-reconcile against purchase ledger, generate responses with queries and payment schedules, track communications.",
+  "dependencies": {
+    "accounting_system": {
+      "type": "sql_connection",
+      "access": "read_only",
+      "tables_read": ["pname", "ptran", "pterms", "zcontacts", "nparm"],
+      "description": "Read purchase ledger data for reconciliation"
+    },
+    "email": {
+      "type": "imap_smtp",
+      "purpose": "Receive supplier statements, send acknowledgements/responses/reminders",
+      "required": true,
+      "description": "IMAP for receiving, SMTP for sending responses"
+    },
+    "ai_extraction": {
+      "type": "rest_api",
+      "provider": "google_gemini",
+      "purpose": "Extract transaction data from supplier statement PDFs",
+      "required": true
+    }
+  },
+  "settings": [
+    {"key": "send_acknowledgement", "label": "Send Receipt Acknowledgement", "type": "boolean", "default": true},
+    {"key": "send_agreed_response", "label": "Send Agreed Confirmation", "type": "boolean", "default": true},
+    {"key": "send_query_response", "label": "Send Query Notification", "type": "boolean", "default": true},
+    {"key": "send_follow_up_reminders", "label": "Send Follow-up Reminders", "type": "boolean", "default": true},
+    {"key": "auto_respond_if_reconciled", "label": "Auto-Send Without Approval", "type": "boolean", "default": true},
+    {"key": "require_approval_for_queries", "label": "Require Approval for Queries", "type": "boolean", "default": true},
+    {"key": "query_response_days", "label": "Query Response Deadline (days)", "type": "integer", "default": 7},
+    {"key": "follow_up_reminder_days", "label": "Follow-up Interval (days)", "type": "integer", "default": 14},
+    {"key": "max_follow_up_reminders", "label": "Maximum Reminders", "type": "integer", "default": 3},
+    {"key": "next_payment_run_date", "label": "Next Payment Run Date", "type": "date"},
+    {"key": "large_discrepancy_threshold", "label": "Large Discrepancy Threshold (£)", "type": "decimal", "default": 500},
+    {"key": "email_template_agreed", "label": "Agreed Email Template", "type": "text"},
+    {"key": "email_template_query", "label": "Query Email Template", "type": "text"},
+    {"key": "response_sign_off", "label": "Email Sign-off", "type": "text", "default": "Regards, Accounts Department"},
+    {"key": "response_company_name", "label": "Company Name in Sign-off", "type": "text"},
+    {"key": "security_alert_recipients", "label": "Security Alert Email Recipients", "type": "text"}
+  ],
+  "data_stores": [
+    {"file": "supplier_statements.db", "type": "sqlite", "scope": "company", "description": "Statements, reconciliations, communications, config, approved senders"}
+  ],
+  "locking_rules": {
+    "read_only": "This module only READS from the accounting system — no write locks needed",
+    "read_queries": "All SELECT queries use WITH (NOLOCK)",
+    "local_db": "SQLite WAL mode for concurrent read/write on local supplier_statements.db",
+    "dedup": "Unique index on supplier_code + statement_date prevents duplicate processing",
+    "email_dedup": "processed_emails table prevents re-processing of same email"
+  },
+  "api_endpoints": [
+    "/api/supplier-statements/*",
+    "/api/supplier-settings",
+    "/api/supplier-config/*",
+    "/api/supplier-queries/*",
+    "/api/supplier-security/*"
+  ],
+  "frontend_pages": [
+    {"path": "/suppliers/dashboard", "label": "Supplier Dashboard"},
+    {"path": "/suppliers/queue", "label": "Statement Queue"},
+    {"path": "/suppliers/directory", "label": "Supplier Directory"},
+    {"path": "/suppliers/settings", "label": "Supplier Settings"}
+  ]
+}

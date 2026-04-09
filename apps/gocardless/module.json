@@ -1,0 +1,65 @@
+{
+  "module_id": "gocardless",
+  "name": "GoCardless Direct Debit Import",
+  "version": "1.0",
+  "description": "Collect payments via GoCardless Direct Debit, match to customer invoices, post receipts to the accounting system.",
+  "dependencies": {
+    "accounting_system": {
+      "type": "sql_connection",
+      "access": "read_write",
+      "tables_read": ["sname", "stran", "ihead", "atype", "nbank", "nparm", "nacnt", "sprfls"],
+      "tables_write": ["aentry", "atran", "stran", "ntran", "anoml", "sname", "nbank", "nacnt", "nhist", "salloc", "zvtran", "nvat", "nextid", "atype"],
+      "description": "Connection to Opera SQL SE or equivalent accounting database"
+    },
+    "email": {
+      "type": "imap_smtp",
+      "purpose": "Monitor for GoCardless payout notification emails, send payment confirmations",
+      "required": false,
+      "description": "IMAP for receiving, SMTP for sending"
+    },
+    "gocardless_api": {
+      "type": "rest_api",
+      "base_url": "https://api.gocardless.com",
+      "auth": "bearer_token",
+      "description": "GoCardless API for payment creation, mandate management, payout retrieval"
+    }
+  },
+  "settings": [
+    {"key": "api_access_token", "label": "GoCardless API Access Token", "type": "secret", "required": true},
+    {"key": "api_sandbox", "label": "Sandbox Mode", "type": "boolean", "default": false},
+    {"key": "default_bank_code", "label": "Destination Bank Account Code", "type": "string", "required": true, "description": "Opera bank account that receives GoCardless payouts"},
+    {"key": "gocardless_bank_code", "label": "GoCardless Control Bank Code", "type": "string", "required": false, "description": "Intermediate bank if using two-stage posting"},
+    {"key": "fees_nominal_account", "label": "Fees Nominal Account", "type": "string", "required": true, "description": "Nominal code for GoCardless fee charges"},
+    {"key": "fees_vat_code", "label": "Fees VAT Code", "type": "string", "required": false},
+    {"key": "subscription_tag", "label": "Subscription Analysis Tag", "type": "string", "default": "SUB"},
+    {"key": "company_reference", "label": "Company Reference Prefix", "type": "string", "required": false},
+    {"key": "payout_lookback_days", "label": "Payout Lookback Days", "type": "integer", "default": 30},
+    {"key": "request_statement_reference", "label": "Statement Reference Prefix", "type": "string", "required": false}
+  ],
+  "data_stores": [
+    {"file": "gocardless_payments.db", "type": "sqlite", "scope": "company", "description": "Mandate links, payment requests, subscription tracking"},
+    {"file": "gocardless_settings.json", "type": "json", "scope": "company", "description": "Module settings per company"}
+  ],
+  "locking_rules": {
+    "bank_import_lock": "Application-level lock per bank account — prevents concurrent imports to same bank (import_lock module)",
+    "sequence_allocation": "UPDLOCK, ROWLOCK on nparm (journal numbers), atype (entry numbers), nextid (row IDs)",
+    "balance_update": "ROWLOCK on nbank, sname, nacnt when updating balances",
+    "deadlock_retry": "All posting wrapped in execute_with_deadlock_retry (3 attempts, exponential backoff)",
+    "read_queries": "All SELECT queries use WITH (NOLOCK) — no read locks",
+    "duplicate_prevention": "Check existing payments in local DB + GoCardless API before creating new request"
+  },
+  "api_endpoints": [
+    "/api/gocardless/settings",
+    "/api/gocardless/due-invoices",
+    "/api/gocardless/payment-requests/*",
+    "/api/gocardless/api-payouts",
+    "/api/gocardless/import-batch",
+    "/api/gocardless/mandates/*",
+    "/api/gocardless/import-history"
+  ],
+  "frontend_pages": [
+    {"path": "/cashbook/gocardless", "label": "GoCardless Import"},
+    {"path": "/cashbook/gocardless/requests", "label": "Payment Requests"},
+    {"path": "/cashbook/gocardless/settings", "label": "GoCardless Settings"}
+  ]
+}
