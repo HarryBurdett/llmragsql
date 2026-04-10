@@ -572,10 +572,12 @@ def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_a
         # Test mode override — redirect all emails
         recipient = None
         try:
-            test_email = db.get_config('test_mode_email', '')
-            if test_email and test_email.strip():
-                recipient = test_email.strip()
-                logger.info(f"TEST MODE: acknowledgement for {supplier_code} redirected to {recipient}")
+            test_enabled = str(db.get_config('test_mode_enabled', 'false')).lower() in ('true', '1', 'yes')
+            if test_enabled:
+                test_email = db.get_config('test_mode_email', '')
+                if test_email and test_email.strip():
+                    recipient = test_email.strip()
+                    logger.info(f"TEST MODE: acknowledgement for {supplier_code} redirected to {recipient}")
         except Exception:
             pass
 

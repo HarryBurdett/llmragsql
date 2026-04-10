@@ -2819,10 +2819,12 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     try:
         from sql_rag.supplier_statement_db import get_supplier_statement_db
         test_db = get_supplier_statement_db()
-        test_email = test_db.get_config('test_mode_email', '')
-        if test_email and test_email.strip():
-            logger.info(f"TEST MODE: redirecting supplier email for {supplier_code} to {test_email.strip()}")
-            return test_email.strip()
+        test_enabled = str(test_db.get_config('test_mode_enabled', 'false')).lower() in ('true', '1', 'yes')
+        if test_enabled:
+            test_email = test_db.get_config('test_mode_email', '')
+            if test_email and test_email.strip():
+                logger.info(f"TEST MODE: redirecting supplier email for {supplier_code} to {test_email.strip()}")
+                return test_email.strip()
     except Exception:
         pass
 

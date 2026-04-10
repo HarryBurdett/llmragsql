@@ -128,10 +128,17 @@ const SETTINGS_GROUPS: SettingsGroup[] = [
     description: 'Configure email notifications and alerts',
     settings: [
       {
-        key: 'test_mode_email',
-        label: 'Test Mode — Redirect All Emails',
-        description: 'When set, ALL outbound supplier emails are sent to this address instead of the supplier contact. Clear to disable test mode.',
+        key: 'test_mode_enabled',
+        label: 'Test Mode',
+        description: 'When ON, all outbound emails go to the test address below instead of the real supplier contact',
         icon: AlertTriangle,
+        type: 'toggle',
+      },
+      {
+        key: 'test_mode_email',
+        label: 'Test Mode Email',
+        description: 'All supplier emails are redirected to this address when test mode is on',
+        icon: Mail,
         type: 'email',
         placeholder: 'charlieb@intsysuk.com',
       },
