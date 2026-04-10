@@ -126,7 +126,7 @@ function CustomerAccountSearch({
         </div>
       )}
       {results.length > 0 && !value && (
-        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+        <div className="absolute z-[60] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
           {results.map((c) => (
             <button
               key={c.account}
@@ -2087,7 +2087,7 @@ function GoCardlessRequestsInner() {
                                 {(sub.source_docs || []).length > 0 ? 'Add' : 'Link document'}
                               </button>
                               {linkingSubId === sub.subscription_id && (
-                                <div className="absolute z-50 left-0 bottom-full mb-1 w-80 bg-white border border-gray-300 rounded-lg shadow-lg max-h-72 flex flex-col">
+                                <div className="absolute z-50 left-0 bottom-full mb-1 w-80 bg-white border border-gray-300 rounded-lg shadow-lg max-h-96 flex flex-col overflow-visible">
                                   <div className="px-2 py-2 border-b border-gray-200 bg-gray-50 flex-shrink-0">
                                     <CustomerAccountSearch
                                       value={linkPickerCustomer}
