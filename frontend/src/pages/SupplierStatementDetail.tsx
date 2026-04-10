@@ -114,6 +114,7 @@ export default function SupplierStatementDetail() {
   const [showPdf, setShowPdf] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     if (id) {
@@ -437,11 +438,19 @@ export default function SupplierStatementDetail() {
         )}
         {/* Refresh button — always visible so user can reload after changes in Opera */}
         <button
-          onClick={() => { if (id) loadStatement(parseInt(id)); }}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          onClick={async () => {
+            if (!id) return;
+            setRefreshing(true);
+            setSuccess(null);
+            await loadStatement(parseInt(id));
+            setRefreshing(false);
+            setSuccess('Data refreshed from Opera');
+          }}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"
           title="Refresh — reload data from Opera (use after allocating payments)"
         >
-          <RefreshCw className="w-4 h-4" /> Refresh
+          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} /> {refreshing ? 'Refreshing...' : 'Refresh'}
         </button>
         {statement.status === 'approved' && (
           <div className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg">
