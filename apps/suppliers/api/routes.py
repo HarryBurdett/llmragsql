@@ -3568,6 +3568,34 @@ async def get_supplier_statement_detail(statement_id: int):
         our_bal = stmt.get('opera_balance') if stmt.get('opera_balance') is not None else 0
         stmt['balance_difference'] = their_bal - our_bal
 
+        # Unallocated payments on this supplier account
+        stmt['unallocated_payments'] = []
+        stmt['unallocated_total'] = 0
+        try:
+            if sql_connector:
+                unalloc_df = sql_connector.execute_query(f"""
+                    SELECT pt_trref, pt_trdate, pt_trbal, pt_trtype
+                    FROM ptran WITH (NOLOCK)
+                    WHERE RTRIM(pt_account) = '{stmt['supplier_code']}'
+                      AND pt_trbal <> 0
+                      AND pt_trtype IN ('P', 'F')
+                    ORDER BY pt_trdate DESC
+                """)
+                if unalloc_df is not None and not unalloc_df.empty:
+                    total = 0
+                    for _, r in unalloc_df.iterrows():
+                        amt = float(r['pt_trbal'])
+                        total += amt
+                        stmt['unallocated_payments'].append({
+                            "reference": str(r['pt_trref']).strip(),
+                            "date": r['pt_trdate'].strftime('%d/%m/%Y') if hasattr(r['pt_trdate'], 'strftime') else str(r['pt_trdate'])[:10],
+                            "balance": amt,
+                            "type": "Payment" if str(r['pt_trtype']).strip() == 'P' else "Refund",
+                        })
+                    stmt['unallocated_total'] = round(total, 2)
+        except Exception as e:
+            logger.warning(f"Could not check unallocated payments for {stmt['supplier_code']}: {e}")
+
         return {"success": True, "statement": stmt}
 
     except HTTPException:

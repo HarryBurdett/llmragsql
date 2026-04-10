@@ -25,6 +25,8 @@ interface Statement {
   error_message: string | null;
   opera_balance: number | null;
   balance_difference: number | null;
+  unallocated_payments?: { reference: string; date: string; balance: number; type: string }[];
+  unallocated_total?: number;
 }
 
 interface StatementLine {
@@ -367,6 +369,28 @@ export default function SupplierStatementDetail() {
           );
         })()}
       </div>
+
+      {/* Unallocated payments warning */}
+      {statement.unallocated_payments && statement.unallocated_payments.length > 0 && (
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-800">
+                {statement.unallocated_payments.length} unallocated payment{statement.unallocated_payments.length !== 1 ? 's' : ''} on this account (£{Math.abs(statement.unallocated_total || 0).toLocaleString('en-GB', { minimumFractionDigits: 2 })})
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5">These may need allocating to invoices before the reconciliation is accurate.</p>
+              <div className="mt-1.5 flex flex-wrap gap-2">
+                {statement.unallocated_payments.map((p: any, i: number) => (
+                  <span key={i} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded">
+                    {p.reference} {p.date} £{Math.abs(p.balance).toFixed(2)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Action buttons */}
       <div className="flex gap-2 mb-4">
