@@ -2255,8 +2255,8 @@ function GoCardlessRequestsInner() {
 
       {/* Create Subscription Modal */}
       {showCreateSubModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 max-h-[80vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center z-50 overflow-y-auto py-8">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl p-6 my-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold">Create Subscriptions</h3>
               <button onClick={() => setShowCreateSubModal(false)} className="text-gray-400 hover:text-gray-600">
@@ -2451,8 +2451,8 @@ function GoCardlessRequestsInner() {
 
       {/* Create Mandate Modal */}
       {showCreateMandateModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center z-50 overflow-y-auto py-8">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6 my-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold">Create Mandate</h3>
               <button onClick={() => setShowCreateMandateModal(false)} className="text-gray-400 hover:text-gray-600">
@@ -2558,8 +2558,8 @@ function GoCardlessRequestsInner() {
 
       {/* Link Mandate Modal */}
       {showLinkModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center z-50 overflow-y-auto py-8">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6 my-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold">Link GoCardless Mandate</h3>
               <button onClick={() => setShowLinkModal(false)} className="text-gray-400 hover:text-gray-600">
