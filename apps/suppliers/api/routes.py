@@ -2810,10 +2810,22 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     Get the best contact email for a supplier.
 
     Priority:
+    0. Test mode override — if test_mode_email is set, ALL emails go there
     1. Accounting system contacts — first contact with an email for this supplier
     2. supplier_contacts_ext with is_statement_contact = 1 (local override)
     3. sender_email from the statement record (fallback)
     """
+    # 0. Test mode — redirect all emails to test address
+    try:
+        from sql_rag.supplier_statement_db import get_supplier_statement_db
+        test_db = get_supplier_statement_db()
+        test_email = test_db.get_config('test_mode_email', '')
+        if test_email and test_email.strip():
+            logger.info(f"TEST MODE: redirecting supplier email for {supplier_code} to {test_email.strip()}")
+            return test_email.strip()
+    except Exception:
+        pass
+
     # 1. Check accounting system contacts via data provider
     try:
         from sql_rag.supplier_data_provider import get_supplier_data_provider

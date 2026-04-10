@@ -515,16 +515,28 @@ async def _process_single_email(email_id: int, storage, providers):
         logger.warning(f"Failed to save reconciliation results for statement {statement_id}: {e}")
 
     # --- Step 9: Response decision logic ---
+    # Respect per-supplier and global communication settings
     never_communicate = supplier_cfg.get('never_communicate', False) if supplier_cfg else False
     auto_respond = supplier_cfg.get('auto_respond', False) if supplier_cfg else False
     balances_agree = abs(recon_result.difference) < 0.01
 
+    # Check global communication toggles
+    send_ack = str(db.get_config('send_acknowledgement', 'true')).lower() in ('true', '1', 'yes')
+    send_agreed = str(db.get_config('send_agreed_response', 'true')).lower() in ('true', '1', 'yes')
+    send_queries = str(db.get_config('send_query_response', 'true')).lower() in ('true', '1', 'yes')
+    auto_send = str(db.get_config('auto_respond_if_reconciled', 'true')).lower() in ('true', '1', 'yes')
+
     if never_communicate:
         db.update_statement_status(statement_id, 'reconciled')
-    elif balances_agree:
-        _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_addr, info)
+    elif balances_agree and send_agreed and auto_send:
+        if send_ack:
+            _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_addr, info)
         db.update_statement_status(statement_id, 'acknowledged')
-    elif auto_respond:
+    elif not balances_agree and send_queries and auto_respond:
+        if send_ack:
+            _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_addr, info)
+        db.update_statement_status(statement_id, 'acknowledged')
+    elif send_ack and auto_send:
         _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_addr, info)
         db.update_statement_status(statement_id, 'acknowledged')
     else:
@@ -542,21 +554,33 @@ def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_a
     try:
         from api.main import config as app_config, sql_connector
 
-        # Check if auto-acknowledge is enabled
-        auto_ack = True
+        # Check if acknowledgements are enabled
+        send_ack = True
         try:
-            setting = db.get_config('auto_acknowledge')
+            # Check new toggle first, fall back to legacy key
+            setting = db.get_config('send_acknowledgement')
+            if setting is None:
+                setting = db.get_config('auto_acknowledge')
             if setting is not None:
-                auto_ack = str(setting).lower() in ('true', '1', 'yes')
+                send_ack = str(setting).lower() in ('true', '1', 'yes')
         except Exception:
             pass
 
-        if not auto_ack:
+        if not send_ack:
             return
 
-        # Get recipient from accounting system contact, not the sender
+        # Test mode override — redirect all emails
         recipient = None
-        if supplier_code:
+        try:
+            test_email = db.get_config('test_mode_email', '')
+            if test_email and test_email.strip():
+                recipient = test_email.strip()
+                logger.info(f"TEST MODE: acknowledgement for {supplier_code} redirected to {recipient}")
+        except Exception:
+            pass
+
+        # Get recipient from accounting system contact, not the sender
+        if not recipient and supplier_code:
             try:
                 from sql_rag.supplier_data_provider import get_supplier_data_provider
                 provider = get_supplier_data_provider()
