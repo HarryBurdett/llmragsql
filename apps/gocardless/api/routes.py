@@ -640,6 +640,19 @@ async def import_gocardless_batch(
                 "gc_payment_id": p.get('gc_payment_id', '')
             })
 
+        # Log each payment being imported for audit trail
+        for idx, vp in enumerate(validated_payments):
+            logger.info(f"GC import payment {idx+1}: customer={vp['customer_account']}, amount=£{vp['amount']:.2f}, gc_name={vp['customer_name']}, desc={vp['description'][:25]}")
+
+        # Check for duplicate customer+amount — warn but don't block (legitimate duplicates exist)
+        seen = {}
+        for idx, p in enumerate(validated_payments):
+            key = (p['customer_account'], round(p['amount'], 2))
+            seen.setdefault(key, []).append(idx)
+        for (acct, amt), indices in seen.items():
+            if len(indices) > 1:
+                logger.warning(f"GC import DUPLICATE: {acct} has {len(indices)} payments for £{amt:.2f} — verify correct matching")
+
         # Parse date
         try:
             parsed_date = datetime.strptime(post_date, '%Y-%m-%d').date()

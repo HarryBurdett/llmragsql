@@ -6184,6 +6184,25 @@ class OperaSQLImport:
                 errors=errors
             )
 
+        # Check for duplicate customer+amount combinations in the batch
+        # This catches accidental mismatches where two payments for the same amount
+        # end up assigned to the same customer (e.g. Physique £168 posted as A Warne £168)
+        seen_combos = {}  # (customer, amount) → list of payment indices
+        for idx, payment in enumerate(payments):
+            key = (payment.get('customer_account', '').strip(), round(float(payment.get('amount', 0)), 2))
+            seen_combos.setdefault(key, []).append(idx)
+
+        duplicates = {k: v for k, v in seen_combos.items() if len(v) > 1}
+        if duplicates:
+            for (acct, amt), indices in duplicates.items():
+                cust_name = customer_info.get(acct, {}).get('name', acct)
+                line_nums = ', '.join(str(i + 1) for i in indices)
+                warnings.append(
+                    f"Duplicate: {cust_name} ({acct}) appears {len(indices)} times for £{amt:.2f} "
+                    f"(payments {line_nums}). Please verify each payment is matched to the correct customer."
+                )
+            logger.warning(f"GC batch has duplicate customer+amount combos: {duplicates}")
+
         if validate_only:
             return ImportResult(
                 success=True,
