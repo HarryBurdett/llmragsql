@@ -96,6 +96,7 @@ from apps.bank_reconcile.api.routes import router as bank_reconcile_router
 from apps.transaction_snapshot.api.routes import router as transaction_snapshot_router
 from apps.transaction_monitor.api.routes import router as transaction_monitor_router
 from apps.sop.api.routes import router as sop_router
+from apps.migration.api.routes import router as migration_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -937,6 +938,7 @@ app.include_router(bank_reconcile_router)
 app.include_router(transaction_snapshot_router)
 app.include_router(transaction_monitor_router)
 app.include_router(sop_router)
+app.include_router(migration_router)
 
 # ============ Pydantic Models ============
 

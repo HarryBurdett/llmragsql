@@ -159,6 +159,7 @@ const getAdminMenu = (isAdmin: boolean): TopLevelMenu => ({
         { path: '/pop', label: 'Purchase Orders', icon: ClipboardList, description: 'Purchase order processing', color: 'amber' },
         { path: '/bom', label: 'Works Orders', icon: Cog, description: 'Bill of materials & works', color: 'purple' },
         { path: '/admin/system-dashboard', label: 'System Dashboard', icon: Activity, description: 'System health & status', color: 'emerald' },
+        { path: '/admin/migration', label: 'Migration Assistant', icon: Package, description: 'Package modules for deployment', color: 'blue' },
         { path: '/admin/projects', label: 'Ideas Archive', icon: FolderKanban, description: 'Project ideas & proposals', color: 'purple' },
       ],
     },

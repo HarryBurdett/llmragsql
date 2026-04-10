@@ -1,0 +1,35 @@
+{
+  "module_id": "transaction_snapshot",
+  "name": "Transaction Snapshot",
+  "version": "1.0",
+  "description": "Capture before/after snapshots of Opera database transactions to learn exact posting patterns. Feeds the import engine registry.",
+  "dependencies": {
+    "accounting_system": {
+      "type": "sql_connection",
+      "access": "read_only",
+      "description": "Read-only access to Opera SQL SE database — snapshots all tables"
+    }
+  },
+  "settings": [],
+  "config_source": "none",
+  "config_description": "No local settings — reads directly from Opera database.",
+  "locking_rules": {
+    "read_only": "All queries use WITH (NOLOCK) — no write operations",
+    "snapshot_storage": "Local JSON files — no database locking needed"
+  },
+  "data_stores": [
+    {"file": "opera-transaction-library/", "type": "json_directory", "scope": "global", "description": "Captured transaction snapshots as JSON files"}
+  ],
+  "api_endpoints": [
+    "/api/transaction-snapshot/before",
+    "/api/transaction-snapshot/after",
+    "/api/transaction-snapshot/library",
+    "/api/transaction-snapshot/library/*",
+    "/api/transaction-snapshot/field-analysis",
+    "/api/transaction-snapshot/relationship-analysis",
+    "/api/transaction-snapshot/export-to-knowledge"
+  ],
+  "frontend_pages": [
+    {"path": "/utilities/transaction-snapshot", "label": "Transaction Snapshot"}
+  ]
+}
