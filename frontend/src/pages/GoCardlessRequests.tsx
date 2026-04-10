@@ -125,6 +125,11 @@ function CustomerAccountSearch({
           )}
         </div>
       )}
+      {!value && debouncedSearch.length >= 2 && !isLoading && results.length === 0 && (
+        <div className="absolute z-[60] w-full mt-1 bg-white border border-amber-300 rounded-lg shadow-lg px-3 py-2">
+          <p className="text-xs text-amber-700">No customer found matching "{debouncedSearch}"</p>
+        </div>
+      )}
       {results.length > 0 && !value && (
         <div className="absolute z-[60] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
           {results.map((c) => (
