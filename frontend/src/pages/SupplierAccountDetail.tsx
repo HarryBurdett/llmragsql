@@ -302,6 +302,31 @@ export default function SupplierAccountDetail() {
       </div>
 
       {/* ------------------------------------------------------------------ */}
+      {/* Unallocated Payments Warning                                          */}
+      {/* ------------------------------------------------------------------ */}
+      {detail.unallocated_payments && detail.unallocated_payments.length > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-800">
+                {detail.unallocated_payments.length} unallocated payment{detail.unallocated_payments.length !== 1 ? 's' : ''} on this account ({fmtCurrency(detail.unallocated_total)})
+              </p>
+              <p className="text-xs text-amber-700 mt-1">These payments have not been allocated to invoices. This may affect statement reconciliation and supplier balances.</p>
+              <div className="mt-2 space-y-1">
+                {detail.unallocated_payments.map((p: any, i: number) => (
+                  <div key={i} className="flex items-center justify-between text-xs text-amber-800 bg-amber-100 rounded px-2 py-1">
+                    <span>{p.type}: {p.reference} — {p.date}</span>
+                    <span className="font-medium">{fmtCurrency(p.balance)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------------ */}
       {/* Automation Flags                                                      */}
       {/* ------------------------------------------------------------------ */}
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">

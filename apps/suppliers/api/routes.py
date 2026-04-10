@@ -861,14 +861,16 @@ async def auto_resolve_supplier_queries():
 @router.post("/api/supplier-queries/{query_id}/send-reminder")
 async def send_query_reminder(query_id: int):
     """
-    Send a follow-up reminder email to the supplier about an unresolved query.
+    Send an escalating follow-up reminder email to the supplier about an unresolved query.
 
-    Gets the query details from statement_lines, looks up the supplier
-    contact email, sends a reminder, and records in the communications
-    audit trail.
+    Tracks reminder count per query. After max reminders reached, marks query as
+    escalated instead of sending another email. Tone escalates with each reminder:
+      1st: polite follow-up
+      2nd: firmer, references elapsed time
+      3rd: final notice, no further reminders will be sent
 
     Returns:
-        {success, sent_to}
+        {success, sent_to, reminder_number, escalated}
     """
     from api.main import sql_connector
     from sql_rag.supplier_statement_db import get_supplier_statement_db
@@ -888,7 +890,8 @@ async def send_query_reminder(query_id: int):
         cursor.execute("""
             SELECT sl.id, sl.reference, sl.description, sl.debit, sl.credit,
                    sl.query_type, sl.query_sent_at, sl.query_resolved_at,
-                   sl.statement_id,
+                   sl.statement_id, sl.reminder_count, sl.last_reminder_at,
+                   sl.escalated_at,
                    ss.supplier_code, ss.statement_date
             FROM statement_lines sl
             JOIN supplier_statements ss ON sl.statement_id = ss.id
@@ -904,9 +907,53 @@ async def send_query_reminder(query_id: int):
             conn.close()
             return {"success": False, "error": "Query has already been resolved"}
 
+        if query['escalated_at'] is not None:
+            conn.close()
+            return {"success": False, "error": "Query has been escalated — no further automated reminders. Requires manual follow-up."}
+
+        reminder_count = query['reminder_count'] or 0
+
+        # Get max reminders from config
+        cursor.execute("SELECT value FROM supplier_automation_config WHERE key = 'max_follow_up_reminders'")
+        row = cursor.fetchone()
+        max_reminders = int(row['value']) if row else 3
+
+        # If max reminders reached, escalate instead of sending another
+        if reminder_count >= max_reminders:
+            cursor.execute("""
+                UPDATE statement_lines
+                SET escalated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (query_id,))
+            conn.commit()
+            conn.close()
+
+            # Log the escalation
+            try:
+                db = get_supplier_statement_db()
+                db.log_communication(
+                    supplier_code=query['supplier_code'],
+                    direction='internal',
+                    comm_type='query_escalated',
+                    email_subject=f"ESCALATED: Query {query['reference'] or 'N/A'} - {max_reminders} reminders sent with no response",
+                    email_body=f"Query for {query['reference'] or 'N/A'} (£{(query['debit'] or query['credit'] or 0):,.2f}) has been escalated after {max_reminders} unanswered reminders. Manual follow-up required.",
+                    statement_id=query['statement_id'],
+                    sent_by='System'
+                )
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "escalated": True,
+                "reminder_number": reminder_count,
+                "message": f"Query escalated after {max_reminders} unanswered reminders. No further automated emails will be sent — requires manual follow-up (e.g. phone call)."
+            }
+
         supplier_code = query['supplier_code']
         reference = query['reference'] or 'N/A'
         amount = query['debit'] or query['credit'] or 0
+        next_reminder = reminder_count + 1
 
         # Get supplier name from Opera
         supplier_name = supplier_code
@@ -939,20 +986,71 @@ async def send_query_reminder(query_id: int):
             conn.close()
             return {"success": False, "error": "No contact email found for this supplier"}
 
-        # Build reminder email
-        email_subject = f"Follow-up: Outstanding Query - {supplier_name} - Ref {reference}"
-        email_body = (
-            f"Dear {supplier_name},\n\n"
-            f"We are following up on our query regarding invoice {reference} "
-            f"for the amount of \u00a3{amount:,.2f}.\n\n"
-            f"Query type: {query['query_type'] or 'General query'}\n"
-            f"Original query date: {query['query_sent_at'] or 'N/A'}\n"
-            f"Statement date: {query['statement_date'] or 'N/A'}\n\n"
-            f"We would appreciate your earliest response to help us "
-            f"reconcile our records.\n\n"
-            f"Regards,\n"
-            f"Accounts Department"
-        )
+        # Get sign-off from config
+        cursor.execute("SELECT value FROM supplier_automation_config WHERE key = 'response_sign_off'")
+        sign_off_row = cursor.fetchone()
+        sign_off = sign_off_row['value'] if sign_off_row else "Regards,\nAccounts Department"
+
+        # Calculate days since original query
+        days_since_query = ''
+        if query['query_sent_at']:
+            try:
+                sent_date = datetime.fromisoformat(query['query_sent_at'].replace('Z', '+00:00'))
+                days_elapsed = (datetime.now() - sent_date.replace(tzinfo=None)).days
+                days_since_query = f"{days_elapsed} days ago"
+            except Exception:
+                days_since_query = query['query_sent_at'][:10]
+
+        # Check if follow-up reminders are enabled
+        cursor.execute("SELECT value FROM supplier_automation_config WHERE key = 'send_follow_up_reminders'")
+        fu_row = cursor.fetchone()
+        if fu_row and fu_row['value'].lower() in ('false', '0', 'no'):
+            conn.close()
+            return {"success": False, "error": "Follow-up reminders are disabled in settings"}
+
+        # Build escalating reminder email — framed around payment being held
+        query_type_str = query['query_type'] or 'General query'
+        original_date = query['query_sent_at'][:10] if query['query_sent_at'] else 'N/A'
+
+        if next_reminder == 1:
+            email_subject = f"Outstanding Query - {supplier_name} - Ref {reference}"
+            email_body = (
+                f"Dear {supplier_name},\n\n"
+                f"We are writing regarding reference {reference} "
+                f"(\u00a3{amount:,.2f}) which we raised on {original_date}.\n\n"
+                f"This item remains unresolved and is affecting the outstanding "
+                f"balance on your account. We would appreciate your earliest "
+                f"response so that we can reconcile our records.\n\n"
+                f"Query: {query_type_str}\n"
+                f"Statement date: {query['statement_date'] or 'N/A'}\n\n"
+                f"{sign_off}"
+            )
+        elif next_reminder == 2:
+            email_subject = f"Second Request: Outstanding Query - {supplier_name} - Ref {reference}"
+            email_body = (
+                f"Dear {supplier_name},\n\n"
+                f"We wrote to you {days_since_query} regarding reference {reference} "
+                f"(\u00a3{amount:,.2f}) and have not yet received a response.\n\n"
+                f"This item continues to affect the balance on your account. "
+                f"Please could you look into this as a matter of urgency so that "
+                f"we can reconcile our records.\n\n"
+                f"Query: {query_type_str}\n"
+                f"Original query date: {original_date}\n\n"
+                f"{sign_off}"
+            )
+        else:
+            email_subject = f"Final Notice: Outstanding Query - {supplier_name} - Ref {reference}"
+            email_body = (
+                f"Dear {supplier_name},\n\n"
+                f"This is our final reminder regarding reference {reference} "
+                f"(\u00a3{amount:,.2f}), originally raised {days_since_query}.\n\n"
+                f"We have been unable to reconcile this item without your input. "
+                f"If we do not receive a response, this matter will be referred "
+                f"internally for review and no further automated reminders will be sent.\n\n"
+                f"Query: {query_type_str}\n"
+                f"Original query date: {original_date}\n\n"
+                f"{sign_off}"
+            )
 
         # Send email
         email_sent = False
@@ -978,6 +1076,15 @@ async def send_query_reminder(query_id: int):
             email_error = f"Email send error: {str(e)}"
             logger.warning(f"Failed to send query reminder for query {query_id}: {e}")
 
+        # Update reminder count and timestamp
+        if email_sent:
+            cursor.execute("""
+                UPDATE statement_lines
+                SET reminder_count = ?, last_reminder_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (next_reminder, query_id))
+            conn.commit()
+
         # Record in communications audit trail
         try:
             db = get_supplier_statement_db()
@@ -998,7 +1105,10 @@ async def send_query_reminder(query_id: int):
         result = {
             "success": email_sent,
             "sent_to": recipient_email if email_sent else None,
-            "message": "Reminder sent" if email_sent else "Failed to send reminder"
+            "reminder_number": next_reminder,
+            "max_reminders": max_reminders,
+            "escalated": False,
+            "message": f"Reminder {next_reminder} of {max_reminders} sent" if email_sent else "Failed to send reminder"
         }
         if email_error:
             result["email_error"] = email_error
@@ -1056,6 +1166,9 @@ async def get_overdue_supplier_queries(days_overdue: Optional[int] = None):
                 sl.credit,
                 sl.query_type,
                 sl.query_sent_at,
+                sl.reminder_count,
+                sl.last_reminder_at,
+                sl.escalated_at,
                 julianday('now') - julianday(sl.query_sent_at) as days_outstanding
             FROM statement_lines sl
             JOIN supplier_statements ss ON sl.statement_id = ss.id
@@ -1906,12 +2019,19 @@ async def get_supplier_settings():
             "settings": {
                 "acknowledgment_delay_minutes": "0",
                 "processing_sla_hours": "24",
-                "query_response_days": "5",
-                "follow_up_reminder_days": "7",
+                "query_response_days": "7",
+                "follow_up_reminder_days": "14",
+                "max_follow_up_reminders": "3",
                 "large_discrepancy_threshold": "500",
                 "old_statement_threshold_days": "14",
                 "payment_notification_days": "90",
-                "security_alert_recipients": ""
+                "security_alert_recipients": "",
+                "send_acknowledgement": "true",
+                "send_agreed_response": "true",
+                "send_query_response": "true",
+                "send_follow_up_reminders": "true",
+                "auto_respond_if_reconciled": "true",
+                "require_approval_for_queries": "true",
             }
         }
 
@@ -1942,6 +2062,35 @@ async def update_supplier_settings(settings: Dict[str, str] = Body(...)):
     if not db_path.exists():
         from sql_rag.supplier_statement_db import SupplierStatementDB
         SupplierStatementDB(str(db_path))
+
+    # Validate: follow-up reminder must be greater than query response deadline
+    follow_up = settings.get('follow_up_reminder_days')
+    response_days = settings.get('query_response_days')
+    # If only one is being updated, load the other from DB for comparison
+    if (follow_up is not None or response_days is not None) and not (follow_up and response_days):
+        try:
+            conn_check = sqlite3.connect(str(db_path))
+            cursor_check = conn_check.cursor()
+            if follow_up is None:
+                cursor_check.execute("SELECT value FROM supplier_automation_config WHERE key = 'follow_up_reminder_days'")
+                row = cursor_check.fetchone()
+                follow_up = row[0] if row else '14'
+            if response_days is None:
+                cursor_check.execute("SELECT value FROM supplier_automation_config WHERE key = 'query_response_days'")
+                row = cursor_check.fetchone()
+                response_days = row[0] if row else '7'
+            conn_check.close()
+        except Exception:
+            pass
+    if follow_up is not None and response_days is not None:
+        try:
+            if int(follow_up) <= int(response_days):
+                return {
+                    "success": False,
+                    "error": f"Follow-up reminder ({follow_up} days) must be greater than query response deadline ({response_days} days)"
+                }
+        except ValueError:
+            pass
 
     try:
         conn = sqlite3.connect(str(db_path))
@@ -3026,13 +3175,19 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
         template = db.get_config('email_template_agreed', None)
 
     if not template:
-        # Fallback: build minimal body (should not happen once DB is initialised)
+        # Fallback defaults — payment proceeds for agreed items, queries affect specific items/balance
         if has_queries:
             template = (
                 '<p>Dear {contact_name},</p>'
                 '<p>Thank you for your statement dated {statement_date}.</p>'
+                '<p>We have reconciled your statement against our records. '
+                'Payment will be processed for all agreed items. However, the following '
+                'items require your attention as they affect the outstanding balance:</p>'
                 '{query_table}'
-                '<p>Regards,<br>{company_sign_off}</p>'
+                '<p>Please respond at your earliest convenience so that we can '
+                'resolve these items and reconcile our records.</p>'
+                '{payment_schedule}'
+                '<p>{company_sign_off}</p>'
             )
         else:
             template = (
@@ -3040,7 +3195,7 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
                 '<p>Thank you for your statement dated {statement_date}.</p>'
                 '<p>We confirm the balance of {their_balance} is agreed.</p>'
                 '{payment_schedule}'
-                '<p>Regards,<br>{company_sign_off}</p>'
+                '<p>{company_sign_off}</p>'
             )
 
     merge_fields = {
@@ -3057,6 +3212,22 @@ def _generate_default_response(cursor, statement_id: int, supplier_code: str,
         'payment_schedule': payment_schedule,
         'company_sign_off': company_sign_off,
     }
+
+    # If the template is plain text (no HTML tags), convert to HTML paragraphs
+    # This lets users write natural text in the settings textarea
+    if '<p>' not in template and '<div>' not in template and '<br' not in template:
+        lines = template.strip().split('\n')
+        html_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # Preserve merge field blocks that expand to HTML (query_table, payment_table, etc.)
+            if stripped in ('{query_table}', '{payment_table}', '{payment_schedule}'):
+                html_lines.append(stripped)
+            else:
+                html_lines.append(f'<p>{stripped}</p>')
+        template = '\n'.join(html_lines)
 
     body = template
     for field, value in merge_fields.items():
@@ -4726,6 +4897,35 @@ async def get_supplier_detail(account: str):
             result["balance"] = balance
     except Exception as e:
         logger.warning(f"Could not load balance for {account}: {e}")
+
+    # --- Unallocated payments on account ---
+    try:
+        if sql_connector:
+            unalloc_df = sql_connector.execute_query(f"""
+                SELECT pt_trref, pt_trdate, pt_trbal, pt_trtype
+                FROM ptran WITH (NOLOCK)
+                WHERE RTRIM(pt_account) = '{account}'
+                  AND pt_trbal <> 0
+                  AND pt_trtype IN ('P', 'F')
+                ORDER BY pt_trdate DESC
+            """)
+            if unalloc_df is not None and not unalloc_df.empty:
+                unallocated = []
+                total_unallocated = 0
+                for _, r in unalloc_df.iterrows():
+                    amt = float(r['pt_trbal'])
+                    total_unallocated += amt
+                    unallocated.append({
+                        "reference": str(r['pt_trref']).strip(),
+                        "date": r['pt_trdate'].strftime('%d/%m/%Y') if hasattr(r['pt_trdate'], 'strftime') else str(r['pt_trdate'])[:10],
+                        "balance": amt,
+                        "type": "Payment" if str(r['pt_trtype']).strip() == 'P' else "Refund",
+                    })
+                if unallocated:
+                    result["unallocated_payments"] = unallocated
+                    result["unallocated_total"] = round(total_unallocated, 2)
+    except Exception as e:
+        logger.warning(f"Could not check unallocated payments for {account}: {e}")
 
     # --- Statement history from SQLite ---
     try:
