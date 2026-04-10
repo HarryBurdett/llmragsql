@@ -58,8 +58,8 @@
     "/api/gocardless/import-history"
   ],
   "frontend_pages": [
-    {"path": "/cashbook/gocardless", "label": "GoCardless Import"},
-    {"path": "/cashbook/gocardless/requests", "label": "Payment Requests"},
-    {"path": "/cashbook/gocardless/settings", "label": "GoCardless Settings"}
+    {"path": "/cashbook/gocardless", "label": "GoCardless Import", "type": "workflow", "menu": "Cashbook"},
+    {"path": "/cashbook/gocardless/requests", "label": "Payment Requests", "type": "workflow", "menu": "Cashbook"},
+    {"path": "/cashbook/gocardless/settings", "label": "GoCardless Settings", "type": "settings", "menu": "Admin"}
   ]
 }

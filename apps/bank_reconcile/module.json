@@ -52,7 +52,7 @@
     "/api/bank-reconcile/reconcile"
   ],
   "frontend_pages": [
-    {"path": "/cashbook/statement-reconcile", "label": "Bank Statement Reconciliation"},
-    {"path": "/cashbook/options", "label": "Bank Rec Settings"}
+    {"path": "/cashbook/statement-reconcile", "label": "Bank Statement Reconciliation", "type": "workflow", "menu": "Cashbook"},
+    {"path": "/cashbook/options", "label": "Bank Rec Settings", "type": "settings", "menu": "Admin"}
   ]
 }

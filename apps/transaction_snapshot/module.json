@@ -30,6 +30,6 @@
     "/api/transaction-snapshot/export-to-knowledge"
   ],
   "frontend_pages": [
-    {"path": "/utilities/transaction-snapshot", "label": "Transaction Snapshot"}
+    {"path": "/utilities/transaction-snapshot", "label": "Transaction Snapshot", "type": "workflow", "menu": "Utilities"}
   ]
 }

@@ -59,9 +59,9 @@
     "/api/supplier-security/*"
   ],
   "frontend_pages": [
-    {"path": "/suppliers/dashboard", "label": "Supplier Dashboard"},
-    {"path": "/suppliers/queue", "label": "Statement Queue"},
-    {"path": "/suppliers/directory", "label": "Supplier Directory"},
-    {"path": "/suppliers/settings", "label": "Supplier Settings"}
+    {"path": "/suppliers/dashboard", "label": "Supplier Dashboard", "type": "workflow", "menu": "Suppliers"},
+    {"path": "/suppliers/queue", "label": "Statement Queue", "type": "workflow", "menu": "Suppliers"},
+    {"path": "/suppliers/directory", "label": "Supplier Directory", "type": "workflow", "menu": "Suppliers"},
+    {"path": "/suppliers/settings", "label": "Supplier Settings", "type": "settings", "menu": "Admin"}
   ]
 }
