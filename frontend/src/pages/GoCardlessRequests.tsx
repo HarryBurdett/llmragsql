@@ -2117,8 +2117,8 @@ function GoCardlessRequestsInner() {
                                             Selected: <strong>{linkPickerCustomerName || linkPickerCustomer}</strong> — {filteredDocs.length} document{filteredDocs.length !== 1 ? 's' : ''} available
                                           </div>
                                           {filteredDocs.length === 0 ? (
-                                            <div className="px-3 py-3 text-xs text-gray-500 text-center">
-                                              No unlinked repeat documents for this customer
+                                            <div className="px-3 py-3 text-xs text-amber-700 bg-amber-50 text-center">
+                                              No repeat documents available for {linkPickerCustomerName || linkPickerCustomer}. The customer needs a repeat invoice with the SUB analysis code in Opera.
                                             </div>
                                           ) : (
                                             filteredDocs.map(doc => (
@@ -2143,7 +2143,7 @@ function GoCardlessRequestsInner() {
                                     })()
                                   ) : (
                                     <div className="px-3 py-3 text-xs text-gray-500 text-center">
-                                      Select a customer above to view their documents
+                                      Search for a customer to view their repeat documents
                                     </div>
                                   )}
                                 </div>
