@@ -637,43 +637,43 @@ async def import_gocardless_batch(
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
                 "auto_allocate": p.get('auto_allocate', True),
-                "gc_payment_id": p.get('gc_payment_id', '')
+                "gc_payment_id": p.get('gc_payment_id', ''),
+                "mandate_id": p.get('mandate_id', ''),
             })
 
-        # Verify each payment's customer matches the mandate (prevents wrong-customer posting)
-        # If a payment has a gc_payment_id, we can trace it back to a mandate → opera_account
+        # Verify each payment's customer by mandate_id (the only bulletproof check)
+        # The mandate_id is a hard link: GC payment → mandate → Opera customer
+        # If the import is posting to a different customer than the mandate says, BLOCK it
         payments_db = get_payments_db()
         all_mandates = payments_db.list_mandates()
-        mandate_account_lookup = {}
+        mandate_to_account = {}
         for m in all_mandates:
-            if m.get('opera_account') and m['opera_account'] != '__UNLINKED__':
-                mid = (m.get('mandate_id') or '').strip()
-                if mid:
-                    mandate_account_lookup[mid] = m['opera_account'].strip()
-                gc_name = (m.get('gocardless_name') or m.get('opera_name') or '').strip().lower()
-                if gc_name:
-                    mandate_account_lookup[f"name:{gc_name}"] = m['opera_account'].strip()
+            mid = (m.get('mandate_id') or '').strip()
+            acct = (m.get('opera_account') or '').strip()
+            if mid and acct and acct != '__UNLINKED__':
+                mandate_to_account[mid] = acct
 
         for idx, vp in enumerate(validated_payments):
-            gc_name = (vp.get('customer_name') or '').strip().lower()
             posting_account = vp['customer_account'].strip()
+            mandate_id = vp.get('mandate_id', '').strip() if vp.get('mandate_id') else ''
 
-            # Check if the GC customer name maps to a different Opera account via mandates
-            expected_account = mandate_account_lookup.get(f"name:{gc_name}")
-            if expected_account and expected_account != posting_account:
-                logger.error(
-                    f"GC import MISMATCH payment {idx+1}: GoCardless name '{vp.get('customer_name')}' "
-                    f"is linked to {expected_account} via mandate, but posting to {posting_account}. "
-                    f"Amount: £{vp['amount']:.2f}"
-                )
-                return {
-                    "success": False,
-                    "error": f"Payment {idx+1}: '{vp.get('customer_name')}' is linked to account {expected_account} "
-                             f"in the mandate table, but is being posted to {posting_account}. "
-                             f"Please correct the customer match before importing."
-                }
+            # If we have the mandate_id, verify the posting account matches
+            if mandate_id and mandate_id in mandate_to_account:
+                expected_account = mandate_to_account[mandate_id]
+                if expected_account != posting_account:
+                    logger.error(
+                        f"GC import BLOCKED payment {idx+1}: mandate {mandate_id} is linked to "
+                        f"{expected_account}, but import is posting to {posting_account}. "
+                        f"GC name: {vp.get('customer_name')}, amount: £{vp['amount']:.2f}"
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Payment {idx+1}: mandate {mandate_id} belongs to account {expected_account}, "
+                                 f"but is being posted to {posting_account} ({vp.get('customer_name', '')}). "
+                                 f"Please correct the customer match before importing."
+                    }
 
-            logger.info(f"GC import payment {idx+1}: customer={posting_account}, amount=£{vp['amount']:.2f}, gc_name={vp.get('customer_name', '')}, desc={vp['description'][:25]}")
+            logger.info(f"GC import payment {idx+1}: customer={posting_account}, amount=£{vp['amount']:.2f}, mandate={mandate_id}, gc_name={vp.get('customer_name', '')}")
 
         # Check for duplicate customer+amount — warn but don't block (legitimate duplicates exist)
         seen = {}
@@ -3253,7 +3253,8 @@ async def import_gocardless_from_email(
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
                 "auto_allocate": p.get('auto_allocate', True),
-                "gc_payment_id": p.get('gc_payment_id', '')
+                "gc_payment_id": p.get('gc_payment_id', ''),
+                "mandate_id": p.get('mandate_id', ''),
             })
 
         # Validate fees_nominal_account is configured if there are fees
@@ -5895,7 +5896,8 @@ async def opera3_import_gocardless_from_email(
                 "amount": float(p['amount']),
                 "description": p.get('description', '')[:35],
                 "auto_allocate": p.get('auto_allocate', True),
-                "gc_payment_id": p.get('gc_payment_id', '')
+                "gc_payment_id": p.get('gc_payment_id', ''),
+                "mandate_id": p.get('mandate_id', ''),
             })
 
         if gocardless_fees and gocardless_fees > 0 and not fees_nominal_account:

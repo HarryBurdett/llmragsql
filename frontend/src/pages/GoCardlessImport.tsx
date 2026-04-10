@@ -368,6 +368,7 @@ function GoCardlessImportInner() {
     available: number;
     skipped_period_closed: number;
     skipped_duplicates: number;
+    skipped_already_imported: number;
     current_period?: { year: number; period: number };
   } | null>(null);
 
@@ -784,7 +785,8 @@ function GoCardlessImportInner() {
         amount: p.amount,
         description: p.description,
         auto_allocate: !autoAllocateDisabled.has(idx),
-        gc_payment_id: p.gc_payment_id || ''
+        gc_payment_id: p.gc_payment_id || '',
+        mandate_id: p.mandate_id || '',
       }));
 
       // Use batch-specific posting date, fall back to global postDate
@@ -963,6 +965,7 @@ function GoCardlessImportInner() {
         available: data.total_payouts || 0,
         skipped_period_closed: filterStats.filtered_period_closed || 0,
         skipped_duplicates: filterStats.filtered_duplicate_in_opera || 0,
+        skipped_already_imported: filterStats.filtered_already_in_history || 0,
         current_period: undefined
       });
 
@@ -977,7 +980,22 @@ function GoCardlessImportInner() {
         }));
         setEmailBatches(batchesWithState);
       } else {
-        setScanError('No payouts to import');
+        // Build informative message showing why no payouts are available
+        const parts: string[] = [];
+        if (filterStats.total_from_api === 0) {
+          parts.push('No payouts found from GoCardless API in the lookback period');
+        } else {
+          parts.push(`${filterStats.total_from_api} payout(s) found from API`);
+          if (filterStats.filtered_already_in_history > 0)
+            parts.push(`${filterStats.filtered_already_in_history} already imported`);
+          if (filterStats.filtered_duplicate_in_opera > 0)
+            parts.push(`${filterStats.filtered_duplicate_in_opera} already in cashbook`);
+          if (filterStats.filtered_period_closed > 0)
+            parts.push(`${filterStats.filtered_period_closed} period closed`);
+          if (filterStats.filtered_error > 0)
+            parts.push(`${filterStats.filtered_error} errors`);
+        }
+        setScanError(parts.length > 1 ? parts.join(' — ') : 'No payouts to import');
       }
     } catch (error) {
       setScanError(`Failed to fetch payouts: ${error}`);
@@ -1093,7 +1111,8 @@ function GoCardlessImportInner() {
             amount: p.amount,
             description: p.description || p.customer_name,
             auto_allocate: !autoAllocateDisabled.has(idx),
-            gc_payment_id: p.gc_payment_id || ''
+            gc_payment_id: p.gc_payment_id || '',
+            mandate_id: p.mandate_id || '',
           })))
         }
       );
@@ -1653,12 +1672,17 @@ function GoCardlessImportInner() {
               )}
             </div>
 
-            {scanStats && emailBatches.length > 0 && (
+            {scanStats && (emailBatches.length > 0 || scanStats.skipped_already_imported > 0 || scanStats.skipped_duplicates > 0) && (
               <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
                 <div className="flex flex-wrap gap-4 text-blue-800">
-                  <span>Ready to import: {emailBatches.filter(b => !b.possible_duplicate && !b.is_value_mismatch && !b.is_foreign_currency).length}</span>
+                  {emailBatches.length > 0 && (
+                    <span>Ready to import: {emailBatches.filter(b => !b.possible_duplicate && !b.is_value_mismatch && !b.is_foreign_currency).length}</span>
+                  )}
                   {emailBatches.filter(b => b.is_value_mismatch).length > 0 && (
                     <span className="text-orange-700">Value mismatch: {emailBatches.filter(b => b.is_value_mismatch).length}</span>
+                  )}
+                  {scanStats.skipped_already_imported > 0 && (
+                    <span className="text-green-700">Already imported: {scanStats.skipped_already_imported}</span>
                   )}
                   {scanStats.skipped_duplicates > 0 && (
                     <span className="text-amber-700">Already in cashbook: {scanStats.skipped_duplicates}</span>
@@ -1668,7 +1692,7 @@ function GoCardlessImportInner() {
             )}
 
             {scanError && (
-              <Alert variant={scanError === 'No payouts to import' ? 'info' : 'error'} onDismiss={() => setScanError(null)}>{scanError}</Alert>
+              <Alert variant={scanError.includes('already imported') || scanError.includes('already in cashbook') || scanError === 'No payouts to import' ? 'info' : 'error'} onDismiss={() => setScanError(null)}>{scanError}</Alert>
             )}
 
             {emailBatches.length > 0 && (
