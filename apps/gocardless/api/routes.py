@@ -640,9 +640,40 @@ async def import_gocardless_batch(
                 "gc_payment_id": p.get('gc_payment_id', '')
             })
 
-        # Log each payment being imported for audit trail
+        # Verify each payment's customer matches the mandate (prevents wrong-customer posting)
+        # If a payment has a gc_payment_id, we can trace it back to a mandate → opera_account
+        payments_db = get_payments_db()
+        all_mandates = payments_db.list_mandates()
+        mandate_account_lookup = {}
+        for m in all_mandates:
+            if m.get('opera_account') and m['opera_account'] != '__UNLINKED__':
+                mid = (m.get('mandate_id') or '').strip()
+                if mid:
+                    mandate_account_lookup[mid] = m['opera_account'].strip()
+                gc_name = (m.get('gocardless_name') or m.get('opera_name') or '').strip().lower()
+                if gc_name:
+                    mandate_account_lookup[f"name:{gc_name}"] = m['opera_account'].strip()
+
         for idx, vp in enumerate(validated_payments):
-            logger.info(f"GC import payment {idx+1}: customer={vp['customer_account']}, amount=£{vp['amount']:.2f}, gc_name={vp['customer_name']}, desc={vp['description'][:25]}")
+            gc_name = (vp.get('customer_name') or '').strip().lower()
+            posting_account = vp['customer_account'].strip()
+
+            # Check if the GC customer name maps to a different Opera account via mandates
+            expected_account = mandate_account_lookup.get(f"name:{gc_name}")
+            if expected_account and expected_account != posting_account:
+                logger.error(
+                    f"GC import MISMATCH payment {idx+1}: GoCardless name '{vp.get('customer_name')}' "
+                    f"is linked to {expected_account} via mandate, but posting to {posting_account}. "
+                    f"Amount: £{vp['amount']:.2f}"
+                )
+                return {
+                    "success": False,
+                    "error": f"Payment {idx+1}: '{vp.get('customer_name')}' is linked to account {expected_account} "
+                             f"in the mandate table, but is being posted to {posting_account}. "
+                             f"Please correct the customer match before importing."
+                }
+
+            logger.info(f"GC import payment {idx+1}: customer={posting_account}, amount=£{vp['amount']:.2f}, gc_name={vp.get('customer_name', '')}, desc={vp['description'][:25]}")
 
         # Check for duplicate customer+amount — warn but don't block (legitimate duplicates exist)
         seen = {}
