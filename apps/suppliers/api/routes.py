@@ -366,18 +366,35 @@ async def get_supplier_statement_dashboard():
                 "created_at": row["received_date"]
             })
 
-        # Recent statements
+        # Recent statements — lookup supplier names from Opera
         cursor.execute("""
             SELECT id, supplier_code, statement_date, received_date, status,
                    (SELECT closing_balance FROM supplier_statements WHERE id = ss.id) as closing_balance
             FROM supplier_statements ss
             ORDER BY received_date DESC LIMIT 10
         """)
-        for row in cursor.fetchall():
+        stmt_rows = cursor.fetchall()
+        # Batch lookup supplier names
+        supplier_names = {}
+        if stmt_rows and sql_connector:
+            try:
+                codes = list(set(r['supplier_code'] for r in stmt_rows if r['supplier_code']))
+                if codes:
+                    code_list = ','.join(f"'{c}'" for c in codes)
+                    names_df = sql_connector.execute_query(f"""
+                        SELECT RTRIM(pn_account) as code, RTRIM(pn_name) as name
+                        FROM pname WITH (NOLOCK) WHERE pn_account IN ({code_list})
+                    """)
+                    if names_df is not None and len(names_df) > 0:
+                        supplier_names = dict(zip(names_df['code'], names_df['name']))
+            except Exception:
+                pass
+
+        for row in stmt_rows:
             response["recent_statements"].append({
                 "id": row["id"],
                 "supplier_code": row["supplier_code"],
-                "supplier_name": row["supplier_code"],  # Would need to lookup
+                "supplier_name": supplier_names.get(row["supplier_code"], row["supplier_code"]),
                 "statement_date": row["statement_date"],
                 "received_date": row["received_date"],
                 "status": row["status"],
