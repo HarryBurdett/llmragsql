@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileText, CheckCircle, AlertTriangle, Clock, Eye } from 'lucide-react';
+import { ArrowLeft, FileText, CheckCircle, AlertTriangle, Clock, Eye, RefreshCw } from 'lucide-react';
 import { authFetch } from '../api/client';
 
 interface Statement {
@@ -435,16 +435,14 @@ export default function SupplierStatementDetail() {
             )}
           </button>
         )}
-        {/* Refresh button — re-reconcile after allocating payments in Opera */}
-        {(statement.status === 'reconciled' || statement.status === 'acknowledged') && (
-          <button
-            onClick={() => { if (id) loadStatement(parseInt(id)); }}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
-            title="Refresh after allocating payments in Opera"
-          >
-            <Clock className="w-4 h-4" /> Refresh
-          </button>
-        )}
+        {/* Refresh button — always visible so user can reload after changes in Opera */}
+        <button
+          onClick={() => { if (id) loadStatement(parseInt(id)); }}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          title="Refresh — reload data from Opera (use after allocating payments)"
+        >
+          <RefreshCw className="w-4 h-4" /> Refresh
+        </button>
         {statement.status === 'approved' && (
           <div className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg">
             <CheckCircle className="w-4 h-4" />
