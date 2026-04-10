@@ -413,7 +413,18 @@ export default function SupplierStatementDetail() {
         )}
         {(statement.status === 'reconciled' || statement.status === 'acknowledged') && (
           <button
-            onClick={handleOpenEmailPreview}
+            onClick={() => {
+              if (statement.unallocated_payments && statement.unallocated_payments.length > 0) {
+                const total = Math.abs(statement.unallocated_total || 0).toFixed(2);
+                const confirmed = window.confirm(
+                  `There are ${statement.unallocated_payments.length} unallocated payment(s) (£${total}) on this account.\n\n` +
+                  `This may affect the accuracy of the reconciliation. You may want to allocate these in Opera first.\n\n` +
+                  `Do you want to continue sending the response?`
+                );
+                if (!confirmed) return;
+              }
+              handleOpenEmailPreview();
+            }}
             disabled={previewLoading || approving}
             className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-wait"
           >
@@ -422,6 +433,16 @@ export default function SupplierStatementDetail() {
             ) : (
               <><CheckCircle className="w-4 h-4" /> Approve & Send Response</>
             )}
+          </button>
+        )}
+        {/* Refresh button — re-reconcile after allocating payments in Opera */}
+        {(statement.status === 'reconciled' || statement.status === 'acknowledged') && (
+          <button
+            onClick={() => { if (id) loadStatement(parseInt(id)); }}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+            title="Refresh after allocating payments in Opera"
+          >
+            <Clock className="w-4 h-4" /> Refresh
           </button>
         )}
         {statement.status === 'approved' && (
