@@ -2113,6 +2113,9 @@ function GoCardlessRequestsInner() {
 
                                       return (
                                         <div className="overflow-y-auto flex-1">
+                                          <div className="px-3 py-2 bg-green-50 border-b border-green-200 text-xs text-green-800">
+                                            Selected: <strong>{linkPickerCustomerName || linkPickerCustomer}</strong> — {filteredDocs.length} document{filteredDocs.length !== 1 ? 's' : ''} available
+                                          </div>
                                           {filteredDocs.length === 0 ? (
                                             <div className="px-3 py-3 text-xs text-gray-500 text-center">
                                               No unlinked repeat documents for this customer
