@@ -6280,6 +6280,7 @@ class OperaSQLImport:
                     customer_account = payment['customer_account'].strip()
                     amount_pounds = float(payment['amount'])
                     amount_pence = int(round(amount_pounds * 100))
+                    logger.info(f"GC batch line {idx+1}: customer={customer_account}, amount=£{amount_pounds:.2f}, desc={payment.get('description', '')[:30]}")
                     description = payment.get('description', '')[:35].replace("'", "''")
 
                     cust = customer_info[customer_account]
