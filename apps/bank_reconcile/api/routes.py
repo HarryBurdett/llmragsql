@@ -1189,6 +1189,77 @@ async def process_bank_statement(
 
 
 
+@router.post("/api/reconcile/refresh-matches")
+async def refresh_statement_matches(
+    request: Request,
+    bank_code: str = Query(..., description="Bank account code"),
+    transactions: List[Dict] = Body(..., description="Current transaction list to re-check")
+):
+    """
+    Re-run duplicate detection against Opera for all transactions.
+
+    Use this after entering transactions in Opera — it re-checks each
+    transaction and returns updated is_duplicate/skip_reason flags.
+    The frontend updates its display without needing a full re-extract.
+    """
+    from api.main import sql_connector
+    if not sql_connector:
+        return {"success": False, "error": "Database not connected"}
+
+    try:
+        from sql_rag.bank_import import BankStatementImport, BankTransaction
+        from datetime import date as date_type, datetime
+
+        importer = BankStatementImport(sql_connector, bank_code)
+
+        updated = []
+        matched_count = 0
+
+        for t in transactions:
+            txn = BankTransaction()
+            txn.name = t.get('name', t.get('description', ''))
+            txn.amount = float(t.get('amount', 0))
+            txn.abs_amount = abs(txn.amount)
+            txn.reference = t.get('reference', '')
+            txn.action = t.get('action', '')
+            txn.matched_account = t.get('matched_account', '')
+            txn.fit_id = t.get('fit_id', '')
+
+            # Parse date
+            date_val = t.get('date', '')
+            if isinstance(date_val, str) and date_val:
+                try:
+                    txn.date = datetime.strptime(date_val[:10], '%Y-%m-%d').date()
+                except ValueError:
+                    txn.date = date_type.today()
+            else:
+                txn.date = date_type.today()
+
+            is_posted, reason = importer._is_already_posted(txn)
+
+            updated.append({
+                **t,
+                "is_duplicate": is_posted,
+                "skip_reason": reason if is_posted else t.get('skip_reason', ''),
+                "action": "skip" if is_posted else t.get('action', ''),
+            })
+
+            if is_posted:
+                matched_count += 1
+
+        return {
+            "success": True,
+            "transactions": updated,
+            "matched_count": matched_count,
+            "total": len(transactions),
+            "message": f"{matched_count} transaction(s) now matched to Opera entries"
+        }
+
+    except Exception as e:
+        logger.error(f"Error refreshing matches: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @router.post("/api/reconcile/process-statement-unified")
 async def process_statement_unified(
     file_path: str,
@@ -2205,6 +2276,11 @@ async def preview_bank_import_multiformat(
                 txn_data["outstanding_open"] = sum(1 for p in outstanding_postings if p["period_valid"])
                 repeat_entries.append(txn_data)
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
+                # Extract Opera entry number from duplicate candidates for reconcile view
+                if txn.duplicate_candidates:
+                    best = txn.duplicate_candidates[0]
+                    txn_data["entry_number"] = best.record_id
+                    txn_data["matched_entry"] = best.record_id
                 already_posted.append(txn_data)
             else:
                 # Check if this is a GoCardless FX transaction
@@ -8091,6 +8167,11 @@ async def preview_bank_import_from_email(
                 txn_data["outstanding_open"] = sum(1 for p in outstanding_postings if p["period_valid"])
                 repeat_entries.append(txn_data)
             elif txn.is_duplicate or (txn.skip_reason and 'Already' in txn.skip_reason):
+                # Extract Opera entry number from duplicate candidates for reconcile view
+                if txn.duplicate_candidates:
+                    best = txn.duplicate_candidates[0]
+                    txn_data["entry_number"] = best.record_id
+                    txn_data["matched_entry"] = best.record_id
                 already_posted.append(txn_data)
             else:
                 # Check if this is a GoCardless FX transaction
