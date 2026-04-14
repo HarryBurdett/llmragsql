@@ -613,8 +613,9 @@ export function GoCardlessSettings() {
           {/* Payment Request Settings */}
           <div className="space-y-4">
             <h3 className="font-medium text-gray-900 border-b pb-2">Payment Requests</h3>
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Statement Reference</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Company Name</label>
               <input
                 type="text"
                 value={requestStatementReference}
@@ -624,12 +625,15 @@ export function GoCardlessSettings() {
                 className="w-48 p-2 border border-gray-300 rounded text-sm"
               />
               <p className="text-xs text-gray-500 mt-1">
-                Prefix added to the payment description sent to GoCardless (max 10 chars).
-                This appears on the customer's bank statement before the invoice number, e.g. "{requestStatementReference || 'Intsys'} INV12345".
+                Your company name or trading name (max 10 chars). Used as the {'{company}'} field in the templates below and as a prefix in payment descriptions.
+              </p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                {requestStatementReference ? `${requestStatementReference.length}/10 characters` : 'Not set — GoCardless will use its own default'}
               </p>
             </div>
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">BACS Reference Template</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Bank Statement Reference (BACS)</label>
               <input
                 type="text"
                 value={bacsReferenceTemplate}
@@ -638,14 +642,14 @@ export function GoCardlessSettings() {
                 className="w-64 p-2 border border-gray-300 rounded text-sm"
               />
               <p className="text-xs text-gray-500 mt-1">
-                What appears on the customer's bank statement (max 10 chars after merge). Add a number to limit field length:
+                What the customer sees on their bank statement when the Direct Debit is taken (max 10 characters).
               </p>
               <div className="text-xs text-gray-400 mt-1 space-y-0.5">
-                <div><code>{'{company}'}</code> — Statement Reference (e.g. {requestStatementReference || 'Intsys'})</div>
-                <div><code>{'{company4}'}</code> — First 4 chars (e.g. {(requestStatementReference || 'Intsys').slice(0, 4)})</div>
-                <div><code>{'{inv}'}</code> — Invoice reference (e.g. INV26492)</div>
+                <div><code>{'{company}'}</code> — Company name above ({requestStatementReference || 'not set'})</div>
+                <div><code>{'{company4}'}</code> — First 4 chars ({(requestStatementReference || 'COMP').slice(0, 4)})</div>
+                <div><code>{'{inv}'}</code> — Full invoice reference (e.g. INV26492)</div>
                 <div><code>{'{inv_num}'}</code> — Invoice number only (e.g. 26492)</div>
-                <div><code>{'{inv_num5}'}</code> — Last 5 digits (e.g. 26492)</div>
+                <div><code>{'{inv_num5}'}</code> — Number limited to 5 digits</div>
                 <div><code>{'{customer}'}</code> — Customer account code (e.g. R019)</div>
               </div>
               {bacsError ? (
@@ -655,6 +659,14 @@ export function GoCardlessSettings() {
                   Preview: "{resolveBacsTemplate(bacsReferenceTemplate || '{company}').slice(0, 10)}" ({Math.min(bacsPreviewLength, 10)} of 10 chars)
                 </p>
               )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Payment Description</label>
+              <p className="text-xs text-gray-500">
+                The full description sent to GoCardless (max 100 chars). This appears in GoCardless notifications to the customer, not on their bank statement.
+                Format: <span className="font-mono text-gray-600">{requestStatementReference ? `${requestStatementReference} INV26492` : 'INV26492'}</span> (auto-generated from company name + invoice reference).
+              </p>
             </div>
           </div>
 
