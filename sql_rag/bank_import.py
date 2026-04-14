@@ -1515,35 +1515,32 @@ class BankStatementImport:
                 txn.is_duplicate = True
                 return True, f"Already in cashbook (reference match: {txn_ref})"
 
-        # Check 1: Cashbook (atran) - amounts in PENCE
-        # Use NOLOCK to avoid blocking other users during validation
-        # Match on amount + date range + description prefix to avoid false positives
-        # (e.g., two different £300 payments on the same date to different payees)
+        # Check 1: Cashbook — use aentry (header) not atran (splits)
+        # aentry.ae_value is the actual payment/receipt total
+        # atran may have multiple lines split across nominal accounts
         safe_comment = (txn.name or '').replace("'", "''").strip()[:30]
-        # First check: amount + date + description prefix (strong match)
+        # First check: amount + date + comment prefix (strong match)
         query = f"""
-            SELECT COUNT(*) as cnt FROM atran WITH (NOLOCK)
-            WHERE at_acnt = '{self.bank_code}'
-            AND at_pstdate BETWEEN '{date_from}' AND '{date_to}'
-            AND ABS(ABS(at_value) - {amount_pence}) < 1
-            AND LEFT(RTRIM(ISNULL(at_comment, '')), 15) = LEFT('{safe_comment}', 15)
+            SELECT COUNT(*) as cnt FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{self.bank_code}'
+            AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
+            AND ABS(ABS(ae_value) - {amount_pence}) < 1
+            AND LEFT(RTRIM(ISNULL(ae_comment, '')), 15) = LEFT('{safe_comment}', 15)
         """
         df = self.sql_connector.execute_query(query)
-        atran_count = int(df.iloc[0]['cnt'])
-        if atran_count > 0:
+        if int(df.iloc[0]['cnt']) > 0:
             txn.is_duplicate = True
-            return True, "Already in cashbook (atran)"
-        # Second check: amount + date range (no description) — catches transactions
-        # posted in Opera with different descriptions (e.g. HMRC posted manually)
+            return True, "Already in cashbook"
+        # Second check: amount + date range only — catches transactions entered
+        # in Opera with different descriptions (e.g. HMRC entered manually)
         query2 = f"""
-            SELECT COUNT(*) as cnt FROM atran WITH (NOLOCK)
-            WHERE at_acnt = '{self.bank_code}'
-            AND at_pstdate BETWEEN '{date_from}' AND '{date_to}'
-            AND ABS(ABS(at_value) - {amount_pence}) < 1
+            SELECT COUNT(*) as cnt FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{self.bank_code}'
+            AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
+            AND ABS(ABS(ae_value) - {amount_pence}) < 1
         """
         df2 = self.sql_connector.execute_query(query2)
-        atran_count2 = int(df2.iloc[0]['cnt'])
-        if atran_count2 > 0:
+        if int(df2.iloc[0]['cnt']) > 0:
             txn.is_duplicate = True
             return True, "Already in cashbook (amount + date match)"
 
