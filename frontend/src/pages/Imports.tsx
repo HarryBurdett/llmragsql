@@ -9801,9 +9801,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   (bankImportResult?.imported_transactions || []).forEach((t: any) => {
                     if (t.row) importedByRow.set(t.row, t);
                   });
-                  // Also mark already_posted items as "in Opera"
+                  // Also mark already_posted items as "in Opera" — extract entry_number from duplicate candidates
                   (bankPreview.already_posted || []).forEach((t: any) => {
-                    if (t.row && !importedByRow.has(t.row)) importedByRow.set(t.row, { ...t, already_in_opera: true });
+                    if (t.row && !importedByRow.has(t.row)) {
+                      const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || null;
+                      importedByRow.set(t.row, { ...t, already_in_opera: true, entry_number: entryNum });
+                    }
                   });
 
                   if (allStatementTxns.length === 0) {
