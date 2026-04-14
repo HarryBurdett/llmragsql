@@ -157,8 +157,10 @@ class EnhancedDuplicateDetector:
             # Strategy 6: Bank-level amount + date match (no account required)
             # Catches transactions entered directly in Opera (e.g. HMRC) where we have
             # no matched account. Checks aentry header, not atran splits.
+            # Uses wider date range (14 days) because Opera posting date may differ
+            # significantly from bank statement date.
             if bank_code and not candidates:
-                candidates.extend(self._bank_amount_match(amount, txn_date, bank_code, days=3))
+                candidates.extend(self._bank_amount_match(amount, txn_date, bank_code, days=14))
 
         # Remove duplicates and sort by confidence
         seen = set()

@@ -1466,10 +1466,11 @@ class BankStatementImport:
         date_str = txn.date.strftime('%Y-%m-%d')
         amount_pounds = txn.abs_amount
 
-        # Use ±3 day date tolerance to catch transactions posted on different dates
+        # Use ±14 day date tolerance — Opera posting date can differ significantly
+        # from bank statement date (e.g. HMRC posted a week after bank date)
         from datetime import timedelta
-        date_from = (txn.date - timedelta(days=3)).strftime('%Y-%m-%d')
-        date_to = (txn.date + timedelta(days=3)).strftime('%Y-%m-%d')
+        date_from = (txn.date - timedelta(days=14)).strftime('%Y-%m-%d')
+        date_to = (txn.date + timedelta(days=14)).strftime('%Y-%m-%d')
 
         # Check 0: Bank transfer duplicate detection
         # Bank transfers appear on BOTH bank statements with different descriptions:
