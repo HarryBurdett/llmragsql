@@ -3206,6 +3206,15 @@ async def preview_bank_import_from_pdf(
             if txn.is_duplicate:
                 txn_dict['action'] = 'skip'
                 txn_dict['reason'] = txn.skip_reason or 'Already posted'
+                # Include Opera entry number from duplicate detection for reconcile view
+                if txn.duplicate_candidates:
+                    best = txn.duplicate_candidates[0]
+                    txn_dict['entry_number'] = best.record_id
+                    txn_dict['matched_entry'] = best.record_id
+                    txn_dict['duplicate_candidates'] = [
+                        {'table': c.table, 'record_id': c.record_id, 'match_type': c.match_type, 'confidence': round(c.confidence * 100)}
+                        for c in txn.duplicate_candidates
+                    ]
                 already_posted.append(txn_dict)
             elif txn.action == 'skip' and not txn.matched_account:
                 # No match found — treat as unmatched for manual assignment

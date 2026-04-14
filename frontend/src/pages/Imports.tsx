@@ -9788,7 +9788,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   // Get ALL statement transactions from bankPreview, sorted by row (PDF order)
                   // Build entry number lookup from already_posted (these have duplicate_candidates)
                   const alreadyPostedByRow = new Map<number, any>();
+                  console.log('DEBUG already_posted count:', (bankPreview.already_posted || []).length);
                   (bankPreview.already_posted || []).forEach((t: any) => {
+                    if (Math.abs(Math.abs(t.amount || 0) - 5353.29) < 1) {
+                      console.log('DEBUG HMRC in already_posted:', JSON.stringify({row: t.row, entry_number: t.entry_number, matched_entry: t.matched_entry, dup_candidates: t.duplicate_candidates, keys: Object.keys(t)}));
+                    }
                     if (t.row) {
                       const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || t.matched_entry || null;
                       alreadyPostedByRow.set(t.row, { ...t, entry_number: entryNum });
