@@ -8370,7 +8370,7 @@ class OperaSQLImport:
         self,
         bank_account: str,
         statement_transactions: List[Dict[str, Any]],
-        date_tolerance_days: int = 3
+        date_tolerance_days: int = 14
     ) -> Dict[str, Any]:
         """
         Match statement lines to unreconciled cashbook entries.
