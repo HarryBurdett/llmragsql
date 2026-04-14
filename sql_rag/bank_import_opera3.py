@@ -1115,9 +1115,10 @@ class BankStatementMatcherOpera3:
                         return True, "Already in cashbook (bank transfer)"
 
             # Check 1: Cashbook (atran) - amounts in PENCE
-            # Compare description prefix to avoid false positives
+            # First try description match, then amount + date only (catches Opera-entered transactions)
             txn_comment = (txn.name or '').strip()[:15].lower()
             atran_records = self.reader.read_table("atran")
+            amount_date_match = False
             for record in atran_records:
                 at_acnt = record.get('AT_ACNT', record.get('at_acnt', '')).strip()
                 at_pstdate = record.get('AT_PSTDATE', record.get('at_pstdate'))
@@ -1125,10 +1126,16 @@ class BankStatementMatcherOpera3:
                 at_comment = record.get('AT_COMMENT', record.get('at_comment', '')).strip()[:15].lower()
                 if (at_acnt == bank_code and
                     dates_within_tolerance(at_pstdate, txn.date) and
-                    abs(abs(at_value) - amount_pence) < 1 and
-                    (at_comment == txn_comment or not txn_comment)):
-                    txn.is_duplicate = True
-                    return True, "Already in cashbook (atran)"
+                    abs(abs(at_value) - amount_pence) < 1):
+                    if at_comment == txn_comment or not txn_comment:
+                        txn.is_duplicate = True
+                        return True, "Already in cashbook (atran)"
+                    amount_date_match = True
+            # Amount + date matched but description differed — still a duplicate
+            # (catches transactions entered in Opera with different descriptions)
+            if amount_date_match:
+                txn.is_duplicate = True
+                return True, "Already in cashbook (amount + date match)"
 
             # Check 2: Purchase Ledger (ptran) - for supplier payments
             if txn.action == 'purchase_payment' and txn.matched_account:
