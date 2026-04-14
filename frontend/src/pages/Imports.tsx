@@ -9941,7 +9941,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             }}
                             className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-medium flex items-center gap-2 shadow-md hover:shadow-lg transition-all"
                           >
-                            Next: Reconcile Statement
+                            Reconcile Statement
                             <ArrowRight className="h-4 w-4" />
                           </button>
                         </div>
