@@ -313,8 +313,31 @@ export function GoCardlessSettings() {
     }
   };
 
+  // Resolve BACS template to preview string
+  const resolveBacsTemplate = (template: string): string => {
+    const fields: Record<string, string> = {
+      company: requestStatementReference || 'COMPANY',
+      inv: 'INV99999',
+      inv_num: '99999',
+      customer: 'Z999',
+    };
+    return template.replace(/\{(\w+?)(\d+)?\}/g, (_: string, field: string, len: string) => {
+      const val = fields[field] || '';
+      return len ? val.slice(0, parseInt(len)) : val;
+    });
+  };
+
+  const bacsPreviewLength = resolveBacsTemplate(bacsReferenceTemplate || '{company}').length;
+  const bacsError = bacsPreviewLength > 10
+    ? `BACS reference resolves to ${bacsPreviewLength} characters — maximum is 10. Shorten the template or use length limits (e.g. {'{company4}'}).`
+    : null;
+
   // Save all GoCardless settings
   const saveSettings = async () => {
+    if (bacsError) {
+      setSaveSuccess(false);
+      return;
+    }
     setIsSavingSettings(true);
     setSaveSuccess(false);
     try {
@@ -625,20 +648,13 @@ export function GoCardlessSettings() {
                 <div><code>{'{inv_num5}'}</code> — Last 5 digits (e.g. 26492)</div>
                 <div><code>{'{customer}'}</code> — Customer account code (e.g. R019)</div>
               </div>
-              <p className="text-xs text-blue-600 mt-1.5">
-                Preview: "{(() => {
-                  const fields: Record<string, string> = {
-                    company: requestStatementReference || 'Intsys',
-                    inv: 'INV26492',
-                    inv_num: '26492',
-                    customer: 'R019',
-                  };
-                  return (bacsReferenceTemplate || '{company}').replace(/\{(\w+?)(\d+)?\}/g, (_: string, field: string, len: string) => {
-                    const val = fields[field] || '';
-                    return len ? val.slice(0, parseInt(len)) : val;
-                  }).slice(0, 10);
-                })()}"
-              </p>
+              {bacsError ? (
+                <p className="text-xs text-red-600 mt-1.5 font-medium">{bacsError}</p>
+              ) : (
+                <p className="text-xs text-green-600 mt-1.5">
+                  Preview: "{resolveBacsTemplate(bacsReferenceTemplate || '{company}').slice(0, 10)}" ({Math.min(bacsPreviewLength, 10)} of 10 chars)
+                </p>
+              )}
             </div>
           </div>
 
