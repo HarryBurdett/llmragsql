@@ -221,6 +221,24 @@ export function BankStatementHub() {
     }
   }, [fetchArchived, fetchCompleted]);
 
+  const handleDeleteArchived = useCallback(async (recordId: number) => {
+    try {
+      const resp = await authFetch('/api/bank-import/delete-archived-statement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ record_id: recordId }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        fetchArchived();
+      } else {
+        alert(data.error || 'Failed to delete statement');
+      }
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete statement');
+    }
+  }, [fetchArchived]);
+
   useEffect(() => {
     fetchInProgress();
     fetchCompleted();
@@ -659,6 +677,7 @@ export function BankStatementHub() {
           archivedStatements={archivedStatements}
           archivedLoading={archivedLoading}
           onRestoreArchived={handleRestoreArchived}
+          onDeleteArchived={handleDeleteArchived}
           onRefresh={handleScan}
           onProcess={(stmt) => {
             if (stmt.matched_bank_code) {
@@ -1185,6 +1204,7 @@ function ManageStatementsTab({
   archivedStatements,
   archivedLoading,
   onRestoreArchived,
+  onDeleteArchived,
   onRefresh,
   onProcess,
 }: {
@@ -1194,6 +1214,7 @@ function ManageStatementsTab({
   archivedStatements: { id: number; filename: string; bank_code: string; import_date: string; period_start?: string; period_end?: string; source: string; imported_by: string; target_system: string }[];
   archivedLoading: boolean;
   onRestoreArchived: (recordId: number) => void;
+  onDeleteArchived?: (recordId: number) => void;
   onRefresh: () => void;
   onProcess?: (stmt: StatementEntry) => void;
 }) {
@@ -1369,7 +1390,7 @@ function ManageStatementsTab({
         </div>
       )}
       {archivedStatements.length > 0 && (
-        <ArchivedStatementsSection statements={archivedStatements} onRestore={onRestoreArchived} />
+        <ArchivedStatementsSection statements={archivedStatements} onRestore={onRestoreArchived} onDelete={onDeleteArchived} />
       )}
 
       {/* All empty */}
@@ -1474,12 +1495,15 @@ function CompletedStatementsSection({ statements: rawStatements }: { statements:
 function ArchivedStatementsSection({
   statements,
   onRestore,
+  onDelete,
 }: {
   statements: { id: number; filename: string; bank_code: string; import_date: string; period_start?: string; period_end?: string; source: string; imported_by: string; target_system: string }[];
   onRestore: (recordId: number) => void;
+  onDelete?: (recordId: number) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [restoringId, setRestoringId] = useState<number | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const formatDate = (dateStr: string | undefined) => {
     if (!dateStr) return '\u2014';
@@ -1535,14 +1559,33 @@ function ArchivedStatementsSection({
                   </td>
                   <td className="px-4 py-2 text-xs text-gray-600">{formatDate(stmt.import_date)}</td>
                   <td className="px-4 py-2 text-right">
-                    <button
-                      onClick={() => handleRestore(stmt.id)}
-                      disabled={restoringId === stmt.id}
-                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 disabled:opacity-50"
-                    >
-                      <RotateCcw className={`h-3 w-3 ${restoringId === stmt.id ? 'animate-spin' : ''}`} />
-                      {restoringId === stmt.id ? 'Restoring...' : 'Restore'}
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        onClick={() => handleRestore(stmt.id)}
+                        disabled={restoringId === stmt.id}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 disabled:opacity-50"
+                      >
+                        <RotateCcw className={`h-3 w-3 ${restoringId === stmt.id ? 'animate-spin' : ''}`} />
+                        {restoringId === stmt.id ? 'Restoring...' : 'Restore'}
+                      </button>
+                      {onDelete && (
+                        confirmDeleteId === stmt.id ? (
+                          <div className="flex items-center gap-1">
+                            <span className="text-xs text-red-600 font-medium">Delete permanently?</span>
+                            <button onClick={() => { onDelete(stmt.id); setConfirmDeleteId(null); }}
+                              className="px-2 py-1 text-xs font-medium bg-red-600 text-white rounded hover:bg-red-700">Yes</button>
+                            <button onClick={() => setConfirmDeleteId(null)}
+                              className="px-2 py-1 text-xs font-medium bg-gray-300 text-gray-700 rounded hover:bg-gray-400">No</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setConfirmDeleteId(stmt.id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded hover:bg-red-100"
+                            title="Permanently delete this statement">
+                            <Trash2 className="h-3 w-3" /> Delete
+                          </button>
+                        )
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

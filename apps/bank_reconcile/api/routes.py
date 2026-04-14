@@ -7329,6 +7329,60 @@ async def restore_archived_statement(request: Request):
         return {"success": False, "error": str(e)}
 
 
+@router.post("/api/bank-import/delete-archived-statement")
+async def delete_archived_statement(request: Request):
+    """
+    Permanently delete an archived bank statement — removes the file and tracking record.
+    Only works on archived statements, not active ones.
+
+    Body: { "record_id": int }
+    """
+    try:
+        from pathlib import Path
+
+        body = await request.json()
+        record_id = body.get("record_id")
+        if not record_id:
+            return {"success": False, "error": "record_id is required"}
+
+        record = email_storage.get_bank_statement_import_by_id(record_id)
+        if not record:
+            return {"success": False, "error": f"Record {record_id} not found"}
+
+        filename = record.get("filename", "")
+
+        # Find the file in archive folders and delete it
+        settings = _load_company_settings()
+        base_folder = settings.get("bank_statements_base_folder", "")
+        archive_folder = settings.get("bank_statements_archive_folder", "")
+
+        if base_folder and not archive_folder:
+            archive_folder = str(Path(base_folder) / "archive")
+
+        file_deleted = False
+        if archive_folder and filename:
+            ap = Path(archive_folder)
+            if ap.exists():
+                for candidate in ap.rglob(filename):
+                    candidate.unlink()
+                    file_deleted = True
+                    logger.info(f"Permanently deleted archived statement file: {candidate}")
+                    break
+
+        # Delete tracking record
+        email_storage.delete_bank_statement_import_record(record_id)
+
+        return {
+            "success": True,
+            "message": f"Permanently deleted {filename}" if file_deleted else f"Tracking record removed (file not found)",
+            "file_deleted": file_deleted,
+        }
+
+    except Exception as e:
+        logger.error(f"Error deleting archived statement: {e}")
+        return {"success": False, "error": str(e)}
+
+
 
 
 
