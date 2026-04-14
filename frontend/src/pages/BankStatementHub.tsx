@@ -2059,17 +2059,17 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
           {onDelete && (
             confirmingDelete ? (
               <div className="flex items-center gap-1">
-                <span className="text-xs text-red-600 font-medium">Sure?</span>
+                <span className="text-xs text-amber-700 font-medium">Archive?</span>
                 <button onClick={() => { onDelete(); setConfirmingDelete(false); }}
-                  className="px-2 py-1 text-xs font-medium bg-red-600 text-white rounded hover:bg-red-700">Yes</button>
+                  className="px-2 py-1 text-xs font-medium bg-amber-600 text-white rounded hover:bg-amber-700">Yes</button>
                 <button onClick={() => setConfirmingDelete(false)}
                   className="px-2 py-1 text-xs font-medium bg-gray-300 text-gray-700 rounded hover:bg-gray-400">No</button>
               </div>
             ) : (
               <button onClick={() => setConfirmingDelete(true)}
-                className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 hover:border-red-300 transition-colors"
-                title="Delete statement">
-                <Trash2 className="h-3.5 w-3.5" /> Delete
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-md hover:bg-amber-100 hover:border-amber-300 transition-colors"
+                title="Archive statement — moves to archive folder, can be restored later">
+                <Archive className="h-3.5 w-3.5" /> Archive
               </button>
             )
           )}
