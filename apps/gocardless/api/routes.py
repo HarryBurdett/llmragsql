@@ -5148,14 +5148,26 @@ async def opera3_request_gocardless_payment(
         client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
 
         # Build BACS reference from template (max 10 chars — what appears on customer's bank statement)
+        # Supports length params: {company4} = first 4 chars of company, {inv_num5} = 5 digit inv number
+        import re as _bacs_re
         bacs_ref_template = (settings.get("bacs_reference_template") or "{company}").strip()
-        bacs_reference = bacs_ref_template
-        bacs_reference = bacs_reference.replace("{company}", stmt_ref or '')
-        bacs_reference = bacs_reference.replace("{inv}", invoices[0] if invoices else '')
-        # Extract numeric part of invoice ref
-        inv_num = ''.join(c for c in (invoices[0] if invoices else '') if c.isdigit())
-        bacs_reference = bacs_reference.replace("{inv_num}", inv_num)
-        bacs_reference = bacs_reference.replace("{customer}", opera_account or '')
+
+        field_values = {
+            'company': stmt_ref or '',
+            'inv': invoices[0] if invoices else '',
+            'inv_num': ''.join(c for c in (invoices[0] if invoices else '') if c.isdigit()),
+            'customer': opera_account or '',
+        }
+
+        def _replace_field(match):
+            field = match.group(1)
+            length = match.group(2)
+            value = field_values.get(field, '')
+            if length:
+                return value[:int(length)]
+            return value
+
+        bacs_reference = _bacs_re.sub(r'\{(\w+?)(\d+)?\}', _replace_field, bacs_ref_template)
         bacs_reference = bacs_reference.strip()[:10]  # BACS max 10 chars
 
         try:

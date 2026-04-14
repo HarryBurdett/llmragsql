@@ -615,16 +615,29 @@ export function GoCardlessSettings() {
                 className="w-64 p-2 border border-gray-300 rounded text-sm"
               />
               <p className="text-xs text-gray-500 mt-1">
-                What appears on the customer's bank statement (max 10 chars after merge). Available fields:
+                What appears on the customer's bank statement (max 10 chars after merge). Add a number to limit field length:
               </p>
               <div className="text-xs text-gray-400 mt-1 space-y-0.5">
-                <div><code>{'{company}'}</code> — Statement Reference above (e.g. {requestStatementReference || 'Intsys'})</div>
+                <div><code>{'{company}'}</code> — Statement Reference (e.g. {requestStatementReference || 'Intsys'})</div>
+                <div><code>{'{company4}'}</code> — First 4 chars (e.g. {(requestStatementReference || 'Intsys').slice(0, 4)})</div>
                 <div><code>{'{inv}'}</code> — Invoice reference (e.g. INV26492)</div>
                 <div><code>{'{inv_num}'}</code> — Invoice number only (e.g. 26492)</div>
+                <div><code>{'{inv_num5}'}</code> — Last 5 digits (e.g. 26492)</div>
                 <div><code>{'{customer}'}</code> — Customer account code (e.g. R019)</div>
               </div>
               <p className="text-xs text-blue-600 mt-1.5">
-                Preview: "{(bacsReferenceTemplate || '{company}').replace('{company}', requestStatementReference || 'Intsys').replace('{inv}', 'INV26492').replace('{inv_num}', '26492').replace('{customer}', 'R019').slice(0, 10)}"
+                Preview: "{(() => {
+                  const fields: Record<string, string> = {
+                    company: requestStatementReference || 'Intsys',
+                    inv: 'INV26492',
+                    inv_num: '26492',
+                    customer: 'R019',
+                  };
+                  return (bacsReferenceTemplate || '{company}').replace(/\{(\w+?)(\d+)?\}/g, (_: string, field: string, len: string) => {
+                    const val = fields[field] || '';
+                    return len ? val.slice(0, parseInt(len)) : val;
+                  }).slice(0, 10);
+                })()}"
               </p>
             </div>
           </div>
