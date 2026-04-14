@@ -9358,7 +9358,7 @@ async def validate_statement_for_reconciliation(
 @router.post("/api/bank-reconciliation/match-statement")
 async def match_statement_to_cashbook(
     bank_code: str = Query(..., description="Bank account code"),
-    date_tolerance_days: int = Query(3, description="Days tolerance for date matching"),
+    date_tolerance_days: int = Query(14, description="Days tolerance for date matching"),
     import_id: Optional[int] = Query(None, description="Import record ID - if provided, loads transactions from DB and persists match results"),
     request_body: Dict[str, Any] = Body(None)
 ):
@@ -14063,7 +14063,7 @@ async def opera3_validate_statement_for_reconciliation(
 @router.post("/api/opera3/bank-reconciliation/match-statement")
 async def opera3_match_statement_to_cashbook(
     bank_code: str = Query(..., description="Bank account code"),
-    date_tolerance_days: int = Query(3, description="Days tolerance for date matching"),
+    date_tolerance_days: int = Query(14, description="Days tolerance for date matching"),
     import_id: Optional[int] = Query(None, description="Import record ID"),
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
     request_body: Dict[str, Any] = Body(None)
