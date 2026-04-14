@@ -6112,15 +6112,6 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                       Preview Statement: {bankPreview.filename}
                     </h3>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleRefreshPreview}
-                        disabled={isRefreshing || !bankPreview?.success}
-                        className="px-3 py-1 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full hover:bg-blue-100 disabled:opacity-50 flex items-center gap-1.5"
-                        title="Re-analyse against Opera — preserves your account assignments"
-                      >
-                        <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-                        {isRefreshing ? 'Refreshing...' : 'Refresh Matching'}
-                      </button>
                       {bankPreview.period_info && (
                         <span className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-full">
                           Current Period: {bankPreview.period_info.current_period}/{bankPreview.period_info.current_year}
@@ -9788,11 +9779,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   // Get ALL statement transactions from bankPreview, sorted by row (PDF order)
                   // Build entry number lookup from already_posted (these have duplicate_candidates)
                   const alreadyPostedByRow = new Map<number, any>();
-                  console.log('DEBUG already_posted count:', (bankPreview.already_posted || []).length);
                   (bankPreview.already_posted || []).forEach((t: any) => {
-                    if (Math.abs(Math.abs(t.amount || 0) - 5353.29) < 1) {
-                      console.log('DEBUG HMRC in already_posted:', JSON.stringify({row: t.row, entry_number: t.entry_number, matched_entry: t.matched_entry, dup_candidates: t.duplicate_candidates, keys: Object.keys(t)}));
-                    }
                     if (t.row) {
                       const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || t.matched_entry || null;
                       alreadyPostedByRow.set(t.row, { ...t, entry_number: entryNum });
