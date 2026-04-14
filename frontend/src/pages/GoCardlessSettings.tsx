@@ -165,6 +165,7 @@ export function GoCardlessSettings() {
   const [feesPaymentType, setFeesPaymentType] = useState('');
   const [companyReference, setCompanyReference] = useState('');
   const [requestStatementReference, setRequestStatementReference] = useState('');
+  const [bacsReferenceTemplate, setBacsReferenceTemplate] = useState('{company}');
   const [archiveFolder, setArchiveFolder] = useState('Archive/GoCardless');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -263,6 +264,7 @@ export function GoCardlessSettings() {
           if (data.settings.fees_payment_type) setFeesPaymentType(data.settings.fees_payment_type);
           if (data.settings.company_reference) setCompanyReference(data.settings.company_reference);
           if (data.settings.request_statement_reference !== undefined) setRequestStatementReference(data.settings.request_statement_reference || '');
+          if (data.settings.bacs_reference_template !== undefined) setBacsReferenceTemplate(data.settings.bacs_reference_template || '{company}');
           if (data.settings.archive_folder) setArchiveFolder(data.settings.archive_folder);
           if (data.settings.gocardless_bank_code) setGcBankCode(data.settings.gocardless_bank_code);
           if (data.settings.gocardless_transfer_cbtype) setTransferCbtype(data.settings.gocardless_transfer_cbtype);
@@ -327,6 +329,7 @@ export function GoCardlessSettings() {
           fees_payment_type: feesPaymentType,
           company_reference: companyReference,
           request_statement_reference: requestStatementReference,
+          bacs_reference_template: bacsReferenceTemplate,
           archive_folder: archiveFolder,
           gocardless_bank_code: gcBankCode,
           gocardless_transfer_cbtype: transferCbtype,
@@ -600,6 +603,28 @@ export function GoCardlessSettings() {
               <p className="text-xs text-gray-500 mt-1">
                 Prefix added to the payment description sent to GoCardless (max 10 chars).
                 This appears on the customer's bank statement before the invoice number, e.g. "{requestStatementReference || 'Intsys'} INV12345".
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">BACS Reference Template</label>
+              <input
+                type="text"
+                value={bacsReferenceTemplate}
+                onChange={(e) => setBacsReferenceTemplate(e.target.value)}
+                placeholder="{company}"
+                className="w-64 p-2 border border-gray-300 rounded text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                What appears on the customer's bank statement (max 10 chars after merge). Available fields:
+              </p>
+              <div className="text-xs text-gray-400 mt-1 space-y-0.5">
+                <div><code>{'{company}'}</code> — Statement Reference above (e.g. {requestStatementReference || 'Intsys'})</div>
+                <div><code>{'{inv}'}</code> — Invoice reference (e.g. INV26492)</div>
+                <div><code>{'{inv_num}'}</code> — Invoice number only (e.g. 26492)</div>
+                <div><code>{'{customer}'}</code> — Customer account code (e.g. R019)</div>
+              </div>
+              <p className="text-xs text-blue-600 mt-1.5">
+                Preview: "{(bacsReferenceTemplate || '{company}').replace('{company}', requestStatementReference || 'Intsys').replace('{inv}', 'INV26492').replace('{inv_num}', '26492').replace('{customer}', 'R019').slice(0, 10)}"
               </p>
             </div>
           </div>

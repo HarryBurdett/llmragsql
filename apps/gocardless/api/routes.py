@@ -5147,15 +5147,30 @@ async def opera3_request_gocardless_payment(
         sandbox = settings.get("api_sandbox", False)
         client = GoCardlessClient(access_token=access_token, sandbox=sandbox)
 
+        # Build BACS reference from template (max 10 chars — what appears on customer's bank statement)
+        bacs_ref_template = (settings.get("bacs_reference_template") or "{company}").strip()
+        bacs_reference = bacs_ref_template
+        bacs_reference = bacs_reference.replace("{company}", stmt_ref or '')
+        bacs_reference = bacs_reference.replace("{inv}", invoices[0] if invoices else '')
+        # Extract numeric part of invoice ref
+        inv_num = ''.join(c for c in (invoices[0] if invoices else '') if c.isdigit())
+        bacs_reference = bacs_reference.replace("{inv_num}", inv_num)
+        bacs_reference = bacs_reference.replace("{customer}", opera_account or '')
+        bacs_reference = bacs_reference.strip()[:10]  # BACS max 10 chars
+
         try:
+            logger.info(f"GoCardless create_payment: account={opera_account}, invoices={invoices}, amount={amount}p, mandate={mandate['mandate_id']}, bacs_ref={bacs_reference}")
             gc_payment = client.create_payment(
                 amount_pence=amount,
                 mandate_id=mandate['mandate_id'],
                 description=description,
                 charge_date=charge_date,
+                reference=bacs_reference if bacs_reference else None,
                 metadata={"opera_account": opera_account, "invoices": ",".join(invoices)}
             )
+            logger.info(f"GoCardless payment created: {gc_payment.get('id')}, status={gc_payment.get('status')}, ref={bacs_reference}")
         except Exception as gc_err:
+            logger.error(f"GoCardless create_payment FAILED for {opera_account} / {invoices}: {gc_err}")
             return {"success": False, "error": f"GoCardless API error: {str(gc_err)}"}
 
         payment_request = payments_db.create_payment_request(
