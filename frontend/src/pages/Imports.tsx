@@ -9871,7 +9871,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                       {txn.name || txn.memo || txn.description || '-'}
                                     </td>
                                     <td className="px-2 py-2 font-mono text-xs text-blue-600">
-                                      {imported?.entry_number || <span className="text-gray-400">-</span>}
+                                      {imported?.entry_number || txn.entry_number || txn.matched_entry || txn.duplicate_candidates?.[0]?.record_id || <span className="text-gray-400">-</span>}
                                     </td>
                                   </tr>
                                 );
