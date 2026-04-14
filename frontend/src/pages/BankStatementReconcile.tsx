@@ -2395,6 +2395,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   <th className="px-3 py-2 text-right">Payments</th>
                   <th className="px-3 py-2 text-right">Receipts</th>
                   <th className="px-3 py-2 text-right">Balance</th>
+                  <th className="px-3 py-2 text-left">Opera Entry</th>
                   <th className="w-16 px-3 py-2 text-center">Match</th>
                 </tr>
               </thead>
@@ -2475,6 +2476,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                         </td>
                         <td className="px-3 py-2 text-right text-gray-600">
                           {line.statement_balance != null ? formatCurrency(line.statement_balance) : ''}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-xs text-blue-600">
+                          {line.entry_number || ''}
                         </td>
                         <td
                           className="px-3 py-2 text-center cursor-pointer select-none"
