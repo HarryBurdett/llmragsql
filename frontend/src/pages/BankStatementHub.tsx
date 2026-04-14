@@ -1561,9 +1561,15 @@ function ArchivedStatementsSection({
                   <td className="px-4 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
                       <button
-                        onClick={() => {
-                          const token = localStorage.getItem('auth_token') || '';
-                          window.open(`/api/bank-import/archived-statement-pdf/${stmt.id}?token=${token}`, '_blank');
+                        onClick={async () => {
+                          try {
+                            const resp = await authFetch(`/api/bank-import/archived-statement-pdf/${stmt.id}`);
+                            const blob = await resp.blob();
+                            const url = URL.createObjectURL(blob);
+                            window.open(url, '_blank');
+                          } catch (e) {
+                            alert('Failed to open PDF');
+                          }
                         }}
                         className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-50 border border-gray-200 rounded hover:bg-gray-100"
                         title="View statement PDF"
