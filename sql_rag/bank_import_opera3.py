@@ -1068,7 +1068,7 @@ class BankStatementMatcherOpera3:
         """
         amount_pence = int(round(txn.abs_amount * 100))
 
-        def dates_within_tolerance(db_date, txn_date, tolerance_days=3) -> bool:
+        def dates_within_tolerance(db_date, txn_date, tolerance_days=14) -> bool:
             """Compare dates with ±N day tolerance to catch transactions posted on different dates."""
             if db_date is None or txn_date is None:
                 return False
@@ -1114,27 +1114,46 @@ class BankStatementMatcherOpera3:
                         txn.is_duplicate = True
                         return True, "Already in cashbook (bank transfer)"
 
-            # Check 1: Cashbook (atran) - amounts in PENCE
+            # Check 1: Cashbook — use aentry (header total) not atran (nominal splits)
             # First try description match, then amount + date only (catches Opera-entered transactions)
             txn_comment = (txn.name or '').strip()[:15].lower()
-            atran_records = self.reader.read_table("atran")
+            aentry_records = self.reader.read_table("aentry")
+            matched_entry_ref = None
+            comment_match = False
             amount_date_match = False
-            for record in atran_records:
-                at_acnt = record.get('AT_ACNT', record.get('at_acnt', '')).strip()
-                at_pstdate = record.get('AT_PSTDATE', record.get('at_pstdate'))
-                at_value = record.get('AT_VALUE', record.get('at_value', 0))
-                at_comment = record.get('AT_COMMENT', record.get('at_comment', '')).strip()[:15].lower()
-                if (at_acnt == bank_code and
-                    dates_within_tolerance(at_pstdate, txn.date) and
-                    abs(abs(at_value) - amount_pence) < 1):
-                    if at_comment == txn_comment or not txn_comment:
-                        txn.is_duplicate = True
-                        return True, "Already in cashbook (atran)"
+            for record in aentry_records:
+                ae_acnt = record.get('AE_ACNT', record.get('ae_acnt', '')).strip()
+                ae_lstdate = record.get('AE_LSTDATE', record.get('ae_lstdate'))
+                ae_value = record.get('AE_VALUE', record.get('ae_value', 0))
+                ae_comment = record.get('AE_COMMENT', record.get('ae_comment', '')).strip()[:15].lower()
+                ae_entry = record.get('AE_ENTRY', record.get('ae_entry', '')).strip()
+                if (ae_acnt == bank_code and
+                    dates_within_tolerance(ae_lstdate, txn.date) and
+                    abs(abs(ae_value) - amount_pence) < 1):
+                    matched_entry_ref = ae_entry
+                    if ae_comment == txn_comment or not txn_comment:
+                        comment_match = True
+                        break
                     amount_date_match = True
-            # Amount + date matched but description differed — still a duplicate
-            # (catches transactions entered in Opera with different descriptions)
-            if amount_date_match:
+
+            if comment_match and matched_entry_ref:
                 txn.is_duplicate = True
+                from sql_rag.bank_duplicates import DuplicateCandidate
+                txn.duplicate_candidates.append(DuplicateCandidate(
+                    table='aentry', record_id=matched_entry_ref,
+                    match_type='fallback_comment', confidence=0.95,
+                    details={'ae_entry': matched_entry_ref}
+                ))
+                return True, "Already in cashbook"
+
+            if amount_date_match and matched_entry_ref:
+                txn.is_duplicate = True
+                from sql_rag.bank_duplicates import DuplicateCandidate
+                txn.duplicate_candidates.append(DuplicateCandidate(
+                    table='aentry', record_id=matched_entry_ref,
+                    match_type='fallback_amount_date', confidence=0.9,
+                    details={'ae_entry': matched_entry_ref}
+                ))
                 return True, "Already in cashbook (amount + date match)"
 
             # Check 2: Purchase Ledger (ptran) - for supplier payments
