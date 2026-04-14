@@ -9804,7 +9804,19 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   // Also mark already_posted items as "in Opera" — extract entry_number from duplicate candidates
                   (bankPreview.already_posted || []).forEach((t: any) => {
                     if (t.row && !importedByRow.has(t.row)) {
-                      const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || null;
+                      const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || t.matched_entry || null;
+                      importedByRow.set(t.row, { ...t, already_in_opera: true, entry_number: entryNum });
+                    }
+                  });
+                  // Also check ALL transaction categories for duplicate_candidates with entry numbers
+                  // (transactions may be in matched_receipts/payments but flagged as duplicate)
+                  [...(bankPreview.matched_receipts || []),
+                   ...(bankPreview.matched_payments || []),
+                   ...(bankPreview.matched_refunds || []),
+                   ...(bankPreview.repeat_entries || []),
+                   ...(bankPreview.skipped || [])].forEach((t: any) => {
+                    if (t.row && t.is_duplicate && !importedByRow.has(t.row)) {
+                      const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || t.matched_entry || null;
                       importedByRow.set(t.row, { ...t, already_in_opera: true, entry_number: entryNum });
                     }
                   });
