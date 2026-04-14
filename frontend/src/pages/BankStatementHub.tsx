@@ -1561,6 +1561,16 @@ function ArchivedStatementsSection({
                   <td className="px-4 py-2 text-right">
                     <div className="flex items-center justify-end gap-1">
                       <button
+                        onClick={() => {
+                          const token = localStorage.getItem('auth_token') || '';
+                          window.open(`/api/bank-import/archived-statement-pdf/${stmt.id}?token=${token}`, '_blank');
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-600 bg-gray-50 border border-gray-200 rounded hover:bg-gray-100"
+                        title="View statement PDF"
+                      >
+                        <Eye className="h-3 w-3" /> View
+                      </button>
+                      <button
                         onClick={() => handleRestore(stmt.id)}
                         disabled={restoringId === stmt.id}
                         className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 disabled:opacity-50"

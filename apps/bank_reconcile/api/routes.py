@@ -7329,6 +7329,33 @@ async def restore_archived_statement(request: Request):
         return {"success": False, "error": str(e)}
 
 
+@router.get("/api/bank-import/archived-statement-pdf/{record_id}")
+async def view_archived_statement_pdf(record_id: int, token: str = Query(None)):
+    """Serve an archived statement PDF for viewing."""
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+
+    record = email_storage.get_bank_statement_import_by_id(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    filename = record.get("filename", "")
+    settings = _load_company_settings()
+    base_folder = settings.get("bank_statements_base_folder", "")
+    archive_folder = settings.get("bank_statements_archive_folder", "")
+
+    if base_folder and not archive_folder:
+        archive_folder = str(Path(base_folder) / "archive")
+
+    if archive_folder and filename:
+        ap = Path(archive_folder)
+        if ap.exists():
+            for candidate in ap.rglob(filename):
+                return FileResponse(str(candidate), media_type="application/pdf", filename=filename)
+
+    raise HTTPException(status_code=404, detail="Archived PDF file not found")
+
+
 @router.post("/api/bank-import/delete-archived-statement")
 async def delete_archived_statement(request: Request):
     """
