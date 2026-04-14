@@ -154,6 +154,12 @@ class EnhancedDuplicateDetector:
             if account:
                 candidates.extend(self._cross_period_match(amount, txn_date, account, days=7))
 
+            # Strategy 6: Bank-level amount + date match (no account required)
+            # Catches transactions entered directly in Opera (e.g. HMRC) where we have
+            # no matched account. Checks aentry header, not atran splits.
+            if bank_code and not candidates:
+                candidates.extend(self._bank_amount_match(amount, txn_date, bank_code, days=3))
+
         # Remove duplicates and sort by confidence
         seen = set()
         unique_candidates = []
@@ -677,6 +683,64 @@ class EnhancedDuplicateDetector:
                         ))
             except Exception as e:
                 logger.warning(f"Error checking ptran cross-period match: {e}")
+
+        return candidates
+
+    def _bank_amount_match(
+        self,
+        amount: float,
+        txn_date: date,
+        bank_code: str,
+        days: int = 3
+    ) -> List[DuplicateCandidate]:
+        """
+        Check for matching aentry on the same bank by amount + date range.
+
+        No account match needed — catches transactions entered directly in Opera
+        (e.g. HMRC, standing orders) that won't have a matched account.
+        Uses aentry (header total), not atran (nominal splits).
+        """
+        candidates = []
+        amount_pence = int(round(abs(amount) * 100))
+
+        start_date = (txn_date - timedelta(days=days)).strftime('%Y-%m-%d')
+        end_date = (txn_date + timedelta(days=days)).strftime('%Y-%m-%d')
+
+        try:
+            query = f"""
+                SELECT ae_entry, ae_value, ae_lstdate, ae_entref, ae_comment
+                FROM aentry WITH (NOLOCK)
+                WHERE ae_acnt = '{bank_code}'
+                AND ae_lstdate BETWEEN '{start_date}' AND '{end_date}'
+                AND ABS(ABS(ae_value) - {amount_pence}) < 1
+            """
+            df = self.sql.execute_query(query)
+
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    posted_date = row.get('ae_lstdate')
+                    if hasattr(posted_date, 'date'):
+                        posted_date = posted_date.date()
+
+                    days_diff = abs((posted_date - txn_date).days) if posted_date else days
+                    confidence = 0.95 - (days_diff * 0.05)
+
+                    candidates.append(DuplicateCandidate(
+                        table='aentry',
+                        record_id=str(row.get('ae_entry', '')).strip(),
+                        match_type='bank_amount',
+                        confidence=confidence,
+                        details={
+                            'ae_entry': str(row.get('ae_entry', '')).strip(),
+                            'ae_value': row.get('ae_value', 0),
+                            'ae_lstdate': str(posted_date),
+                            'ae_entref': str(row.get('ae_entref', '')).strip(),
+                            'ae_comment': str(row.get('ae_comment', '')).strip(),
+                            'days_diff': days_diff,
+                        }
+                    ))
+        except Exception as e:
+            logger.warning(f"Error checking bank amount match: {e}")
 
         return candidates
 
