@@ -1462,6 +1462,13 @@ class BankStatementImport:
                         txn.is_duplicate = True
                         return True, f"Already posted ({c.match_type}): {c.table}.{c.record_id}"
 
+                # Bank-level amount match — always treat as duplicate regardless of confidence
+                # (exact amount on same bank is strong enough evidence)
+                for c in candidates:
+                    if c.match_type == 'bank_amount':
+                        txn.is_duplicate = True
+                        return True, f"Already in cashbook ({c.details.get('ae_entref', c.record_id)}): {c.record_id}"
+
         # Fallback to legacy duplicate detection
         date_str = txn.date.strftime('%Y-%m-%d')
         amount_pounds = txn.abs_amount
