@@ -3203,10 +3203,6 @@ async def preview_bank_import_from_pdf(
                 'memo': txn.memo,
             }
 
-            # Log HMRC for debugging
-            if abs(abs(txn.amount) - 5353.29) < 1:
-                logger.info(f"preview-from-pdf: HMRC row={txn.row_number} is_duplicate={txn.is_duplicate} action={txn.action} skip_reason={txn.skip_reason} matched_account={txn.matched_account} candidates={len(txn.duplicate_candidates or [])}")
-
             if txn.is_duplicate:
                 txn_dict['action'] = 'skip'
                 txn_dict['reason'] = txn.skip_reason or 'Already posted'
@@ -3219,7 +3215,6 @@ async def preview_bank_import_from_pdf(
                         {'table': c.table, 'record_id': c.record_id, 'match_type': c.match_type, 'confidence': round(c.confidence * 100)}
                         for c in txn.duplicate_candidates
                     ]
-                logger.info(f"preview-from-pdf: DUPLICATE row={txn.row_number} amount={txn.amount} candidates={len(txn.duplicate_candidates or [])} entry={txn_dict.get('entry_number', 'NONE')}")
                 already_posted.append(txn_dict)
             elif txn.action == 'skip' and not txn.matched_account:
                 # No match found — treat as unmatched for manual assignment
@@ -14688,6 +14683,3 @@ async def opera3_create_bank_transfer(
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-
-
-# reload trigger Tue 14 Apr 2026 22:38:39 BST
