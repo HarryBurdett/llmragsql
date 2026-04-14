@@ -7351,7 +7351,9 @@ async def view_archived_statement_pdf(record_id: int, token: str = Query(None)):
         ap = Path(archive_folder)
         if ap.exists():
             for candidate in ap.rglob(filename):
-                return FileResponse(str(candidate), media_type="application/pdf", headers={"Content-Disposition": f"inline; filename={filename}"})
+                from starlette.responses import Response
+                pdf_bytes = candidate.read_bytes()
+                return Response(content=pdf_bytes, media_type="application/pdf")
 
     raise HTTPException(status_code=404, detail="Archived PDF file not found")
 
