@@ -9786,6 +9786,17 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                 {/* Statement transactions table - ALL transactions in PDF order with line numbers */}
                 {(() => {
                   // Get ALL statement transactions from bankPreview, sorted by row (PDF order)
+                  // Build entry number lookup from already_posted (these have duplicate_candidates)
+                  const alreadyPostedByRow = new Map<number, any>();
+                  (bankPreview.already_posted || []).forEach((t: any) => {
+                    if (t.row) {
+                      const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || t.matched_entry || null;
+                      alreadyPostedByRow.set(t.row, { ...t, entry_number: entryNum });
+                    }
+                  });
+
+                  // Build all statement transactions — prefer already_posted version (has entry_number)
+                  const seenRows = new Set<number>();
                   const allStatementTxns = [
                     ...(bankPreview.matched_receipts || []),
                     ...(bankPreview.matched_payments || []),
@@ -9794,30 +9805,43 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     ...(bankPreview.unmatched || []),
                     ...(bankPreview.already_posted || []),
                     ...(bankPreview.skipped || [])
-                  ].sort((a, b) => (a.row || 0) - (b.row || 0));
+                  ].map(t => {
+                    // If this row has an already_posted version with entry_number, use it
+                    if (t.row && alreadyPostedByRow.has(t.row)) {
+                      return alreadyPostedByRow.get(t.row);
+                    }
+                    return t;
+                  }).filter(t => {
+                    // Deduplicate by row
+                    if (!t.row) return true;
+                    if (seenRows.has(t.row)) return false;
+                    seenRows.add(t.row);
+                    return true;
+                  }).sort((a, b) => (a.row || 0) - (b.row || 0));
 
                   // Build a map of row -> imported transaction (to get entry_number)
                   const importedByRow = new Map<number, any>();
                   (bankImportResult?.imported_transactions || []).forEach((t: any) => {
                     if (t.row) importedByRow.set(t.row, t);
                   });
-                  // Also mark already_posted items as "in Opera" — extract entry_number from duplicate candidates
+                  // Mark already_posted items as "in Opera"
                   (bankPreview.already_posted || []).forEach((t: any) => {
                     if (t.row && !importedByRow.has(t.row)) {
                       const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || t.matched_entry || null;
                       importedByRow.set(t.row, { ...t, already_in_opera: true, entry_number: entryNum });
                     }
                   });
-                  // Also check ALL transaction categories for duplicate_candidates with entry numbers
-                  // (transactions may be in matched_receipts/payments but flagged as duplicate)
+                  // Also check ALL categories — enriched transactions have duplicate data
                   [...(bankPreview.matched_receipts || []),
                    ...(bankPreview.matched_payments || []),
                    ...(bankPreview.matched_refunds || []),
                    ...(bankPreview.repeat_entries || []),
                    ...(bankPreview.skipped || [])].forEach((t: any) => {
-                    if (t.row && t.is_duplicate && !importedByRow.has(t.row)) {
+                    if (t.row && (t.is_duplicate || t.action === 'skip') && !importedByRow.has(t.row)) {
                       const entryNum = t.duplicate_candidates?.[0]?.record_id || t.entry_number || t.matched_entry || null;
-                      importedByRow.set(t.row, { ...t, already_in_opera: true, entry_number: entryNum });
+                      if (entryNum) {
+                        importedByRow.set(t.row, { ...t, already_in_opera: true, entry_number: entryNum });
+                      }
                     }
                   });
 
