@@ -1529,28 +1529,43 @@ class BankStatementImport:
         safe_comment = (txn.name or '').replace("'", "''").strip()[:30]
         # First check: amount + date + comment prefix (strong match)
         query = f"""
-            SELECT COUNT(*) as cnt FROM aentry WITH (NOLOCK)
+            SELECT TOP 1 ae_entry FROM aentry WITH (NOLOCK)
             WHERE ae_acnt = '{self.bank_code}'
             AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
             AND ABS(ABS(ae_value) - {amount_pence}) < 1
             AND LEFT(RTRIM(ISNULL(ae_comment, '')), 15) = LEFT('{safe_comment}', 15)
         """
         df = self.sql_connector.execute_query(query)
-        if int(df.iloc[0]['cnt']) > 0:
+        if df is not None and not df.empty:
+            entry_ref = str(df.iloc[0]['ae_entry']).strip()
             txn.is_duplicate = True
+            from sql_rag.bank_duplicates import DuplicateCandidate
+            txn.duplicate_candidates.append(DuplicateCandidate(
+                table='aentry', record_id=entry_ref,
+                match_type='fallback_comment', confidence=0.95,
+                details={'ae_entry': entry_ref}
+            ))
             return True, "Already in cashbook"
         # Second check: amount + date range only — catches transactions entered
         # in Opera with different descriptions (e.g. HMRC entered manually)
         query2 = f"""
-            SELECT COUNT(*) as cnt FROM aentry WITH (NOLOCK)
+            SELECT TOP 1 ae_entry FROM aentry WITH (NOLOCK)
             WHERE ae_acnt = '{self.bank_code}'
             AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
             AND ABS(ABS(ae_value) - {amount_pence}) < 1
         """
         df2 = self.sql_connector.execute_query(query2)
-        if int(df2.iloc[0]['cnt']) > 0:
+        if df2 is not None and not df2.empty:
+            entry_ref = str(df2.iloc[0]['ae_entry']).strip()
             txn.is_duplicate = True
-            return True, "Already in cashbook (amount + date match)"
+            # Store entry as candidate so it flows to the reconcile view
+            from sql_rag.bank_duplicates import DuplicateCandidate
+            txn.duplicate_candidates.append(DuplicateCandidate(
+                table='aentry', record_id=entry_ref,
+                match_type='fallback_amount_date', confidence=0.9,
+                details={'ae_entry': entry_ref}
+            ))
+            return True, f"Already in cashbook (amount + date match)"
 
         # Check 2: Purchase Ledger (ptran) - for supplier payments
         # Only check if we have a matched supplier
