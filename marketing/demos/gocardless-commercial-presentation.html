@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoCardless Direct Debit Collection for Opera — Transforming Cash Collection</title>
+<style>
+  @page { size: A4 landscape; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a2e; background: #f8f9fa; }
+
+  .slide { width: 100%; min-height: 100vh; padding: 60px 80px; display: flex; flex-direction: column; justify-content: center; page-break-after: always; position: relative; }
+
+  /* Slide themes */
+  .slide-cover { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); color: white; text-align: center; }
+  .slide-cover h1 { font-size: 48px; font-weight: 700; margin-bottom: 20px; line-height: 1.2; }
+  .slide-cover .subtitle { font-size: 24px; color: #a8b2d1; margin-bottom: 40px; }
+  .slide-cover .tagline { font-size: 18px; color: #64ffda; font-weight: 500; letter-spacing: 1px; }
+
+  .slide-dark { background: #1a1a2e; color: white; }
+  .slide-light { background: white; }
+  .slide-accent { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
+  .slide-green { background: linear-gradient(135deg, #11998e, #38ef7d); color: #0a2e1a; }
+
+  h2 { font-size: 36px; font-weight: 700; margin-bottom: 30px; line-height: 1.2; }
+  h3 { font-size: 24px; font-weight: 600; margin-bottom: 15px; }
+  .slide-dark h2 { color: #64ffda; }
+  .slide-light h2 { color: #302b63; }
+
+  .content { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+
+  /* Stats grid */
+  .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px; margin: 30px 0; }
+  .stat-card { background: rgba(255,255,255,0.1); border-radius: 16px; padding: 30px; text-align: center; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.15); }
+  .stat-number { font-size: 48px; font-weight: 800; color: #64ffda; margin-bottom: 8px; }
+  .stat-label { font-size: 16px; color: #a8b2d1; }
+
+  /* Benefits list */
+  .benefits { list-style: none; }
+  .benefits li { padding: 16px 0; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: flex-start; gap: 16px; font-size: 20px; line-height: 1.5; }
+  .benefits li:last-child { border-bottom: none; }
+  .benefits .icon { font-size: 28px; flex-shrink: 0; margin-top: 2px; }
+  .benefits-light li { border-color: #e2e8f0; color: #334155; }
+
+  /* Comparison table */
+  .comparison { width: 100%; border-collapse: collapse; margin: 20px 0; }
+  .comparison th { padding: 14px 20px; text-align: left; font-size: 15px; text-transform: uppercase; letter-spacing: 1px; }
+  .comparison td { padding: 14px 20px; font-size: 17px; border-top: 1px solid rgba(255,255,255,0.1); }
+  .comparison .method { font-weight: 600; width: 180px; }
+  .comparison .bad { color: #ff6b6b; }
+  .comparison .good { color: #64ffda; }
+  .comparison-light td { border-color: #e2e8f0; }
+  .comparison-light .bad { color: #dc2626; }
+  .comparison-light .good { color: #059669; }
+
+  /* Workflow steps */
+  .workflow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 30px 0; }
+  .step { background: rgba(255,255,255,0.08); border-radius: 12px; padding: 24px 16px; text-align: center; border: 1px solid rgba(255,255,255,0.12); position: relative; }
+  .step-number { width: 36px; height: 36px; border-radius: 50%; background: #64ffda; color: #1a1a2e; font-weight: 800; font-size: 16px; display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; }
+  .step-title { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+  .step-desc { font-size: 13px; color: #a8b2d1; line-height: 1.4; }
+  .step-auto { background: rgba(100,255,218,0.1); border-color: rgba(100,255,218,0.3); }
+  .step-auto .step-desc { color: #64ffda; }
+
+  /* Feature cards */
+  .features-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin: 20px 0; }
+  .feature-card { background: rgba(255,255,255,0.06); border-radius: 12px; padding: 24px; border: 1px solid rgba(255,255,255,0.1); }
+  .feature-card h3 { font-size: 20px; margin-bottom: 10px; color: #64ffda; }
+  .feature-card p { font-size: 16px; color: #a8b2d1; line-height: 1.5; }
+
+  /* ROI section */
+  .roi-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 40px; margin: 30px 0; }
+  .roi-card { background: white; border-radius: 16px; padding: 30px; color: #1a1a2e; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+  .roi-card h3 { color: #302b63; margin-bottom: 15px; }
+  .roi-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f0f0f0; font-size: 16px; }
+  .roi-item:last-child { border-bottom: none; }
+  .roi-value { font-weight: 700; color: #059669; }
+  .roi-total { display: flex; justify-content: space-between; padding: 12px 0; font-size: 20px; font-weight: 700; border-top: 2px solid #302b63; margin-top: 10px; }
+  .roi-total .roi-value { color: #302b63; font-size: 24px; }
+
+  /* Footer */
+  .slide-footer { position: absolute; bottom: 20px; left: 80px; right: 80px; display: flex; justify-content: space-between; font-size: 12px; color: rgba(255,255,255,0.4); }
+  .slide-light .slide-footer { color: rgba(0,0,0,0.3); }
+
+  /* CTA */
+  .cta-box { background: rgba(100,255,218,0.15); border: 2px solid #64ffda; border-radius: 16px; padding: 30px 40px; text-align: center; margin-top: 30px; }
+  .cta-box h3 { color: #64ffda; font-size: 28px; margin-bottom: 10px; }
+  .cta-box p { font-size: 18px; color: #a8b2d1; }
+</style>
+</head>
+<body>
+
+<!-- SLIDE 1: COVER -->
+<div class="slide slide-cover">
+  <div class="content">
+    <div class="tagline">FOR OPERA USERS</div>
+    <h1>Transform Your Cash Collection<br>with GoCardless Direct Debit</h1>
+    <div class="subtitle">Automated payment collection that integrates seamlessly with Opera</div>
+    <div style="margin-top: 40px; font-size: 16px; color: #a8b2d1;">
+      Collect payments automatically &bull; Reduce debtor days &bull; Eliminate manual processing
+    </div>
+  </div>
+</div>
+
+<!-- SLIDE 2: THE PROBLEM -->
+<div class="slide slide-light">
+  <div class="content">
+    <h2>The Cost of Manual Payment Collection</h2>
+    <p style="font-size: 20px; color: #64748b; margin-bottom: 30px;">Every business that invoices customers faces the same challenges</p>
+
+    <div class="stats-grid">
+      <div class="stat-card" style="background: #fef2f2; border-color: #fecaca;">
+        <div class="stat-number" style="color: #dc2626;">47</div>
+        <div class="stat-label" style="color: #991b1b;">Average debtor days<br>for UK SMEs</div>
+      </div>
+      <div class="stat-card" style="background: #fef2f2; border-color: #fecaca;">
+        <div class="stat-number" style="color: #dc2626;">£2.5k</div>
+        <div class="stat-label" style="color: #991b1b;">Average cost per month<br>chasing late payments</div>
+      </div>
+      <div class="stat-card" style="background: #fef2f2; border-color: #fecaca;">
+        <div class="stat-number" style="color: #dc2626;">62%</div>
+        <div class="stat-label" style="color: #991b1b;">Of UK SMEs experience<br>late payment issues</div>
+      </div>
+    </div>
+
+    <ul class="benefits benefits-light" style="margin-top: 20px;">
+      <li><span class="icon">⏰</span><span>Hours spent chasing overdue invoices by phone and email</span></li>
+      <li><span class="icon">💳</span><span>Customers forget to pay, dispute amounts, or delay payment runs</span></li>
+      <li><span class="icon">📊</span><span>Manual data entry in Opera for every receipt — prone to errors</span></li>
+      <li><span class="icon">🔄</span><span>Reconciliation is tedious — matching bank entries to invoices one by one</span></li>
+    </ul>
+  </div>
+  <div class="slide-footer"><span>GoCardless for Opera</span></div>
+</div>
+
+<!-- SLIDE 3: COLLECTION METHODS COMPARED -->
+<div class="slide slide-dark">
+  <div class="content">
+    <h2>Collection Methods Compared</h2>
+
+    <table class="comparison">
+      <tr>
+        <th></th>
+        <th>Speed</th>
+        <th>Certainty</th>
+        <th>Cost per Transaction</th>
+        <th>Admin Effort</th>
+        <th>Failed Payment Rate</th>
+      </tr>
+      <tr>
+        <td class="method">Cheque</td>
+        <td class="bad">5-7 days</td>
+        <td class="bad">Low — can bounce</td>
+        <td class="bad">£2-5 processing</td>
+        <td class="bad">High — manual entry</td>
+        <td class="bad">3-5%</td>
+      </tr>
+      <tr>
+        <td class="method">BACS Transfer</td>
+        <td>3 days</td>
+        <td class="bad">Low — relies on customer</td>
+        <td>£0.20-0.50</td>
+        <td class="bad">High — chasing required</td>
+        <td class="bad">N/A — customer controls</td>
+      </tr>
+      <tr>
+        <td class="method">Card Payment</td>
+        <td class="good">Instant</td>
+        <td>Medium</td>
+        <td class="bad">1.5-3% of value</td>
+        <td>Medium</td>
+        <td>2-3%</td>
+      </tr>
+      <tr style="background: rgba(100,255,218,0.1);">
+        <td class="method" style="color: #64ffda;">Direct Debit</td>
+        <td class="good">3 days (automated)</td>
+        <td class="good">High — you control</td>
+        <td class="good">£0.20-0.60</td>
+        <td class="good">Zero — fully automated</td>
+        <td class="good">< 1%</td>
+      </tr>
+    </table>
+
+    <div style="margin-top: 20px; padding: 20px; background: rgba(100,255,218,0.1); border-radius: 12px; border: 1px solid rgba(100,255,218,0.2);">
+      <p style="font-size: 18px; color: #64ffda; font-weight: 600;">Direct Debit is the only method where YOU control when payment is taken.</p>
+      <p style="font-size: 16px; color: #a8b2d1; margin-top: 8px;">No chasing. No waiting. No hoping. You decide the amount and the date — the money arrives automatically.</p>
+    </div>
+  </div>
+  <div class="slide-footer"><span>GoCardless for Opera</span></div>
+</div>
+
+<!-- SLIDE 4: GOCARDLESS + OPERA -->
+<div class="slide slide-dark">
+  <div class="content">
+    <h2>GoCardless + Opera: Seamless Integration</h2>
+    <p style="font-size: 20px; color: #a8b2d1; margin-bottom: 30px;">Our integration connects GoCardless directly to your Opera accounting system — no manual steps</p>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <h3>🔗 One-Click Mandate Setup</h3>
+        <p>Send customers a secure link to set up their Direct Debit mandate. They authorise online — no paper forms, no bank details by email.</p>
+      </div>
+      <div class="feature-card">
+        <h3>📋 Invoice-Linked Collection</h3>
+        <p>Select due invoices from Opera, click collect. The system requests payment for the exact amount, linked to the specific invoice references.</p>
+      </div>
+      <div class="feature-card">
+        <h3>🔄 Recurring Subscriptions</h3>
+        <p>Link Opera repeat invoices to GoCardless subscriptions. Monthly collections happen automatically — zero intervention required.</p>
+      </div>
+      <div class="feature-card">
+        <h3>📥 Automatic Posting to Opera</h3>
+        <p>When GoCardless pays out, receipts are posted to Opera automatically — correct customer, correct amount, correct nominal codes. Including fee split and VAT.</p>
+      </div>
+      <div class="feature-card">
+        <h3>🛡️ Duplicate Prevention</h3>
+        <p>Four layers of protection ensure no customer is ever charged twice. Mandate verification, payment request tracking, Opera credit checks, and GoCardless API validation.</p>
+      </div>
+      <div class="feature-card">
+        <h3>📊 Complete Audit Trail</h3>
+        <p>Every payment request, collection, and posting is logged. Full visibility from invoice to bank receipt — nothing gets lost.</p>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer"><span>GoCardless for Opera</span></div>
+</div>
+
+<!-- SLIDE 5: AUTOMATED WORKFLOW -->
+<div class="slide slide-dark">
+  <div class="content">
+    <h2>The Automated Workflow</h2>
+    <p style="font-size: 18px; color: #a8b2d1; margin-bottom: 20px;">From invoice to bank receipt — minimal user input required</p>
+
+    <div class="workflow">
+      <div class="step">
+        <div class="step-number">1</div>
+        <div class="step-title">Invoice Raised</div>
+        <div class="step-desc">Opera raises the invoice as normal — nothing changes in your existing process</div>
+      </div>
+      <div class="step step-auto">
+        <div class="step-number">2</div>
+        <div class="step-title">Select & Collect</div>
+        <div class="step-desc">View due invoices, tick to select, click collect. One click per customer.</div>
+      </div>
+      <div class="step step-auto">
+        <div class="step-number">3</div>
+        <div class="step-title">GoCardless Collects</div>
+        <div class="step-desc">Payment taken automatically from customer's bank. They see your reference on their statement.</div>
+      </div>
+      <div class="step step-auto">
+        <div class="step-number">4</div>
+        <div class="step-title">Payout Received</div>
+        <div class="step-desc">GoCardless batches payments and sends net amount to your bank (minus small fee).</div>
+      </div>
+      <div class="step step-auto">
+        <div class="step-number">5</div>
+        <div class="step-title">Posted to Opera</div>
+        <div class="step-desc">Receipts, fees, and VAT posted automatically. Allocated to invoices. Bank reconciliation ready.</div>
+      </div>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 20px;">
+      <div style="padding: 20px; background: rgba(100,255,218,0.08); border-radius: 12px; border: 1px solid rgba(100,255,218,0.15);">
+        <h3 style="color: #64ffda; font-size: 18px; margin-bottom: 8px;">For One-Off Invoices</h3>
+        <p style="font-size: 15px; color: #a8b2d1;">View due invoices → select → collect. Takes 30 seconds. Payment arrives in 3-5 working days.</p>
+      </div>
+      <div style="padding: 20px; background: rgba(100,255,218,0.08); border-radius: 12px; border: 1px solid rgba(100,255,218,0.15);">
+        <h3 style="color: #64ffda; font-size: 18px; margin-bottom: 8px;">For Recurring Invoices</h3>
+        <p style="font-size: 15px; color: #a8b2d1;">Link Opera repeat invoices to subscriptions once. Collections happen automatically every month — zero clicks.</p>
+      </div>
+    </div>
+  </div>
+  <div class="slide-footer"><span>GoCardless for Opera</span></div>
+</div>
+
+<!-- SLIDE 6: ROI -->
+<div class="slide slide-accent">
+  <div class="content">
+    <h2 style="color: white;">Return on Investment</h2>
+    <p style="font-size: 20px; color: rgba(255,255,255,0.8); margin-bottom: 20px;">The numbers speak for themselves</p>
+
+    <div class="roi-grid">
+      <div class="roi-card">
+        <h3>Cost Savings (per month)</h3>
+        <div class="roi-item"><span>Credit control staff time saved</span><span class="roi-value">£800</span></div>
+        <div class="roi-item"><span>Accounts receivable processing</span><span class="roi-value">£400</span></div>
+        <div class="roi-item"><span>Bank reconciliation time</span><span class="roi-value">£200</span></div>
+        <div class="roi-item"><span>Reduced bad debt write-offs</span><span class="roi-value">£300</span></div>
+        <div class="roi-item"><span>Postage & printing (no reminders)</span><span class="roi-value">£50</span></div>
+        <div class="roi-total"><span>Monthly Saving</span><span class="roi-value">£1,750</span></div>
+      </div>
+      <div class="roi-card">
+        <h3>Cash Flow Improvement</h3>
+        <div class="roi-item"><span>Average debtor days</span><span>47 → <span class="roi-value">5 days</span></span></div>
+        <div class="roi-item"><span>Payment certainty</span><span><span class="roi-value">99%+</span></span></div>
+        <div class="roi-item"><span>Late payment chasing</span><span><span class="roi-value">Eliminated</span></span></div>
+        <div class="roi-item"><span>Manual data entry</span><span><span class="roi-value">Eliminated</span></span></div>
+        <div class="roi-item"><span>Reconciliation effort</span><span><span class="roi-value">Automated</span></span></div>
+        <div class="roi-total"><span>Annual Saving</span><span class="roi-value">£21,000+</span></div>
+      </div>
+    </div>
+
+    <p style="font-size: 16px; color: rgba(255,255,255,0.7); text-align: center; margin-top: 10px;">
+      Based on a business processing 200 invoices/month. GoCardless fees: approximately £0.20-0.60 per transaction.
+    </p>
+  </div>
+  <div class="slide-footer"><span style="color: rgba(255,255,255,0.4);">GoCardless for Opera</span></div>
+</div>
+
+<!-- SLIDE 7: CUSTOMER EXPERIENCE -->
+<div class="slide slide-light">
+  <div class="content">
+    <h2>What Your Customers Experience</h2>
+    <p style="font-size: 20px; color: #64748b; margin-bottom: 30px;">Direct Debit is trusted and familiar — 80% of UK adults have at least one</p>
+
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 30px;">
+      <div style="background: #f8fafc; border-radius: 16px; padding: 30px; border: 1px solid #e2e8f0; text-align: center;">
+        <div style="font-size: 48px; margin-bottom: 15px;">📧</div>
+        <h3 style="color: #302b63;">1. Email Invite</h3>
+        <p style="color: #64748b; font-size: 15px; line-height: 1.5;">Customer receives a secure email with a link to set up their Direct Debit mandate. Takes 2 minutes.</p>
+      </div>
+      <div style="background: #f8fafc; border-radius: 16px; padding: 30px; border: 1px solid #e2e8f0; text-align: center;">
+        <div style="font-size: 48px; margin-bottom: 15px;">✅</div>
+        <h3 style="color: #302b63;">2. One-Time Setup</h3>
+        <p style="color: #64748b; font-size: 15px; line-height: 1.5;">They enter their bank details once on GoCardless's secure page. Protected by the Direct Debit Guarantee.</p>
+      </div>
+      <div style="background: #f8fafc; border-radius: 16px; padding: 30px; border: 1px solid #e2e8f0; text-align: center;">
+        <div style="font-size: 48px; margin-bottom: 15px;">🏦</div>
+        <h3 style="color: #302b63;">3. Automatic Payment</h3>
+        <p style="color: #64748b; font-size: 15px; line-height: 1.5;">Payments are collected automatically. Your reference appears on their bank statement so they know what it's for.</p>
+      </div>
+    </div>
+
+    <div style="margin-top: 30px; padding: 20px; background: #ecfdf5; border-radius: 12px; border: 1px solid #a7f3d0;">
+      <p style="font-size: 18px; color: #065f46; font-weight: 600;">🛡️ Protected by the Direct Debit Guarantee</p>
+      <p style="font-size: 15px; color: #047857; margin-top: 6px;">Customers can claim a full refund at any time through their bank. This gives them confidence to set up mandates — they know they're protected.</p>
+    </div>
+  </div>
+  <div class="slide-footer"><span>GoCardless for Opera</span></div>
+</div>
+
+<!-- SLIDE 8: GETTING STARTED -->
+<div class="slide slide-dark">
+  <div class="content">
+    <h2>Getting Started Is Simple</h2>
+
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin: 30px 0;">
+      <div style="text-align: center; padding: 30px 20px;">
+        <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(100,255,218,0.2); display: flex; align-items: center; justify-content: center; margin: 0 auto 15px; font-size: 28px; font-weight: 800; color: #64ffda;">1</div>
+        <h3 style="font-size: 18px; margin-bottom: 8px;">Sign Up</h3>
+        <p style="font-size: 14px; color: #a8b2d1;">Create a GoCardless account (free). Get your API credentials.</p>
+      </div>
+      <div style="text-align: center; padding: 30px 20px;">
+        <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(100,255,218,0.2); display: flex; align-items: center; justify-content: center; margin: 0 auto 15px; font-size: 28px; font-weight: 800; color: #64ffda;">2</div>
+        <h3 style="font-size: 18px; margin-bottom: 8px;">Configure</h3>
+        <p style="font-size: 14px; color: #a8b2d1;">Enter your API key, bank account, and fee settings. 5 minutes setup.</p>
+      </div>
+      <div style="text-align: center; padding: 30px 20px;">
+        <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(100,255,218,0.2); display: flex; align-items: center; justify-content: center; margin: 0 auto 15px; font-size: 28px; font-weight: 800; color: #64ffda;">3</div>
+        <h3 style="font-size: 18px; margin-bottom: 8px;">Invite Customers</h3>
+        <p style="font-size: 14px; color: #a8b2d1;">Send mandate setup emails to your customers. They sign up in 2 minutes.</p>
+      </div>
+      <div style="text-align: center; padding: 30px 20px;">
+        <div style="width: 60px; height: 60px; border-radius: 50%; background: rgba(100,255,218,0.2); display: flex; align-items: center; justify-content: center; margin: 0 auto 15px; font-size: 28px; font-weight: 800; color: #64ffda;">4</div>
+        <h3 style="font-size: 18px; margin-bottom: 8px;">Collect</h3>
+        <p style="font-size: 14px; color: #a8b2d1;">Start collecting. Payments post to Opera automatically.</p>
+      </div>
+    </div>
+
+    <div class="cta-box">
+      <h3>Ready to Transform Your Cash Collection?</h3>
+      <p>Contact us for a demonstration of GoCardless integration with your Opera system</p>
+      <p style="margin-top: 15px; font-size: 14px; color: #64ffda;">No disruption to your existing invoicing process &bull; Works alongside your current payment methods &bull; Start with a few customers and scale up</p>
+    </div>
+  </div>
+  <div class="slide-footer"><span>GoCardless for Opera</span></div>
+</div>
+
+</body>
+</html>
