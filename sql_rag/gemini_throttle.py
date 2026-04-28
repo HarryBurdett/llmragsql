@@ -104,6 +104,32 @@ def _get_active_keys_for_testing() -> list[str]:
         return list(_keys)
 
 
+def _select_active_key_idx() -> int | None:
+    """Return the index of the lowest-indexed key not currently exhausted.
+
+    Returns None if no keys are configured, or if every configured key
+    is currently inside its exhaustion cooldown window.
+
+    Caller is expected to hold (or acquire) `_lock` if mutating state
+    after this call. The function itself acquires the lock to read state.
+    """
+    with _lock:
+        if not _keys:
+            return None
+        now = time.monotonic()
+        for idx in range(len(_keys)):
+            until = _exhausted_until.get(idx, 0.0)
+            if until <= now:
+                return idx
+        return None
+
+
+def _mark_key_exhausted(idx: int) -> None:
+    """Flag a key as exhausted for the next _EXHAUSTION_DURATION_SECONDS."""
+    with _lock:
+        _exhausted_until[idx] = time.monotonic() + _EXHAUSTION_DURATION_SECONDS
+
+
 def _reset_throttle_state_for_testing() -> None:
     """Reset module-level throttle state. Test-only helper."""
     global _last_call_time, _keys, _exhausted_until

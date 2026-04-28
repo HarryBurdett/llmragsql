@@ -157,3 +157,43 @@ def test_reset_clears_keys():
     configure_keys(["k1", "k2"])
     _reset_throttle_state_for_testing()
     assert _get_active_keys_for_testing() == []
+
+
+from sql_rag.gemini_throttle import _select_active_key_idx, _mark_key_exhausted
+
+
+def test_select_active_returns_none_when_no_keys():
+    configure_keys([])
+    assert _select_active_key_idx() is None
+
+
+def test_select_active_returns_first_when_all_eligible():
+    configure_keys(["k1", "k2", "k3"])
+    assert _select_active_key_idx() == 0
+
+
+def test_select_active_skips_exhausted(monkeypatch):
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.monotonic", lambda: 1000.0)
+    configure_keys(["k1", "k2", "k3"])
+    _mark_key_exhausted(0)
+    assert _select_active_key_idx() == 1
+
+
+def test_select_active_returns_none_when_all_exhausted(monkeypatch):
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.monotonic", lambda: 1000.0)
+    configure_keys(["k1", "k2"])
+    _mark_key_exhausted(0)
+    _mark_key_exhausted(1)
+    assert _select_active_key_idx() is None
+
+
+def test_exhausted_key_recovers_after_cooldown(monkeypatch):
+    fake_now = [1000.0]
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.monotonic", lambda: fake_now[0])
+    configure_keys(["k1", "k2"])
+    _mark_key_exhausted(0)
+    assert _select_active_key_idx() == 1
+
+    # Advance past 30-minute cooldown
+    fake_now[0] += 1800.0 + 1.0
+    assert _select_active_key_idx() == 0
