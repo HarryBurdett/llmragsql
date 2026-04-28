@@ -109,3 +109,32 @@ def test_partial_balance_counts_as_unextracted():
     result = _compute_gate(bank)
     assert result['extraction_status'] == 'incomplete'
     assert result['statements_extracted'] == 0
+
+
+def _route_assignment_guard(stmt_entries):
+    """Mirrors the assignment guard in scan_all_banks_for_statements at lines ~6536, ~6729.
+
+    Returns the list of stmt_entries that would be appended to all_banks[code]['statements'].
+    Failed extractions (status='pending_extraction') MUST flow through so the gate sees them.
+    """
+    return [
+        s for s in stmt_entries
+        if s.get('status') in ('ready', 'imported', 'pending_extraction')
+    ]
+
+
+def test_assignment_guard_keeps_pending_extraction_statements():
+    # Without this, failed statements are dropped before the gate runs and the
+    # bank is incorrectly marked 'complete'.
+    entries = [
+        {'filename': 'a.pdf', 'status': 'ready', 'opening_balance': 100.0, 'closing_balance': 200.0},
+        {'filename': 'b.pdf', 'status': 'pending_extraction', 'opening_balance': None, 'closing_balance': None},
+        {'filename': 'c.pdf', 'status': 'imported'},
+        {'filename': 'd.pdf', 'status': 'already_processed'},
+    ]
+    forwarded = _route_assignment_guard(entries)
+    forwarded_filenames = {s['filename'] for s in forwarded}
+    assert 'a.pdf' in forwarded_filenames  # ready
+    assert 'b.pdf' in forwarded_filenames  # pending_extraction — required for the gate to gate
+    assert 'c.pdf' in forwarded_filenames  # imported
+    assert 'd.pdf' not in forwarded_filenames  # already_processed correctly excluded

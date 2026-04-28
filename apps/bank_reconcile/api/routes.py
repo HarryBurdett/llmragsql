@@ -6533,7 +6533,7 @@ async def scan_all_banks_for_statements(
                     stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
                     stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
 
-                    if stmt_entry.get('status') in ('ready', 'imported'):
+                    if stmt_entry.get('status') in ('ready', 'imported', 'pending_extraction'):
                         all_banks[matched_bank_code]['statements'].append(stmt_entry)
                     else:
                         logger.info(f"Skipping {filename} for {matched_bank_code}: status={stmt_entry.get('status')}")
@@ -6620,6 +6620,7 @@ async def scan_all_banks_for_statements(
                             stmt_entry['bank_name'] = info_data.get('bank_name')
                             stmt_entry['account_number'] = info_data.get('account_number')
                             stmt_entry['sort_code'] = info_data.get('sort_code')
+                            stmt_entry['extraction_status'] = 'cached'
 
                             stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
                             stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
@@ -6726,7 +6727,7 @@ async def scan_all_banks_for_statements(
                         stmt_entry['matched_sort_code'] = all_banks[matched_bank_code]['sort_code']
                         stmt_entry['matched_account_number'] = all_banks[matched_bank_code]['account_number']
 
-                    if stmt_entry.get('status') in ('ready', 'imported'):
+                    if stmt_entry.get('status') in ('ready', 'imported', 'pending_extraction'):
                         # --- Dedup: skip if same filename or period already seen for this bank ---
                         fn_lower = filename.lower().strip()
                         fn_key = (matched_bank_code, fn_lower)

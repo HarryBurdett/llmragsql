@@ -1051,6 +1051,15 @@ function PendingStatementsTab({
     }
     return result.sort();
   }, [bankList, orphanedByBank]);
+
+  // When at least one bank is incomplete (extraction pending), switch button copy to prompt re-scan
+  const hasIncompleteBank = useMemo(
+    () => Object.values(scanResult?.banks ?? {}).some(
+      (b) => b.extraction_status === 'incomplete'
+    ),
+    [scanResult]
+  );
+
   return (
     <div className="space-y-4">
       <div className="bg-white border border-gray-200 rounded-lg p-4">
@@ -1059,7 +1068,7 @@ function PendingStatementsTab({
             <button onClick={onScan} disabled={scanning}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 text-sm font-medium">
               {scanning ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-              {scanning ? 'Scanning...' : 'Scan All Banks'}
+              {scanning ? 'Scanning...' : hasIncompleteBank ? 'Re-scan to complete extraction' : 'Scan All Banks'}
             </button>
             <div className="flex items-center gap-1.5 text-sm text-gray-600">
               <span>Last</span>
@@ -2036,11 +2045,14 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
       case 'uncached':
         return <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500 rounded-full">Uncached</span>;
       case 'pending_extraction':
+        if (stmt.extraction_failure_reason === 'extraction_error') {
+          return null;
+        }
         return <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 rounded-full">Pending</span>;
       default:
         return <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500 rounded-full">Pending</span>;
     }
-  }, [stmt.status, hasPartialReconcile, inProgressData]);
+  }, [stmt.status, stmt.extraction_failure_reason, hasPartialReconcile, inProgressData]);
 
   const formatBal = (val: number | undefined | null) => {
     if (val === null || val === undefined) return '—';
