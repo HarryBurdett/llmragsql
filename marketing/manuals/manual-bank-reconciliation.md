@@ -33,6 +33,12 @@ This routine takes a bank statement (PDF from email or uploaded file), extracts 
 - Click **Upload PDF** and select a bank statement file
 - The system validates the sort code, account number, and opening balance
 
+**If extraction is pending:** Occasionally the AI service hits its quota. Affected
+statements show a "Pending" badge and the Process button is disabled for the
+whole bank until every statement is extracted (this prevents processing
+statements out of sequence). Wait 1–2 minutes and press Scan again; the system
+retries the failed statements automatically. No data is lost.
+
 ### Stage 2: Review & Match
 
 The AI extracts every transaction from the PDF. Each line is then auto-matched:
@@ -192,4 +198,4 @@ If an import fails partway through (e.g. network error, database lock):
 
 ---
 
-*Last updated: 2026-03-12*
+*Last updated: 2026-04-28*
