@@ -20,7 +20,9 @@ interface StatementEntry {
   already_processed?: boolean;
   is_reconciled?: boolean;
   is_imported?: boolean;
-  status: 'ready' | 'sequence_gap' | 'uncached' | 'pending' | 'already_processed' | 'imported';
+  status: 'ready' | 'sequence_gap' | 'uncached' | 'pending' | 'already_processed' | 'imported' | 'pending_extraction';
+  extraction_status?: 'extracted' | 'cached' | 'pending_extraction' | 'failed';
+  extraction_failure_reason?: 'rate_limit' | 'extraction_error';
   validation_note?: string;
   opening_balance?: number;
   closing_balance?: number;
@@ -49,6 +51,10 @@ interface BankGroup {
   type: string;
   statements: StatementEntry[];
   statement_count: number;
+  extraction_status?: 'complete' | 'incomplete';
+  statements_extracted?: number;
+  statements_total?: number;
+  extraction_failures?: { filename: string; reason: string }[];
 }
 
 interface NonCurrentStatements {
@@ -1825,6 +1831,16 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, onDeleteSt
         </div>
       </button>
 
+      {bank.extraction_status === 'incomplete' && (
+        <div className="px-4 py-2 bg-amber-50 border-t border-amber-200 text-sm text-amber-800 flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          <span>
+            <strong>{bank.statements_extracted ?? 0}</strong> of <strong>{bank.statements_total ?? 0}</strong> statements extracted.
+            Re-scan to complete (Gemini quota may need a minute or two to recover).
+          </span>
+        </div>
+      )}
+
       {expanded && (
         <div className="border-t border-gray-100">
           <table className="w-full text-sm">
@@ -1850,7 +1866,8 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, onDeleteSt
                     onReconcile={stmt.status === 'imported' ? () => onReconcile(stmt) : undefined}
                     onDelete={onDeleteStatement ? () => onDeleteStatement(stmt) : undefined}
                     onView={onViewStatement ? () => onViewStatement(stmt) : undefined}
-                    inProgressData={ipData} onContinueImport={onContinueImport} onClearStatement={onClearStatement} onResumeReconcile={onResumeReconcile} />
+                    inProgressData={ipData} onContinueImport={onContinueImport} onClearStatement={onClearStatement} onResumeReconcile={onResumeReconcile}
+                    bankExtractionComplete={bank.extraction_status !== 'incomplete'} />
                 );
               })}
               {/* Orphaned in-progress rows (imported but not in scan results for this bank) */}
@@ -1995,10 +2012,11 @@ function OrphanedBankCard({ bankCode, statements, onContinueImport, onClearState
 
 // ---- Statement Row ----
 
-function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, inProgressData, onContinueImport, onClearStatement, onResumeReconcile }: {
+function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, inProgressData, onContinueImport, onClearStatement, onResumeReconcile, bankExtractionComplete }: {
   stmt: StatementEntry; isNext: boolean; onProcess: () => void; onReconcile?: () => void; onDelete?: () => void; onView?: () => void;
   inProgressData?: InProgressStatement; onContinueImport?: (stmt: InProgressStatement) => void;
   onClearStatement?: (stmt: InProgressStatement) => void; onResumeReconcile?: (stmt: InProgressStatement) => void;
+  bankExtractionComplete?: boolean;
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const isImportedWithData = stmt.status === 'imported' && inProgressData;
@@ -2017,6 +2035,8 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
         return <span className="px-2 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded-full" title="Imported but not yet reconciled">Awaiting Reconcile</span>;
       case 'uncached':
         return <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500 rounded-full">Uncached</span>;
+      case 'pending_extraction':
+        return <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 rounded-full">Pending</span>;
       default:
         return <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-500 rounded-full">Pending</span>;
     }
@@ -2034,7 +2054,7 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
     return '—';
   };
 
-  const canProcess = stmt.status === 'ready' && isNext;
+  const canProcess = (bankExtractionComplete !== false) && stmt.status === 'ready' && isNext;
 
   return (
     <tr className={`border-t border-gray-50 transition-colors ${
@@ -2071,6 +2091,9 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
             {statusBadge}
             {isNext && stmt.status === 'ready' && (
               <span className="px-2 py-0.5 text-xs font-medium bg-blue-600 text-white rounded-full">Next</span>
+            )}
+            {stmt.extraction_failure_reason === 'extraction_error' && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-800 rounded-full">Failed</span>
             )}
           </div>
           {isImportedWithData && hasPartialImport && (
