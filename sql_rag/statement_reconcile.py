@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
 import logging
 
+from sql_rag.gemini_throttle import (
+    call_gemini_with_throttle,
+    RateLimitExhaustedError,
+    ExtractionFailedError,
+)
+
 logger = logging.getLogger(__name__)
 
 # Default config file path
@@ -554,7 +560,11 @@ RULES:
 
         try:
             file_part = {"mime_type": "application/pdf", "data": pdf_bytes}
-            response = self.model.generate_content([file_part, prompt])
+            response = call_gemini_with_throttle(
+                self.model,
+                [file_part, prompt],
+                filename=Path(pdf_path).name,
+            )
             json_match = re.search(r'\{[\s\S]*\}', response.text)
             if not json_match:
                 return None
@@ -711,7 +721,11 @@ and balances. You MUST:
         max_attempts = 2
         data = None
         for attempt in range(max_attempts):
-            response = self.model.generate_content([file_part, extraction_prompt])
+            response = call_gemini_with_throttle(
+                self.model,
+                [file_part, extraction_prompt],
+                filename=Path(pdf_path).name,
+            )
 
             # Check for truncation via finish_reason
             finish_reason = None
