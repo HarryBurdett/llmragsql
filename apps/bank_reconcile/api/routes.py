@@ -7097,6 +7097,44 @@ async def scan_all_banks_for_statements(
                 for s in non_current[nc_key]:
                     logger.info(f"  bank={s.get('matched_bank_code')}  date={s.get('statement_date')}  sk={s.get('sort_key')}  ob={s.get('opening_balance')}  file={s.get('filename','')[:40]}")
 
+        # Extraction gate: compute per-bank extraction_status, statements_total,
+        # statements_extracted, and extraction_failures. A bank is 'complete' only
+        # when every statement has both an opening and closing balance. If any
+        # statement is unextracted, the bank is 'incomplete' and its 'ready'
+        # statements are demoted to 'pending_extraction' so the frontend disables
+        # Process buttons for the whole bank (preventing out-of-order processing).
+        for code, bank_info in banks_with_statements.items():
+            bank_stmts = bank_info.get('statements', [])
+            statements_total = len(bank_stmts)
+            statements_extracted = sum(
+                1 for s in bank_stmts
+                if s.get('opening_balance') is not None
+                and s.get('closing_balance') is not None
+            )
+            extraction_failures = [
+                {
+                    'filename': s.get('filename'),
+                    'reason': s.get('extraction_failure_reason') or 'rate_limit',
+                }
+                for s in bank_stmts
+                if (s.get('opening_balance') is None or s.get('closing_balance') is None)
+            ]
+            bank_info['statements_total'] = statements_total
+            bank_info['statements_extracted'] = statements_extracted
+            bank_info['extraction_failures'] = extraction_failures
+            bank_info['extraction_status'] = (
+                'complete' if statements_total > 0 and statements_extracted == statements_total
+                else 'incomplete' if statements_total > 0
+                else 'complete'  # empty bank counts as complete (nothing to do)
+            )
+
+            # Per-statement: if bank is incomplete, demote any 'ready' statements
+            # to 'pending_extraction' so the UI gates Process for the whole bank.
+            if bank_info['extraction_status'] == 'incomplete':
+                for s in bank_stmts:
+                    if s.get('status') == 'ready':
+                        s['status'] = 'pending_extraction'
+
         # Build message
         bank_count = len(banks_with_statements)
         if total_statements == 0:
