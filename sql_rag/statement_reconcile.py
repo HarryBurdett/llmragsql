@@ -21,6 +21,7 @@ from sql_rag.gemini_throttle import (
     call_gemini_with_throttle,
     RateLimitExhaustedError,
     ExtractionFailedError,
+    configure_keys,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,27 @@ class StatementReconciler:
             api_key = config.get('gemini', 'api_key', fallback='')
         if not api_key:
             api_key = os.environ.get('GEMINI_API_KEY', '')
+
+        # Collect numbered keys (api_key_2, api_key_3, ...) for rotation.
+        # The bare api_key above is always Key #1 in the rotation list.
+        rotation_keys: list[str] = [api_key] if api_key else []
+        if config.has_section('gemini'):
+            n = 2
+            while True:
+                k = config.get('gemini', f'api_key_{n}', fallback='').strip()
+                if not k:
+                    break
+                rotation_keys.append(k)
+                n += 1
+
+        # Configure throttle helper with the full key list. Rotation activates
+        # automatically when more than one key is provided. With a single key,
+        # behaviour is identical to before this change.
+        configure_keys(rotation_keys)
+        if len(rotation_keys) > 1:
+            logger.info(
+                "Gemini key rotation enabled with %d keys", len(rotation_keys)
+            )
 
         if not api_key:
             raise ValueError(
