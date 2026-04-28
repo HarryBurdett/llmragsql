@@ -114,15 +114,32 @@ class StatementReconciler:
 
         # Collect numbered keys (api_key_2, api_key_3, ...) for rotation.
         # The bare api_key above is always Key #1 in the rotation list.
+        # We scan all api_key_N entries (regardless of gaps) so a typo'd
+        # config doesn't silently truncate the rotation list at the gap.
         rotation_keys: list[str] = [api_key] if api_key else []
         if config.has_section('gemini'):
-            n = 2
-            while True:
-                k = config.get('gemini', f'api_key_{n}', fallback='').strip()
-                if not k:
-                    break
-                rotation_keys.append(k)
-                n += 1
+            import re as _re
+            numbered: dict[int, str] = {}
+            for option in config.options('gemini'):
+                m = _re.fullmatch(r'api_key_(\d+)', option)
+                if not m:
+                    continue
+                idx = int(m.group(1))
+                value = config.get('gemini', option, fallback='').strip()
+                if value:
+                    numbered[idx] = value
+            # Warn on gaps so operators notice misnumbered keys
+            if numbered:
+                expected = set(range(2, max(numbered) + 1))
+                missing = sorted(expected - set(numbered.keys()))
+                if missing:
+                    logger.warning(
+                        "Gemini config has numbered keys %s but is missing %s — "
+                        "all configured keys will still be loaded",
+                        sorted(numbered.keys()), missing,
+                    )
+            for idx in sorted(numbered.keys()):
+                rotation_keys.append(numbered[idx])
 
         # Configure throttle helper with the full key list. Rotation activates
         # automatically when more than one key is provided. With a single key,

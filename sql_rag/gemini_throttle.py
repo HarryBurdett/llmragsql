@@ -87,14 +87,24 @@ _EXHAUSTION_DURATION_SECONDS = 1800.0  # 30 minutes
 def configure_keys(keys: list[str | None]) -> None:
     """Configure the list of Gemini API keys to use for rotation.
 
-    Empty strings and None entries are silently dropped. Each call replaces
-    the previous list. Pass an empty list to disable rotation entirely
-    (the helper then falls back to whatever key the caller's `model` already
-    has configured globally — i.e. today's behaviour).
+    Empty strings and None entries are silently dropped. If the cleaned key
+    list is identical to the currently-configured list, this call is a no-op
+    — exhaustion state and the active-key cursor are preserved. This matters
+    because reconcilers are instantiated per HTTP request, so the same keys
+    are re-passed many times during a scan; without idempotence, every
+    request would wipe the 30-minute cooldown timer.
+
+    Pass an empty list to disable rotation entirely (the helper then falls
+    back to whatever key the caller's `model` already has configured globally
+    — i.e. today's behaviour).
     """
     global _keys, _exhausted_until
     cleaned = [k.strip() for k in keys if k and isinstance(k, str) and k.strip()]
     with _lock:
+        if cleaned == _keys:
+            # Same key list — preserve exhaustion state. Don't log the
+            # "configured with N key(s)" line on every reconciler init.
+            return
         _keys = cleaned
         _exhausted_until = {}
     logger.info("Gemini throttle configured with %d key(s)", len(cleaned))
@@ -110,10 +120,9 @@ def _select_active_key_idx() -> int | None:
     """Return the index of the lowest-indexed key not currently exhausted.
 
     Returns None if no keys are configured, or if every configured key
-    is currently inside its exhaustion cooldown window.
-
-    Caller is expected to hold (or acquire) `_lock` if mutating state
-    after this call. The function itself acquires the lock to read state.
+    is currently inside its exhaustion cooldown window. When an exhausted
+    key rolls off the cooldown, an INFO log is emitted once (the
+    `_exhausted_until` entry is then cleared so the log doesn't repeat).
     """
     with _lock:
         if not _keys:
@@ -122,6 +131,16 @@ def _select_active_key_idx() -> int | None:
         for idx in range(len(_keys)):
             until = _exhausted_until.get(idx, 0.0)
             if until <= now:
+                # If this key was previously exhausted, log its recovery once
+                # and clear the timestamp so subsequent calls don't re-log.
+                if idx in _exhausted_until:
+                    logger.info(
+                        "Gemini key %d/%d eligible again after %.0f-minute cooldown",
+                        idx + 1,
+                        len(_keys),
+                        _EXHAUSTION_DURATION_SECONDS / 60.0,
+                    )
+                    del _exhausted_until[idx]
                 return idx
         return None
 

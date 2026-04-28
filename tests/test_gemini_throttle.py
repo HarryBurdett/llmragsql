@@ -297,3 +297,29 @@ def test_first_key_success_no_rotation(monkeypatch):
     assert result is not None
     assert model.generate_content.call_count == 1
     assert configure_calls == ["k1"]
+
+
+def test_configure_keys_preserves_exhaustion_when_list_unchanged(monkeypatch):
+    """Reconcilers re-call configure_keys() on every HTTP request. The
+    exhaustion timer must survive across those calls — otherwise the
+    30-minute cooldown never accumulates and rotation re-burns the
+    backoff schedule on every PDF."""
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.monotonic", lambda: 1000.0)
+    configure_keys(["k1", "k2"])
+    _mark_key_exhausted(0)
+    assert _select_active_key_idx() == 1
+
+    # Reconciler reconfigures with the same list — exhaustion must persist
+    configure_keys(["k1", "k2"])
+    assert _select_active_key_idx() == 1
+
+
+def test_configure_keys_resets_exhaustion_when_list_changes(monkeypatch):
+    """Conversely, when the key list actually changes, exhaustion state
+    is reset — keys may have been added, removed, or reordered."""
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.monotonic", lambda: 1000.0)
+    configure_keys(["k1", "k2"])
+    _mark_key_exhausted(0)
+    configure_keys(["k1", "k2", "k3"])  # Different list
+    # All keys eligible again after reset
+    assert _select_active_key_idx() == 0
