@@ -1931,6 +1931,35 @@ Self-healing: failed statements are not cached; the next scan retries them autom
 
 Files: `sql_rag/gemini_throttle.py`, `sql_rag/statement_reconcile.py`, `sql_rag/statement_reconcile_opera3.py`, `apps/bank_reconcile/api/routes.py`.
 
+### Gemini Multi-Key Rotation
+
+`config.ini` `[gemini]` section accepts numbered keys for automatic rotation when one key is rate-limited:
+
+```ini
+[gemini]
+api_key = AIzaSy...key1
+api_key_2 = AIzaSy...key2
+api_key_3 = AIzaSy...key3
+model = gemini-2.0-flash
+```
+
+The bare `api_key` is Key #1. Numbered keys are loaded in order until a missing entry is encountered. Empty values are silently skipped.
+
+**Behaviour:** When the active key returns 429 across all 3 inner retries, it is flagged exhausted (30-minute cooldown) and the next eligible key is configured via `genai.configure()` and tried. Rotation continues until a key succeeds or every key is exhausted. When all keys are exhausted, the same `RateLimitExhaustedError` is raised as in the single-key case — so the per-bank gate / banner / button-gating reuse identical paths.
+
+**Recovery:** After 30 minutes, an exhausted key is retried automatically. No operator intervention is required.
+
+**Backwards compatibility:** With a single key configured (the existing pattern), behaviour is byte-identical to before rotation was added — no `genai.configure` swaps occur on every call.
+
+**Logs to watch for in the API output:**
+
+- `Gemini throttle configured with N key(s)` — at process start
+- `Gemini key rotation enabled with N keys` — at reconciler init when N > 1
+- `Gemini key X/N rate-limit exhausted; rotating to key Y/N for {filename}` — every rotation
+- `All N Gemini keys rate-limited; raising RateLimitExhaustedError for {filename}` — full-stop case
+
+Files: `sql_rag/gemini_throttle.py`, `sql_rag/statement_reconcile.py`, `sql_rag/statement_reconcile_opera3.py`.
+
 ---
 
 ## Repeat Invoice Frequency Codes (ihead)
