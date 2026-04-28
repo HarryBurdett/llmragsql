@@ -75,12 +75,42 @@ _last_call_time: float = 0.0
 _MIN_INTERVAL_SECONDS = 1.0
 _BACKOFF_SCHEDULE = (5.0, 15.0, 45.0)  # seconds; len == max retries
 
+# --- Multi-key rotation state (module-level) ---
+
+_keys: list[str] = []
+_exhausted_until: dict[int, float] = {}
+_EXHAUSTION_DURATION_SECONDS = 1800.0  # 30 minutes
+
+
+def configure_keys(keys: list[str | None]) -> None:
+    """Configure the list of Gemini API keys to use for rotation.
+
+    Empty strings and None entries are silently dropped. Each call replaces
+    the previous list. Pass an empty list to disable rotation entirely
+    (the helper then falls back to whatever key the caller's `model` already
+    has configured globally — i.e. today's behaviour).
+    """
+    global _keys, _exhausted_until
+    cleaned = [k.strip() for k in keys if k and isinstance(k, str) and k.strip()]
+    with _lock:
+        _keys = cleaned
+        _exhausted_until = {}
+    logger.info("Gemini throttle configured with %d key(s)", len(cleaned))
+
+
+def _get_active_keys_for_testing() -> list[str]:
+    """Test-only accessor for the configured key list."""
+    with _lock:
+        return list(_keys)
+
 
 def _reset_throttle_state_for_testing() -> None:
     """Reset module-level throttle state. Test-only helper."""
-    global _last_call_time
+    global _last_call_time, _keys, _exhausted_until
     with _lock:
         _last_call_time = 0.0
+        _keys = []
+        _exhausted_until = {}
 
 
 def call_gemini_with_throttle(

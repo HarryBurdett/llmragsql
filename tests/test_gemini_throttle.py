@@ -132,3 +132,28 @@ def test_call_enforces_minimum_interval(monkeypatch):
     # Find the throttle sleep (~0.8s); ignore any tiny jitter
     throttle_sleeps = [s for s in sleeps if 0.7 < s < 1.0]
     assert len(throttle_sleeps) == 1, f"expected one throttle sleep, got {sleeps}"
+
+
+from sql_rag.gemini_throttle import configure_keys, _get_active_keys_for_testing
+
+
+def test_configure_keys_stores_provided_list():
+    configure_keys(["k1", "k2", "k3"])
+    assert _get_active_keys_for_testing() == ["k1", "k2", "k3"]
+
+
+def test_configure_keys_strips_empty_and_none():
+    configure_keys(["k1", "", None, "k2", "  "])
+    assert _get_active_keys_for_testing() == ["k1", "k2"]
+
+
+def test_configure_keys_with_empty_list_resets():
+    configure_keys(["k1"])
+    configure_keys([])
+    assert _get_active_keys_for_testing() == []
+
+
+def test_reset_clears_keys():
+    configure_keys(["k1", "k2"])
+    _reset_throttle_state_for_testing()
+    assert _get_active_keys_for_testing() == []
