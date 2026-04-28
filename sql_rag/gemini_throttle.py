@@ -46,3 +46,23 @@ class ExtractionFailedError(Exception):
         if reason:
             msg += f": {reason}"
         super().__init__(msg)
+
+
+_RATE_LIMIT_TOKENS = (
+    "429",
+    "resource exhausted",
+    "resource_exhausted",
+    "quota",
+    "rate limit",
+)
+
+
+def is_rate_limit_error(exc: BaseException) -> bool:
+    """Detect a Gemini 429 / quota-exceeded response from any exception type.
+
+    Inspects the exception message for known rate-limit tokens. Case-insensitive.
+    """
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return any(tok in msg for tok in _RATE_LIMIT_TOKENS)
