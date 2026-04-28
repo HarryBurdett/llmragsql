@@ -1918,6 +1918,19 @@ A statement is valid for import when ALL conditions are met:
 - `_is_already_posted()` runs for ALL transactions including skipped
 - No hardcoded SKIP_PATTERNS — empty lists in both SE and Opera 3
 
+### Gemini Throttle and 429 Retry (Bank Statement Extraction)
+
+All bank-statement extraction calls go through `sql_rag/gemini_throttle.py`:
+- **Throttle**: minimum 1 second between consecutive `model.generate_content` calls (process-wide).
+- **Retry**: on a 429 / `RESOURCE_EXHAUSTED` / quota response, the helper retries up to 3 times with backoff `5s → 15s → 45s`.
+- **Typed errors**: `RateLimitExhaustedError` after all retries; `ExtractionFailedError` for non-rate-limit failures (no retry).
+
+The `scan-all-banks` endpoint catches these typed errors and marks the affected statement `extraction_status: 'pending_extraction'` (or `'failed'` for non-429 errors). Per-bank gating: if any statement is unextracted, the bank's `extraction_status` is `'incomplete'` and the frontend disables Process buttons for the whole bank — preventing out-of-order processing.
+
+Self-healing: failed statements are not cached; the next scan retries them automatically via the existing cache-MISS path.
+
+Files: `sql_rag/gemini_throttle.py`, `sql_rag/statement_reconcile.py`, `sql_rag/statement_reconcile_opera3.py`, `apps/bank_reconcile/api/routes.py`.
+
 ---
 
 ## Repeat Invoice Frequency Codes (ihead)
