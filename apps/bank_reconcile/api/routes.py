@@ -19,6 +19,8 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+from sql_rag.gemini_throttle import RateLimitExhaustedError, ExtractionFailedError
+
 # Cashbook recurring entry type/frequency descriptions
 TYPE_DESCRIPTIONS = {
     1: "Nominal Payment",
@@ -6293,6 +6295,7 @@ async def scan_all_banks_for_statements(
                                                 stmt_entry['status'] = 'ready'
 
                                         pdf_extracted = True
+                                        stmt_entry['extraction_status'] = 'cached'
                                     else:
                                         # Cache miss — full AI extraction for balances and transactions
                                         logger.info(f"Scan-all: cache MISS for {filename} — running full extraction")
@@ -6321,6 +6324,7 @@ async def scan_all_banks_for_statements(
                                                     matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct)) or matched_bank_code
 
                                                 pdf_extracted = True
+                                                stmt_entry['extraction_status'] = 'extracted'
                                                 logger.info(f"Scan-all: extracted {filename} — open={opening} close={closing}")
                                             finally:
                                                 import os as _os2
@@ -6328,8 +6332,28 @@ async def scan_all_banks_for_statements(
                                                     _os2.unlink(tmp_path)
                                                 except Exception:
                                                     pass
+                                        except RateLimitExhaustedError as ext_err:
+                                            logger.warning(
+                                                f"Scan-all: rate-limit exhausted extracting {filename}: {ext_err}"
+                                            )
+                                            stmt_entry['extraction_status'] = 'pending_extraction'
+                                            stmt_entry['extraction_failure_reason'] = 'rate_limit'
+                                            stmt_entry['status'] = 'pending_extraction'
+                                        except ExtractionFailedError as ext_err:
+                                            logger.warning(
+                                                f"Scan-all: extraction error for {filename}: {ext_err}"
+                                            )
+                                            stmt_entry['extraction_status'] = 'failed'
+                                            stmt_entry['extraction_failure_reason'] = 'extraction_error'
+                                            stmt_entry['status'] = 'pending_extraction'
                                         except Exception as ext_err:
-                                            logger.warning(f"Scan-all: extraction failed for {filename}: {ext_err}")
+                                            # Defensive: any other unexpected error
+                                            logger.warning(
+                                                f"Scan-all: unexpected extraction failure for {filename}: {ext_err}"
+                                            )
+                                            stmt_entry['extraction_status'] = 'failed'
+                                            stmt_entry['extraction_failure_reason'] = 'extraction_error'
+                                            stmt_entry['status'] = 'pending_extraction'
                       except Exception as dl_err:
                         logger.warning(f"Scan-all: could not download {filename}: {dl_err}")
 
