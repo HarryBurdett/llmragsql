@@ -5600,10 +5600,24 @@ async def scan_emails_for_bank_statements(
                                                     if stmt_info_result.opening_balance is not None:
                                                         statement_opening_balance = stmt_info_result.opening_balance
                                                         att['opening_balance'] = statement_opening_balance
+                                                    att['extraction_status'] = 'extracted'
                                                 finally:
                                                     os.unlink(tmp_path)
+                                            except RateLimitExhaustedError as ex:
+                                                logger.warning(f"Rate-limit exhausted for {att['filename']}: {ex}")
+                                                att['extraction_status'] = 'pending_extraction'
+                                                att['extraction_failure_reason'] = 'rate_limit'
+                                                att['status'] = 'pending_extraction'
+                                            except ExtractionFailedError as ex:
+                                                logger.warning(f"Extraction error for {att['filename']}: {ex}")
+                                                att['extraction_status'] = 'failed'
+                                                att['extraction_failure_reason'] = 'extraction_error'
+                                                att['status'] = 'pending_extraction'
                                             except Exception as ex:
                                                 logger.warning(f"Full extraction failed for {att['filename']}: {ex}")
+                                                att['extraction_status'] = 'failed'
+                                                att['extraction_failure_reason'] = 'extraction_error'
+                                                att['status'] = 'pending_extraction'
                             except Exception as e:
                                 logger.warning(f"Could not validate PDF statement info: {e}")
                                 pass
@@ -6660,8 +6674,22 @@ async def scan_all_banks_for_statements(
                                 stmt_entry['account_number'] = stmt_info_result.account_number
                                 stmt_entry['sort_code'] = stmt_info_result.sort_code
                                 logger.info(f"Folder match: {filename} extracted open={stmt_info_result.opening_balance} close={stmt_info_result.closing_balance}")
+                                stmt_entry['extraction_status'] = 'extracted'
+                            except RateLimitExhaustedError as ex:
+                                logger.warning(f"Folder match: rate-limit exhausted for {filename}: {ex}")
+                                stmt_entry['extraction_status'] = 'pending_extraction'
+                                stmt_entry['extraction_failure_reason'] = 'rate_limit'
+                                stmt_entry['status'] = 'pending_extraction'
+                            except ExtractionFailedError as ex:
+                                logger.warning(f"Folder match: extraction error for {filename}: {ex}")
+                                stmt_entry['extraction_status'] = 'failed'
+                                stmt_entry['extraction_failure_reason'] = 'extraction_error'
+                                stmt_entry['status'] = 'pending_extraction'
                             except Exception as ex:
-                                logger.warning(f"Folder match: extraction failed for {filename}: {ex}")
+                                logger.warning(f"Folder match: unexpected extraction failure for {filename}: {ex}")
+                                stmt_entry['extraction_status'] = 'failed'
+                                stmt_entry['extraction_failure_reason'] = 'extraction_error'
+                                stmt_entry['status'] = 'pending_extraction'
 
                 # Assign to matched bank, non-current, or not_classified
                 cat = stmt_entry.get('category')
@@ -11257,10 +11285,24 @@ async def opera3_scan_emails_for_bank_statements(
                                                     if stmt_info_result.opening_balance is not None:
                                                         statement_opening_balance = stmt_info_result.opening_balance
                                                         att['opening_balance'] = statement_opening_balance
+                                                    att['extraction_status'] = 'extracted'
                                                 finally:
                                                     os.unlink(tmp_path)
+                                            except RateLimitExhaustedError as ex:
+                                                logger.warning(f"Opera 3 rate-limit exhausted for {att['filename']}: {ex}")
+                                                att['extraction_status'] = 'pending_extraction'
+                                                att['extraction_failure_reason'] = 'rate_limit'
+                                                att['status'] = 'pending_extraction'
+                                            except ExtractionFailedError as ex:
+                                                logger.warning(f"Opera 3 extraction error for {att['filename']}: {ex}")
+                                                att['extraction_status'] = 'failed'
+                                                att['extraction_failure_reason'] = 'extraction_error'
+                                                att['status'] = 'pending_extraction'
                                             except Exception as ex:
                                                 logger.warning(f"Opera 3 full extraction failed for {att['filename']}: {ex}")
+                                                att['extraction_status'] = 'failed'
+                                                att['extraction_failure_reason'] = 'extraction_error'
+                                                att['status'] = 'pending_extraction'
                             except Exception as e:
                                 logger.warning(f"Opera 3: Could not validate statement balance: {e}")
                                 pass
