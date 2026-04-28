@@ -32,6 +32,12 @@ from sql_rag.statement_reconcile import (
     _safe_float
 )
 
+from sql_rag.gemini_throttle import (
+    call_gemini_with_throttle,
+    RateLimitExhaustedError,
+    ExtractionFailedError,
+)
+
 
 class StatementReconcilerOpera3:
     """
@@ -340,7 +346,11 @@ IMPORTANT: Return actual values from this document, not examples. Return ONLY va
 
         try:
             file_part = {"mime_type": "application/pdf", "data": pdf_bytes}
-            response = self.model.generate_content([file_part, prompt])
+            response = call_gemini_with_throttle(
+                self.model,
+                [file_part, prompt],
+                filename=Path(pdf_path).name,
+            )
             json_match = re.search(r'\{[\s\S]*\}', response.text)
             if not json_match:
                 return None
@@ -478,7 +488,11 @@ and balances. You MUST:
             "data": pdf_bytes
         }
 
-        response = self.model.generate_content([file_part, extraction_prompt])
+        response = call_gemini_with_throttle(
+            self.model,
+            [file_part, extraction_prompt],
+            filename=Path(pdf_path).name,
+        )
 
         # Parse the response
         response_text = response.text
