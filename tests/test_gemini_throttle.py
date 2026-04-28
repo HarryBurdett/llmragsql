@@ -197,3 +197,103 @@ def test_exhausted_key_recovers_after_cooldown(monkeypatch):
     # Advance past 30-minute cooldown
     fake_now[0] += 1800.0 + 1.0
     assert _select_active_key_idx() == 0
+
+
+import google.generativeai as genai
+
+
+def test_no_keys_configured_uses_existing_model_key(monkeypatch):
+    """Backwards-compat: when configure_keys() never called, no genai.configure swap."""
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.sleep", lambda s: None)
+    configure_calls: list[str] = []
+    monkeypatch.setattr(
+        "sql_rag.gemini_throttle.genai.configure",
+        lambda **kw: configure_calls.append(kw.get("api_key", "")),
+    )
+    model = MagicMock()
+    model.generate_content.return_value = MagicMock(name="resp")
+
+    result = call_gemini_with_throttle(model, ["p"])
+
+    assert result is not None
+    # No keys configured → no genai.configure swap should occur
+    assert configure_calls == []
+
+
+def test_rotates_to_second_key_when_first_exhausted(monkeypatch):
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.sleep", lambda s: None)
+    configure_keys(["k1", "k2"])
+    configure_calls: list[str] = []
+    monkeypatch.setattr(
+        "sql_rag.gemini_throttle.genai.configure",
+        lambda **kw: configure_calls.append(kw.get("api_key", "")),
+    )
+
+    model = MagicMock()
+    success_response = MagicMock(name="resp")
+    # k1: 4 attempts (initial + 3 retries) all 429
+    # k2: 1 attempt succeeds
+    model.generate_content.side_effect = [
+        Exception("429 Resource exhausted"),
+        Exception("429 Resource exhausted"),
+        Exception("429 Resource exhausted"),
+        Exception("429 Resource exhausted"),
+        success_response,
+    ]
+
+    result = call_gemini_with_throttle(model, ["p"], filename="test.pdf")
+
+    assert result is success_response
+    assert model.generate_content.call_count == 5
+    # genai.configure called twice — once for k1, once when rotating to k2
+    assert configure_calls == ["k1", "k2"]
+
+
+def test_raises_when_all_keys_exhausted(monkeypatch):
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.sleep", lambda s: None)
+    configure_keys(["k1", "k2"])
+    monkeypatch.setattr("sql_rag.gemini_throttle.genai.configure", lambda **kw: None)
+
+    model = MagicMock()
+    model.generate_content.side_effect = Exception("429 Resource exhausted")
+
+    with pytest.raises(RateLimitExhaustedError) as exc_info:
+        call_gemini_with_throttle(model, ["p"], filename="bad.pdf")
+
+    # 4 attempts on k1 + 4 attempts on k2 = 8 total
+    assert model.generate_content.call_count == 8
+    assert "bad.pdf" in str(exc_info.value)
+
+
+def test_non_rate_limit_error_does_not_rotate(monkeypatch):
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.sleep", lambda s: None)
+    configure_keys(["k1", "k2"])
+    monkeypatch.setattr("sql_rag.gemini_throttle.genai.configure", lambda **kw: None)
+
+    model = MagicMock()
+    model.generate_content.side_effect = ValueError("Could not parse response")
+
+    with pytest.raises(ExtractionFailedError):
+        call_gemini_with_throttle(model, ["p"], filename="bad.pdf")
+
+    # Only one attempt on k1 — no retry, no rotation
+    assert model.generate_content.call_count == 1
+
+
+def test_first_key_success_no_rotation(monkeypatch):
+    monkeypatch.setattr("sql_rag.gemini_throttle.time.sleep", lambda s: None)
+    configure_keys(["k1", "k2", "k3"])
+    configure_calls: list[str] = []
+    monkeypatch.setattr(
+        "sql_rag.gemini_throttle.genai.configure",
+        lambda **kw: configure_calls.append(kw.get("api_key", "")),
+    )
+
+    model = MagicMock()
+    model.generate_content.return_value = MagicMock(name="resp")
+
+    result = call_gemini_with_throttle(model, ["p"])
+
+    assert result is not None
+    assert model.generate_content.call_count == 1
+    assert configure_calls == ["k1"]

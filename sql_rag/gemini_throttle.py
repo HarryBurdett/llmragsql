@@ -17,6 +17,8 @@ import threading
 import time
 from typing import Any, Iterable
 
+import google.generativeai as genai
+
 logger = logging.getLogger(__name__)
 
 
@@ -139,34 +141,23 @@ def _reset_throttle_state_for_testing() -> None:
         _exhausted_until = {}
 
 
-def call_gemini_with_throttle(
+def _attempt_with_backoff(
     model: Any,
-    parts: Iterable[Any],
+    parts_list: list[Any],
     *,
     filename: str | None = None,
 ) -> Any:
-    """Call `model.generate_content(parts)` with throttling and 429 retries.
+    """Inner attempt loop: initial call + retries on 429.
 
-    Args:
-        model: a configured `genai.GenerativeModel` instance.
-        parts: the list passed to `generate_content` (file_part + prompt, etc).
-        filename: optional filename for inclusion in error messages and logs.
-
-    Returns:
-        The successful response from `generate_content`.
-
-    Raises:
-        RateLimitExhaustedError: all retries hit 429.
-        ExtractionFailedError: a non-rate-limit exception occurred (no retry).
+    Raises RateLimitExhaustedError if all retries hit 429.
+    Raises ExtractionFailedError on the first non-rate-limit failure (no retry).
     """
     global _last_call_time
 
-    parts_list = list(parts)
     last_error: BaseException | None = None
 
-    # Initial attempt + len(_BACKOFF_SCHEDULE) retries
     for attempt in range(len(_BACKOFF_SCHEDULE) + 1):
-        # --- Throttle: ensure >= _MIN_INTERVAL_SECONDS since last call ---
+        # Throttle: ensure >= _MIN_INTERVAL_SECONDS since last call
         with _lock:
             now = time.monotonic()
             elapsed = now - _last_call_time
@@ -176,7 +167,6 @@ def call_gemini_with_throttle(
         if wait > 0 and prev_last > 0.0:
             time.sleep(wait)
 
-        # --- Attempt the call ---
         try:
             response = model.generate_content(parts_list)
             with _lock:
@@ -188,10 +178,8 @@ def call_gemini_with_throttle(
             last_error = exc
 
             if not is_rate_limit_error(exc):
-                # Not retryable — surface immediately
                 raise ExtractionFailedError(filename=filename, reason=str(exc)) from exc
 
-            # Rate limit — back off and retry if we have retries left
             if attempt < len(_BACKOFF_SCHEDULE):
                 backoff = _BACKOFF_SCHEDULE[attempt]
                 logger.warning(
@@ -204,7 +192,6 @@ def call_gemini_with_throttle(
                 time.sleep(backoff)
                 continue
 
-            # All retries exhausted
             logger.warning(
                 "Gemini rate limit exhausted after %d retries%s",
                 len(_BACKOFF_SCHEDULE),
@@ -214,5 +201,100 @@ def call_gemini_with_throttle(
                 filename=filename, last_error=str(last_error)
             ) from last_error
 
-    # Unreachable, but satisfies type checkers
     raise RateLimitExhaustedError(filename=filename, last_error=str(last_error))
+
+
+def call_gemini_with_throttle(
+    model: Any,
+    parts: Iterable[Any],
+    *,
+    filename: str | None = None,
+) -> Any:
+    """Call `model.generate_content(parts)` with throttling, 429 retries, and
+    automatic key rotation when configured via `configure_keys()`.
+
+    If no keys have been configured (`configure_keys` not called or called
+    with `[]`), behaviour is identical to a single-key throttle: the call
+    uses whatever key `genai.configure()` has set globally.
+
+    If keys are configured:
+        - Outer loop tries each non-exhausted key in numbered order.
+        - For each key, the inner attempt-with-backoff runs (initial + 3 retries).
+        - On RateLimitExhaustedError, the key is marked exhausted (30-min cooldown)
+          and rotation continues to the next eligible key.
+        - On ExtractionFailedError, the error propagates immediately (other keys
+          would not help).
+        - When all configured keys are exhausted, RateLimitExhaustedError is raised.
+
+    Args:
+        model: a configured `genai.GenerativeModel` instance.
+        parts: the list passed to `generate_content`.
+        filename: optional filename for inclusion in error messages and logs.
+
+    Returns:
+        The successful response from `generate_content`.
+
+    Raises:
+        RateLimitExhaustedError: every available key was rate-limited.
+        ExtractionFailedError: a non-rate-limit exception occurred.
+    """
+    parts_list = list(parts)
+
+    # Single-key path: no rotation, preserves existing behaviour
+    with _lock:
+        keys_snapshot = list(_keys)
+
+    if not keys_snapshot:
+        return _attempt_with_backoff(model, parts_list, filename=filename)
+
+    # Multi-key path: rotate through eligible keys
+    last_error: BaseException | None = None
+
+    while True:
+        active_idx = _select_active_key_idx()
+        if active_idx is None:
+            logger.warning(
+                "All %d Gemini keys rate-limited; raising RateLimitExhaustedError%s",
+                len(keys_snapshot),
+                f" for {filename}" if filename else "",
+            )
+            raise RateLimitExhaustedError(
+                filename=filename,
+                last_error=f"all {len(keys_snapshot)} keys rate-limited",
+            ) from last_error
+
+        active_key = keys_snapshot[active_idx]
+
+        # Configure SDK with the active key under the throttle lock to keep
+        # the swap atomic relative to other in-flight calls.
+        with _lock:
+            genai.configure(api_key=active_key)
+
+        try:
+            return _attempt_with_backoff(model, parts_list, filename=filename)
+        except RateLimitExhaustedError as exc:
+            last_error = exc
+            _mark_key_exhausted(active_idx)
+            next_idx = _select_active_key_idx()
+            if next_idx is None:
+                logger.warning(
+                    "All %d Gemini keys rate-limited; raising RateLimitExhaustedError%s",
+                    len(keys_snapshot),
+                    f" for {filename}" if filename else "",
+                )
+                raise RateLimitExhaustedError(
+                    filename=filename,
+                    last_error=f"all {len(keys_snapshot)} keys rate-limited",
+                ) from exc
+            logger.warning(
+                "Gemini key %d/%d rate-limit exhausted; rotating to key %d/%d%s",
+                active_idx + 1,
+                len(keys_snapshot),
+                next_idx + 1,
+                len(keys_snapshot),
+                f" for {filename}" if filename else "",
+            )
+            continue
+        except ExtractionFailedError:
+            # Non-rate-limit errors are not key-specific — re-raise.
+            raise
