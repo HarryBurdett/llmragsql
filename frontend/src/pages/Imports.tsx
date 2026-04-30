@@ -2758,6 +2758,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       .filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
   })();
 
+  // Count of rows that are settled in Opera (already_posted + flagged duplicates) — used for messaging.
+  const alreadyInOperaCount = (() => {
+    if (!bankPreview) return 0;
+    const alreadyPosted = (bankPreview.already_posted || []).length;
+    return alreadyPosted + duplicateTransactionCount;
+  })();
+
   // Build tooltip message for import button
   const importTitle = (() => {
     if (noBankSelected) return 'Select a bank account first';
@@ -9490,7 +9497,15 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             {allTransactionsImported
                               ? `Import complete for "${selectedPdfFile?.filename || selectedEmailStatement?.filename || 'statement'}" — please reconcile`
                               : allAlreadyInOpera
-                                ? `All ${duplicateTransactionCount} transaction${duplicateTransactionCount !== 1 ? 's' : ''} already in Opera — nothing to import, proceed to reconcile`
+                                ? (() => {
+                                    const inOpera = alreadyInOperaCount;
+                                    const deferredN = deferredRows.size;
+                                    const parts: string[] = [];
+                                    if (inOpera > 0) parts.push(`${inOpera} already in Opera`);
+                                    if (deferredN > 0) parts.push(`${deferredN} deferred for manual entry`);
+                                    const summary = parts.length > 0 ? parts.join(', ') : 'all transactions handled';
+                                    return `${summary} — nothing to import, proceed to reconcile`;
+                                  })()
                               : bankImportResult?.success
                                 ? `${bankImportResult.imported_count || 0} imported — select remaining transactions to continue`
                                 : importReadiness?.canImport
@@ -9573,8 +9588,13 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             {importReadiness.totalReady === 0 && importReadiness.totalIncomplete === 0 && !allAlreadyInOpera && (
                               <div className="flex items-center gap-1">
                                 <XCircle className="h-3.5 w-3.5" />
-                                <span>{duplicateTransactionCount > 0
-                                  ? `All ${duplicateTransactionCount} transaction${duplicateTransactionCount !== 1 ? 's are' : ' is'} already in Opera — nothing new to import`
+                                <span>{(alreadyInOperaCount + deferredRows.size) > 0
+                                  ? (() => {
+                                      const parts: string[] = [];
+                                      if (alreadyInOperaCount > 0) parts.push(`${alreadyInOperaCount} already in Opera`);
+                                      if (deferredRows.size > 0) parts.push(`${deferredRows.size} deferred`);
+                                      return `${parts.join(', ')} — nothing new to import`;
+                                    })()
                                   : 'No transactions selected for import - check the boxes to include items'}</span>
                               </div>
                             )}
