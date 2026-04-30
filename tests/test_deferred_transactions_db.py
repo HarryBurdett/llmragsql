@@ -76,3 +76,53 @@ def test_reopening_db_preserves_rows(tmp_path):
 
     db2 = DeferredTransactionsDB(path)  # Re-open
     assert db2.count_for_bank("BC010") == 1
+
+
+def test_count_for_statement_returns_zero_with_no_rows(tmpdb):
+    assert tmpdb.count_for_statement(
+        bank_code="BC010",
+        period_start="2026-04-01",
+        period_end="2026-04-30",
+    ) == 0
+
+
+def test_count_for_statement_includes_only_in_period(tmpdb):
+    tmpdb.record(bank_code="BC010", statement_date="2026-04-15",
+                 amount=10.0, description="A", deferred_by="admin")
+    tmpdb.record(bank_code="BC010", statement_date="2026-04-25",
+                 amount=20.0, description="B", deferred_by="admin")
+    tmpdb.record(bank_code="BC010", statement_date="2026-05-10",
+                 amount=30.0, description="C — outside period", deferred_by="admin")
+    tmpdb.record(bank_code="BC020", statement_date="2026-04-15",
+                 amount=40.0, description="D — wrong bank", deferred_by="admin")
+
+    count = tmpdb.count_for_statement(
+        bank_code="BC010",
+        period_start="2026-04-01",
+        period_end="2026-04-30",
+    )
+    assert count == 2  # only A and B
+
+
+def test_count_for_statement_period_inclusive_at_boundaries(tmpdb):
+    tmpdb.record(bank_code="BC010", statement_date="2026-04-01",
+                 amount=10.0, description="start of period", deferred_by="admin")
+    tmpdb.record(bank_code="BC010", statement_date="2026-04-30",
+                 amount=20.0, description="end of period", deferred_by="admin")
+
+    count = tmpdb.count_for_statement(
+        bank_code="BC010",
+        period_start="2026-04-01",
+        period_end="2026-04-30",
+    )
+    assert count == 2  # both boundary dates included
+
+
+def test_count_for_statement_handles_missing_period_args(tmpdb):
+    tmpdb.record(bank_code="BC010", statement_date="2026-04-15",
+                 amount=10.0, description="A", deferred_by="admin")
+
+    # If either period bound is None or empty, fall back to count_for_bank semantics.
+    assert tmpdb.count_for_statement(bank_code="BC010", period_start=None, period_end=None) == 1
+    assert tmpdb.count_for_statement(bank_code="BC010", period_start="", period_end="") == 1
+    assert tmpdb.count_for_statement(bank_code="BC010", period_start="2026-04-01", period_end=None) == 1

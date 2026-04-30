@@ -91,3 +91,34 @@ class DeferredTransactionsDB:
                 (bank_code,),
             )
             return int(cur.fetchone()[0])
+
+    def count_for_statement(
+        self,
+        bank_code: str,
+        period_start: Optional[str],
+        period_end: Optional[str],
+    ) -> int:
+        """Count deferred rows for a bank, optionally filtered to a statement period.
+
+        If `period_start` or `period_end` is None or empty, the period filter is
+        skipped and behaviour is equivalent to `count_for_bank(bank_code)`. The
+        period bounds are inclusive (`statement_date BETWEEN start AND end`).
+        """
+        with self._connect() as conn:
+            if period_start and period_end:
+                cur = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM deferred_transactions
+                    WHERE bank_code = ?
+                      AND statement_date IS NOT NULL
+                      AND statement_date >= ?
+                      AND statement_date <= ?
+                    """,
+                    (bank_code, period_start, period_end),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM deferred_transactions WHERE bank_code = ?",
+                    (bank_code,),
+                )
+            return int(cur.fetchone()[0])
