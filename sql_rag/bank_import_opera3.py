@@ -858,6 +858,11 @@ class BankStatementMatcherOpera3:
         - Refund detection via credit note lookup
         - Score difference check for ambiguous matches
         """
+        if txn.action == 'defer':
+            # User-deferred row — do not match; preserve the deferred action
+            # so the row is excluded from posting downstream.
+            return
+
         # Step 0: Check repeat entries first
         if self._check_repeat_entry(txn, bank_code):
             return

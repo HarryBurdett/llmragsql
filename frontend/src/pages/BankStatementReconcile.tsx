@@ -2140,26 +2140,6 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     );
     if (toImport.length === 0) return;
 
-    // Audit deferred rows (fire-and-forget — must not block the import)
-    if (deferredLines.size > 0) {
-      const deferredItems = Array.from(deferredLines)
-        .map(stmtLine => {
-          const row = enrichedUnmatched.find(u => u.statement_line === stmtLine);
-          return row ? {
-            statement_date: row.statement_date || '',
-            amount: row.statement_amount || 0,
-            description: row.statement_description || '',
-          } : null;
-        })
-        .filter(Boolean);
-
-      authFetch(`/api/reconcile/bank/${selectedBank}/audit-defer`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: deferredItems }),
-      }).catch(err => console.warn('Defer audit failed (non-blocking):', err));
-    }
-
     setIsBatchImporting(true);
     setBatchImportProgress({ total: toImport.length, completed: 0, errors: [] });
 
@@ -3831,6 +3811,20 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                                             const next = new Set(deferredLines);
                                             next.add(line.statement_line);
                                             setDeferredLines(next);
+                                            // Audit immediately on defer click — fire-and-forget,
+                                            // never blocks the UI. Captures every defer even if
+                                            // the user never reaches batch-import.
+                                            authFetch(`/api/reconcile/bank/${selectedBank}/audit-defer`, {
+                                              method: 'POST',
+                                              headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({
+                                                items: [{
+                                                  statement_date: line.statement_date || '',
+                                                  amount: line.statement_amount || 0,
+                                                  description: line.statement_description || '',
+                                                }],
+                                              }),
+                                            }).catch(err => console.warn('Defer audit failed (non-blocking):', err));
                                           }}
                                           className="text-xs px-2 py-1 text-amber-600 hover:text-amber-800 hover:bg-amber-50 rounded"
                                           title="Mark as awaiting manual entry — will not be imported, will reappear on next scan"

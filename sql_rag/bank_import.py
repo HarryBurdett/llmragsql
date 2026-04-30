@@ -1248,6 +1248,11 @@ class BankStatementImport:
 
         Updates transaction with match results
         """
+        if txn.action == 'defer':
+            # User-deferred row — do not match; preserve the deferred action
+            # so the row is excluded from posting downstream.
+            return
+
         # Step 0: Check repeat entries first - these are handled by Opera's auto-post
         if self._check_repeat_entry(txn):
             return  # Matched as repeat entry - no further matching needed
