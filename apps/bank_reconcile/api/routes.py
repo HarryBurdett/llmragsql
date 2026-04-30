@@ -306,9 +306,11 @@ async def reconcile_bank(bank_code: str):
             current_year_cr = float(ntran_result[0]['credits'] or 0) if ntran_result else 0
             current_year_net = float(ntran_result[0]['net'] or 0) if ntran_result else 0
 
-            # Bank is a debit balance account (same logic as debtors control)
-            # Use current year net for reconciliation (consistent with creditors/debtors)
-            current_year_balance = current_year_net if current_year_net > 0 else abs(current_year_net)
+            # Use current year net AS-IS — preserves sign so an overdrawn bank
+            # account (negative balance) reconciles correctly. Previously this
+            # took abs() which flipped overdraft signs and produced a phantom
+            # variance against nbank.nk_curbal (which is signed).
+            current_year_balance = current_year_net
             closing_balance = current_year_balance
             nl_total = current_year_balance
 
@@ -466,7 +468,7 @@ async def reconcile_bank(bank_code: str):
         variance_cb_nl_abs = abs(variance_cb_nl)
 
         # All three should match when fully reconciled
-        all_reconciled = variance_cb_nbank_abs < 1.00 and variance_nbank_nl_abs < 1.00
+        all_reconciled = variance_cb_nbank_abs < 0.005 and variance_nbank_nl_abs < 0.005
 
         reconciliation["variance"] = {
             "cashbook_vs_bank_master": {
@@ -475,7 +477,7 @@ async def reconcile_bank(bank_code: str):
                 "bank_master": round(nbank_curbal_pounds, 2),
                 "amount": round(variance_cb_nbank, 2),
                 "absolute": round(variance_cb_nbank_abs, 2),
-                "reconciled": variance_cb_nbank_abs < 1.00
+                "reconciled": variance_cb_nbank_abs < 0.005
             },
             "bank_master_vs_nominal": {
                 "description": "nbank.nk_curbal vs ntran current year",
@@ -483,7 +485,7 @@ async def reconcile_bank(bank_code: str):
                 "nominal_ledger": round(nl_total, 2),
                 "amount": round(variance_nbank_nl, 2),
                 "absolute": round(variance_nbank_nl_abs, 2),
-                "reconciled": variance_nbank_nl_abs < 1.00
+                "reconciled": variance_nbank_nl_abs < 0.005
             },
             "cashbook_vs_nominal": {
                 "description": "atran expected vs ntran",
@@ -491,7 +493,7 @@ async def reconcile_bank(bank_code: str):
                 "nominal_ledger": round(nl_total, 2),
                 "amount": round(variance_cb_nl, 2),
                 "absolute": round(variance_cb_nl_abs, 2),
-                "reconciled": variance_cb_nl_abs < 1.00
+                "reconciled": variance_cb_nl_abs < 0.005
             },
             "summary": {
                 "current_year": current_year,
@@ -517,17 +519,17 @@ async def reconcile_bank(bank_code: str):
             reconciliation["status"] = "UNRECONCILED"
             # Build detailed message showing where mismatches occur
             issues = []
-            if variance_cb_nl_abs >= 1.00:
+            if variance_cb_nl_abs >= 0.005:
                 if variance_cb_nl > 0:
                     issues.append(f"Cashbook £{variance_cb_nl_abs:,.2f} MORE than NL")
                 else:
                     issues.append(f"Cashbook £{variance_cb_nl_abs:,.2f} LESS than NL")
-            if variance_cb_nbank_abs >= 1.00:
+            if variance_cb_nbank_abs >= 0.005:
                 if variance_cb_nbank > 0:
                     issues.append(f"Cashbook £{variance_cb_nbank_abs:,.2f} MORE than Bank Master")
                 else:
                     issues.append(f"Cashbook £{variance_cb_nbank_abs:,.2f} LESS than Bank Master")
-            if variance_nbank_nl_abs >= 1.00:
+            if variance_nbank_nl_abs >= 0.005:
                 if variance_nbank_nl > 0:
                     issues.append(f"Bank Master £{variance_nbank_nl_abs:,.2f} MORE than NL")
                 else:
@@ -13552,7 +13554,7 @@ async def opera3_reconcile_bank(
         # Variance calculation
         variance_nbank_nl = nbank_curbal_pounds - nl_total
         variance_nbank_nl_abs = abs(variance_nbank_nl)
-        all_reconciled = variance_nbank_nl_abs < 1.00
+        all_reconciled = variance_nbank_nl_abs < 0.005
 
         reconciliation = {
             "success": True,
@@ -13592,7 +13594,7 @@ async def opera3_reconcile_bank(
                     "nominal_ledger": round(nl_total, 2),
                     "amount": round(variance_nbank_nl, 2),
                     "absolute": round(variance_nbank_nl_abs, 2),
-                    "reconciled": variance_nbank_nl_abs < 1.00
+                    "reconciled": variance_nbank_nl_abs < 0.005
                 },
                 "summary": {
                     "bank_master_balance": round(nbank_curbal_pounds, 2),

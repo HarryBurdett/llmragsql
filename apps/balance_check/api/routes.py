@@ -907,12 +907,16 @@ async def reconcile_debtors():
         }
 
         # ========== SALES LEDGER (stran) ==========
+        # Exclude orphan stran rows (account no longer in sname). Mirrors the
+        # equivalent filter on the Creditors check so both ledgers compare on
+        # the same population.
         sl_outstanding_sql = """
             SELECT
                 COUNT(*) AS transaction_count,
                 SUM(st_trbal) AS total_outstanding
             FROM stran WITH (NOLOCK)
             WHERE st_trbal <> 0
+              AND RTRIM(st_account) IN (SELECT RTRIM(sn_account) FROM sname WITH (NOLOCK))
         """
         sl_result = sql_connector.execute_query(sl_outstanding_sql)
         if hasattr(sl_result, 'to_dict'):
@@ -921,7 +925,7 @@ async def reconcile_debtors():
         sl_total = float(sl_result[0]['total_outstanding'] or 0) if sl_result else 0
         sl_count = int(sl_result[0]['transaction_count'] or 0) if sl_result else 0
 
-        # Breakdown by type
+        # Breakdown by type — same orphan filter.
         sl_breakdown_sql = """
             SELECT
                 st_trtype AS type,
@@ -929,6 +933,7 @@ async def reconcile_debtors():
                 SUM(st_trbal) AS total
             FROM stran WITH (NOLOCK)
             WHERE st_trbal <> 0
+              AND RTRIM(st_account) IN (SELECT RTRIM(sn_account) FROM sname WITH (NOLOCK))
             GROUP BY st_trtype
             ORDER BY st_trtype
         """
@@ -1914,6 +1919,16 @@ async def reconcile_summary():
         # Get control accounts
         control_accounts = _get_control_accounts_for_reconciliation()
 
+        # Get current fiscal year — used to filter ntran sums to "current year only"
+        # so the year-opening B/Fwd row + this year's transactions = full closing
+        # balance, regardless of whether prior-year detail rows are still in ntran.
+        # This matches the approach the Detail endpoints already use.
+        fy_sql = "SELECT MAX(nt_year) AS current_year FROM ntran WITH (NOLOCK)"
+        fy_result = sql_connector.execute_query(fy_sql)
+        if hasattr(fy_result, 'to_dict'):
+            fy_result = fy_result.to_dict('records')
+        fiscal_current_year = int(fy_result[0]['current_year']) if fy_result and fy_result[0]['current_year'] else datetime.now().year
+
         # ========== 1. DEBTORS CHECK ==========
         try:
             # Sales Ledger total — exclude orphan stran rows (account no longer in sname).
@@ -1937,12 +1952,16 @@ async def reconcile_summary():
                 sname_result = sname_result.to_dict('records')
             sname_total = float(sname_result[0]['total'] or 0) if sname_result and sname_result[0]['total'] else 0
 
-            # NL Debtors control
+            # NL Debtors control — filter to current fiscal year so the B/Fwd
+            # opening row + this year's transactions = full closing balance.
+            # Without the year filter, prior-year detail rows would double-count
+            # against the B/Fwd opener that summarises them.
             debtors_control = control_accounts['debtors']
             nl_debtors_sql = f"""
                 SELECT SUM(nt_value) AS total
                 FROM ntran WITH (NOLOCK)
                 WHERE nt_acnt = '{debtors_control}'
+                  AND nt_year = {fiscal_current_year}
             """
             nl_debtors_result = sql_connector.execute_query(nl_debtors_sql)
             if hasattr(nl_debtors_result, 'to_dict'):
@@ -2002,12 +2021,14 @@ async def reconcile_summary():
                 pname_result = pname_result.to_dict('records')
             pname_total = float(pname_result[0]['total'] or 0) if pname_result and pname_result[0]['total'] else 0
 
-            # NL Creditors control (negate for comparison - NL is opposite sign)
+            # NL Creditors control (negate for comparison - NL is opposite sign).
+            # Filter to current fiscal year — same rationale as Debtors above.
             creditors_control = control_accounts['creditors']
             nl_creditors_sql = f"""
                 SELECT SUM(nt_value) AS total
                 FROM ntran WITH (NOLOCK)
                 WHERE nt_acnt = '{creditors_control}'
+                  AND nt_year = {fiscal_current_year}
             """
             nl_creditors_result = sql_connector.execute_query(nl_creditors_sql)
             if hasattr(nl_creditors_result, 'to_dict'):
@@ -2066,8 +2087,10 @@ async def reconcile_summary():
                 master_bal = float(bank['nk_curbal'] or 0) / 100.0
                 bank_master_total += master_bal
 
-                # In Opera, bank account code IS the nominal code (e.g., BC010)
-                nl_sql = f"SELECT SUM(nt_value) AS total FROM ntran WITH (NOLOCK) WHERE nt_acnt = '{bank_code}'"
+                # In Opera, bank account code IS the nominal code (e.g., BC010).
+                # Filter to current fiscal year — B/Fwd opener + this year's
+                # transactions = full closing balance, no double-count.
+                nl_sql = f"SELECT SUM(nt_value) AS total FROM ntran WITH (NOLOCK) WHERE nt_acnt = '{bank_code}' AND nt_year = {fiscal_current_year}"
                 nl_result = sql_connector.execute_query(nl_sql)
                 if hasattr(nl_result, 'to_dict'):
                     nl_result = nl_result.to_dict('records')
@@ -2549,8 +2572,11 @@ async def reconcile_vat():
             "message": ""
         }
 
-        # Get current year from ntran - use NOLOCK to avoid locking
-        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran WITH (NOLOCK)"
+        # Get current calendar year from ntran. Previously this used MAX(nt_year)
+        # (fiscal year integer); nvat is filtered by YEAR(nv_date) (calendar) so a
+        # mismatch between the two for non-calendar fiscal years produced wrong
+        # totals. Use calendar year on both sides.
+        current_year_sql = "SELECT MAX(YEAR(nt_date)) AS current_year FROM ntran WITH (NOLOCK)"
         cy_result = sql_connector.execute_query(current_year_sql)
         if hasattr(cy_result, 'to_dict'):
             cy_result = cy_result.to_dict('records')
@@ -2976,14 +3002,16 @@ async def reconcile_vat():
 
                 bf_balance = pry_cr - pry_dr
 
-                # Get current year transactions
+                # Get current calendar-year transactions. The VAT endpoint
+                # treats current_year as a CALENDAR year (to align with nvat's
+                # YEAR(nv_date) filter), so we filter ntran by calendar year too.
                 ntran_sql = f"""
                     SELECT
                         SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
                         SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
                         SUM(nt_value) AS net
                     FROM ntran WITH (NOLOCK)
-                    WHERE nt_acnt = '{acnt}' AND nt_year = {current_year}
+                    WHERE nt_acnt = '{acnt}' AND YEAR(nt_date) = {current_year}
                 """
                 ntran_result = sql_connector.execute_query(ntran_sql)
                 if hasattr(ntran_result, 'to_dict'):
@@ -3382,17 +3410,32 @@ async def opera3_reconcile_summary(
             debtors_control = ''
             creditors_control = ''
 
-        # Read ntran ONCE and build a per-account sum. The full accumulated
-        # nominal balance for an account is the sum of every nt_value row,
-        # which includes the year-end "B/Fwd" rows that summarise prior years.
-        # This replaces the old approach of reading nacnt and computing
-        # na_ytddr - na_ytdcr (current year only — excludes B/Fwd, gives wrong
-        # totals on long-running companies).
+        # Read ntran ONCE and build a per-account sum filtered to the CURRENT
+        # FISCAL YEAR. The current-year ntran for an account contains the
+        # year-opening "B/Fwd" row PLUS this year's transactions, which together
+        # give the full closing balance — without double-counting any prior-year
+        # detail rows that may still be in the file. Same approach as the
+        # Opera SE detail endpoints.
         ntran_records = reader.read_table('ntran')
-        ntran_sums = {}  # account_code -> running sum of nt_value
+        # Determine current fiscal year from the records themselves.
+        try:
+            fiscal_current_year = max(
+                int(r.get('nt_year') or 0)
+                for r in ntran_records
+                if r.get('nt_year')
+            )
+        except ValueError:
+            fiscal_current_year = datetime.now().year
+        ntran_sums = {}  # account_code -> running sum of nt_value (current year only)
         for r in ntran_records:
             acc_code = (r.get('nt_acnt') or '').strip().upper()
             if not acc_code:
+                continue
+            try:
+                row_year = int(r.get('nt_year') or 0)
+            except (TypeError, ValueError):
+                row_year = 0
+            if row_year != fiscal_current_year:
                 continue
             ntran_sums[acc_code] = ntran_sums.get(acc_code, 0.0) + float(r.get('nt_value', 0) or 0)
 

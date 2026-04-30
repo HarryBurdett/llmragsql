@@ -851,11 +851,11 @@ class OperaSQLProvider(OperaDataProvider):
             "transfer_file_posted": round(posted_total, 2),
             "transfer_file_pending": round(pending_total, 2),
             "nominal_ledger_total": round(nl_total, 2),
-            "reconciled": variance_abs < 1.00,
+            "reconciled": variance_abs < 0.005,
             "has_pending_transfers": pending_count > 0
         }
 
-        if variance_abs < 1.00:
+        if variance_abs < 0.005:
             reconciliation["status"] = "RECONCILED"
             reconciliation["message"] = "Sales Ledger reconciles to Nominal Ledger Debtors Control"
         else:
@@ -1015,11 +1015,11 @@ class OperaSQLProvider(OperaDataProvider):
             "transfer_file_posted": round(posted_total, 2),
             "transfer_file_pending": round(pending_total, 2),
             "nominal_ledger_total": round(nl_total, 2),
-            "reconciled": variance_abs < 1.00,
+            "reconciled": variance_abs < 0.005,
             "has_pending_transfers": pending_count > 0
         }
 
-        if variance_abs < 1.00:
+        if variance_abs < 0.005:
             reconciliation["status"] = "RECONCILED"
             reconciliation["message"] = "Purchase Ledger reconciles to Nominal Ledger Creditors Control"
         else:

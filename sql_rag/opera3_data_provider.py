@@ -945,7 +945,15 @@ class Opera3DataProvider(OperaDataProvider):
         }
 
         # ========== SALES LEDGER (stran) ==========
-        sl_outstanding = [r for r in stran if self._get_num(r, 'ST_TRBAL') != 0]
+        # Exclude orphan stran rows whose customer is no longer in sname.
+        # Mirrors the Opera SE filter to keep the two ledgers comparing
+        # the same population.
+        valid_sn_accounts = {self._get_str(r, 'SN_ACCOUNT').strip().upper() for r in sname}
+        sl_outstanding = [
+            r for r in stran
+            if self._get_num(r, 'ST_TRBAL') != 0
+            and self._get_str(r, 'ST_ACCOUNT').strip().upper() in valid_sn_accounts
+        ]
         sl_total = sum(self._get_num(r, 'ST_TRBAL') for r in sl_outstanding)
         sl_count = len(sl_outstanding)
 
@@ -1065,7 +1073,10 @@ class Opera3DataProvider(OperaDataProvider):
                                   if self._get_num(r, 'NT_VALUE') < 0)
             current_year_net = sum(self._get_num(r, 'NT_VALUE') for r in current_year_trans)
 
-            current_year_balance = current_year_net if current_year_net > 0 else abs(current_year_net)
+            # Use signed net AS-IS — keep the sign so a credit balance (e.g. customer
+            # overpayment) reconciles correctly against stran. Previously this took
+            # abs() which flipped credits to positive and produced phantom variance.
+            current_year_balance = current_year_net
 
             # Get all years breakdown
             ntran_by_year = defaultdict(lambda: {'debits': 0.0, 'credits': 0.0, 'net': 0.0})
@@ -1123,12 +1134,12 @@ class Opera3DataProvider(OperaDataProvider):
             "nominal_ledger_total": round(nl_total, 2),
             "posted_variance": round(variance_posted, 2),
             "posted_variance_abs": round(variance_posted_abs, 2),
-            "reconciled": variance_abs < 1.00,
+            "reconciled": variance_abs < 0.005,
             "has_pending_transfers": sl_pending_count > 0
         }
 
         # Determine status
-        if variance_abs < 1.00:
+        if variance_abs < 0.005:
             reconciliation["status"] = "RECONCILED"
             if sl_pending_count > 0:
                 reconciliation["message"] = f"Sales Ledger reconciles to Nominal Ledger. {sl_pending_count} transactions (£{abs(sl_pending_total):,.2f}) in transfer file pending."
@@ -1230,7 +1241,14 @@ class Opera3DataProvider(OperaDataProvider):
         }
 
         # ========== PURCHASE LEDGER (ptran) ==========
-        pl_outstanding = [r for r in ptran if self._get_num(r, 'PT_TRBAL') != 0]
+        # Exclude orphan ptran rows whose supplier is no longer in pname.
+        # Mirrors the Opera SE filter.
+        valid_pn_accounts = {self._get_str(r, 'PN_ACCOUNT').strip().upper() for r in pname}
+        pl_outstanding = [
+            r for r in ptran
+            if self._get_num(r, 'PT_TRBAL') != 0
+            and self._get_str(r, 'PT_ACCOUNT').strip().upper() in valid_pn_accounts
+        ]
         pl_total = sum(self._get_num(r, 'PT_TRBAL') for r in pl_outstanding)
         pl_count = len(pl_outstanding)
 
@@ -1409,12 +1427,12 @@ class Opera3DataProvider(OperaDataProvider):
             "nominal_ledger_total": round(nl_total, 2),
             "posted_variance": round(variance_posted, 2),
             "posted_variance_abs": round(variance_posted_abs, 2),
-            "reconciled": variance_abs < 1.00,
+            "reconciled": variance_abs < 0.005,
             "has_pending_transfers": pl_pending_count > 0
         }
 
         # Determine status
-        if variance_abs < 1.00:
+        if variance_abs < 0.005:
             reconciliation["status"] = "RECONCILED"
             if pl_pending_count > 0:
                 reconciliation["message"] = f"Purchase Ledger reconciles to Nominal Ledger. {pl_pending_count} transactions (£{abs(pl_pending_total):,.2f}) in transfer file pending."
