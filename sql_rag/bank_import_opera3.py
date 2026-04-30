@@ -35,7 +35,7 @@ from sql_rag.bank_matching import (
     BankMatcher, MatchCandidate, MatchResult,
     create_match_candidate_from_dict
 )
-from sql_rag.bank_import import extract_payee_name
+from sql_rag.bank_import import extract_payee_name, extract_payee_name_full
 from sql_rag.opera3_foxpro import Opera3Reader, Opera3System
 
 # Import alias manager (optional — graceful fallback if not available)
@@ -66,104 +66,6 @@ except ImportError:
     Opera3AgentRequired = None
 
 logger = logging.getLogger(__name__)
-
-
-# Trailing-anchored regex matching parenthesised bank-method suffixes appended
-# to the end of a bank statement description, e.g. `Diskel (Faster Payments)`,
-# `Customer (Direct Debit)`, `Customer (Faster Pay...)`. The `$` anchor is
-# critical — embedded parens that are part of a legal company name (e.g.
-# `Acme (Bristol) Ltd`, `P Flannery Plant Hire(oval) Limited`) must be
-# preserved when there is no trailing bank-method suffix.
-_BANK_METHOD_SUFFIX_RE = re.compile(
-    r'\s*\(\s*(?:faster\s*pay(?:\.\.\.|…|ments?)|direct\s*debit|standing\s*order|'
-    r'bacs|chaps|card\s*payment|cheque|cash|online\s*payment|'
-    r'transfer)\s*\)\s*$',
-    re.IGNORECASE,
-)
-
-
-def extract_payee_name_full(description: str) -> str:
-    """
-    Extract the payee/payer name from a bank statement description (full length, not truncated).
-    Used for matching purposes where we need the complete name.
-
-    Examples:
-        "Giro Direct Credit From Reserve Forces and Ref: REM 1075" → "Reserve Forces and"
-        "DD Direct Debit to HMRC E VAT Ref: 000917304990" → "HMRC E VAT"
-        "Giro Direct Credit From Balladeer Limited Ref: Inv.26395" → "Balladeer Limited"
-        "Card Purchase Tyreland Limited On 10 Feb" → "Tyreland Limited"
-    """
-    if not description:
-        return ''
-
-    text = description.replace('\n', ' ').replace('\r', ' ').strip()
-
-    # Strip AI-added classification labels (e.g. "SUPPLIER - Name", "CUSTOMER: Name")
-    # These appear when Gemini adds type annotations to extracted descriptions
-    text = re.sub(
-        r'^(?:SUPPLIER|CUSTOMER|PAYMENT|RECEIPT|TRANSFER|SALARY|WAGES|REFUND)\s*[-–:]\s*',
-        '', text, flags=re.IGNORECASE
-    ).strip()
-
-    # Handle comma-separated bank descriptions (common in NatWest, HSBC, etc.)
-    # Format: "PAYEE NAME, CLASSIFICATION, FP dd/mm/yy nn, REFERENCE"
-    # e.g. "MJM DATA CAPTURE LTD, SUPPLIER, FP 23/03/26 40, 11013128004084000N"
-    # Extract just the payee name (first field), strip classification and reference junk
-    if ',' in text:
-        parts = [p.strip() for p in text.split(',')]
-        # Check if any subsequent part is a classification keyword or payment reference
-        classification_words = {'SUPPLIER', 'CUSTOMER', 'VOLUNTEER', 'SALARY', 'WAGES',
-                                'GP', 'EMPLOYEE', 'STAFF', 'REFUND', 'PENSION'}
-        for i, part in enumerate(parts[1:], 1):
-            upper_part = part.upper().strip()
-            # If we hit a classification word or a payment ref pattern (FP dd/mm, digits),
-            # the payee name is everything before this point
-            if (upper_part in classification_words or
-                re.match(r'^(?:FP|DD|SO|BGC|CHQ|BACS)\s', upper_part) or
-                re.match(r'^\d{8,}', upper_part)):
-                text = ', '.join(parts[:i]).strip()
-                break
-
-    # Try to extract name after "to" or "from"
-    match = re.match(
-        r'(?:(?:dd\s+)?direct\s+debit\s+to|(?:giro\s+)?direct\s+credit\s+from|'
-        r'card\s+payment\s+to|card\s+purchase|'
-        r'faster\s+payment\s+to|faster\s+payment\s+from|'
-        r'standing\s+order\s+to|bank\s+giro\s+credit\s+from)\s+(.+)',
-        text, re.IGNORECASE
-    )
-
-    if match:
-        remainder = match.group(1).strip()
-        # Remove trailing patterns: "On DD Mon", "Ref: ...", "*...", date-like numbers
-        name = re.split(
-            r'(?:\s+(?:on\s+\d{1,2}\s|ref:\s|ref\s|\d{5,})|\*)',
-            remainder, maxsplit=1, flags=re.IGNORECASE
-        )[0].strip()
-        name = name.rstrip('* ')
-        if name:
-            return name
-
-    # Fallback: remove common prefixes
-    cleaned = re.sub(
-        r'^(?:dd\s+)?(?:card\s+payment|direct\s+debit|direct\s+credit|faster\s+payment|'
-        r'standing\s+order|(?:giro\s+)?(?:bank\s+)?giro\s+credit|counter\s+credit)\s*',
-        '', text, flags=re.IGNORECASE
-    ).strip()
-
-    # Remove trailing "to"/"from" if left over
-    cleaned = re.sub(r'\s+(?:to|from)\s*$', '', cleaned, flags=re.IGNORECASE).strip()
-
-    # Strip trailing bank-method suffix (e.g. `(Faster Payments)`) — loop because
-    # the existing trailing-`Ref:` strip above might have exposed a fresh match.
-    result = cleaned if cleaned else text
-    while True:
-        new_result = _BANK_METHOD_SUFFIX_RE.sub('', result).strip()
-        if new_result == result:
-            break
-        result = new_result
-
-    return result
 
 
 @dataclass
