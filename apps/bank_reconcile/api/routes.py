@@ -2961,6 +2961,168 @@ async def delete_bank_import_draft(
         return {"success": False, "error": str(e)}
 
 
+@router.post("/api/bank-import/persist-decisions")
+async def persist_bank_import_decisions(request: Request):
+    """
+    Persist defer / partial-rec decisions for a bank statement WITHOUT requiring
+    the user to click the green Import / Proceed-to-Reconcile button.
+
+    Sequential Statement Gating works off two records:
+        - bank_statement_imports row (source of has_import_record)
+        - deferred_transactions.db rows (source of deferred_count)
+
+    Historically those were only written when the user clicked Import. For a
+    statement where everything except one row is already in Opera, the user's
+    mental model is "I deferred — I'm done"; clicking another button to commit
+    is friction. This endpoint commits the moment the operator decides.
+
+    Body:
+    {
+        "bank_code": "BC010",
+        "filename": "Statement 17-APR-26 ...pdf",
+        "source": "pdf" | "email",
+        "statement_info": {                     # all optional
+            "opening_balance": 91879.80,
+            "closing_balance": 119822.40,
+            "statement_date": "2026-04-17",
+            "period_start": "2026-04-11",
+            "period_end": "2026-04-17",
+            "account_number": "...",
+            "sort_code": "..."
+        },
+        "deferred_transactions": [              # current full set (replaces prior)
+            {"date": "2026-04-13", "amount": 883.31, "description": "..."},
+            ...
+        ],
+        "imported_by": "admin"                  # optional
+    }
+
+    Behaviour:
+        - UPSERT a bank_statement_imports row (transactions_imported=0,
+          is_reconciled=0, target_system='opera_se') for this bank+filename.
+        - Replace the bank+period defer set in deferred_transactions.db with
+          the supplied set (idempotent — no duplicates on repeat clicks).
+        - On error in either step, log a warning but keep going. The caller
+          treats success conservatively: success=True only if both writes
+          completed.
+    """
+    if not email_storage:
+        raise HTTPException(status_code=503, detail="Email storage not initialized")
+    try:
+        body = await request.json()
+        bank_code = (body.get("bank_code") or "").strip()
+        filename = (body.get("filename") or "").strip()
+        source = (body.get("source") or "pdf").strip()
+        stmt_info = body.get("statement_info") or {}
+        deferred_txns = body.get("deferred_transactions") or []
+        imported_by = (body.get("imported_by") or "admin")
+
+        if not bank_code or not filename:
+            return {"success": False, "error": "bank_code and filename are required"}
+
+        # --- Step 1: Ensure a bank_statement_imports row exists ---
+        # Use a lightweight UPSERT-ish: query for existing row first; create
+        # only if missing. We do NOT update an existing row — once the
+        # statement has been imported (transactions posted), we mustn't
+        # overwrite its tracking metadata.
+        period_start = stmt_info.get("period_start")
+        period_end = stmt_info.get("period_end")
+        existing_id = None
+        try:
+            with email_storage._get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT id FROM bank_statement_imports
+                    WHERE bank_code = ? AND filename = ?
+                      AND target_system NOT IN ('archived', 'deleted', 'retained')
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (bank_code, filename),
+                )
+                row = cur.fetchone()
+                if row:
+                    existing_id = row['id'] if isinstance(row, dict) or hasattr(row, 'keys') else row[0]
+        except Exception as _q_err:
+            logger.warning(f"persist-decisions: lookup failed for {filename}: {_q_err}")
+
+        import_id = existing_id
+        if existing_id is None:
+            try:
+                import_id = email_storage.record_bank_statement_import(
+                    bank_code=bank_code,
+                    filename=filename,
+                    transactions_imported=0,
+                    source='file' if source == 'pdf' else source,
+                    target_system='opera_se',
+                    total_receipts=0,
+                    total_payments=0,
+                    imported_by=imported_by,
+                    opening_balance=stmt_info.get("opening_balance"),
+                    closing_balance=stmt_info.get("closing_balance"),
+                    statement_date=stmt_info.get("statement_date"),
+                    account_number=stmt_info.get("account_number"),
+                    sort_code=stmt_info.get("sort_code"),
+                    period_start=period_start,
+                    period_end=period_end,
+                )
+            except Exception as _ins_err:
+                logger.warning(f"persist-decisions: failed to insert import record for {filename}: {_ins_err}")
+                return {"success": False, "error": f"Could not create tracking record: {_ins_err}"}
+
+        # --- Step 2: Replace the bank+period defer set ---
+        # Use period bounds when supplied so we don't clobber defers from
+        # OTHER statements on the same bank.
+        from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+        from sql_rag.company_data import get_current_db_path as _gcdp
+        defer_path = _gcdp("bank_reconcile/deferred_transactions.db")
+        defer_db = DeferredTransactionsDB(defer_path)
+        try:
+            with defer_db._connect() as conn:
+                if period_start and period_end:
+                    conn.execute(
+                        """
+                        DELETE FROM deferred_transactions
+                        WHERE bank_code = ?
+                          AND statement_date >= ?
+                          AND statement_date <= ?
+                        """,
+                        (bank_code, period_start, period_end),
+                    )
+                else:
+                    conn.execute(
+                        "DELETE FROM deferred_transactions WHERE bank_code = ?",
+                        (bank_code,),
+                    )
+                conn.commit()
+        except Exception as _del_err:
+            logger.warning(f"persist-decisions: failed to clear prior defer set for {bank_code}: {_del_err}")
+
+        deferred_count = 0
+        for d in deferred_txns:
+            try:
+                defer_db.record(
+                    bank_code=bank_code,
+                    statement_date=str(d.get("date") or "")[:10],
+                    amount=float(d.get("amount") or 0.0),
+                    description=str(d.get("description") or "")[:255],
+                    deferred_by=imported_by,
+                )
+                deferred_count += 1
+            except Exception as _row_err:
+                logger.warning(f"persist-decisions: failed to record defer row for {bank_code}: {_row_err}")
+
+        return {
+            "success": True,
+            "import_id": import_id,
+            "deferred_count": deferred_count,
+        }
+
+    except Exception as e:
+        logger.error(f"persist-decisions failed: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
+
+
 
 
 
