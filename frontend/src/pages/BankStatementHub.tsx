@@ -21,6 +21,8 @@ interface StatementEntry {
   is_reconciled?: boolean;
   is_imported?: boolean;
   status: 'ready' | 'sequence_gap' | 'uncached' | 'pending' | 'already_processed' | 'imported' | 'pending_extraction';
+  state?: 'ready' | 'in_progress' | 'imported' | 'reconciled' | 'pending_extraction' | 'sequence_gap' | 'already_processed';
+  deferred_count?: number;
   extraction_status?: 'extracted' | 'cached' | 'pending_extraction' | 'failed';
   extraction_failure_reason?: 'rate_limit' | 'extraction_error';
   validation_note?: string;
@@ -1799,8 +1801,15 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, onDeleteSt
   inProgressForBank: InProgressStatement[]; inProgressMap: Map<string, InProgressStatement>; orphanedStatements: InProgressStatement[];
   onContinueImport: (stmt: InProgressStatement) => void; onClearStatement: (stmt: InProgressStatement) => void; onResumeReconcile: (stmt: InProgressStatement) => void;
 }) {
-  const readyCount = bank.statements.filter(s => s.status === 'ready').length;
+  const readyCount = bank.statements.filter(s => (s.state ?? s.status) === 'ready').length;
   const awaitingReconcileCount = inProgressForBank.length;
+
+  // Per-bank summary of outstanding deferred work
+  const importedCount = bank.statements.filter(s => s.state === 'imported').length;
+  const totalDeferred = bank.statements.reduce(
+    (acc, s) => acc + ((s.state === 'imported') ? (s.deferred_count ?? 0) : 0),
+    0,
+  );
 
   const formatBal = (val: number | undefined | null) => {
     if (val === null || val === undefined) return '—';
@@ -1850,6 +1859,12 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, onDeleteSt
         </div>
       )}
 
+      {importedCount > 0 && (
+        <div className="px-4 py-2 text-sm text-amber-700 bg-amber-50 border-t border-amber-100">
+          {importedCount} statement{importedCount !== 1 ? 's' : ''} imported with deferred items, {totalDeferred} transaction{totalDeferred !== 1 ? 's' : ''} awaiting decision
+        </div>
+      )}
+
       {expanded && (
         <div className="border-t border-gray-100">
           <table className="w-full text-sm">
@@ -1867,7 +1882,7 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, onDeleteSt
             </thead>
             <tbody>
               {bank.statements.map((stmt, idx) => {
-                const firstReadyIdx = bank.statements.findIndex(s => s.status === 'ready');
+                const firstReadyIdx = bank.statements.findIndex(s => (s.state ?? s.status) === 'ready');
                 const isNextToProcess = idx === firstReadyIdx;
                 const ipData = inProgressMap.get(`${bank.bank_code}::${stmt.filename}`);
                 return (
@@ -2066,12 +2081,13 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
     return '—';
   };
 
-  const canProcess = (bankExtractionComplete !== false) && stmt.status === 'ready' && isNext;
+  const effectiveState = stmt.state ?? stmt.status;
+  const canProcess = (bankExtractionComplete !== false) && effectiveState === 'ready' && isNext;
 
   return (
     <tr className={`border-t border-gray-50 transition-colors ${
       isNext ? 'bg-blue-50/50 hover:bg-blue-50' : isImportedWithData ? 'bg-orange-50/20 hover:bg-orange-50/40' : 'hover:bg-blue-50/30'
-    } ${stmt.status === 'ready' && !isNext ? 'opacity-60' : ''}`}>
+    } ${effectiveState === 'ready' && !isNext ? 'opacity-60' : ''}`}>
       <td className="px-4 py-2 text-gray-400 text-xs">{stmt.import_sequence}</td>
       <td className="px-4 py-2">
         <div className="flex items-center gap-1.5">
@@ -2099,13 +2115,19 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
       <td className="px-4 py-2 text-right text-xs font-mono text-gray-700">{formatBal(stmt.closing_balance)}</td>
       <td className="px-4 py-2 text-center">
         <div className="flex flex-col items-center gap-0.5">
-          <div className="flex items-center justify-center gap-1">
+          <div className="flex items-center justify-center gap-1 flex-wrap">
             {statusBadge}
-            {isNext && stmt.status === 'ready' && (
+            {isNext && effectiveState === 'ready' && (
               <span className="px-2 py-0.5 text-xs font-medium bg-blue-600 text-white rounded-full">Next</span>
             )}
             {stmt.extraction_failure_reason === 'extraction_error' && (
               <span className="px-2 py-0.5 text-xs font-medium bg-red-100 text-red-800 rounded-full">Failed</span>
+            )}
+            {stmt.state === 'imported' && (stmt.deferred_count ?? 0) > 0 && (
+              <span className="px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-800 rounded-full inline-flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                Imported · {stmt.deferred_count} deferred
+              </span>
             )}
           </div>
           {isImportedWithData && hasPartialImport && (
@@ -2146,7 +2168,7 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
               className={`px-3 py-1 text-xs font-medium text-white rounded flex items-center gap-1 ${
                 canProcess ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-400 cursor-not-allowed opacity-40'
               }`}
-              title={stmt.status === 'ready' && !isNext ? 'Import previous statements first' : ''}>
+              title={effectiveState === 'ready' && !isNext ? 'Import previous statements first' : ''}>
               Process <ArrowRight className="h-3 w-3" />
             </button>
           )}
