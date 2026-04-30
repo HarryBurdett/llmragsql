@@ -223,6 +223,23 @@ AND ABS(ABS(at_value) - {amount_pence}) < 1
 ```
 **Important**: Use `ABS(ABS(at_value) - amount)` because payments are stored as negative values.
 
+### Defer Transaction Action (Bank Statement Reconciliation)
+
+At Stage 3 (Import), each unmatched bank-statement row carries a per-row `action`. In addition to the existing posting actions (`sales_receipt`, `purchase_payment`, `sales_refund`, `purchase_refund`, `nominal_payment`, `nominal_receipt`, `bank_transfer`) and the permanent Ignore endpoint, there is a **`defer`** action.
+
+A deferred row:
+- Counts as "decided" so the Import button enables — no need to fill in customer/supplier/nominal details.
+- Is **not** posted to Opera (no `atran`/`aentry`/`ntran`/`anoml` writes).
+- Is **not** added to the permanent ignore list.
+- Reaches Stage 4 as an ordinary unmatched line — the existing partial-reconciliation dialog covers it. **Stage 4 has no defer-specific UI.**
+- Reappears as unmatched on the next scan if Opera still has no record; auto-matches once a manual posting has been entered.
+
+Audit: every defer is logged to `data/<company>/bank_reconcile/deferred_transactions.db` (table `deferred_transactions`, columns `bank_code, statement_date, amount, description, deferred_at, deferred_by`). Audit-only — no business logic depends on it.
+
+The reconciliation page (`BankStatementReconcile.tsx`) calls a dedicated endpoint `POST /api/reconcile/bank/{bank_code}/audit-defer` with the list of deferred rows; the import-with-overrides and Opera 3 import endpoints also write the same audit when given `transaction_type='defer'` overrides directly.
+
+Files: `sql_rag/deferred_transactions_db.py`, `apps/bank_reconcile/api/routes.py` (endpoints: `/api/reconcile/bank/{bank_code}/audit-defer`, `/api/bank-import/import-with-overrides`, `/api/opera3/bank-import/import-from-pdf`), `frontend/src/pages/BankStatementReconcile.tsx`.
+
 ### Locking Strategy
 
 **Locking Concerns:**
