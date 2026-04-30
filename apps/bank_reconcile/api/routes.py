@@ -6019,6 +6019,46 @@ async def scan_all_banks_for_statements(
             imported_hashes = {}
             imported_identities = set()
 
+        # Sequential gating: a statement that is imported but has deferred rows
+        # advances the chain virtually — its closing balance is treated as a
+        # reconciled opener for the NEXT statement, even though Opera's nk_recbal
+        # hasn't moved yet.  This unblocks operators waiting on a third party to
+        # resolve a deferred row in the prior statement.
+        imported_pending_closings: dict = {}
+        try:
+            for fn, info in cached_stmt_info.items():
+                if info.get('bank_code') == 'DEDUP':
+                    continue
+                bcode = info.get('bank_code')
+                if not bcode:
+                    continue
+                # imported_nr_filenames contains files imported but not yet reconciled
+                if fn in imported_nr_filenames:
+                    closing = info.get('closing_balance')
+                    if closing is not None:
+                        imported_pending_closings.setdefault(bcode, set()).add(
+                            round(float(closing), 2)
+                        )
+        except Exception as _ipc_err:
+            logger.warning("Could not build imported_pending_closings: %s", _ipc_err)
+
+        def _opening_unblocks_chain(bank_code_local: str, opening) -> bool:
+            """True if this opening balance matches a reconciled OR imported-pending
+            closing, i.e. the prior statement is in 'reconciled' or 'imported' state."""
+            if opening is None or not bank_code_local:
+                return False
+            target = round(float(opening), 2)
+            # Reconciled prior — the existing rule.
+            rec_bal = (all_banks.get(bank_code_local) or {}).get('reconciled_balance')
+            if rec_bal is not None and target == round(float(rec_bal), 2):
+                return True
+            if target in reconciled_opening_balances.get(bank_code_local, set()):
+                return True
+            # Imported-pending prior — new rule.
+            if target in imported_pending_closings.get(bank_code_local, set()):
+                return True
+            return False
+
         unidentified = []
         non_current = {
             'already_processed': [],
@@ -6330,15 +6370,18 @@ async def scan_all_banks_for_statements(
 
                                         if matched_bank_code:
                                             # Chain check: if closing balance matches a reconciled opening,
-                                            # this statement has already been processed
+                                            # this statement has already been processed (a later reconciled
+                                            # statement adopted this one's closing as its own opening).
                                             bank_rec_opens = reconciled_opening_balances.get(matched_bank_code, set())
                                             chain_complete = closing is not None and round(closing, 2) in bank_rec_opens
                                             if chain_complete:
                                                 stmt_entry['category'] = 'already_processed'
                                                 stmt_entry['status'] = 'already_processed'
                                                 logger.info(f"Scan-all: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
-                                            else:
+                                            elif _opening_unblocks_chain(matched_bank_code, opening):
+                                                # Opening chains from a reconciled or imported-pending prior
                                                 stmt_entry['status'] = 'ready'
+                                            # else: leave status as-is (imported / pending) — out-of-sequence statement
 
                                         pdf_extracted = True
                                         stmt_entry['extraction_status'] = 'cached'
@@ -6660,16 +6703,20 @@ async def scan_all_banks_for_statements(
 
                             if matched_bank_code:
                                 # Chain check: if closing balance matches a reconciled opening,
-                                # this statement has already been processed
+                                # this statement has already been processed (a later reconciled
+                                # statement adopted this one's closing as its own opening).
                                 closing = stmt_entry.get('closing_balance')
+                                opening = stmt_entry.get('opening_balance')
                                 bank_rec_opens = reconciled_opening_balances.get(matched_bank_code, set())
                                 chain_complete = closing is not None and round(closing, 2) in bank_rec_opens
                                 if chain_complete:
                                     stmt_entry['category'] = 'already_processed'
                                     stmt_entry['status'] = 'already_processed'
                                     logger.info(f"Folder scan: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
-                                else:
+                                elif _opening_unblocks_chain(matched_bank_code, opening):
+                                    # Opening chains from a reconciled or imported-pending prior
                                     stmt_entry['status'] = 'ready'
+                                # else: leave status as-is — out-of-sequence statement
                     except Exception as e:
                         logger.warning(f"Could not read/validate PDF file {filename}: {e}")
 
