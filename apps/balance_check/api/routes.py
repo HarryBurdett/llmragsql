@@ -2149,7 +2149,7 @@ async def reconcile_summary():
             # FISCAL year integer; nvat is filtered by YEAR(nv_date) (calendar) so
             # mismatching fiscal vs calendar produced wrong totals on companies
             # with non-calendar fiscal years.
-            cy_sql = "SELECT MAX(YEAR(nt_date)) AS current_year FROM ntran WITH (NOLOCK)"
+            cy_sql = "SELECT MAX(YEAR(nt_entr)) AS current_year FROM ntran WITH (NOLOCK)"
             cy_result = sql_connector.execute_query(cy_sql)
             if hasattr(cy_result, 'to_dict'):
                 cy_result = cy_result.to_dict('records')
@@ -2174,7 +2174,7 @@ async def reconcile_summary():
             nl_vat_total = 0
             all_vat_nominals = output_nominals.union(input_nominals)
             for acnt in all_vat_nominals:
-                nl_sql = f"SELECT SUM(nt_value) AS total FROM ntran WITH (NOLOCK) WHERE nt_acnt = '{acnt}' AND YEAR(nt_date) = {current_year}"
+                nl_sql = f"SELECT SUM(nt_value) AS total FROM ntran WITH (NOLOCK) WHERE nt_acnt = '{acnt}' AND YEAR(nt_entr) = {current_year}"
                 nl_result = sql_connector.execute_query(nl_sql)
                 if hasattr(nl_result, 'to_dict'):
                     nl_result = nl_result.to_dict('records')
@@ -2576,7 +2576,7 @@ async def reconcile_vat():
         # (fiscal year integer); nvat is filtered by YEAR(nv_date) (calendar) so a
         # mismatch between the two for non-calendar fiscal years produced wrong
         # totals. Use calendar year on both sides.
-        current_year_sql = "SELECT MAX(YEAR(nt_date)) AS current_year FROM ntran WITH (NOLOCK)"
+        current_year_sql = "SELECT MAX(YEAR(nt_entr)) AS current_year FROM ntran WITH (NOLOCK)"
         cy_result = sql_connector.execute_query(current_year_sql)
         if hasattr(cy_result, 'to_dict'):
             cy_result = cy_result.to_dict('records')
@@ -3004,14 +3004,15 @@ async def reconcile_vat():
 
                 # Get current calendar-year transactions. The VAT endpoint
                 # treats current_year as a CALENDAR year (to align with nvat's
-                # YEAR(nv_date) filter), so we filter ntran by calendar year too.
+                # YEAR(nv_date) filter), so we filter ntran by the calendar year
+                # of its entry date (nt_entr).
                 ntran_sql = f"""
                     SELECT
                         SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
                         SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
                         SUM(nt_value) AS net
                     FROM ntran WITH (NOLOCK)
-                    WHERE nt_acnt = '{acnt}' AND YEAR(nt_date) = {current_year}
+                    WHERE nt_acnt = '{acnt}' AND YEAR(nt_entr) = {current_year}
                 """
                 ntran_result = sql_connector.execute_query(ntran_sql)
                 if hasattr(ntran_result, 'to_dict'):
