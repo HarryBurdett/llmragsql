@@ -122,3 +122,41 @@ class DeferredTransactionsDB:
                     (bank_code,),
                 )
             return int(cur.fetchone()[0])
+
+
+def derive_statement_state(
+    *,
+    is_reconciled: bool,
+    has_import_record: bool,
+    has_draft: bool,
+    deferred_count: int,
+    extraction_status: Optional[str] = None,
+) -> str:
+    """Compute the canonical statement state from the underlying flags.
+
+    Returns one of:
+        'reconciled'           — Stage 4 complete, OR import done with no
+                                 deferred rows still pending.
+        'imported'             — import done, deferred rows still pending,
+                                 not yet reconciled. The next statement is
+                                 openable when prior is in this state.
+        'in_progress'          — draft started but import not yet completed.
+        'ready'                — extraction complete, no draft, no import,
+                                 awaiting operator action.
+        'pending_extraction'   — extraction failed or in progress; user can
+                                 do nothing until it succeeds.
+
+    See the spec for the full state machine.
+    """
+    if extraction_status in ('pending_extraction', 'failed'):
+        return 'pending_extraction'
+    if is_reconciled:
+        return 'reconciled'
+    if has_import_record and deferred_count > 0:
+        return 'imported'
+    if has_import_record:
+        # Imported with zero deferred — Stage 4 should have run cleanly.
+        return 'reconciled'
+    if has_draft:
+        return 'in_progress'
+    return 'ready'

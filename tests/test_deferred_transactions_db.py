@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 
-from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+from sql_rag.deferred_transactions_db import DeferredTransactionsDB, derive_statement_state
 
 
 @pytest.fixture
@@ -126,3 +126,87 @@ def test_count_for_statement_handles_missing_period_args(tmpdb):
     assert tmpdb.count_for_statement(bank_code="BC010", period_start=None, period_end=None) == 1
     assert tmpdb.count_for_statement(bank_code="BC010", period_start="", period_end="") == 1
     assert tmpdb.count_for_statement(bank_code="BC010", period_start="2026-04-01", period_end=None) == 1
+
+
+def test_derive_state_reconciled():
+    assert derive_statement_state(
+        is_reconciled=True,
+        has_import_record=True,
+        has_draft=False,
+        deferred_count=0,
+        extraction_status='cached',
+    ) == 'reconciled'
+
+
+def test_derive_state_reconciled_overrides_other_flags():
+    """If is_reconciled is True, that beats everything else."""
+    assert derive_statement_state(
+        is_reconciled=True,
+        has_import_record=True,
+        has_draft=True,
+        deferred_count=5,
+        extraction_status='extracted',
+    ) == 'reconciled'
+
+
+def test_derive_state_imported_when_deferred_present():
+    assert derive_statement_state(
+        is_reconciled=False,
+        has_import_record=True,
+        has_draft=False,
+        deferred_count=2,
+        extraction_status='extracted',
+    ) == 'imported'
+
+
+def test_derive_state_in_progress_when_draft_only():
+    assert derive_statement_state(
+        is_reconciled=False,
+        has_import_record=False,
+        has_draft=True,
+        deferred_count=0,
+        extraction_status='extracted',
+    ) == 'in_progress'
+
+
+def test_derive_state_pending_extraction():
+    assert derive_statement_state(
+        is_reconciled=False,
+        has_import_record=False,
+        has_draft=False,
+        deferred_count=0,
+        extraction_status='pending_extraction',
+    ) == 'pending_extraction'
+
+
+def test_derive_state_failed_extraction_falls_back_to_pending():
+    assert derive_statement_state(
+        is_reconciled=False,
+        has_import_record=False,
+        has_draft=False,
+        deferred_count=0,
+        extraction_status='failed',
+    ) == 'pending_extraction'
+
+
+def test_derive_state_ready_default():
+    """No draft, no import, no deferred, extraction is good — ready to be processed."""
+    assert derive_statement_state(
+        is_reconciled=False,
+        has_import_record=False,
+        has_draft=False,
+        deferred_count=0,
+        extraction_status='extracted',
+    ) == 'ready'
+
+
+def test_derive_state_imported_with_no_deferred_falls_to_reconciled_intent():
+    """An import record without deferred rows — Stage 4 should already have run.
+    Treat as 'reconciled' for the purpose of state derivation."""
+    assert derive_statement_state(
+        is_reconciled=False,
+        has_import_record=True,
+        has_draft=False,
+        deferred_count=0,
+        extraction_status='extracted',
+    ) == 'reconciled'
