@@ -275,6 +275,18 @@ The reconciliation page (`BankStatementReconcile.tsx`) calls a dedicated endpoin
 
 Files: `sql_rag/deferred_transactions_db.py`, `apps/bank_reconcile/api/routes.py` (endpoints: `/api/reconcile/bank/{bank_code}/audit-defer`, `/api/bank-import/import-with-overrides`, `/api/opera3/bank-import/import-from-pdf`), `frontend/src/pages/BankStatementReconcile.tsx`.
 
+### Sequential Statement Gating (Bank Statement Reconciliation)
+
+Per bank, every statement carries a derived state — one of `pending_extraction`, `ready`, `in_progress`, `imported`, `reconciled` — computed by `derive_statement_state()` in `sql_rag/deferred_transactions_db.py` from existing flags (`bank_statement_imports.is_reconciled`, presence in `deferred_transactions.db`, drafts in email storage).
+
+**Key rule (changed):** the *next* statement becomes openable for processing when the prior statement is in state `imported` **or** `reconciled` (previously: `reconciled` only). The new `imported` state means "every row decided, at least one row deferred — Stage 4 still waiting on the deferred-row resolution".
+
+The chain integrity for **reconciliation** is preserved by the existing opening-balance check (statement's opening must equal Opera's `nk_recbal`). Since `nk_recbal` only advances on actual Stage 4 completion, the next statement still cannot reconcile until the prior one does. Imports keep flowing through, customer/supplier ledgers stay current, but reconciliations strictly serialise.
+
+UI: rows in `imported` state show an amber "Imported · N deferred" pill; per-bank summary line above the table aggregates the outstanding count.
+
+Files: `sql_rag/deferred_transactions_db.py` (state derivation), `apps/bank_reconcile/api/routes.py` (`scan-all-banks` Opera SE + Opera 3 mirror), `frontend/src/pages/BankStatementHub.tsx`.
+
 ### Locking Strategy
 
 **Locking Concerns:**

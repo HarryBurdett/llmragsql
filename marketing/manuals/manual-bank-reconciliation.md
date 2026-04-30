@@ -61,6 +61,8 @@ For unmatched lines, you can:
 
 **Defer (Awaiting manual entry):** When a bank-statement row reflects a transaction that you know is being entered into Opera manually outside this routine, click **Defer** instead of Assign or Ignore. The row is not posted to Opera, is not added to the permanent ignore list, and does not block you from completing the rest of the reconciliation. On the next scan the row reappears — once the manual entry has been made in Opera it will auto-match like any other transaction. Use Defer (rather than Ignore) so the row is not lost; use Ignore only for genuine non-postings (bank fees, internal transfers handled elsewhere).
 
+**Working through statements while waiting on a deferred row:** Once you have decided every row in the current statement (imported, ignored, or deferred), you can move on to the next statement straight away — no need to wait for the deferred row to be resolved. Stages 1–3 (extract, match, import) run on the next statement and Opera's customer/supplier ledgers stay up to date. The only thing that has to wait is the *reconciliation* of the next statement; that's blocked until the prior one fully reconciles, which happens automatically once you resolve the deferred row.
+
 ### Stage 3: Import
 
 Click **Import** to post all assigned transactions to Opera:
