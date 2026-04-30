@@ -3382,11 +3382,24 @@ async def opera3_reconcile_summary(
             debtors_control = ''
             creditors_control = ''
 
+        # Read ntran ONCE and build a per-account sum. The full accumulated
+        # nominal balance for an account is the sum of every nt_value row,
+        # which includes the year-end "B/Fwd" rows that summarise prior years.
+        # This replaces the old approach of reading nacnt and computing
+        # na_ytddr - na_ytdcr (current year only — excludes B/Fwd, gives wrong
+        # totals on long-running companies).
+        ntran_records = reader.read_table('ntran')
+        ntran_sums = {}  # account_code -> running sum of nt_value
+        for r in ntran_records:
+            acc_code = (r.get('nt_acnt') or '').strip().upper()
+            if not acc_code:
+                continue
+            ntran_sums[acc_code] = ntran_sums.get(acc_code, 0.0) + float(r.get('nt_value', 0) or 0)
+
         # ========== 1. DEBTORS CHECK ==========
         try:
             stran_records = reader.read_table('stran')
             sname_records = reader.read_table('sname')
-            nacnt_records = reader.read_table('nacnt')
 
             # Exclude orphan stran rows whose customer is no longer in sname.
             # Matches the Opera SE check; ensures both ledgers compare on the
@@ -3400,12 +3413,7 @@ async def opera3_reconcile_summary(
             )
             sname_total = sum(float(r.get('sn_currbal', 0) or 0) for r in sname_records if float(r.get('sn_currbal', 0) or 0) != 0)
 
-            nl_debtors_total = 0
-            if debtors_control:
-                for acc in nacnt_records:
-                    if (acc.get('na_acnt') or '').strip().upper() == debtors_control.upper():
-                        nl_debtors_total = float(acc.get('na_ytddr', 0) or 0) - float(acc.get('na_ytdcr', 0) or 0)
-                        break
+            nl_debtors_total = ntran_sums.get(debtors_control.upper(), 0.0) if debtors_control else 0.0
 
             # Exact to the penny — finance system, no tolerance.
             sl_vs_sname = abs(sl_total - sname_total)
@@ -3447,12 +3455,8 @@ async def opera3_reconcile_summary(
             )
             pname_total = sum(float(r.get('pn_currbal', 0) or 0) for r in pname_records if float(r.get('pn_currbal', 0) or 0) != 0)
 
-            nl_creditors_total = 0
-            if creditors_control:
-                for acc in nacnt_records:
-                    if (acc.get('na_acnt') or '').strip().upper() == creditors_control.upper():
-                        nl_creditors_total = -(float(acc.get('na_ytddr', 0) or 0) - float(acc.get('na_ytdcr', 0) or 0))
-                        break
+            # Creditors NL is held as a credit (negative) in the nominal — negate to compare with PL convention.
+            nl_creditors_total = -ntran_sums.get(creditors_control.upper(), 0.0) if creditors_control else 0.0
 
             # Exact to the penny — finance system, no tolerance.
             pl_vs_pname = abs(pl_total - pname_total)
@@ -3488,12 +3492,9 @@ async def opera3_reconcile_summary(
                 bank_code = (bank.get('nk_acnt') or '').strip()
                 master_bal = float(bank.get('nk_curbal', 0) or 0) / 100.0
                 bank_master_total += master_bal
-
-                for acc in nacnt_records:
-                    if (acc.get('na_acnt') or '').strip().upper() == bank_code.upper():
-                        nl_bal = float(acc.get('na_ytddr', 0) or 0) - float(acc.get('na_ytdcr', 0) or 0)
-                        nl_bank_total += nl_bal
-                        break
+                # Full accumulated balance for the bank's nominal account = sum of every ntran row
+                # (includes B/Fwd entries from prior year-ends).
+                nl_bank_total += ntran_sums.get(bank_code.upper(), 0.0)
 
             # Exact to the penny — finance system, no tolerance.
             bank_variance = abs(bank_master_total - nl_bank_total)
