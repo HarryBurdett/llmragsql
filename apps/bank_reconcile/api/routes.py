@@ -4167,7 +4167,7 @@ async def import_with_manual_overrides(
 
                 # Use explicit transaction_type if provided, otherwise infer from ledger type
                 transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer', 'defer'):
                     txn.action = transaction_type
                     # Store bank transfer details on the transaction
                     if transaction_type == 'bank_transfer':
@@ -4185,6 +4185,30 @@ async def import_with_manual_overrides(
                     txn.department_code = override['department_code']
                 if override.get('vat_code'):
                     txn.vat_code = override['vat_code']
+
+        # --- Audit and count deferred rows ---
+        # Deferred rows are not posted to Opera (they fall outside the import
+        # action whitelist below). We record one audit row per deferred line
+        # and surface deferred_count in the response so the UI can confirm
+        # the user's choice was honoured.
+        deferred_count = 0
+        try:
+            from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+            from sql_rag.company_data import get_current_db_path
+            audit_path = get_current_db_path("bank_reconcile/deferred_transactions.db")
+            audit_db = DeferredTransactionsDB(audit_path)
+            for txn in transactions:
+                if txn.action == 'defer':
+                    deferred_count += 1
+                    audit_db.record(
+                        bank_code=bank_code,
+                        statement_date=txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date or ''),
+                        amount=float(txn.amount or 0.0),
+                        description=(txn.memo or txn.name or '')[:255],
+                        deferred_by="admin",
+                    )
+        except Exception as audit_err:
+            logger.warning("Deferred-transaction audit failed: %s", audit_err)
 
         # Validate periods for all selected transactions before importing
         # Use ledger-specific validation (SL for receipts/refunds to customers, PL for payments/refunds from suppliers)
@@ -4536,7 +4560,8 @@ async def import_with_manual_overrides(
             "allocations_attempted": allocations_attempted,
             "allocations_successful": allocations_successful,
             "auto_reconcile_enabled": auto_reconcile,
-            "reconciliation_result": reconciliation_result
+            "reconciliation_result": reconciliation_result,
+            "deferred_count": deferred_count
         }
 
     except Exception as e:
