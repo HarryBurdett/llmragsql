@@ -3548,7 +3548,7 @@ async def import_bank_statement_from_pdf(
                 if override.get('cbtype'):
                     txn.cbtype = override.get('cbtype')
                 transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer', 'defer'):
                     txn.action = transaction_type
                     # Store bank transfer details on the transaction
                     if transaction_type == 'bank_transfer':
@@ -3566,6 +3566,29 @@ async def import_bank_statement_from_pdf(
                     txn.department_code = override['department_code']
                 if override.get('vat_code'):
                     txn.vat_code = override['vat_code']
+
+        # --- Audit deferred rows ---
+        # Rows the user marked as 'defer' must NOT be posted to Opera but must
+        # be recorded in the audit DB so Sequential Statement Gating can
+        # surface 'imported' state on the next scan.
+        deferred_count = 0
+        try:
+            from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+            from sql_rag.company_data import get_current_db_path as _gcdp
+            audit_path = _gcdp("bank_reconcile/deferred_transactions.db")
+            audit_db = DeferredTransactionsDB(audit_path)
+            for txn in transactions:
+                if txn.action == 'defer':
+                    deferred_count += 1
+                    audit_db.record(
+                        bank_code=bank_code,
+                        statement_date=txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date or ''),
+                        amount=float(txn.amount or 0.0),
+                        description=(txn.memo or txn.name or '')[:255],
+                        deferred_by="admin",
+                    )
+        except Exception as _audit_err:
+            logger.warning("Deferred-transaction audit failed (import-from-pdf): %s", _audit_err)
 
         # Convert selected_rows to set
         selected_rows_set = set(selected_rows) if selected_rows else None
@@ -3598,6 +3621,10 @@ async def import_bank_statement_from_pdf(
             # Skip rows not in selected_rows (if specified)
             if selected_rows_set is not None and txn.row_number not in selected_rows_set:
                 skipped_not_selected += 1
+                continue
+
+            # Skip deferred rows — recorded above to the audit DB; never posted.
+            if txn.action == 'defer':
                 continue
 
             # Skip already-posted lines (partial recovery resume)
@@ -3765,11 +3792,14 @@ async def import_bank_statement_from_pdf(
         total_receipts = sum(t['amount'] for t in imported if t['action'] == 'sales_receipt')
         total_payments = sum(abs(t['amount']) for t in imported if t['action'] == 'purchase_payment')
 
-        # Build result
+        # Build result. Treat deferred-only outcome as success too — the
+        # operator's intent (defer the row) was honoured even though no
+        # Opera write happened.
         result = {
-            "success": len(imported) > 0,
+            "success": len(imported) > 0 or deferred_count > 0,
             "imported_count": len(imported),
             "imported_transactions_count": len(imported),
+            "deferred_count": deferred_count,
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,
@@ -3785,8 +3815,10 @@ async def import_bank_statement_from_pdf(
             "statement_info": statement_info_dict
         }
 
-        # Record in import history
-        if len(imported) > 0:
+        # Record in import history. Also fire when only deferred rows exist
+        # so Sequential Statement Gating can derive `state='imported'` and the
+        # operator can move on to the next statement.
+        if len(imported) > 0 or deferred_count > 0:
             try:
                 total_receipts = result.get('receipts_imported', 0)
                 total_payments = result.get('payments_imported', 0)
@@ -12665,8 +12697,10 @@ async def opera3_import_bank_statement_from_pdf(
                     "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
                 }
 
-        # Record in import history and persist statement transactions
-        if len(imported) > 0 and email_storage:
+        # Record in import history and persist statement transactions.
+        # Also fire when only deferred rows exist so Sequential Statement
+        # Gating can derive `state='imported'` and unblock the next statement.
+        if (len(imported) > 0 or deferred_count > 0) and email_storage:
             try:
                 current_user = getattr(request.state, 'user', None)
                 imported_by = current_user.get('username', 'Unknown') if current_user else 'Unknown'
@@ -12773,7 +12807,8 @@ async def opera3_import_bank_statement_from_pdf(
                 logger.warning(f"Could not learn patterns (Opera 3 PDF): {e}")
 
         return {
-            "success": len(imported) > 0,
+            # Treat deferred-only outcome as success — operator's intent was honoured.
+            "success": len(imported) > 0 or deferred_count > 0,
             "source": "opera3",
             "data_path": data_path,
             "filename": filename,

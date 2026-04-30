@@ -9621,7 +9621,25 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                   <div className="flex items-center gap-4 flex-wrap">
                     {/* Import Button */}
                     <button
-                      onClick={(allAlreadyInOpera || allItemsHandled) ? () => {
+                      onClick={(allAlreadyInOpera || allItemsHandled) ? async () => {
+                        // If there are deferred rows, the import endpoint must be
+                        // called first so they're audited to deferred_transactions.db
+                        // and the bank_statement_imports record is created. Without
+                        // this, Sequential Statement Gating can't derive 'imported'
+                        // state and the next statement stays gated.
+                        if (deferredRows.size > 0) {
+                          try {
+                            if (isEmailSource) {
+                              await handleEmailImport();
+                            } else if (selectedPdfFile) {
+                              await handlePdfImport();
+                            } else {
+                              await handleBankImport();
+                            }
+                          } catch (e) {
+                            console.warn('Defer-only import call failed; proceeding to reconcile anyway', e);
+                          }
+                        }
                         const reconcileData = {
                           bank_code: selectedBankCode,
                           statement_transactions: bankPreview?.statement_transactions || [],
