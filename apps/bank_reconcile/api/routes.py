@@ -3819,32 +3819,36 @@ async def import_bank_statement_from_pdf(
         # so Sequential Statement Gating can derive `state='imported'` and the
         # operator can move on to the next statement.
         if len(imported) > 0 or deferred_count > 0:
+            total_receipts = result.get('receipts_imported', 0)
+            total_payments = result.get('payments_imported', 0)
+            transactions_imported = total_receipts + total_payments
+
+            # Get current user
+            current_user = getattr(request.state, 'user', None)
+            imported_by = current_user.get('username', 'Unknown') if current_user else 'Unknown'
+
+            statement_date = statement_info_dict.get('statement_date')
+            if statement_date:
+                # Format for SQL
+                try:
+                    from datetime import datetime
+                    if isinstance(statement_date, str):
+                        # Try parsing various formats
+                        for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y']:
+                            try:
+                                dt = datetime.strptime(statement_date.split('T')[0].split(' ')[0], fmt)
+                                statement_date = dt.strftime('%Y-%m-%d')
+                                break
+                            except:
+                                pass
+                except:
+                    pass
+
+            # Insert into the SQL Server bank_import_history audit table.
+            # Wrapped independently so a failure here doesn't prevent the
+            # email_storage tracking record below — the latter is what
+            # Sequential Statement Gating reads.
             try:
-                total_receipts = result.get('receipts_imported', 0)
-                total_payments = result.get('payments_imported', 0)
-                transactions_imported = total_receipts + total_payments
-
-                # Get current user
-                current_user = getattr(request.state, 'user', None)
-                imported_by = current_user.get('username', 'Unknown') if current_user else 'Unknown'
-
-                statement_date = statement_info_dict.get('statement_date')
-                if statement_date:
-                    # Format for SQL
-                    try:
-                        from datetime import datetime
-                        if isinstance(statement_date, str):
-                            # Try parsing various formats
-                            for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y']:
-                                try:
-                                    dt = datetime.strptime(statement_date.split('T')[0].split(' ')[0], fmt)
-                                    statement_date = dt.strftime('%Y-%m-%d')
-                                    break
-                                except:
-                                    pass
-                    except:
-                        pass
-
                 sql_connector.execute_query(f"""
                     INSERT INTO bank_import_history
                     (filename, source, bank_code, total_receipts, total_payments,
@@ -3861,9 +3865,20 @@ async def import_bank_statement_from_pdf(
                         {f"'{statement_date}'" if statement_date else 'NULL'}
                     )
                 """)
+            except Exception as _hist_err:
+                logger.warning(f"Could not insert into bank_import_history (SQL Server): {_hist_err}")
 
-                # Also record in email_storage for statement status tracking
+            try:
+                # Record in email_storage for statement status tracking.
                 # This allows BankStatementReconcile to show the import status
+                # AND is what Sequential Statement Gating uses to detect
+                # `state='imported'` (via imported_nr_filenames lookup).
+                if email_storage is None:
+                    logger.warning(
+                        f"import-from-pdf: email_storage is None — bank_statement_imports "
+                        f"will NOT be created for {filename}. Sequential gating will not "
+                        f"see this statement as 'imported'."
+                    )
                 if email_storage:
                     import_record_id = email_storage.record_bank_statement_import(
                         bank_code=bank_code,
