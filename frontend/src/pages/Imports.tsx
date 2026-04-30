@@ -1041,6 +1041,29 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       }
     }
 
+    // Refund cases — opposite sign-direction matches.
+    // Negative amount + customer match → we are refunding the customer
+    // (overpayment, mistaken collection, or credit-note repayment).
+    if (!isPositive && customers.length > 0) {
+      for (const cust of customers) {
+        const custName = (cust.name || '').toLowerCase();
+        if (custName.length >= 3 && combined.includes(custName)) {
+          return 'sales_refund';
+        }
+      }
+    }
+
+    // Positive amount + supplier match → supplier is refunding us
+    // (overpayment recovered, returned goods, etc.).
+    if (isPositive && suppliers.length > 0) {
+      for (const supp of suppliers) {
+        const suppName = (supp.name || '').toLowerCase();
+        if (suppName.length >= 3 && combined.includes(suppName)) {
+          return 'purchase_refund';
+        }
+      }
+    }
+
     // Default to nominal - if no customer/supplier name found, it's likely a bank charge,
     // fee, interest, or other nominal entry
     return isPositive ? 'nominal_receipt' : 'nominal_payment';
