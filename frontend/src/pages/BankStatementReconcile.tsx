@@ -24,6 +24,7 @@ import {
   XCircle,
   Archive,
   RotateCcw,
+  Clock,
 } from 'lucide-react';
 import apiClient, { authFetch, friendlyError } from '../api/client';
 import type {
@@ -384,6 +385,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
 
   // Categorized import selection for unmatched statement lines
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
+  const [deferredLines, setDeferredLines] = useState<Set<number>>(new Set());
   const [enrichedUnmatched, setEnrichedUnmatched] = useState<UnmatchedStatementLine[]>([]);
   const [isBatchImporting, setIsBatchImporting] = useState(false);
   const [batchImportProgress, setBatchImportProgress] = useState<{
@@ -2134,7 +2136,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   // Batch import all selected unmatched lines
   const batchImportSelected = async () => {
     const toImport = enrichedUnmatched.filter(line =>
-      selectedForImport.has(line.statement_line) && line.matched_account
+      selectedForImport.has(line.statement_line) && line.matched_account && !deferredLines.has(line.statement_line)
     );
     if (toImport.length === 0) return;
 
@@ -2187,6 +2189,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     }
 
     setIsBatchImporting(false);
+    setDeferredLines(new Set());
 
     // Refresh data after batch import
     queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
@@ -3761,38 +3764,72 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                                     {formatCurrency(line.statement_amount)}
                                   </td>
                                   <td className="px-3 py-2 text-center">
-                                    <div className="flex items-center justify-center gap-1">
-                                      <button
-                                        onClick={() => {
-                                          setNewEntryForm({
-                                            accountCode: line.matched_account || '',
-                                            accountType: line.suggested_type || (line.statement_amount > 0 ? 'customer' : 'supplier'),
-                                            nominalCode: '',
-                                            reference: line.statement_reference || '',
-                                            description: line.statement_description || '',
-                                            destBank: '',
-                                            projectCode: '',
-                                            departmentCode: '',
-                                          });
-                                          setCreateEntryModal({ open: true, statementLine: line });
-                                        }}
-                                        className="text-xs px-2 py-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded"
-                                        title="Assign or edit customer/supplier/nominal"
-                                      >
-                                        Assign
-                                      </button>
-                                      <button
-                                        onClick={() => setIgnoreConfirm({
-                                          date: line.statement_date || '',
-                                          description: line.statement_description,
-                                          amount: line.statement_amount,
-                                        })}
-                                        className="text-xs px-2 py-1 text-orange-600 hover:text-orange-800 hover:bg-orange-50 rounded"
-                                        title="Ignore this transaction"
-                                      >
-                                        Ignore
-                                      </button>
-                                    </div>
+                                    {deferredLines.has(line.statement_line) ? (
+                                      <div className="flex items-center justify-center gap-1">
+                                        <span
+                                          className="text-xs px-2 py-1 bg-amber-100 text-amber-800 rounded inline-flex items-center gap-1"
+                                          title="This row will not be imported. It will reappear on the next scan unless it has been entered into Opera manually."
+                                        >
+                                          <Clock className="h-3 w-3" />
+                                          Awaiting manual entry
+                                        </span>
+                                        <button
+                                          onClick={() => {
+                                            const next = new Set(deferredLines);
+                                            next.delete(line.statement_line);
+                                            setDeferredLines(next);
+                                          }}
+                                          className="text-xs px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded"
+                                          title="Undo defer"
+                                        >
+                                          Undo
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div className="flex items-center justify-center gap-1">
+                                        <button
+                                          onClick={() => {
+                                            setNewEntryForm({
+                                              accountCode: line.matched_account || '',
+                                              accountType: line.suggested_type || (line.statement_amount > 0 ? 'customer' : 'supplier'),
+                                              nominalCode: '',
+                                              reference: line.statement_reference || '',
+                                              description: line.statement_description || '',
+                                              destBank: '',
+                                              projectCode: '',
+                                              departmentCode: '',
+                                            });
+                                            setCreateEntryModal({ open: true, statementLine: line });
+                                          }}
+                                          className="text-xs px-2 py-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded"
+                                          title="Assign or edit customer/supplier/nominal"
+                                        >
+                                          Assign
+                                        </button>
+                                        <button
+                                          onClick={() => {
+                                            const next = new Set(deferredLines);
+                                            next.add(line.statement_line);
+                                            setDeferredLines(next);
+                                          }}
+                                          className="text-xs px-2 py-1 text-amber-600 hover:text-amber-800 hover:bg-amber-50 rounded"
+                                          title="Mark as awaiting manual entry — will not be imported, will reappear on next scan"
+                                        >
+                                          Defer
+                                        </button>
+                                        <button
+                                          onClick={() => setIgnoreConfirm({
+                                            date: line.statement_date || '',
+                                            description: line.statement_description,
+                                            amount: line.statement_amount,
+                                          })}
+                                          className="text-xs px-2 py-1 text-orange-600 hover:text-orange-800 hover:bg-orange-50 rounded"
+                                          title="Ignore this transaction (already entered in Opera)"
+                                        >
+                                          Ignore
+                                        </button>
+                                      </div>
+                                    )}
                                   </td>
                                 </tr>
                               );
