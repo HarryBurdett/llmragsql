@@ -6437,7 +6437,9 @@ async def scan_all_banks_for_statements(
                                                 stmt_entry['category'] = 'already_processed'
                                                 stmt_entry['status'] = 'already_processed'
                                                 logger.info(f"Scan-all: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
-                                            else:
+                                            elif stmt_entry.get('status') != 'imported':
+                                                # Preserve upstream 'imported' (imported-but-not-reconciled);
+                                                # only mark fresh 'pending' rows as 'ready'.
                                                 stmt_entry['status'] = 'ready'
 
                                         pdf_extracted = True
@@ -6770,7 +6772,9 @@ async def scan_all_banks_for_statements(
                                     stmt_entry['category'] = 'already_processed'
                                     stmt_entry['status'] = 'already_processed'
                                     logger.info(f"Folder scan: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
-                                else:
+                                elif stmt_entry.get('status') != 'imported':
+                                    # Preserve upstream 'imported' (imported-but-not-reconciled);
+                                    # only mark fresh 'pending' rows as 'ready'.
                                     stmt_entry['status'] = 'ready'
                     except Exception as e:
                         logger.warning(f"Could not read/validate PDF file {filename}: {e}")
