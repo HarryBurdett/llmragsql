@@ -12223,10 +12223,11 @@ async def opera3_import_bank_statement_from_pdf(
                     txn.match_score = 1.0
                 if override.get('ledger_type'):
                     txn.match_type = 'customer' if override['ledger_type'] == 'C' else 'supplier'
-                if override.get('transaction_type'):
-                    txn.action = override['transaction_type']
+                transaction_type = override.get('transaction_type')
+                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer', 'defer'):
+                    txn.action = transaction_type
                     # Store bank transfer details on the transaction
-                    if override['transaction_type'] == 'bank_transfer':
+                    if transaction_type == 'bank_transfer':
                         txn.bank_transfer_details = override.get('bank_transfer_details', {})
                 # Apply project/department/VAT codes for nominal entries
                 if override.get('project_code'):
@@ -12235,6 +12236,30 @@ async def opera3_import_bank_statement_from_pdf(
                     txn.department_code = override['department_code']
                 if override.get('vat_code'):
                     txn.vat_code = override['vat_code']
+
+        # --- Audit and count deferred rows ---
+        # Deferred rows are not posted to Opera (they fall outside the import
+        # action whitelist below). We record one audit row per deferred line
+        # and surface deferred_count in the response so the UI can confirm
+        # the user's choice was honoured.
+        deferred_count = 0
+        try:
+            from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+            from sql_rag.company_data import get_current_db_path
+            audit_path = get_current_db_path("bank_reconcile/deferred_transactions.db")
+            audit_db = DeferredTransactionsDB(audit_path)
+            for txn in transactions:
+                if txn.action == 'defer':
+                    deferred_count += 1
+                    audit_db.record(
+                        bank_code=bank_code,
+                        statement_date=txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date or ''),
+                        amount=float(txn.amount or 0.0),
+                        description=(txn.memo or txn.name or '')[:255],
+                        deferred_by="admin",
+                    )
+        except Exception as audit_err:
+            logger.warning("Deferred-transaction audit failed (Opera 3): %s", audit_err)
 
         # Process transactions through matcher
         matcher.process_transactions(transactions, check_duplicates=True, bank_code=bank_code)
@@ -12499,7 +12524,8 @@ async def opera3_import_bank_statement_from_pdf(
             "errors": errors,
             "auto_allocate_enabled": auto_allocate,
             "auto_reconcile_enabled": auto_reconcile,
-            "reconciliation_result": reconciliation_result
+            "reconciliation_result": reconciliation_result,
+            "deferred_count": deferred_count
         }
 
     except Exception as e:
