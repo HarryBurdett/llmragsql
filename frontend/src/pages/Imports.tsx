@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, /* Upload - kept for CSV upload if re-enabled */ Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight, ArrowRight, FolderOpen } from 'lucide-react';
+import { FileText, CheckCircle, XCircle, AlertCircle, Loader2, Receipt, CreditCard, FileSpreadsheet, BookOpen, Landmark, /* Upload - kept for CSV upload if re-enabled */ Edit3, RefreshCw, Search, RotateCcw, X, History, ChevronDown, ChevronRight, ArrowRight, FolderOpen, Clock } from 'lucide-react';
 import apiClient, { authFetch } from '../api/client';
 
 interface ImportResult {
@@ -421,6 +421,9 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // Track which transactions are marked as ignored (by row number)
   const [ignoredTransactions, setIgnoredTransactions] = useState<Set<number>>(new Set());
 
+  // Track which unmatched rows the user has deferred (not posted, not permanently ignored, reappears on next scan)
+  const [deferredRows, setDeferredRows] = useState<Set<number>>(new Set());
+
   // =====================
   // EMAIL SCANNING STATE
   // =====================
@@ -633,6 +636,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     setRefundOverrides(new Map());
     setSelectedForImport(new Set());
     setIgnoredTransactions(new Set());
+    setDeferredRows(new Set());
     setNominalPostingDetails(new Map());
     setBankTransferDetails(new Map());
     setDateOverrides(new Map());
@@ -2887,6 +2891,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         }
       }
 
+      // Append override entries for deferred rows so backend records audit + skips posting
+      deferredRows.forEach((row) => {
+        allOverrides.push({ row, transaction_type: 'defer' } as any);
+      });
+
       // Convert selectedForImport to array for the API
       const selectedRowsArray = Array.from(selectedForImport);
 
@@ -2966,6 +2975,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           importedRowSet.forEach(r => updated.delete(r));
           return updated;
         });
+        setDeferredRows(new Set());
         // Note: Do NOT clear bankPreview - keep it visible for summary until user clicks "Clear Statement"
         // Clear sessionStorage + backend draft so next visit gets fresh analysis (not stale pre-import data)
         // Suppress auto-save during refresh to prevent re-creating deleted draft
@@ -3685,6 +3695,12 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           allOverrides.push({ row: cbo.row, cbtype: cbo.cbtype } as any);
         }
       }
+
+      // Append override entries for deferred rows so backend records audit + skips posting
+      deferredRows.forEach((row) => {
+        allOverrides.push({ row, transaction_type: 'defer' } as any);
+      });
+
       const selectedRowsList = Array.from(selectedForImport);
       const dateOverridesList = Array.from(dateOverrides.entries()).map(([row, date]) => ({ row, date }));
       const rejectedRefundRows = Array.from(refundOverrides.entries())
@@ -3761,6 +3777,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           importedRowSet.forEach(r => updated.delete(r));
           return updated;
         });
+        setDeferredRows(new Set());
         // Clear sessionStorage + backend draft so next visit gets fresh analysis
         // Suppress auto-save during refresh to prevent re-creating deleted draft
         draftSuppressedRef.current = true;
@@ -3916,6 +3933,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         }
       }
 
+      // Append override entries for deferred rows so backend records audit + skips posting
+      deferredRows.forEach((row) => {
+        allOverrides.push({ row, transaction_type: 'defer' } as any);
+      });
+
       const selectedRowsArray = Array.from(selectedForImport);
       const dateOverridesList = Array.from(dateOverrides.entries()).map(([row, date]) => ({
         row,
@@ -3989,6 +4011,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
           importedRowSet.forEach(r => updated.delete(r));
           return updated;
         });
+        setDeferredRows(new Set());
         // Clear sessionStorage + backend draft so next visit gets fresh analysis
         // Suppress auto-save during refresh to prevent re-creating deleted draft
         draftSuppressedRef.current = true;
@@ -8250,11 +8273,11 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                   {!isImported && (
                                     <input
                                       type="checkbox"
-                                      checked={filtered.filter(t => !ignoredTransactions.has(t.row)).length > 0 && filtered.filter(t => !ignoredTransactions.has(t.row)).every(t => selectedForImport.has(t.row))}
+                                      checked={filtered.filter(t => !ignoredTransactions.has(t.row) && !deferredRows.has(t.row)).length > 0 && filtered.filter(t => !ignoredTransactions.has(t.row) && !deferredRows.has(t.row)).every(t => selectedForImport.has(t.row))}
                                       onChange={(e) => {
                                         const updated = new Set(selectedForImport);
                                         if (e.target.checked) {
-                                          filtered.filter(t => !ignoredTransactions.has(t.row)).forEach(t => updated.add(t.row));
+                                          filtered.filter(t => !ignoredTransactions.has(t.row) && !deferredRows.has(t.row)).forEach(t => updated.add(t.row));
                                         } else {
                                           filtered.forEach(t => updated.delete(t.row));
                                         }
@@ -8281,6 +8304,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                           <tbody>
                             {filtered.map((txn) => {
                               const isIgnored = ignoredTransactions.has(txn.row);
+                              const isDeferred = deferredRows.has(txn.row);
                               const editedTxn = editedTransactions.get(txn.row);
                               const isPositive = txn.amount > 0;
                               const currentTxnType = transactionTypeOverrides.get(txn.row) || getSmartDefaultTransactionType(txn);
@@ -8322,6 +8346,43 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                           });
                                           const dateOnly = txn.date.includes('T') ? txn.date.split('T')[0] : txn.date;
                                           authFetch(`${API_BASE}/reconcile/bank/${encodeURIComponent(selectedBankCode)}/unignore-transaction?transaction_date=${encodeURIComponent(dateOnly)}&amount=${txn.amount}`, { method: 'DELETE' }).catch(() => {});
+                                        }}
+                                      >
+                                        Undo
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              }
+
+                              // If deferred, show amber-tinted simplified row
+                              if (isDeferred) {
+                                return (
+                                  <tr
+                                    key={txn.row}
+                                    className="border-t border-amber-200 bg-amber-50/50 opacity-75"
+                                  >
+                                    <td className="p-2 text-center">
+                                      <input type="checkbox" disabled checked={false} className="rounded border-amber-400" />
+                                    </td>
+                                    <td className="p-2 text-amber-700">{txn.date}</td>
+                                    <td className="p-2 text-amber-700">{txn.name}</td>
+                                    <td className={`p-2 text-right font-medium whitespace-nowrap ${isPositive ? 'text-green-700' : 'text-red-700'}`}>
+                                      {isPositive ? '+' : '-'}£{Math.abs(txn.amount).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </td>
+                                    <td colSpan={5} className="p-2">
+                                      <span className="inline-flex items-center gap-1 text-xs px-2 py-1 bg-amber-100 text-amber-800 rounded">
+                                        <Clock className="h-3 w-3" />
+                                        Awaiting manual entry
+                                      </span>
+                                      <button
+                                        className="ml-2 text-xs text-blue-600 hover:text-blue-800 underline"
+                                        onClick={() => {
+                                          setDeferredRows(prev => {
+                                            const s = new Set(prev);
+                                            s.delete(txn.row);
+                                            return s;
+                                          });
                                         }}
                                       >
                                         Undo
@@ -8853,7 +8914,26 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                                         <AlertCircle className="h-3 w-3" /> Already in Opera
                                       </span>
                                     ) : (
-                                      <span className="text-gray-400 text-xs">Unassigned</span>
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-gray-400 text-xs">Unassigned</span>
+                                        {!rowImported && (
+                                          <button
+                                            className="text-xs px-2 py-1 text-amber-600 hover:text-amber-800 hover:bg-amber-50 rounded"
+                                            title="Defer: skip this import, reappears on next scan"
+                                            onClick={() => {
+                                              setDeferredRows(prev => new Set([...prev, txn.row]));
+                                              // Remove from selectedForImport if it was somehow selected
+                                              setSelectedForImport(prev => {
+                                                const s = new Set(prev);
+                                                s.delete(txn.row);
+                                                return s;
+                                              });
+                                            }}
+                                          >
+                                            Defer
+                                          </button>
+                                        )}
+                                      </div>
                                     )}
                                   </td>
                                 </tr>
