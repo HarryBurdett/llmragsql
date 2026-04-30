@@ -223,6 +223,41 @@ AND ABS(ABS(at_value) - {amount_pence}) < 1
 ```
 **Important**: Use `ABS(ABS(at_value) - amount)` because payments are stored as negative values.
 
+### Bank-Method Suffix Stripping (Payee Name Extraction)
+
+`extract_payee_name_full()` in `sql_rag/bank_import.py` strips a trailing parenthesised bank-method suffix before fuzzy-matching against `sname` / `pname`. Recognised suffixes (case-insensitive, optional `...` or `…` for truncation):
+
+- `(Faster Payments)` / `(Faster Payment)` / `(Faster Pay...)`
+- `(Direct Debit)`
+- `(Standing Order)`
+- `(BACS)`
+- `(CHAPS)`
+- `(Card Payment)`
+- `(Cheque)`
+- `(Cash)`
+- `(Online Payment)`
+- `(Transfer)`
+
+The strip is anchored to end-of-string (`$`), so embedded parens that are part of a legal company name — `Acme (Bristol) Ltd`, `P Flannery Plant Hire(oval) Limited` — are preserved when there is no trailing bank-method suffix appended.
+
+The Opera 3 module (`sql_rag/bank_import_opera3.py`) imports `extract_payee_name_full` directly from the SE module, so the same logic applies on both data sources without a duplicated function.
+
+### Refund Suggestion for Unmatched Bank Lines
+
+When a row lands in the *Unmatched Transactions* table, the frontend's `getSmartDefaultTransactionType` (in `frontend/src/pages/Imports.tsx`) checks the four sign-and-list combinations:
+
+| Amount | Match | Default Type |
+|---|---|---|
+| positive | customer in `sname` | `sales_receipt` |
+| negative | supplier in `pname` | `purchase_payment` |
+| **negative** | **customer in `sname`** | **`sales_refund`** (new) |
+| **positive** | **supplier in `pname`** | **`purchase_refund`** (new) |
+| — | no match | `nominal_receipt` / `nominal_payment` |
+
+This is a *suggestion only* — the user reviews and ticks Include before importing. The credit-note check (`_check_customer_refund` requiring an unallocated `stran` row) lives in the auto-classification path and is unchanged. Suggestions cover real-world cases like customer overpayments and mistaken GoCardless collections where no `stran` credit-note row exists yet.
+
+Files: `sql_rag/bank_import.py`, `sql_rag/bank_import_opera3.py` (imports from SE), `frontend/src/pages/Imports.tsx`.
+
 ### Defer Transaction Action (Bank Statement Reconciliation)
 
 At Stage 3 (Import), each unmatched bank-statement row carries a per-row `action`. In addition to the existing posting actions (`sales_receipt`, `purchase_payment`, `sales_refund`, `purchase_refund`, `nominal_payment`, `nominal_receipt`, `bank_transfer`) and the permanent Ignore endpoint, there is a **`defer`** action.
