@@ -11269,7 +11269,7 @@ async def opera3_scan_emails_for_bank_statements(
         # Sequential gating: a statement imported-but-not-reconciled advances the
         # chain virtually — its closing is treated as a valid opener for the NEXT
         # statement even though nk_recbal hasn't moved yet.
-        imported_pending_closings: set = set()
+        imported_pending_closings: set[float] = set()
         try:
             for fn, info in cached_stmt_info.items():
                 if info.get('bank_code') == 'DEDUP':
