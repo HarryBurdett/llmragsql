@@ -57,6 +57,19 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Trailing-anchored regex matching parenthesised bank-method suffixes appended
+# to the end of a bank statement description, e.g. `Diskel (Faster Payments)`,
+# `Customer (Direct Debit)`, `Customer (Faster Pay...)`. The `$` anchor is
+# critical — embedded parens that are part of a legal company name (e.g.
+# `Acme (Bristol) Ltd`, `P Flannery Plant Hire(oval) Limited`) must be
+# preserved when there is no trailing bank-method suffix.
+_BANK_METHOD_SUFFIX_RE = re.compile(
+    r'\s*\(\s*(?:faster\s*pay(?:\.\.\.|…|ments?)|direct\s*debit|standing\s*order|'
+    r'bacs|chaps|card\s*payment|cheque|cash|online\s*payment|'
+    r'transfer)\s*\)\s*$',
+    re.IGNORECASE,
+)
+
 
 def extract_payee_name(description: str) -> str:
     """
@@ -191,7 +204,16 @@ def extract_payee_name_full(description: str) -> str:
     # Remove trailing "to"/"from" if left over
     cleaned = re.sub(r'\s+(?:to|from)\s*$', '', cleaned, flags=re.IGNORECASE).strip()
 
-    return cleaned if cleaned else text
+    # Strip trailing bank-method suffix (e.g. `(Faster Payments)`) — loop because
+    # the existing trailing-`Ref:` strip above might have exposed a fresh match.
+    result = cleaned if cleaned else text
+    while True:
+        new_result = _BANK_METHOD_SUFFIX_RE.sub('', result).strip()
+        if new_result == result:
+            break
+        result = new_result
+
+    return result
 
 
 @dataclass
