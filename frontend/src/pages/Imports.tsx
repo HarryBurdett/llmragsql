@@ -2705,16 +2705,16 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     // Check if any unmatched items have an assigned action (bank transfer, nominal, etc.)
     // These NEED importing even in bankRecOnly mode
     const unmatchedWithAction = unmatched.filter(t =>
-      !ignoredTransactions.has(t.row) && !t.is_duplicate && t.action
+      !ignoredTransactions.has(t.row) && !deferredRows.has(t.row) && !t.is_duplicate && t.action
     );
     // If there are assigned unmatched items, they need importing — not "all in Opera"
     if (unmatchedWithAction.length > 0) return false;
 
-    const needsImport = allItems.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
+    const needsImport = allItems.filter(t => !ignoredTransactions.has(t.row) && !deferredRows.has(t.row) && !t.is_duplicate);
     const needsImportExcludingUnmatched = bankRecOnly
-      ? [...receipts, ...payments, ...refunds].filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate)
+      ? [...receipts, ...payments, ...refunds].filter(t => !ignoredTransactions.has(t.row) && !deferredRows.has(t.row) && !t.is_duplicate)
       : needsImport;
-    const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && t.is_duplicate).length;
+    const duplicateCount = allItems.filter(t => !ignoredTransactions.has(t.row) && !deferredRows.has(t.row) && t.is_duplicate).length;
     if (bankRecOnly && (bankPreview.already_posted?.length || 0) > 0 && unmatchedWithAction.length === 0) {
       return true;
     }
@@ -2733,14 +2733,14 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     if (allItems.length === 0) return false;
     // Check if any unmatched items have an assigned action — they still need importing
     const unmatchedWithAction2 = unmatched.filter(t =>
-      !ignoredTransactions.has(t.row) && !t.is_duplicate && t.action
+      !ignoredTransactions.has(t.row) && !deferredRows.has(t.row) && !t.is_duplicate && t.action
     );
     if (unmatchedWithAction2.length > 0) return false;
 
     const itemsToCheck = bankRecOnly
       ? [...receipts, ...payments, ...refunds]
       : allItems;
-    const unhandled = itemsToCheck.filter(t => !ignoredTransactions.has(t.row) && !t.is_duplicate);
+    const unhandled = itemsToCheck.filter(t => !ignoredTransactions.has(t.row) && !deferredRows.has(t.row) && !t.is_duplicate);
     return unhandled.length === 0;
   })();
 
