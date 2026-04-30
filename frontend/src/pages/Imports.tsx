@@ -986,6 +986,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         autoAllocateDisabled: Array.from(autoAllocateDisabled),
         cbtypeOverrides: Array.from(cbtypeOverrides.entries()),
         ignoredTransactions: Array.from(ignoredTransactions),
+        deferredRows: Array.from(deferredRows),
       };
 
       authFetch(`${API_BASE}/bank-import/draft`, {
@@ -1007,7 +1008,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     return () => {
       if (draftSaveTimerRef.current) clearTimeout(draftSaveTimerRef.current);
     };
-  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, cbtypeOverrides, ignoredTransactions, selectedBankCode, selectedEmailStatement, selectedPdfFile, buildDraftParams, dataSource, mapToArray]);
+  }, [bankPreview, editedTransactions, selectedForImport, dateOverrides, transactionTypeOverrides, includedSkipped, refundOverrides, nominalPostingDetails, bankTransferDetails, autoAllocateDisabled, cbtypeOverrides, ignoredTransactions, deferredRows, selectedBankCode, selectedEmailStatement, selectedPdfFile, buildDraftParams, dataSource, mapToArray]);
 
   // Helper function to determine smart default transaction type for unmatched transactions
   // Defaults to nominal unless there's a pattern suggestion or clear customer/supplier hint
@@ -3364,6 +3365,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
         if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
         if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
+        if (edits.deferredRows) setDeferredRows(new Set(edits.deferredRows));
       }
 
       if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');
@@ -3579,6 +3581,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
         if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
         if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
+        if (edits.deferredRows) setDeferredRows(new Set(edits.deferredRows));
       }
 
       if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');

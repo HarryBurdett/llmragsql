@@ -1882,7 +1882,10 @@ function BankCard({ bank, expanded, onToggle, onProcess, onReconcile, onDeleteSt
             </thead>
             <tbody>
               {bank.statements.map((stmt, idx) => {
-                const firstReadyIdx = bank.statements.findIndex(s => (s.state ?? s.status) === 'ready');
+                const firstReadyIdx = bank.statements.findIndex(s => {
+                  const eff = s.state ?? s.status;
+                  return eff === 'ready' || eff === 'in_progress';
+                });
                 const isNextToProcess = idx === firstReadyIdx;
                 const ipData = inProgressMap.get(`${bank.bank_code}::${stmt.filename}`);
                 return (
@@ -2082,7 +2085,13 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
   };
 
   const effectiveState = stmt.state ?? stmt.status;
-  const canProcess = (bankExtractionComplete !== false) && effectiveState === 'ready' && isNext;
+  // Process button enables on the next-in-sequence statement that is either fresh
+  // ('ready') or has a saved draft ('in_progress') — clicking Process auto-resumes
+  // the draft, so it must not be greyed out just because the user previously
+  // started work on this statement.
+  const canProcess = (bankExtractionComplete !== false)
+    && (effectiveState === 'ready' || effectiveState === 'in_progress')
+    && isNext;
 
   return (
     <tr className={`border-t border-gray-50 transition-colors ${
