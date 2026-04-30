@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 from sql_rag.gemini_throttle import RateLimitExhaustedError, ExtractionFailedError
+from sql_rag.deferred_transactions_db import (
+    DeferredTransactionsDB,
+    derive_statement_state,
+)
+from sql_rag.company_data import get_current_db_path
 
 # Cashbook recurring entry type/frequency descriptions
 TYPE_DESCRIPTIONS = {
@@ -7125,6 +7130,17 @@ async def scan_all_banks_for_statements(
                 for s in non_current[nc_key]:
                     logger.info(f"  bank={s.get('matched_bank_code')}  date={s.get('statement_date')}  sk={s.get('sort_key')}  ob={s.get('opening_balance')}  file={s.get('filename','')[:40]}")
 
+        # --- Sequential statement gating: build deferred-count lookup ---
+        # Used by the per-statement state derivation below to determine
+        # whether a statement should be 'imported' (deferred rows pending)
+        # vs 'reconciled' (cleanly imported with no deferred rows).
+        deferred_db = None
+        try:
+            deferred_path = get_current_db_path("bank_reconcile/deferred_transactions.db")
+            deferred_db = DeferredTransactionsDB(deferred_path)
+        except Exception as defer_err:
+            logger.warning("Could not open deferred_transactions DB for scan-all-banks: %s", defer_err)
+
         # Extraction gate: compute per-bank extraction_status, statements_total,
         # statements_extracted, and extraction_failures. A bank is 'complete' only
         # when every statement has both an opening and closing balance. If any
@@ -7162,6 +7178,41 @@ async def scan_all_banks_for_statements(
                 for s in bank_stmts:
                     if s.get('status') == 'ready':
                         s['status'] = 'pending_extraction'
+
+            # --- Sequential statement gating: derive state + deferred_count ---
+            for stmt in bank_stmts:
+                period_start = stmt.get('period_start')
+                period_end = stmt.get('period_end')
+                is_reconciled = bool(stmt.get('is_reconciled', False))
+                stmt_filename = stmt.get('filename')
+                has_import_record = bool(
+                    is_reconciled
+                    or (stmt_filename and stmt_filename in imported_nr_filenames)
+                )
+                has_draft = bool(stmt.get('has_draft', False))
+
+                deferred_count_for_stmt = 0
+                if deferred_db and code:
+                    try:
+                        deferred_count_for_stmt = deferred_db.count_for_statement(
+                            bank_code=code,
+                            period_start=period_start,
+                            period_end=period_end,
+                        )
+                    except Exception as count_err:
+                        logger.warning(
+                            "Could not count deferred rows for %s/%s/%s: %s",
+                            code, period_start, period_end, count_err,
+                        )
+
+                stmt['deferred_count'] = deferred_count_for_stmt
+                stmt['state'] = derive_statement_state(
+                    is_reconciled=is_reconciled,
+                    has_import_record=has_import_record,
+                    has_draft=has_draft,
+                    deferred_count=deferred_count_for_stmt,
+                    extraction_status=stmt.get('extraction_status'),
+                )
 
         # Build message
         bank_count = len(banks_with_statements)
