@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import List, Dict, Optional, Set, Tuple, Any
 import logging
 
 from sql_rag.gemini_throttle import (
@@ -376,7 +376,12 @@ class StatementReconciler:
             'suggested_bank': actual_bank
         }
 
-    def validate_statement_sequence(self, bank_acnt: str, statement_info: StatementInfo) -> Dict[str, Any]:
+    def validate_statement_sequence(
+        self,
+        bank_acnt: str,
+        statement_info: StatementInfo,
+        imported_pending_closings: Optional[Set[float]] = None,
+    ) -> Dict[str, Any]:
         """
         Validate that the statement is the next one in sequence by comparing opening balance
         to Opera's reconciled balance.
@@ -385,10 +390,16 @@ class StatementReconciler:
         - Opening balance = Reconciled balance → PROCESS (correct next statement)
         - Opening balance < Reconciled balance → SKIP (already processed/earlier statement)
         - Opening balance > Reconciled balance → PENDING (future statement, missing one in between)
+          UNLESS the opening matches the closing of a prior statement that has been imported
+          but not yet reconciled (Sequential Statement Gating) — then PROCESS.
 
         Args:
             bank_acnt: The Opera bank account code
             statement_info: Extracted statement info with opening balance
+            imported_pending_closings: Set of closing balances (rounded to 2dp) for statements
+                already imported but not yet reconciled. When the prior statement is imported
+                with deferred rows, its closing chains forward virtually so the next statement
+                can be processed. Pass None or empty to disable this relaxation.
 
         Returns:
             Dict with 'status' (process/skip/pending), 'reconciled_balance', 'opening_balance',
@@ -453,7 +464,25 @@ class StatementReconciler:
                 'message': f"Statement already processed or earlier than current position. Opening balance £{opening_balance:.2f} is less than reconciled balance £{reconciled_balance:.2f}."
             }
         else:
-            # Opening balance is greater than reconciled - missing statement in between
+            # Opening balance is greater than reconciled — by default this means a missing
+            # statement, but Sequential Statement Gating allows it through if the opening
+            # matches the closing of a prior statement that has been imported but not yet
+            # reconciled (i.e. the prior is in 'imported' state, waiting on a deferred row).
+            if imported_pending_closings:
+                target = round(opening_balance, 2)
+                if target in imported_pending_closings:
+                    logger.info(
+                        f"Statement sequence: opening £{opening_balance:.2f} > reconciled £{reconciled_balance:.2f} "
+                        f"BUT matches an imported-pending prior's closing — allowing process (sequential gating)"
+                    )
+                    return {
+                        'status': 'process',
+                        'reconciled_balance': reconciled_balance,
+                        'opening_balance': opening_balance,
+                        'current_balance': current_balance,
+                        'last_statement_number': last_stmt_no,
+                        'sequential_gating': True,
+                    }
             logger.warning(f"Statement pending: opening £{opening_balance:.2f} > reconciled £{reconciled_balance:.2f} (missing statement)")
             return {
                 'status': 'pending',

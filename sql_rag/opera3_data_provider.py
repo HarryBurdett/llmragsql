@@ -5,7 +5,7 @@ Implements OperaDataProvider for Opera 3 FoxPro DBF files using Opera3Reader.
 Performs aggregations in Python since DBF files have no SQL-like aggregation capability.
 """
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Set, Any
 from datetime import date, datetime
 from collections import defaultdict
 import logging
@@ -1593,13 +1593,23 @@ class Opera3DataProvider(OperaDataProvider):
                 "error": str(e)
             }
 
-    def validate_statement_sequence(self, bank_code: str, opening_balance: float) -> Dict:
+    def validate_statement_sequence(
+        self,
+        bank_code: str,
+        opening_balance: float,
+        imported_pending_closings: Optional[Set[float]] = None,
+    ) -> Dict:
         """
         Validate that a statement is the next one in sequence for Opera 3.
 
         Args:
             bank_code: The bank account code
             opening_balance: The statement's opening balance
+            imported_pending_closings: Set of closing balances (rounded to 2dp) for prior
+                statements imported but not yet reconciled. Used by Sequential Statement
+                Gating: when opening > reconciled but matches one of these, status is
+                'process' instead of 'pending' — the prior is treated as already advanced
+                the chain (Stage 4 deferred while waiting on a deferred row).
 
         Returns:
             Dict with 'status' (process/skip/pending), 'reconciled_balance', etc.
@@ -1646,7 +1656,25 @@ class Opera3DataProvider(OperaDataProvider):
                     'message': f"Statement opening balance (£{opening_balance:.2f}) is less than reconciled balance (£{reconciled_balance:.2f})"
                 }
             else:
-                # Opening balance is more than reconciled - missing statement
+                # Opening balance is more than reconciled — by default missing statement,
+                # but Sequential Statement Gating allows it through if the opening matches
+                # an imported-but-not-reconciled prior's closing balance.
+                if imported_pending_closings:
+                    target = round(opening_balance, 2)
+                    if target in imported_pending_closings:
+                        logger.info(
+                            f"Opera 3: opening £{opening_balance:.2f} > reconciled "
+                            f"£{reconciled_balance:.2f} BUT matches an imported-pending "
+                            f"closing — allowing process (sequential gating)"
+                        )
+                        return {
+                            'status': 'process',
+                            'reconciled_balance': reconciled_balance,
+                            'opening_balance': opening_balance,
+                            'current_balance': current_balance,
+                            'last_statement_number': last_stmt_no,
+                            'sequential_gating': True,
+                        }
                 return {
                     'status': 'pending',
                     'reason': 'missing_statement',
