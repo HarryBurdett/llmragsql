@@ -57,6 +57,9 @@ For unmatched lines, you can:
 - **Select a supplier** (posts as Purchase Payment)
 - **Select a nominal account** (posts as Nominal Entry)
 - **Mark as Ignore** (skip — won't post or reconcile)
+- **Defer** (awaiting manual entry in Opera)
+
+**Defer (Awaiting manual entry):** When a bank-statement row reflects a transaction that you know is being entered into Opera manually outside this routine, click **Defer** instead of Assign or Ignore. The row is not posted to Opera, is not added to the permanent ignore list, and does not block you from completing the rest of the reconciliation. On the next scan the row reappears — once the manual entry has been made in Opera it will auto-match like any other transaction. Use Defer (rather than Ignore) so the row is not lost; use Ignore only for genuine non-postings (bank fees, internal transfers handled elsewhere).
 
 ### Stage 3: Import
 
@@ -198,4 +201,4 @@ If an import fails partway through (e.g. network error, database lock):
 
 ---
 
-*Last updated: 2026-04-28*
+*Last updated: 2026-04-30*
