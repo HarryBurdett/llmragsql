@@ -40,3 +40,15 @@ from sql_rag.bank_import import extract_payee_name_full
 ])
 def test_extract_payee_name_full_strips_bank_method_suffix(input_text, expected):
     assert extract_payee_name_full(input_text) == expected
+
+
+from sql_rag.bank_import_opera3 import extract_payee_name_full as extract_payee_name_full_o3
+
+
+def test_opera3_mirror_strips_bank_method_suffix():
+    """Opera 3 mirror must produce the same result as SE for the same input."""
+    assert extract_payee_name_full_o3("Diskel (Faster Payments)") == "Diskel"
+    assert extract_payee_name_full_o3(
+        "P Flannery Plant Hire(oval) Limited (Faster Pay...)"
+    ) == "P Flannery Plant Hire(oval) Limited"
+    assert extract_payee_name_full_o3("Acme (Bristol) Ltd") == "Acme (Bristol) Ltd"
