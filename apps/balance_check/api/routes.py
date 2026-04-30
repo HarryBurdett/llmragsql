@@ -1916,8 +1916,15 @@ async def reconcile_summary():
 
         # ========== 1. DEBTORS CHECK ==========
         try:
-            # Sales Ledger total
-            sl_sql = "SELECT SUM(st_trbal) AS total FROM stran WITH (NOLOCK) WHERE st_trbal <> 0"
+            # Sales Ledger total — exclude orphan stran rows (account no longer in sname).
+            # Mirrors the equivalent filter on the Creditors check below so the two
+            # checks treat data integrity issues consistently.
+            sl_sql = """
+                SELECT SUM(st_trbal) AS total
+                FROM stran WITH (NOLOCK)
+                WHERE st_trbal <> 0
+                  AND RTRIM(st_account) IN (SELECT RTRIM(sn_account) FROM sname WITH (NOLOCK))
+            """
             sl_result = sql_connector.execute_query(sl_sql)
             if hasattr(sl_result, 'to_dict'):
                 sl_result = sl_result.to_dict('records')
@@ -2114,14 +2121,18 @@ async def reconcile_summary():
                     elif vat_type == 'P':
                         input_nominals.add(nominal)
 
-            # Get current year
-            cy_sql = "SELECT MAX(nt_year) AS current_year FROM ntran WITH (NOLOCK)"
+            # Get current calendar year — derived from the latest calendar-year
+            # of nominal activity. Previously this used MAX(nt_year), which is the
+            # FISCAL year integer; nvat is filtered by YEAR(nv_date) (calendar) so
+            # mismatching fiscal vs calendar produced wrong totals on companies
+            # with non-calendar fiscal years.
+            cy_sql = "SELECT MAX(YEAR(nt_date)) AS current_year FROM ntran WITH (NOLOCK)"
             cy_result = sql_connector.execute_query(cy_sql)
             if hasattr(cy_result, 'to_dict'):
                 cy_result = cy_result.to_dict('records')
             current_year = int(cy_result[0]['current_year']) if cy_result and cy_result[0]['current_year'] else datetime.now().year
 
-            # nvat totals
+            # nvat totals — calendar year via YEAR(nv_date)
             nvat_output_sql = f"SELECT SUM(nv_vatval) AS total FROM nvat WITH (NOLOCK) WHERE nv_vattype = 'S' AND YEAR(nv_date) = {current_year}"
             nvat_output_result = sql_connector.execute_query(nvat_output_sql)
             if hasattr(nvat_output_result, 'to_dict'):
@@ -2140,7 +2151,7 @@ async def reconcile_summary():
             nl_vat_total = 0
             all_vat_nominals = output_nominals.union(input_nominals)
             for acnt in all_vat_nominals:
-                nl_sql = f"SELECT SUM(nt_value) AS total FROM ntran WITH (NOLOCK) WHERE nt_acnt = '{acnt}' AND nt_year = {current_year}"
+                nl_sql = f"SELECT SUM(nt_value) AS total FROM ntran WITH (NOLOCK) WHERE nt_acnt = '{acnt}' AND YEAR(nt_date) = {current_year}"
                 nl_result = sql_connector.execute_query(nl_sql)
                 if hasattr(nl_result, 'to_dict'):
                     nl_result = nl_result.to_dict('records')
@@ -3376,7 +3387,16 @@ async def opera3_reconcile_summary(
             sname_records = reader.read_table('sname')
             nacnt_records = reader.read_table('nacnt')
 
-            sl_total = sum(float(r.get('st_trbal', 0) or 0) for r in stran_records if float(r.get('st_trbal', 0) or 0) != 0)
+            # Exclude orphan stran rows whose customer is no longer in sname.
+            # Matches the Opera SE check; ensures both ledgers compare on the
+            # same population.
+            valid_sn_accounts = {(r.get('sn_account') or '').strip().upper() for r in sname_records}
+            sl_total = sum(
+                float(r.get('st_trbal', 0) or 0)
+                for r in stran_records
+                if float(r.get('st_trbal', 0) or 0) != 0
+                and (r.get('st_account') or '').strip().upper() in valid_sn_accounts
+            )
             sname_total = sum(float(r.get('sn_currbal', 0) or 0) for r in sname_records if float(r.get('sn_currbal', 0) or 0) != 0)
 
             nl_debtors_total = 0
@@ -3412,7 +3432,15 @@ async def opera3_reconcile_summary(
             ptran_records = reader.read_table('ptran')
             pname_records = reader.read_table('pname')
 
-            pl_total = sum(float(r.get('pt_trbal', 0) or 0) for r in ptran_records if float(r.get('pt_trbal', 0) or 0) != 0)
+            # Exclude orphan ptran rows whose supplier is no longer in pname.
+            # Matches the Opera SE check.
+            valid_pn_accounts = {(r.get('pn_account') or '').strip().upper() for r in pname_records}
+            pl_total = sum(
+                float(r.get('pt_trbal', 0) or 0)
+                for r in ptran_records
+                if float(r.get('pt_trbal', 0) or 0) != 0
+                and (r.get('pt_account') or '').strip().upper() in valid_pn_accounts
+            )
             pname_total = sum(float(r.get('pn_currbal', 0) or 0) for r in pname_records if float(r.get('pn_currbal', 0) or 0) != 0)
 
             nl_creditors_total = 0
