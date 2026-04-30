@@ -9497,15 +9497,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                             {allTransactionsImported
                               ? `Import complete for "${selectedPdfFile?.filename || selectedEmailStatement?.filename || 'statement'}" — please reconcile`
                               : allAlreadyInOpera
-                                ? (() => {
-                                    const inOpera = alreadyInOperaCount;
-                                    const deferredN = deferredRows.size;
-                                    const parts: string[] = [];
-                                    if (inOpera > 0) parts.push(`${inOpera} already in Opera`);
-                                    if (deferredN > 0) parts.push(`${deferredN} deferred for manual entry`);
-                                    const summary = parts.length > 0 ? parts.join(', ') : 'all transactions handled';
-                                    return `${summary} — nothing to import, proceed to reconcile`;
-                                  })()
+                                ? 'All non-deferred transactions are now in Opera — nothing further to import, proceed to reconcile'
                               : bankImportResult?.success
                                 ? `${bankImportResult.imported_count || 0} imported — select remaining transactions to continue`
                                 : importReadiness?.canImport
@@ -9589,12 +9581,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                               <div className="flex items-center gap-1">
                                 <XCircle className="h-3.5 w-3.5" />
                                 <span>{(alreadyInOperaCount + deferredRows.size) > 0
-                                  ? (() => {
-                                      const parts: string[] = [];
-                                      if (alreadyInOperaCount > 0) parts.push(`${alreadyInOperaCount} already in Opera`);
-                                      if (deferredRows.size > 0) parts.push(`${deferredRows.size} deferred`);
-                                      return `${parts.join(', ')} — nothing new to import`;
-                                    })()
+                                  ? 'All non-deferred transactions are now in Opera — nothing further to import, proceed to reconcile'
                                   : 'No transactions selected for import - check the boxes to include items'}</span>
                               </div>
                             )}
