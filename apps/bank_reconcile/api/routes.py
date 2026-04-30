@@ -11246,28 +11246,59 @@ async def opera3_scan_emails_for_bank_statements(
         total_pdfs_found = 0
         skipped_reasons = []  # Track why statements were filtered out
 
-        # Load reconciled statement keys — skip fully reconciled statements
+        # Load all tracking data in one round-trip (same as SE scan endpoint)
         try:
-            reconciled_keys = email_storage.get_reconciled_statement_keys()
-            reconciled_filenames = email_storage.get_reconciled_filenames()
-        except Exception:
-            reconciled_keys = set()
-            reconciled_filenames = set()
-
-        # Build effective reconciled balance for Opera 3 scan
-        try:
-            _rec_closing = email_storage.get_reconciled_closing_balances()
+            _tracking = email_storage.get_all_statement_tracking_data()
+            reconciled_keys = _tracking['reconciled_keys']
+            reconciled_filenames = _tracking['reconciled_filenames']
+            imported_nr_filenames = _tracking['imported_nr_filenames']
+            cached_stmt_info = _tracking['cached_stmt_info']
+            _rec_closing = _tracking['reconciled_closing_balances']
             _tracked_max = _rec_closing.get(bank_code, 0)
             effective_reconciled_balance = max(reconciled_balance or 0, _tracked_max)
-        except Exception:
+            bank_rec_openings = _tracking['reconciled_opening_balances'].get(bank_code, set())
+        except Exception as _trk_err:
+            logger.warning("Opera 3: Could not load statement tracking data: %s", _trk_err)
+            reconciled_keys = set()
+            reconciled_filenames = set()
+            imported_nr_filenames = set()
+            cached_stmt_info = {}
             effective_reconciled_balance = reconciled_balance
-
-        # Load reconciled opening balances for chain-based completion detection
-        try:
-            _rec_openings = email_storage.get_reconciled_opening_balances()
-            bank_rec_openings = _rec_openings.get(bank_code, set())
-        except Exception:
             bank_rec_openings = set()
+
+        # Sequential gating: a statement imported-but-not-reconciled advances the
+        # chain virtually — its closing is treated as a valid opener for the NEXT
+        # statement even though nk_recbal hasn't moved yet.
+        imported_pending_closings: set = set()
+        try:
+            for fn, info in cached_stmt_info.items():
+                if info.get('bank_code') == 'DEDUP':
+                    continue
+                if info.get('bank_code') != bank_code:
+                    continue
+                if fn in imported_nr_filenames:
+                    _ipc_closing = info.get('closing_balance')
+                    if _ipc_closing is not None:
+                        imported_pending_closings.add(round(float(_ipc_closing), 2))
+        except Exception as _ipc_err:
+            logger.warning("Opera 3: Could not build imported_pending_closings: %s", _ipc_err)
+
+        def _opening_unblocks_chain(opening) -> bool:
+            """True if this opening balance matches a reconciled OR imported-pending
+            closing, i.e. the prior statement is in 'reconciled' or 'imported' state."""
+            if opening is None:
+                return False
+            target = round(float(opening), 2)
+            # Reconciled prior — the existing rule.
+            eff_bal = effective_reconciled_balance if effective_reconciled_balance is not None else reconciled_balance
+            if eff_bal is not None and abs(target - round(float(eff_bal), 2)) <= 0.01:
+                return True
+            if target in bank_rec_openings:
+                return True
+            # Imported-pending prior — new rule.
+            if target in imported_pending_closings:
+                return True
+            return False
 
         for email in result.get('emails', []):
             email_id = email.get('id')
@@ -11382,18 +11413,29 @@ async def opera3_scan_emails_for_bank_statements(
                                                 att['closing_balance'] = float(closing_bal_raw) if closing_bal_raw is not None else None
 
                                                 # Chain check + balance validation
+                                                # Sequential gating: only filter out if the statement's chain is
+                                                # truly reconciled. If its opening matches an imported-pending
+                                                # closing (prior statement imported but not yet reconciled), allow
+                                                # it through — the operator needs to be able to import it next.
                                                 stmt_closing = float(closing_bal_raw) if closing_bal_raw is not None else None
                                                 chain_complete = stmt_closing is not None and round(stmt_closing, 2) in bank_rec_openings
                                                 eff_bal = effective_reconciled_balance if effective_reconciled_balance is not None else reconciled_balance
-                                                if chain_complete or (eff_bal is not None and statement_opening_balance < eff_bal - 0.01):
+                                                # Determine if opening is unblocked by imported-pending prior
+                                                opening_is_unblocked = _opening_unblocks_chain(statement_opening_balance)
+                                                # Only filter out if chain is fully reconciled AND this statement's
+                                                # opening is NOT from an imported-pending prior
+                                                if chain_complete:
                                                     is_valid_statement = False
                                                     validation_status = 'already_processed'
-                                                    if chain_complete:
-                                                        logger.info(f"Opera 3 statement filtered out (chain): closing £{stmt_closing:,.2f} matches reconciled opening")
-                                                    else:
-                                                        logger.info(f"Opera 3 statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f}")
+                                                    logger.info(f"Opera 3 statement filtered out (chain): closing £{stmt_closing:,.2f} matches reconciled opening")
+                                                    skipped_reasons.append(f"Statement {att['filename']}: already processed (chain complete, closing £{stmt_closing:,.2f})")
+                                                elif eff_bal is not None and statement_opening_balance < eff_bal - 0.01 and not opening_is_unblocked:
+                                                    is_valid_statement = False
+                                                    validation_status = 'already_processed'
+                                                    logger.info(f"Opera 3 statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f}")
                                                     skipped_reasons.append(f"Statement {att['filename']}: already processed (opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f})")
 
+                                                if not is_valid_statement:
                                                     try:
                                                         email_storage.record_bank_statement_import(
                                                             bank_code=bank_code,
@@ -11573,6 +11615,14 @@ async def opera3_scan_emails_for_bank_statements(
         else:
             statements_found.sort(key=lambda s: (s.get('period_start') or '9999', s.get('opening_balance') or 0))
 
+        # --- Sequential statement gating: build deferred-count lookup ---
+        deferred_db = None
+        try:
+            deferred_path = get_current_db_path("bank_reconcile/deferred_transactions.db")
+            deferred_db = DeferredTransactionsDB(deferred_path)
+        except Exception as _defer_err:
+            logger.warning("Opera 3: Could not open deferred_transactions DB for scan: %s", _defer_err)
+
         # Add sequence numbers and detect missing statements
         expected_opening = reconciled_balance if reconciled_balance else None
         missing_statements = []
@@ -11607,6 +11657,44 @@ async def opera3_scan_emails_for_bank_statements(
 
             if closing is not None:
                 expected_opening = closing
+
+            # --- Sequential statement gating: derive state + deferred_count ---
+            stmt_period_start = stmt.get('period_start')
+            stmt_period_end = stmt.get('period_end')
+            is_reconciled = bool(stmt.get('is_reconciled', False))
+            stmt_filename = None
+            for att in stmt.get('attachments', []):
+                if att.get('filename'):
+                    stmt_filename = att['filename']
+                    break
+            has_import_record = bool(
+                is_reconciled
+                or (stmt_filename and stmt_filename in imported_nr_filenames)
+            )
+            has_draft = bool(stmt.get('has_draft', False))
+
+            deferred_count_for_stmt = 0
+            if deferred_db and bank_code:
+                try:
+                    deferred_count_for_stmt = deferred_db.count_for_statement(
+                        bank_code=bank_code,
+                        period_start=stmt_period_start,
+                        period_end=stmt_period_end,
+                    )
+                except Exception as _count_err:
+                    logger.warning(
+                        "Opera 3: Could not count deferred rows for %s/%s/%s: %s",
+                        bank_code, stmt_period_start, stmt_period_end, _count_err,
+                    )
+
+            stmt['deferred_count'] = deferred_count_for_stmt
+            stmt['state'] = derive_statement_state(
+                is_reconciled=is_reconciled,
+                has_import_record=has_import_record,
+                has_draft=has_draft,
+                deferred_count=deferred_count_for_stmt,
+                extraction_status=stmt.get('extraction_status'),
+            )
 
         # Build response message
         message = None
