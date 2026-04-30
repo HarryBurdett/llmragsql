@@ -2140,6 +2140,26 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     );
     if (toImport.length === 0) return;
 
+    // Audit deferred rows (fire-and-forget — must not block the import)
+    if (deferredLines.size > 0) {
+      const deferredItems = Array.from(deferredLines)
+        .map(stmtLine => {
+          const row = enrichedUnmatched.find(u => u.statement_line === stmtLine);
+          return row ? {
+            statement_date: row.statement_date || '',
+            amount: row.statement_amount || 0,
+            description: row.statement_description || '',
+          } : null;
+        })
+        .filter(Boolean);
+
+      authFetch(`/api/reconcile/bank/${selectedBank}/audit-defer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: deferredItems }),
+      }).catch(err => console.warn('Defer audit failed (non-blocking):', err));
+    }
+
     setIsBatchImporting(true);
     setBatchImportProgress({ total: toImport.length, completed: 0, errors: [] });
 

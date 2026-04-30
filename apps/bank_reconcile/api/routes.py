@@ -14839,3 +14839,68 @@ async def opera3_create_bank_transfer(
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
+
+# ---------------------------------------------------------------------------
+# Audit-defer endpoint
+# ---------------------------------------------------------------------------
+
+class AuditDeferItem(BaseModel):
+    """One deferred statement row to record in the audit DB."""
+    statement_date: Optional[str] = None
+    amount: Optional[float] = None
+    description: Optional[str] = None
+
+
+class AuditDeferRequest(BaseModel):
+    """Request body for /api/reconcile/bank/{bank_code}/audit-defer."""
+    items: List[AuditDeferItem] = []
+
+
+@router.post("/api/reconcile/bank/{bank_code}/audit-defer")
+async def audit_defer_transactions(bank_code: str, body: AuditDeferRequest):
+    """
+    Write one audit row per deferred statement line for the reconcile page.
+
+    Called fire-and-forget by BankStatementReconcile before it starts its
+    per-row create-entry loop.  The reconcile page uses a different import
+    path (/api/cashbook/create-entry) so it cannot piggyback on the
+    audit already written by import-with-overrides.
+
+    Audit failures MUST NOT fail the endpoint — we log a warning and return
+    success with the actual number of rows written.
+    """
+    _sync_from_main()
+
+    audited = 0
+    try:
+        from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+        from sql_rag.company_data import get_current_db_path
+
+        audit_path = get_current_db_path("bank_reconcile/deferred_transactions.db")
+        if audit_path is None:
+            # No company context — use a fallback path so the endpoint still works
+            import tempfile
+            import os as _os
+            audit_path = _os.path.join(tempfile.gettempdir(), "deferred_transactions.db")
+
+        audit_db = DeferredTransactionsDB(str(audit_path))
+
+        for item in body.items:
+            try:
+                audit_db.record(
+                    bank_code=bank_code,
+                    statement_date=item.statement_date or None,
+                    amount=float(item.amount) if item.amount is not None else None,
+                    description=(item.description or '')[:255],
+                    deferred_by="admin",
+                )
+                audited += 1
+            except Exception as row_err:
+                logger.warning(
+                    "audit-defer: failed to write row for bank=%s amount=%s: %s",
+                    bank_code, item.amount, row_err,
+                )
+    except Exception as audit_err:
+        logger.warning("audit-defer: audit setup failed for bank=%s: %s", bank_code, audit_err)
+
+    return {"success": True, "audited": audited}
