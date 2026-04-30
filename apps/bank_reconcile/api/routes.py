@@ -6378,10 +6378,8 @@ async def scan_all_banks_for_statements(
                                                 stmt_entry['category'] = 'already_processed'
                                                 stmt_entry['status'] = 'already_processed'
                                                 logger.info(f"Scan-all: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
-                                            elif _opening_unblocks_chain(matched_bank_code, opening):
-                                                # Opening chains from a reconciled or imported-pending prior
+                                            else:
                                                 stmt_entry['status'] = 'ready'
-                                            # else: leave status as-is (imported / pending) — out-of-sequence statement
 
                                         pdf_extracted = True
                                         stmt_entry['extraction_status'] = 'cached'
@@ -6713,10 +6711,8 @@ async def scan_all_banks_for_statements(
                                     stmt_entry['category'] = 'already_processed'
                                     stmt_entry['status'] = 'already_processed'
                                     logger.info(f"Folder scan: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
-                                elif _opening_unblocks_chain(matched_bank_code, opening):
-                                    # Opening chains from a reconciled or imported-pending prior
+                                else:
                                     stmt_entry['status'] = 'ready'
-                                # else: leave status as-is — out-of-sequence statement
                     except Exception as e:
                         logger.warning(f"Could not read/validate PDF file {filename}: {e}")
 
