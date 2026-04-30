@@ -386,12 +386,12 @@ async def reconcile_creditors():
             "nominal_ledger_total": round(nl_total, 2),
             "posted_variance": round(variance_posted, 2),
             "posted_variance_abs": round(variance_posted_abs, 2),
-            "reconciled": variance_abs < 1.00,
+            "reconciled": variance_abs < 0.005,
             "has_pending_transfers": pending_count > 0
         }
 
         # Determine status based on total PL vs NL
-        if variance_abs < 1.00:
+        if variance_abs < 0.005:
             reconciliation["status"] = "RECONCILED"
             if pending_count > 0:
                 reconciliation["message"] = f"Purchase Ledger reconciles to Nominal Ledger. {pending_count} transactions (£{abs(pending_total):,.2f}) in transfer file pending."
@@ -1216,12 +1216,12 @@ async def reconcile_debtors():
             "nominal_ledger_total": round(nl_total, 2),
             "posted_variance": round(variance_posted, 2),
             "posted_variance_abs": round(variance_posted_abs, 2),
-            "reconciled": variance_abs < 1.00,
+            "reconciled": variance_abs < 0.005,
             "has_pending_transfers": sl_pending_count > 0
         }
 
         # Determine status based on total SL vs NL
-        if variance_abs < 1.00:
+        if variance_abs < 0.005:
             reconciliation["status"] = "RECONCILED"
             if sl_pending_count > 0:
                 reconciliation["message"] = f"Sales Ledger reconciles to Nominal Ledger. {sl_pending_count} transactions (£{abs(sl_pending_total):,.2f}) in transfer file pending."
@@ -1780,25 +1780,25 @@ async def reconcile_trial_balance():
                 "debits": round(total_bf_debits, 2),
                 "credits": round(total_bf_credits, 2),
                 "variance": round(bf_variance, 2),
-                "balanced": bf_variance < 1.00
+                "balanced": bf_variance < 0.005
             },
             "current_year": {
                 "debits": round(total_current_debits, 2),
                 "credits": round(total_current_credits, 2),
                 "variance": round(current_variance, 2),
-                "balanced": current_variance < 1.00
+                "balanced": current_variance < 0.005
             },
             "closing": {
                 "debits": round(total_closing_debits, 2),
                 "credits": round(total_closing_credits, 2),
                 "variance": round(closing_variance, 2),
-                "balanced": closing_variance < 1.00
+                "balanced": closing_variance < 0.005
             },
             "account_count": len(accounts)
         }
 
         # Overall status
-        all_balanced = (bf_variance < 1.00 and current_variance < 1.00 and closing_variance < 1.00)
+        all_balanced = (bf_variance < 0.005 and current_variance < 0.005 and closing_variance < 0.005)
 
         if all_balanced:
             result["status"] = "BALANCED"
@@ -1949,13 +1949,13 @@ async def reconcile_summary():
                 nl_debtors_result = nl_debtors_result.to_dict('records')
             nl_debtors_total = float(nl_debtors_result[0]['total'] or 0) if nl_debtors_result and nl_debtors_result[0]['total'] else 0
 
-            # Check stran vs sname
+            # Check stran vs sname — exact to the penny (no tolerance: this is a finance system).
             sl_vs_sname_variance = abs(sl_total - sname_total)
-            sl_vs_sname_ok = sl_vs_sname_variance < 1.00
+            sl_vs_sname_ok = round(sl_vs_sname_variance, 2) == 0.0
 
-            # Check stran vs NL
+            # Check stran vs NL — exact to the penny.
             sl_vs_nl_variance = abs(sl_total - nl_debtors_total)
-            sl_vs_nl_ok = sl_vs_nl_variance < 1.00
+            sl_vs_nl_ok = round(sl_vs_nl_variance, 2) == 0.0
 
             debtors_ok = sl_vs_sname_ok and sl_vs_nl_ok
 
@@ -2014,13 +2014,13 @@ async def reconcile_summary():
                 nl_creditors_result = nl_creditors_result.to_dict('records')
             nl_creditors_total = -float(nl_creditors_result[0]['total'] or 0) if nl_creditors_result and nl_creditors_result[0]['total'] else 0
 
-            # Check ptran vs pname
+            # Check ptran vs pname — exact to the penny.
             pl_vs_pname_variance = abs(pl_total - pname_total)
-            pl_vs_pname_ok = pl_vs_pname_variance < 1.00
+            pl_vs_pname_ok = round(pl_vs_pname_variance, 2) == 0.0
 
-            # Check ptran vs NL
+            # Check ptran vs NL — exact to the penny.
             pl_vs_nl_variance = abs(pl_total - nl_creditors_total)
-            pl_vs_nl_ok = pl_vs_nl_variance < 1.00
+            pl_vs_nl_ok = round(pl_vs_nl_variance, 2) == 0.0
 
             creditors_ok = pl_vs_pname_ok and pl_vs_nl_ok
 
@@ -2074,9 +2074,9 @@ async def reconcile_summary():
                 nl_bal = float(nl_result[0]['total'] or 0) if nl_result and nl_result[0]['total'] else 0
                 nl_bank_total += nl_bal
 
-            # Check bank master vs NL
+            # Check bank master vs NL — exact to the penny.
             bank_variance = abs(bank_master_total - nl_bank_total)
-            cashbook_ok = bank_variance < 1.00
+            cashbook_ok = round(bank_variance, 2) == 0.0
 
             summary["checks"].append({
                 "name": "Cashbook",
@@ -2157,8 +2157,9 @@ async def reconcile_summary():
                     nl_result = nl_result.to_dict('records')
                 nl_vat_total += -float(nl_result[0]['total'] or 0) if nl_result and nl_result[0]['total'] else 0
 
+            # VAT check — exact to the penny.
             vat_variance = abs(nvat_net - nl_vat_total)
-            vat_ok = vat_variance < 1.00
+            vat_ok = round(vat_variance, 2) == 0.0
 
             summary["checks"].append({
                 "name": "VAT",
@@ -3096,7 +3097,7 @@ async def reconcile_vat():
             "vat_bank_total": round(vat_bank_total, 2),
             "expected_balance": round(total_uncommitted_net - vat_bank_total, 2),
             "balance_variance": round(adjusted_balance - (total_uncommitted_net - vat_bank_total), 2),
-            "reconciled": abs(adjusted_balance - (total_uncommitted_net - vat_bank_total)) < 1.00
+            "reconciled": abs(adjusted_balance - (total_uncommitted_net - vat_bank_total)) < 0.005
         }
 
         # ==========================================
@@ -3122,7 +3123,7 @@ async def reconcile_vat():
                 "nl_net_movement": round(quarter_nl_output_total - quarter_nl_input_total, 2),
                 "variance_amount": round(quarter_variance, 2),
                 "variance_absolute": round(quarter_variance_abs, 2),
-                "reconciled": quarter_variance_abs < 1.00
+                "reconciled": quarter_variance_abs < 0.005
             },
             "year_to_date": {
                 "nvat_output_total": round(ytd_output_total, 2),
@@ -3131,12 +3132,12 @@ async def reconcile_vat():
                 "nominal_ledger_balance": round(nl_total, 2),
                 "variance_amount": round(ytd_variance, 2),
                 "variance_absolute": round(ytd_variance_abs, 2),
-                "reconciled": ytd_variance_abs < 1.00
+                "reconciled": ytd_variance_abs < 0.005
             }
         }
 
         # Overall status based on quarter reconciliation (primary focus)
-        if quarter_variance_abs < 1.00:
+        if quarter_variance_abs < 0.005:
             reconciliation["status"] = "RECONCILED"
             reconciliation["message"] = f"{quarter_info['current_quarter']}: Uncommitted VAT (£{uncommitted_net:,.2f}) reconciles to NL movements"
         else:
@@ -3303,7 +3304,7 @@ async def opera3_reconcile_trial_balance(
         bf_variance = abs(total_bf_debits - total_bf_credits)
         current_variance = abs(total_ytd_debits - total_ytd_credits)
         closing_variance = abs(total_closing_debits - total_closing_credits)
-        all_balanced = bf_variance < 1.00 and current_variance < 1.00 and closing_variance < 1.00
+        all_balanced = bf_variance < 0.005 and current_variance < 0.005 and closing_variance < 0.005
 
         result = {
             "success": True,
@@ -3315,19 +3316,19 @@ async def opera3_reconcile_trial_balance(
                     "debits": round(total_bf_debits, 2),
                     "credits": round(total_bf_credits, 2),
                     "variance": round(bf_variance, 2),
-                    "balanced": bf_variance < 1.00
+                    "balanced": bf_variance < 0.005
                 },
                 "current_year": {
                     "debits": round(total_ytd_debits, 2),
                     "credits": round(total_ytd_credits, 2),
                     "variance": round(current_variance, 2),
-                    "balanced": current_variance < 1.00
+                    "balanced": current_variance < 0.005
                 },
                 "closing": {
                     "debits": round(total_closing_debits, 2),
                     "credits": round(total_closing_credits, 2),
                     "variance": round(closing_variance, 2),
-                    "balanced": closing_variance < 1.00
+                    "balanced": closing_variance < 0.005
                 },
                 "account_count": len(accounts)
             },
@@ -3406,9 +3407,12 @@ async def opera3_reconcile_summary(
                         nl_debtors_total = float(acc.get('na_ytddr', 0) or 0) - float(acc.get('na_ytdcr', 0) or 0)
                         break
 
+            # Exact to the penny — finance system, no tolerance.
             sl_vs_sname = abs(sl_total - sname_total)
             sl_vs_nl = abs(sl_total - nl_debtors_total)
-            debtors_ok = sl_vs_sname < 1.00 and sl_vs_nl < 1.00
+            sl_vs_sname_ok = round(sl_vs_sname, 2) == 0.0
+            sl_vs_nl_ok = round(sl_vs_nl, 2) == 0.0
+            debtors_ok = sl_vs_sname_ok and sl_vs_nl_ok
 
             summary["checks"].append({
                 "name": "Debtors",
@@ -3420,8 +3424,8 @@ async def opera3_reconcile_summary(
                     {"label": f"Nominal ({debtors_control})", "value": round(nl_debtors_total, 2)},
                 ],
                 "variances": [
-                    {"label": "SL vs Master", "value": round(sl_vs_sname, 2), "ok": sl_vs_sname < 1.00},
-                    {"label": "SL vs NL", "value": round(sl_vs_nl, 2), "ok": sl_vs_nl < 1.00},
+                    {"label": "SL vs Master", "value": round(sl_vs_sname, 2), "ok": sl_vs_sname_ok},
+                    {"label": "SL vs NL", "value": round(sl_vs_nl, 2), "ok": sl_vs_nl_ok},
                 ]
             })
         except Exception as e:
@@ -3450,9 +3454,12 @@ async def opera3_reconcile_summary(
                         nl_creditors_total = -(float(acc.get('na_ytddr', 0) or 0) - float(acc.get('na_ytdcr', 0) or 0))
                         break
 
+            # Exact to the penny — finance system, no tolerance.
             pl_vs_pname = abs(pl_total - pname_total)
             pl_vs_nl = abs(pl_total - nl_creditors_total)
-            creditors_ok = pl_vs_pname < 1.00 and pl_vs_nl < 1.00
+            pl_vs_pname_ok = round(pl_vs_pname, 2) == 0.0
+            pl_vs_nl_ok = round(pl_vs_nl, 2) == 0.0
+            creditors_ok = pl_vs_pname_ok and pl_vs_nl_ok
 
             summary["checks"].append({
                 "name": "Creditors",
@@ -3464,8 +3471,8 @@ async def opera3_reconcile_summary(
                     {"label": f"Nominal ({creditors_control})", "value": round(nl_creditors_total, 2)},
                 ],
                 "variances": [
-                    {"label": "PL vs Master", "value": round(pl_vs_pname, 2), "ok": pl_vs_pname < 1.00},
-                    {"label": "PL vs NL", "value": round(pl_vs_nl, 2), "ok": pl_vs_nl < 1.00},
+                    {"label": "PL vs Master", "value": round(pl_vs_pname, 2), "ok": pl_vs_pname_ok},
+                    {"label": "PL vs NL", "value": round(pl_vs_nl, 2), "ok": pl_vs_nl_ok},
                 ]
             })
         except Exception as e:
@@ -3488,8 +3495,9 @@ async def opera3_reconcile_summary(
                         nl_bank_total += nl_bal
                         break
 
+            # Exact to the penny — finance system, no tolerance.
             bank_variance = abs(bank_master_total - nl_bank_total)
-            cashbook_ok = bank_variance < 1.00
+            cashbook_ok = round(bank_variance, 2) == 0.0
 
             summary["checks"].append({
                 "name": "Cashbook",
@@ -3606,7 +3614,7 @@ async def opera3_reconcile_vat(
                     "net_liability": round(net_liability, 2)
                 }
             },
-            "status": "RECONCILED" if abs(net_liability) < 1.00 else "DATA_AVAILABLE",
+            "status": "RECONCILED" if abs(net_liability) < 0.005 else "DATA_AVAILABLE",
             "message": f"Uncommitted VAT: Output £{output_total:,.2f}, Input £{input_total:,.2f}, Net £{net_liability:,.2f}"
         }
 
