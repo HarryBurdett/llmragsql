@@ -2156,22 +2156,18 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
       <td className="px-4 py-2 text-right">
         <div className="flex items-center gap-1.5 justify-end">
           {isImportedWithData ? (
+            // In-progress import: keep the workflow simple — Process re-enters
+            // Imports.tsx (resuming any unposted lines from the saved draft),
+            // Reconcile takes them to Stage 4. No "Continue Import" or "Clear"
+            // — those were redundant labels for the same Process action.
             <>
-              {onClearStatement && (
-                <button onClick={() => onClearStatement(inProgressData)}
-                  className="px-2.5 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600"
-                  title="Clear import tracking data and start over">Clear</button>
-              )}
-              {hasPartialImport && onContinueImport && (
-                <button onClick={() => onContinueImport(inProgressData)}
-                  className="px-2.5 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
-                  title={`${inProgressData.stored_transaction_count - inProgressData.transactions_imported} lines not yet posted to Opera`}>
-                  Continue Import <ArrowRight className="h-3 w-3" />
-                </button>
-              )}
+              <button onClick={() => onContinueImport && onContinueImport(inProgressData)}
+                className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
+                Process <ArrowRight className="h-3 w-3" />
+              </button>
               {onResumeReconcile && (
                 <button onClick={() => onResumeReconcile(inProgressData)}
-                  className="px-2.5 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                  className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
                   Reconcile <ArrowRight className="h-3 w-3" />
                 </button>
               )}
