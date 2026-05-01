@@ -2046,12 +2046,12 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
   bankExtractionComplete?: boolean;
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  // 'Partial' = unfinished work that still needs a Process click. Deferred
-  // rows are deliberately unposted so they count as 'decided': statement is
-  // fully decided when (imported + deferred) === total.
+  // Process button stays available while there's anything not yet posted to
+  // Opera — including deferred rows. Deferred is a pending decision, not a
+  // resolved one: the operator may want to re-run Analyse later to pick up
+  // a previously-deferred row that's since been entered in Opera.
   const hasPartialImport = inProgressData
-    && (inProgressData.transactions_imported + (stmt.deferred_count ?? 0))
-       < inProgressData.stored_transaction_count;
+    && inProgressData.transactions_imported < inProgressData.stored_transaction_count;
   const isImportedWithData = stmt.status === 'imported' && inProgressData;
 
   const hasPartialReconcile = inProgressData && (inProgressData.reconciled_count || 0) > 0;
