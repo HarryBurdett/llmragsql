@@ -417,6 +417,45 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     });
   }, [deferredItemsQuery.data, enrichedUnmatched]);
 
+  // Auto-clean stale defer audit rows: when the matcher pairs a previously-
+  // deferred bank line with an Opera entry (the operator entered it manually),
+  // the audit row's purpose is done. Drop it silently so deferred_count drops
+  // to 0 and the statement's state cleanly transitions to 'reconciled' on
+  // the next scan. No UI action — just bookkeeping.
+  useEffect(() => {
+    if (!deferredItemsQuery.data?.items || deferredItemsQuery.data.items.length === 0) return;
+    if (!matchingResult) return;
+    const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const dateOnly = (s: string) => (s || '').split('T')[0];
+    const matchedKeys = new Set<string>();
+    const collect = (e: { statement_date: string | null; statement_amount: number; statement_description: string; statement_reference?: string }) => {
+      const key = `${dateOnly(e.statement_date || '')}|${Math.round((e.statement_amount || 0) * 100) / 100}|${norm(e.statement_description || e.statement_reference || '')}`;
+      matchedKeys.add(key);
+    };
+    (matchingResult.auto_matched || []).forEach(collect);
+    (matchingResult.suggested_matched || []).forEach(collect);
+    const stale: number[] = [];
+    for (const it of deferredItemsQuery.data.items) {
+      const k = `${dateOnly(it.statement_date)}|${Math.round(it.amount * 100) / 100}|${norm(it.description)}`;
+      if (matchedKeys.has(k)) stale.push(it.id);
+    }
+    if (stale.length === 0) return;
+    fetch(`/api/reconcile/bank/${selectedBank}/deferred-items`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`,
+      },
+      credentials: 'include',
+      body: JSON.stringify({ ids: stale }),
+    })
+      .then(() => {
+        console.info(`[deferred] auto-cleaned ${stale.length} audit row(s) for now-matched lines`);
+        queryClient.invalidateQueries({ queryKey: ['deferredItems', selectedBank] });
+      })
+      .catch(err => console.warn('Auto-clean defer audit failed (non-blocking):', err));
+  }, [matchingResult, deferredItemsQuery.data, selectedBank, queryClient]);
+
   const [isBatchImporting, setIsBatchImporting] = useState(false);
   const [batchImportProgress, setBatchImportProgress] = useState<{
     total: number;
