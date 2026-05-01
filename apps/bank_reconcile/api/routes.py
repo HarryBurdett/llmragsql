@@ -627,13 +627,24 @@ async def get_bank_reconciliation_status(
         # broken).
         try:
             if rec_in_progress.get('in_progress') and email_storage:
-                nr_filenames = email_storage.get_imported_not_reconciled_filenames()
-                if nr_filenames:
-                    cached = email_storage.get_cached_statement_info()
-                    pending_files = [
-                        fn for fn in nr_filenames
-                        if cached.get(fn, {}).get('bank_code') == bank_code
-                    ]
+                # Query bank_statement_imports directly for this bank with
+                # is_reconciled=0 — bypasses the stricter sort_code/account
+                # filters in get_cached_statement_info() so a row missing
+                # those columns still surfaces here.
+                pending_files: list = []
+                with email_storage._get_connection() as _conn:
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        """
+                        SELECT DISTINCT filename FROM bank_statement_imports
+                        WHERE bank_code = ?
+                          AND COALESCE(is_reconciled, 0) = 0
+                          AND target_system NOT IN ('archived', 'deleted', 'retained')
+                          AND filename IS NOT NULL
+                        """,
+                        (bank_code,),
+                    )
+                    pending_files = [r['filename'] for r in _cur.fetchall()]
                     if pending_files:
                         n_partial = rec_in_progress.get('partial_entries', 0)
                         names = ', '.join(pending_files[:2])
@@ -11169,13 +11180,20 @@ async def opera3_bank_reconciliation_status(
         # vs a subsequent statement in the chain.
         try:
             if result.get('reconciliation_in_progress') and email_storage:
-                nr_filenames = email_storage.get_imported_not_reconciled_filenames()
-                if nr_filenames:
-                    cached = email_storage.get_cached_statement_info()
-                    pending_files = [
-                        fn for fn in nr_filenames
-                        if cached.get(fn, {}).get('bank_code') == bank_code
-                    ]
+                pending_files: list = []
+                with email_storage._get_connection() as _conn:
+                    _cur = _conn.cursor()
+                    _cur.execute(
+                        """
+                        SELECT DISTINCT filename FROM bank_statement_imports
+                        WHERE bank_code = ?
+                          AND COALESCE(is_reconciled, 0) = 0
+                          AND target_system NOT IN ('archived', 'deleted', 'retained')
+                          AND filename IS NOT NULL
+                        """,
+                        (bank_code,),
+                    )
+                    pending_files = [r['filename'] for r in _cur.fetchall()]
                     if pending_files:
                         n_partial = result.get('partial_entries', 0)
                         names = ', '.join(pending_files[:2])
