@@ -5399,18 +5399,33 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         </div>
       </div>
 
-      {/* Warning: Reconciliation in progress in Opera */}
+      {/* Warning: Reconciliation in progress in Opera.
+          When sequential_gating is set, the partial markers belong to a prior
+          statement awaiting a deferred-row resolution — show as informational
+          amber rather than alarming red. */}
       {reconciliationStatus?.reconciliation_in_progress && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <h3 className="text-sm font-semibold text-red-800">Reconciliation In Progress in Opera</h3>
-            <p className="text-sm text-red-700 mt-0.5">
-              {reconciliationStatus.reconciliation_in_progress_message ||
-               `There are ${reconciliationStatus.partial_entries || 0} entries marked as reconciled but not yet posted in Opera. Please complete or clear the reconciliation in Opera before importing new statements.`}
-            </p>
+        reconciliationStatus.sequential_gating ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-amber-800">Awaiting deferred row in prior statement</h3>
+              <p className="text-sm text-amber-700 mt-0.5">
+                {reconciliationStatus.reconciliation_in_progress_message}
+              </p>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-red-800">Reconciliation In Progress in Opera</h3>
+              <p className="text-sm text-red-700 mt-0.5">
+                {reconciliationStatus.reconciliation_in_progress_message ||
+                 `There are ${reconciliationStatus.partial_entries || 0} entries marked as reconciled but not yet posted in Opera. Please complete or clear the reconciliation in Opera before importing new statements.`}
+              </p>
+            </div>
+          </div>
+        )
       )}
 
       {/* Import Type Selector - hidden in bankRecOnly mode */}

@@ -615,6 +615,36 @@ async def get_bank_reconciliation_status(bank_code: str):
         reconciler = StatementReconciler(sql_connector, config=config)
         rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
 
+        # Sequential Statement Gating: if this bank has any imported-but-not-
+        # reconciled statement, the partial reconciliation markers in Opera
+        # belong to that prior statement (waiting on a deferred-row
+        # resolution). Reword the warning so the operator understands this is
+        # the expected state and not an abandoned reconciliation that needs
+        # fixing in Opera.
+        try:
+            if rec_in_progress.get('in_progress') and email_storage:
+                nr_filenames = email_storage.get_imported_not_reconciled_filenames()
+                if nr_filenames:
+                    cached = email_storage.get_cached_statement_info()
+                    pending_files = [
+                        fn for fn in nr_filenames
+                        if cached.get(fn, {}).get('bank_code') == bank_code
+                    ]
+                    if pending_files:
+                        n_partial = rec_in_progress.get('partial_entries', 0)
+                        names = ', '.join(pending_files[:2])
+                        more = f" (+{len(pending_files)-2} more)" if len(pending_files) > 2 else ''
+                        rec_in_progress['message'] = (
+                            f"{n_partial} partial reconciliation markers belong to "
+                            f"statement {names}{more}, which is awaiting a deferred-row "
+                            f"resolution. They will clear automatically when that "
+                            f"statement reconciles. You can safely continue with this "
+                            f"statement."
+                        )
+                        rec_in_progress['sequential_gating'] = True
+        except Exception as _e:
+            logger.warning(f"Sequential-gating message rewrite failed: {_e}")
+
         return {
             "success": True,
             "reconciliation_in_progress": rec_in_progress.get('in_progress', False),
@@ -11112,6 +11142,33 @@ async def opera3_bank_reconciliation_status(
 
         provider = Opera3DataProvider(data_path)
         result = provider.get_bank_reconciliation_status(bank_code)
+
+        # Sequential Statement Gating: reword 'reconciliation_in_progress'
+        # message when the bank has imported-but-not-reconciled statement(s)
+        # — the partial markers are expected while a deferred row is pending.
+        try:
+            if result.get('reconciliation_in_progress') and email_storage:
+                nr_filenames = email_storage.get_imported_not_reconciled_filenames()
+                if nr_filenames:
+                    cached = email_storage.get_cached_statement_info()
+                    pending_files = [
+                        fn for fn in nr_filenames
+                        if cached.get(fn, {}).get('bank_code') == bank_code
+                    ]
+                    if pending_files:
+                        n_partial = result.get('partial_entries', 0)
+                        names = ', '.join(pending_files[:2])
+                        more = f" (+{len(pending_files)-2} more)" if len(pending_files) > 2 else ''
+                        result['reconciliation_in_progress_message'] = (
+                            f"{n_partial} partial reconciliation markers belong to "
+                            f"statement {names}{more}, which is awaiting a deferred-row "
+                            f"resolution. They will clear automatically when that "
+                            f"statement reconciles. You can safely continue with this "
+                            f"statement."
+                        )
+                        result['sequential_gating'] = True
+        except Exception as _e:
+            logger.warning(f"Opera 3 sequential-gating message rewrite failed: {_e}")
 
         return result
 
