@@ -2046,17 +2046,8 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
   bankExtractionComplete?: boolean;
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  // Treat deferred rows as "accounted for" — a statement where every row is
-  // either imported OR deferred is NOT a partial import; it's fully decided
-  // and ready to reconcile (the deferred ones are deliberately unposted).
-  const hasPartialImport = inProgressData
-    && (inProgressData.transactions_imported + (stmt.deferred_count ?? 0))
-       < inProgressData.stored_transaction_count;
-  // Only show the in-progress UI variant (Continue Import + Clear + Reconcile)
-  // when there is genuinely unfinished work. Once everything is decided
-  // (imported + deferred = total), fall through to the standard
-  // Process + Reconcile buttons used everywhere else.
-  const isImportedWithData = stmt.status === 'imported' && inProgressData && hasPartialImport;
+  const isImportedWithData = stmt.status === 'imported' && inProgressData;
+  const hasPartialImport = inProgressData && inProgressData.transactions_imported < inProgressData.stored_transaction_count;
 
   const hasPartialReconcile = inProgressData && (inProgressData.reconciled_count || 0) > 0;
 
@@ -2156,44 +2147,31 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
       <td className="px-4 py-2 text-right">
         <div className="flex items-center gap-1.5 justify-end">
           {isImportedWithData ? (
-            // In-progress import: keep the workflow simple — Process re-enters
-            // Imports.tsx (resuming any unposted lines from the saved draft),
-            // Reconcile takes them to Stage 4. No "Continue Import" or "Clear"
-            // — those were redundant labels for the same Process action.
             <>
-              <button onClick={() => onContinueImport && onContinueImport(inProgressData)}
-                className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
-                Process <ArrowRight className="h-3 w-3" />
-              </button>
+              {onClearStatement && (
+                <button onClick={() => onClearStatement(inProgressData)}
+                  className="px-2.5 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600"
+                  title="Clear import tracking data and start over">Clear</button>
+              )}
+              {hasPartialImport && onContinueImport && (
+                <button onClick={() => onContinueImport(inProgressData)}
+                  className="px-2.5 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
+                  title={`${inProgressData.stored_transaction_count - inProgressData.transactions_imported} lines not yet posted to Opera`}>
+                  Continue Import <ArrowRight className="h-3 w-3" />
+                </button>
+              )}
               {onResumeReconcile && (
                 <button onClick={() => onResumeReconcile(inProgressData)}
-                  className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                  className="px-2.5 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
                   Reconcile <ArrowRight className="h-3 w-3" />
                 </button>
               )}
             </>
           ) : onReconcile ? (
-            // Imported statements: Process is also available so the operator
-            // can re-enter the Imports page and re-run Analyse — useful when
-            // a previously-deferred row has since been entered in Opera and
-            // the matcher should re-pair it.
-            stmt.state === 'imported' && (stmt.deferred_count ?? 0) > 0 ? (
-              <>
-                <button onClick={onProcess}
-                  className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
-                  Process <ArrowRight className="h-3 w-3" />
-                </button>
-                <button onClick={onReconcile}
-                  className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
-                  Reconcile <ArrowRight className="h-3 w-3" />
-                </button>
-              </>
-            ) : (
-              <button onClick={onReconcile}
-                className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
-                Reconcile <ArrowRight className="h-3 w-3" />
-              </button>
-            )
+            <button onClick={onReconcile}
+              className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+              Reconcile <ArrowRight className="h-3 w-3" />
+            </button>
           ) : (
             <button onClick={onProcess} disabled={!canProcess}
               className={`px-3 py-1 text-xs font-medium text-white rounded flex items-center gap-1 ${
