@@ -3416,7 +3416,28 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
         if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
         if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
-        if (edits.deferredRows) setDeferredRows(new Set(edits.deferredRows));
+        if (edits.deferredRows) {
+          // Restore the deferred set, then drop any row that came back from
+          // analyse with a confident Opera match. Operator's mental model:
+          // "deferred items that are now in Opera should just be processed".
+          const matchedRows = new Set<number>([
+            ...enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).map((t: any) => t.row),
+            ...enhancedPreview.matched_payments.filter((t: any) => !t.is_duplicate).map((t: any) => t.row),
+            ...((enhancedPreview.matched_refunds || []).filter((t: any) => !t.is_duplicate).map((t: any) => t.row)),
+          ]);
+          const restoredDeferred = new Set<number>(edits.deferredRows as number[]);
+          let cleared = 0;
+          for (const r of restoredDeferred) {
+            if (matchedRows.has(r)) {
+              restoredDeferred.delete(r);
+              cleared++;
+            }
+          }
+          setDeferredRows(restoredDeferred);
+          if (cleared > 0) {
+            console.info(`[deferred] ${cleared} previously-deferred rows are now matched in Opera — un-deferred for normal import`);
+          }
+        }
       }
 
       if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');
@@ -3632,7 +3653,28 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
         if (edits.autoAllocateDisabled) setAutoAllocateDisabled(new Set(edits.autoAllocateDisabled));
         if (edits.cbtypeOverrides) setCbtypeOverrides(new Map(edits.cbtypeOverrides));
         if (edits.ignoredTransactions) setIgnoredTransactions(new Set(edits.ignoredTransactions));
-        if (edits.deferredRows) setDeferredRows(new Set(edits.deferredRows));
+        if (edits.deferredRows) {
+          // Restore the deferred set, then drop any row that came back from
+          // analyse with a confident Opera match. Operator's mental model:
+          // "deferred items that are now in Opera should just be processed".
+          const matchedRows = new Set<number>([
+            ...enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).map((t: any) => t.row),
+            ...enhancedPreview.matched_payments.filter((t: any) => !t.is_duplicate).map((t: any) => t.row),
+            ...((enhancedPreview.matched_refunds || []).filter((t: any) => !t.is_duplicate).map((t: any) => t.row)),
+          ]);
+          const restoredDeferred = new Set<number>(edits.deferredRows as number[]);
+          let cleared = 0;
+          for (const r of restoredDeferred) {
+            if (matchedRows.has(r)) {
+              restoredDeferred.delete(r);
+              cleared++;
+            }
+          }
+          setDeferredRows(restoredDeferred);
+          if (cleared > 0) {
+            console.info(`[deferred] ${cleared} previously-deferred rows are now matched in Opera — un-deferred for normal import`);
+          }
+        }
       }
 
       if (enhancedPreview.matched_receipts.filter((t: any) => !t.is_duplicate).length > 0) setActivePreviewTab('receipts');
