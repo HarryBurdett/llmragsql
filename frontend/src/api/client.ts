@@ -1367,8 +1367,10 @@ export const apiClient = {
     api.get<BankReconciliationResponse>(`/reconcile/bank/${bankCode}`),
 
   // Bank Statement Reconciliation (mark entries as reconciled)
-  getBankReconciliationStatus: (bankCode: string) =>
-    api.get<BankReconciliationStatusResponse>(`/reconcile/bank/${bankCode}/status`),
+  getBankReconciliationStatus: (bankCode: string, currentFilename?: string) => {
+    const fnParam = currentFilename ? `?current_filename=${encodeURIComponent(currentFilename)}` : '';
+    return api.get<BankReconciliationStatusResponse>(`/reconcile/bank/${bankCode}/status${fnParam}`);
+  },
   getUnreconciledEntries: (bankCode: string) =>
     api.get<UnreconciledEntriesResponse>(`/reconcile/bank/${bankCode}/unreconciled`),
   markEntriesReconciled: (bankCode: string, data: MarkReconciledRequest) =>

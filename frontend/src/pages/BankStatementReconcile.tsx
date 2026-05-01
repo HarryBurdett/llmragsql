@@ -1165,11 +1165,21 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     },
   });
 
-  // Fetch reconciliation status
+  // Pick the best available filename for the active statement so the
+  // status endpoint can detect Sequential-Statement-Gating context and
+  // tailor its message ("self" vs "subsequent"). Falls back through prop
+  // sources in priority order.
+  const statusQueryFilename = (
+    initialReconcileData?.filename
+    || resumeStatement?.filename
+    || (typeof window !== 'undefined' ? sessionStorage.getItem('reconcile_active_filename') : null)
+    || ''
+  );
+
   const statusQuery = useQuery<BankReconciliationStatusResponse>({
-    queryKey: ['bankRecStatus', selectedBank],
+    queryKey: ['bankRecStatus', selectedBank, statusQueryFilename],
     queryFn: async () => {
-      const response = await apiClient.getBankReconciliationStatus(selectedBank);
+      const response = await apiClient.getBankReconciliationStatus(selectedBank, statusQueryFilename || undefined);
       return response.data;
     },
     enabled: !!selectedBank,

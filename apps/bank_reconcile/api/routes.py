@@ -649,7 +649,16 @@ async def get_bank_reconciliation_status(
                         n_partial = rec_in_progress.get('partial_entries', 0)
                         names = ', '.join(pending_files[:2])
                         more = f" (+{len(pending_files)-2} more)" if len(pending_files) > 2 else ''
-                        is_self = bool(current_filename and current_filename in pending_files)
+                        # Whitespace-tolerant filename match: collapse runs of
+                        # whitespace and case-fold both sides so a stored
+                        # "Statement 17-APR-26 AC X  Y.pdf" (double space) matches
+                        # an inbound "Statement 17-APR-26 AC X Y.pdf" (single space).
+                        def _norm_fn(fn: Optional[str]) -> str:
+                            if not fn:
+                                return ''
+                            return ' '.join(fn.split()).strip().casefold()
+                        cur_norm = _norm_fn(current_filename)
+                        is_self = bool(cur_norm and any(_norm_fn(p) == cur_norm for p in pending_files))
                         if is_self:
                             # The user is processing THE deferred-row statement.
                             # The partial markers ARE this statement's — context fits.
@@ -11198,7 +11207,12 @@ async def opera3_bank_reconciliation_status(
                         n_partial = result.get('partial_entries', 0)
                         names = ', '.join(pending_files[:2])
                         more = f" (+{len(pending_files)-2} more)" if len(pending_files) > 2 else ''
-                        is_self = bool(current_filename and current_filename in pending_files)
+                        def _norm_fn(fn: Optional[str]) -> str:
+                            if not fn:
+                                return ''
+                            return ' '.join(fn.split()).strip().casefold()
+                        cur_norm = _norm_fn(current_filename)
+                        is_self = bool(cur_norm and any(_norm_fn(p) == cur_norm for p in pending_files))
                         if is_self:
                             result['reconciliation_in_progress_message'] = (
                                 f"This statement has {n_partial} partial reconciliation "
