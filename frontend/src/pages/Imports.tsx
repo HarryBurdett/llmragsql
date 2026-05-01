@@ -426,31 +426,52 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Auto-undefer any row that the matcher now pairs with Opera. Fires every
   // time the bank preview changes (after Analyse, after a fresh scan, after
-  // any re-match). Operator's mental model: "deferred items now in Opera
-  // should just be processed". No UI action required.
+  // any re-match). Also clears the corresponding row from the persisted
+  // deferred_transactions audit DB so deferred_count drops to 0 in the
+  // Bank Hub on the next scan. Operator's mental model: "deferred items
+  // now in Opera should just be processed". No UI action required.
   useEffect(() => {
     if (!bankPreview) return;
-    const allMatched = new Set<number>([
-      ...(bankPreview.matched_receipts || []).map((t: any) => t.row),
-      ...(bankPreview.matched_payments || []).map((t: any) => t.row),
-      ...((bankPreview.matched_refunds || []).map((t: any) => t.row)),
-      ...(((bankPreview as any).already_posted || []).map((t: any) => t.row)),
-    ]);
+    const allMatched: any[] = [
+      ...(bankPreview.matched_receipts || []),
+      ...(bankPreview.matched_payments || []),
+      ...((bankPreview.matched_refunds || [])),
+      ...(((bankPreview as any).already_posted || [])),
+    ];
+    const matchedRowSet = new Set<number>(allMatched.map(t => t.row));
     setDeferredRows(prev => {
       let changed = false;
       const next = new Set<number>(prev);
+      const matchedAndCleared: any[] = [];
       for (const r of prev) {
-        if (allMatched.has(r)) {
+        if (matchedRowSet.has(r)) {
           next.delete(r);
           changed = true;
+          const txn = allMatched.find((t: any) => t.row === r);
+          if (txn) matchedAndCleared.push(txn);
         }
       }
       if (changed) {
         console.info(`[deferred] auto-undefer: ${prev.size - next.size} rows now matched in Opera`);
+        // Also clear the audit row(s) so the Bank Hub's deferred_count
+        // drops to 0 on the next scan. Fire-and-forget.
+        if (selectedBankCode && matchedAndCleared.length > 0) {
+          authFetch(`${API_BASE}/reconcile/bank/${selectedBankCode}/deferred-items`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              match: matchedAndCleared.map((t: any) => ({
+                statement_date: t.date || '',
+                amount: t.amount || 0,
+                description: t.memo || t.name || '',
+              })),
+            }),
+          }).catch(err => console.warn('Auto-clean defer audit failed (non-blocking):', err));
+        }
       }
       return changed ? next : prev;
     });
-  }, [bankPreview]);
+  }, [bankPreview, selectedBankCode]);
 
   // (persistDeferDecisions defined below — needs selectedPdfFile + selectedEmailStatement to be declared first)
 
