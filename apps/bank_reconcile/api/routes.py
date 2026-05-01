@@ -130,7 +130,10 @@ def _auto_clean_resolved_defers(bank_code: str) -> int:
     operator has manually entered the transaction since deferring it.
 
     Match criteria: same bank, ABS(at_value - amount_pence) < 1, at_pstdate
-    within ±14 days of the audit row's statement_date.
+    within ±45 days of the audit row's statement_date. Wider window than the
+    ±14d duplicate-detector elsewhere because real-world manual entries often
+    happen weeks after the bank statement (e.g. waiting for colleague's
+    answer on a deferred item).
 
     Idempotent and silent — fire from any scan-style endpoint to keep the
     deferred_count accurate. Returns number of rows cleaned.
@@ -152,8 +155,8 @@ def _auto_clean_resolved_defers(bank_code: str) -> int:
                 if not sd_raw:
                     continue
                 d0 = datetime.strptime(sd_raw, '%Y-%m-%d').date()
-                date_from = (d0 - timedelta(days=14)).strftime('%Y-%m-%d')
-                date_to = (d0 + timedelta(days=14)).strftime('%Y-%m-%d')
+                date_from = (d0 - timedelta(days=45)).strftime('%Y-%m-%d')
+                date_to = (d0 + timedelta(days=45)).strftime('%Y-%m-%d')
                 amount_pence = int(round(float(item.get('amount') or 0.0) * 100))
                 # Sign convention: bank statement amount is signed (positive=
                 # receipt). atran also stores signed values. Match on absolute
