@@ -424,52 +424,7 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // Track which unmatched rows the user has deferred (not posted, not permanently ignored, reappears on next scan)
   const [deferredRows, setDeferredRows] = useState<Set<number>>(new Set());
 
-  // Persist defer decisions to the backend immediately on Defer/Undo. Writes
-  // both the deferred_transactions audit row AND the bank_statement_imports
-  // tracking row so Sequential Statement Gating sees the statement as
-  // 'imported' without requiring an explicit Import-button click.
-  const persistDeferDecisions = useCallback((rows: Set<number>) => {
-    if (!selectedBankCode) return;
-    const filename = selectedPdfFile?.filename || selectedEmailStatement?.filename || '';
-    if (!filename) return;
-    const allTxns = [
-      ...(bankPreview?.matched_receipts || []),
-      ...(bankPreview?.matched_payments || []),
-      ...(bankPreview?.matched_refunds || []),
-      ...(bankPreview?.unmatched || []),
-      ...(bankPreview?.skipped || []),
-    ];
-    const deferredList = Array.from(rows)
-      .map(r => allTxns.find((t: any) => t.row === r))
-      .filter(Boolean)
-      .map((t: any) => ({
-        date: t.date,
-        amount: t.amount,
-        description: t.memo || t.name || '',
-      }));
-    const stmtInfo = bankPreview?.statement_info || bankPreview?.statement_bank_info || {};
-    authFetch(`${API_BASE}/bank-import/persist-decisions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        bank_code: selectedBankCode,
-        filename,
-        source: selectedEmailStatement ? 'email' : 'pdf',
-        statement_info: {
-          opening_balance: (stmtInfo as any)?.opening_balance,
-          closing_balance: (stmtInfo as any)?.closing_balance,
-          statement_date: (stmtInfo as any)?.statement_date,
-          period_start: (stmtInfo as any)?.period_start,
-          period_end: (stmtInfo as any)?.period_end,
-          account_number: (stmtInfo as any)?.account_number,
-          sort_code: (stmtInfo as any)?.sort_code,
-        },
-        deferred_transactions: deferredList,
-      }),
-    }).catch((err) => {
-      console.warn('persist-decisions failed', err);
-    });
-  }, [selectedBankCode, selectedPdfFile, selectedEmailStatement, bankPreview]);
+  // (persistDeferDecisions defined below — needs selectedPdfFile + selectedEmailStatement to be declared first)
 
   // =====================
   // EMAIL SCANNING STATE
@@ -622,6 +577,53 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
     fullPath: string;
   } | null>(null);
   const [, setFolderSourcePath] = useState<string | null>(null);
+
+  // Persist defer decisions to the backend immediately on Defer/Undo. Writes
+  // both the deferred_transactions audit row AND the bank_statement_imports
+  // tracking row so Sequential Statement Gating sees the statement as
+  // 'imported' without requiring an explicit Import-button click.
+  const persistDeferDecisions = useCallback((rows: Set<number>) => {
+    if (!selectedBankCode) return;
+    const filename = selectedPdfFile?.filename || selectedEmailStatement?.filename || '';
+    if (!filename) return;
+    const allTxns = [
+      ...(bankPreview?.matched_receipts || []),
+      ...(bankPreview?.matched_payments || []),
+      ...(bankPreview?.matched_refunds || []),
+      ...(bankPreview?.unmatched || []),
+      ...(bankPreview?.skipped || []),
+    ];
+    const deferredList = Array.from(rows)
+      .map(r => allTxns.find((t: any) => t.row === r))
+      .filter(Boolean)
+      .map((t: any) => ({
+        date: t.date,
+        amount: t.amount,
+        description: t.memo || t.name || '',
+      }));
+    const stmtInfo = bankPreview?.statement_info || bankPreview?.statement_bank_info || {};
+    authFetch(`${API_BASE}/bank-import/persist-decisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bank_code: selectedBankCode,
+        filename,
+        source: selectedEmailStatement ? 'email' : 'pdf',
+        statement_info: {
+          opening_balance: (stmtInfo as any)?.opening_balance,
+          closing_balance: (stmtInfo as any)?.closing_balance,
+          statement_date: (stmtInfo as any)?.statement_date,
+          period_start: (stmtInfo as any)?.period_start,
+          period_end: (stmtInfo as any)?.period_end,
+          account_number: (stmtInfo as any)?.account_number,
+          sort_code: (stmtInfo as any)?.sort_code,
+        },
+        deferred_transactions: deferredList,
+      }),
+    }).catch((err) => {
+      console.warn('persist-decisions failed', err);
+    });
+  }, [selectedBankCode, selectedPdfFile, selectedEmailStatement, bankPreview]);
 
   // =====================
   // SESSION STORAGE PERSISTENCE - Keep data when switching tabs/pages
