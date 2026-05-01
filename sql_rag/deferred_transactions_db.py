@@ -123,6 +123,47 @@ class DeferredTransactionsDB:
                 )
             return int(cur.fetchone()[0])
 
+    def list_for_statement(
+        self,
+        bank_code: str,
+        period_start: Optional[str] = None,
+        period_end: Optional[str] = None,
+    ) -> list:
+        """Return all deferred rows for a bank, optionally filtered to a period.
+
+        Each row is returned as a dict with keys: id, bank_code, statement_date,
+        amount, description, deferred_at, deferred_by. Used by the reconcile
+        UI to surface deferred items so the operator can act on them.
+        """
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            if period_start and period_end:
+                cur = conn.execute(
+                    """
+                    SELECT id, bank_code, statement_date, amount, description,
+                           deferred_at, deferred_by
+                    FROM deferred_transactions
+                    WHERE bank_code = ?
+                      AND statement_date IS NOT NULL
+                      AND statement_date >= ?
+                      AND statement_date <= ?
+                    ORDER BY statement_date ASC, id ASC
+                    """,
+                    (bank_code, period_start, period_end),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    SELECT id, bank_code, statement_date, amount, description,
+                           deferred_at, deferred_by
+                    FROM deferred_transactions
+                    WHERE bank_code = ?
+                    ORDER BY statement_date ASC, id ASC
+                    """,
+                    (bank_code,),
+                )
+            return [dict(r) for r in cur.fetchall()]
+
 
 def derive_statement_state(
     *,

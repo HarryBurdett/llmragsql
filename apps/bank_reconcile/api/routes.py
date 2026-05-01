@@ -15500,3 +15500,99 @@ async def audit_defer_transactions(bank_code: str, body: AuditDeferRequest):
         logger.warning("audit-defer: audit setup failed for bank=%s: %s", bank_code, audit_err)
 
     return {"success": True, "audited": audited}
+
+
+@router.delete("/api/reconcile/bank/{bank_code}/deferred-items")
+async def delete_deferred_items(
+    bank_code: str,
+    request: Request,
+):
+    """
+    Delete one or more deferred audit rows for a bank. Called by the Reconcile
+    page when the operator has manually entered the transaction in Opera and
+    wants to clear the 'awaiting manual entry' marker so the line falls back
+    into the regular matching flow.
+
+    Body:
+        { "ids": [1, 2, ...] }   — delete by audit-row id, OR
+        { "match": [{"statement_date": "2026-04-13", "amount": 883.31, "description": "..."}, ...] }
+            — delete by tuple-match (date+amount+normalised description)
+
+    Returns: {"success": True, "deleted": N}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    deleted = 0
+    try:
+        from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+        from sql_rag.company_data import get_current_db_path
+        path = get_current_db_path("bank_reconcile/deferred_transactions.db")
+        db = DeferredTransactionsDB(path)
+        with db._connect() as conn:
+            ids = body.get('ids') or []
+            if ids:
+                placeholders = ','.join('?' for _ in ids)
+                cur = conn.execute(
+                    f"DELETE FROM deferred_transactions WHERE bank_code = ? AND id IN ({placeholders})",
+                    (bank_code, *ids),
+                )
+                deleted = cur.rowcount
+            match_items = body.get('match') or []
+            if match_items:
+                for m in match_items:
+                    sd = (m.get('statement_date') or '')[:10]
+                    amt = float(m.get('amount') or 0.0)
+                    desc = (m.get('description') or '').strip().lower()
+                    cur = conn.execute(
+                        """
+                        DELETE FROM deferred_transactions
+                        WHERE bank_code = ?
+                          AND substr(COALESCE(statement_date,''), 1, 10) = ?
+                          AND ROUND(amount, 2) = ROUND(?, 2)
+                          AND LOWER(TRIM(COALESCE(description,''))) = ?
+                        """,
+                        (bank_code, sd, amt, desc),
+                    )
+                    deleted += cur.rowcount
+            conn.commit()
+        return {"success": True, "deleted": deleted}
+    except Exception as e:
+        logger.error(f"delete deferred-items failed for {bank_code}: {e}")
+        return {"success": False, "error": str(e), "deleted": deleted}
+
+
+@router.get("/api/reconcile/bank/{bank_code}/deferred-items")
+async def get_deferred_items(
+    bank_code: str,
+    period_start: Optional[str] = Query(None, description="Period start date (YYYY-MM-DD), inclusive"),
+    period_end: Optional[str] = Query(None, description="Period end date (YYYY-MM-DD), inclusive"),
+):
+    """
+    Return deferred audit rows for a bank — optionally filtered to a statement
+    period. Used by the Bank Statement Reconcile page so the UI can surface
+    items the operator earlier marked as 'awaiting manual entry' and let them
+    resolve / match them now.
+
+    Returns:
+        {
+            "success": True,
+            "items": [
+                {"id", "bank_code", "statement_date", "amount", "description",
+                 "deferred_at", "deferred_by"},
+                ...
+            ]
+        }
+    """
+    try:
+        from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+        from sql_rag.company_data import get_current_db_path
+        path = get_current_db_path("bank_reconcile/deferred_transactions.db")
+        db = DeferredTransactionsDB(path)
+        items = db.list_for_statement(bank_code=bank_code, period_start=period_start, period_end=period_end)
+        return {"success": True, "items": items, "count": len(items)}
+    except Exception as e:
+        logger.error(f"deferred-items lookup failed for bank={bank_code}: {e}")
+        return {"success": False, "error": str(e), "items": [], "count": 0}

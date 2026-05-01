@@ -387,6 +387,36 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
   const [deferredLines, setDeferredLines] = useState<Set<number>>(new Set());
   const [enrichedUnmatched, setEnrichedUnmatched] = useState<UnmatchedStatementLine[]>([]);
+
+  // Auto-mark statement lines as deferred when they match a row in the
+  // deferred-transactions audit DB. Triggered whenever the unmatched lines
+  // are loaded or the deferred-items query refreshes. The match is by
+  // (date prefix, rounded amount, normalised description) — robust to
+  // whitespace and ISO-date suffix differences.
+  useEffect(() => {
+    if (!deferredItemsQuery.data?.items || deferredItemsQuery.data.items.length === 0) return;
+    if (!enrichedUnmatched || enrichedUnmatched.length === 0) return;
+    const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const dateOnly = (s: string) => (s || '').split('T')[0];
+    const auditByKey = new Map<string, number>();
+    for (const it of deferredItemsQuery.data.items) {
+      const key = `${dateOnly(it.statement_date)}|${Math.round(it.amount * 100) / 100}|${norm(it.description)}`;
+      auditByKey.set(key, it.id);
+    }
+    setDeferredLines(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const line of enrichedUnmatched) {
+        const k = `${dateOnly(line.statement_date)}|${Math.round((line.statement_amount || 0) * 100) / 100}|${norm(line.statement_description || line.statement_reference || '')}`;
+        if (auditByKey.has(k) && !next.has(line.statement_line)) {
+          next.add(line.statement_line);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [deferredItemsQuery.data, enrichedUnmatched]);
+
   const [isBatchImporting, setIsBatchImporting] = useState(false);
   const [batchImportProgress, setBatchImportProgress] = useState<{
     total: number;
@@ -1200,6 +1230,39 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       return response.data;
     },
     enabled: !!selectedBank,
+  });
+
+  // Fetch deferred audit rows for this bank+period so the reconcile page can
+  // surface items the operator earlier marked 'awaiting manual entry'.
+  // Used to pre-populate `deferredLines` and add a "Re-match" affordance once
+  // the operator has manually entered the transaction in Opera.
+  const deferredItemsQuery = useQuery<{
+    success: boolean;
+    items: Array<{
+      id: number;
+      bank_code: string;
+      statement_date: string;
+      amount: number;
+      description: string;
+      deferred_at: string;
+      deferred_by: string;
+    }>;
+    count: number;
+  }>({
+    queryKey: ['deferredItems', selectedBank, statusQueryFilename],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      // No period from this page right now — fetch all for bank, frontend
+      // matches by date+amount+description.
+      const url = `/api/reconcile/bank/${selectedBank}/deferred-items?${params.toString()}`;
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}` },
+        credentials: 'include',
+      });
+      return res.json();
+    },
+    enabled: !!selectedBank,
+    staleTime: 10000,
   });
 
   // Mark reconciled mutation (manual mode)
@@ -3784,15 +3847,45 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                                           Awaiting manual entry
                                         </span>
                                         <button
-                                          onClick={() => {
+                                          onClick={async () => {
                                             const next = new Set(deferredLines);
                                             next.delete(line.statement_line);
                                             setDeferredLines(next);
+                                            // Remove the corresponding audit row so the statement's
+                                            // 'imported · N deferred' state derivation drops the count
+                                            // and the next-statement gate updates accordingly.
+                                            try {
+                                              await fetch(`/api/reconcile/bank/${selectedBank}/deferred-items`, {
+                                                method: 'DELETE',
+                                                headers: {
+                                                  'Content-Type': 'application/json',
+                                                  'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`,
+                                                },
+                                                credentials: 'include',
+                                                body: JSON.stringify({
+                                                  match: [{
+                                                    statement_date: line.statement_date || '',
+                                                    amount: line.statement_amount || 0,
+                                                    description: line.statement_description || line.statement_reference || '',
+                                                  }],
+                                                }),
+                                              });
+                                            } catch (err) {
+                                              console.warn('Failed to delete defer audit row (non-blocking):', err);
+                                            }
+                                            // Re-run match so this line picks up any newly-entered Opera entry.
+                                            try {
+                                              await runMatchingFromUnreconciled();
+                                            } catch (err) {
+                                              console.warn('Re-match failed after undo defer:', err);
+                                            }
+                                            // Refresh the deferred-items query so the audit panel updates.
+                                            queryClient.invalidateQueries({ queryKey: ['deferredItems', selectedBank] });
                                           }}
                                           className="text-xs px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded"
-                                          title="Undo defer"
+                                          title="Undo defer + re-match against Opera (use this once you've entered the transaction in Opera)"
                                         >
-                                          Undo
+                                          Undo &amp; Re-match
                                         </button>
                                       </div>
                                     ) : (
