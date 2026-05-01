@@ -2046,8 +2046,13 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
   bankExtractionComplete?: boolean;
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // 'Partial' = unfinished work that still needs a Process click. Deferred
+  // rows are deliberately unposted so they count as 'decided': statement is
+  // fully decided when (imported + deferred) === total.
+  const hasPartialImport = inProgressData
+    && (inProgressData.transactions_imported + (stmt.deferred_count ?? 0))
+       < inProgressData.stored_transaction_count;
   const isImportedWithData = stmt.status === 'imported' && inProgressData;
-  const hasPartialImport = inProgressData && inProgressData.transactions_imported < inProgressData.stored_transaction_count;
 
   const hasPartialReconcile = inProgressData && (inProgressData.reconciled_count || 0) > 0;
 
@@ -2147,22 +2152,19 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
       <td className="px-4 py-2 text-right">
         <div className="flex items-center gap-1.5 justify-end">
           {isImportedWithData ? (
+            // Imported statement: show Process only when there's still
+            // unfinished work (some rows not imported AND not deferred).
+            // Reconcile is always shown so the operator can move to Stage 4.
             <>
-              {onClearStatement && (
-                <button onClick={() => onClearStatement(inProgressData)}
-                  className="px-2.5 py-1 text-xs font-medium bg-gray-500 text-white rounded hover:bg-gray-600"
-                  title="Clear import tracking data and start over">Clear</button>
-              )}
               {hasPartialImport && onContinueImport && (
                 <button onClick={() => onContinueImport(inProgressData)}
-                  className="px-2.5 py-1 text-xs font-medium bg-orange-600 text-white rounded hover:bg-orange-700 flex items-center gap-1"
-                  title={`${inProgressData.stored_transaction_count - inProgressData.transactions_imported} lines not yet posted to Opera`}>
-                  Continue Import <ArrowRight className="h-3 w-3" />
+                  className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
+                  Process <ArrowRight className="h-3 w-3" />
                 </button>
               )}
               {onResumeReconcile && (
                 <button onClick={() => onResumeReconcile(inProgressData)}
-                  className="px-2.5 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                  className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
                   Reconcile <ArrowRight className="h-3 w-3" />
                 </button>
               )}
