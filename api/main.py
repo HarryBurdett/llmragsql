@@ -10680,7 +10680,14 @@ _COMPANY_SETTINGS_FILENAME = "company_settings.json"
 
 def _compute_similarity_key(name: str, memo: str = "") -> str:
     """Extract a pattern key from transaction name for grouping similar unmatched items.
-    Strips variable parts (reference numbers, dates) to find the common pattern."""
+    Strips variable parts (reference numbers, dates) to find the common pattern.
+
+    Examples that should collapse to the same key:
+        "Card Purchase Lime*Pass A34G On 17 Apr"
+        "Card Purchase Lime*Pass A34G On 24 Apr"
+        "Card Purchase Lime*Pass A34G On 1 May"
+        → "Card Purchase Lime*Pass A34G"
+    """
     import re as _re
     text = (name or "").strip()
     if not text:
@@ -10689,6 +10696,20 @@ def _compute_similarity_key(name: str, memo: str = "") -> str:
     ppy_match = _re.match(r'PPY\d+(/\d+)', text)
     if ppy_match:
         return f"PPY{ppy_match.group(1)}"
+    # Strip trailing "On DD Mon" date suffix (Barclays-style card purchases).
+    # Months: 3-letter abbreviation OR full name (case-insensitive).
+    # Apply BEFORE the trailing-digits strip so the day-of-month is removed
+    # along with the month token.
+    text = _re.sub(
+        r'\s+on\s+\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|'
+        r'january|february|march|april|may|june|july|august|september|october|november|december)\.?\s*$',
+        '', text, flags=_re.IGNORECASE
+    )
+    # Strip trailing "DD MMM YYYY" / "DD/MM/YY" / "DD-MM-YYYY" date stamps.
+    text = _re.sub(
+        r'\s+\d{1,2}[\s/-]\d{1,2}[\s/-]\d{2,4}\s*$',
+        '', text
+    )
     # Strip trailing 4+ digit reference numbers: "30JAN A/C 5456" → "30JAN A/C"
     text = _re.sub(r'\s+\d{4,}\s*$', '', text)
     # Strip FP date references: "FP 27/02/26 0259" → ""
