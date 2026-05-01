@@ -124,6 +124,69 @@ def _build_imported_pending_closings(email_storage, bank_code: str) -> set:
         return set()
 
 
+def _auto_clean_resolved_defers(bank_code: str) -> int:
+    """Automatically delete defer audit rows whose transaction now has a
+    matching unreconciled entry in Opera atran for this bank — meaning the
+    operator has manually entered the transaction since deferring it.
+
+    Match criteria: same bank, ABS(at_value - amount_pence) < 1, at_pstdate
+    within ±14 days of the audit row's statement_date.
+
+    Idempotent and silent — fire from any scan-style endpoint to keep the
+    deferred_count accurate. Returns number of rows cleaned.
+    """
+    if not bank_code or sql_connector is None:
+        return 0
+    try:
+        from sql_rag.deferred_transactions_db import DeferredTransactionsDB
+        from sql_rag.company_data import get_current_db_path
+        defer_db = DeferredTransactionsDB(get_current_db_path("bank_reconcile/deferred_transactions.db"))
+        items = defer_db.list_for_statement(bank_code=bank_code)
+        if not items:
+            return 0
+        cleaned: list = []
+        from datetime import datetime, timedelta
+        for item in items:
+            try:
+                sd_raw = (item.get('statement_date') or '')[:10]
+                if not sd_raw:
+                    continue
+                d0 = datetime.strptime(sd_raw, '%Y-%m-%d').date()
+                date_from = (d0 - timedelta(days=14)).strftime('%Y-%m-%d')
+                date_to = (d0 + timedelta(days=14)).strftime('%Y-%m-%d')
+                amount_pence = int(round(float(item.get('amount') or 0.0) * 100))
+                # Sign convention: bank statement amount is signed (positive=
+                # receipt). atran also stores signed values. Match on absolute
+                # to be tolerant — the duplicate detection elsewhere uses ABS.
+                query = (
+                    "SELECT TOP 1 at_unique FROM atran WITH (NOLOCK) "
+                    f"WHERE at_acnt = '{bank_code}' "
+                    f"AND at_pstdate BETWEEN '{date_from}' AND '{date_to}' "
+                    f"AND ABS(ABS(at_value) - {abs(amount_pence)}) < 1"
+                )
+                df = sql_connector.execute_query(query)
+                if df is not None and len(df) > 0:
+                    cleaned.append(int(item['id']))
+            except Exception as _row_err:
+                logger.debug(f"defer auto-clean: skipping item {item.get('id')}: {_row_err}")
+        if cleaned:
+            placeholders = ','.join('?' for _ in cleaned)
+            with defer_db._connect() as conn:
+                conn.execute(
+                    f"DELETE FROM deferred_transactions WHERE bank_code = ? AND id IN ({placeholders})",
+                    (bank_code, *cleaned),
+                )
+                conn.commit()
+            logger.info(
+                f"defer auto-clean: removed {len(cleaned)} row(s) for {bank_code} "
+                f"— matching atran entry now exists"
+            )
+        return len(cleaned)
+    except Exception as e:
+        logger.warning(f"defer auto-clean failed for {bank_code}: {e}")
+        return 0
+
+
 def _sync_from_main():
     """Propagate per-request globals from api.main into this module."""
     import api.main as m
@@ -7533,6 +7596,13 @@ async def scan_all_banks_for_statements(
         # statements are demoted to 'pending_extraction' so the frontend disables
         # Process buttons for the whole bank (preventing out-of-order processing).
         for code, bank_info in banks_with_statements.items():
+            # Auto-clean defer audit rows whose transaction has since been
+            # entered in Opera. Keeps deferred_count accurate without any
+            # operator action — the system self-heals on each scan.
+            try:
+                _auto_clean_resolved_defers(code)
+            except Exception as _ac_err:
+                logger.debug(f"defer auto-clean wrapper failed for {code}: {_ac_err}")
             bank_stmts = bank_info.get('statements', [])
             statements_total = len(bank_stmts)
             statements_extracted = sum(
