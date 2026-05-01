@@ -1461,15 +1461,17 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
 
   // Query for reconciliation-in-progress status
   const { data: reconciliationStatus } = useQuery({
-    queryKey: ['bank-reconciliation-status', selectedBankCode, dataSource, opera3DataPath],
+    queryKey: ['bank-reconciliation-status', selectedBankCode, dataSource, opera3DataPath, selectedPdfFile?.filename, selectedEmailStatement?.filename],
     queryFn: async () => {
       if (!selectedBankCode) return null;
+      const currentFn = selectedPdfFile?.filename || selectedEmailStatement?.filename || '';
+      const fnParam = currentFn ? `&current_filename=${encodeURIComponent(currentFn)}` : '';
       if (dataSource === 'opera3') {
         if (!opera3DataPath) return null;
-        const res = await authFetch(`${API_BASE}/opera3/reconcile/bank/${selectedBankCode}/status?data_path=${encodeURIComponent(opera3DataPath)}`);
+        const res = await authFetch(`${API_BASE}/opera3/reconcile/bank/${selectedBankCode}/status?data_path=${encodeURIComponent(opera3DataPath)}${fnParam}`);
         return res.json();
       } else {
-        const res = await authFetch(`${API_BASE}/reconcile/bank/${selectedBankCode}/status`);
+        const res = await authFetch(`${API_BASE}/reconcile/bank/${selectedBankCode}/status?_=1${fnParam}`);
         return res.json();
       }
     },
@@ -5400,15 +5402,24 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
       </div>
 
       {/* Warning: Reconciliation in progress in Opera.
-          When sequential_gating is set, the partial markers belong to a prior
-          statement awaiting a deferred-row resolution — show as informational
-          amber rather than alarming red. */}
+          When sequential_gating is true, the partial markers belong to a prior
+          statement awaiting a deferred-row resolution. We render an amber
+          informational banner with one of two headings:
+            - sequential_gating_self === true  → user is on THE deferred-row
+                statement → "Awaiting deferred row resolution"
+            - sequential_gating_self === false → user is on a SUBSEQUENT
+                statement → "Reconciliation will wait on prior statement"
+          Genuinely-abandoned reconciliations still get the red alarming banner. */}
       {reconciliationStatus?.reconciliation_in_progress && (
         reconciliationStatus.sequential_gating ? (
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
-              <h3 className="text-sm font-semibold text-amber-800">Awaiting deferred row in prior statement</h3>
+              <h3 className="text-sm font-semibold text-amber-800">
+                {reconciliationStatus.sequential_gating_self
+                  ? 'Awaiting deferred row resolution'
+                  : 'Reconciliation will wait on prior statement'}
+              </h3>
               <p className="text-sm text-amber-700 mt-0.5">
                 {reconciliationStatus.reconciliation_in_progress_message}
               </p>

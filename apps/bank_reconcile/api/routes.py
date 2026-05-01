@@ -593,7 +593,10 @@ async def reconcile_bank(bank_code: str):
 
 
 @router.get("/api/reconcile/bank/{bank_code}/status")
-async def get_bank_reconciliation_status(bank_code: str):
+async def get_bank_reconciliation_status(
+    bank_code: str,
+    current_filename: Optional[str] = Query(None, description="Filename of the statement being processed (for context-aware messaging)"),
+):
     """
     Get current bank reconciliation status including balances and unreconciled counts.
     Also checks if there's a reconciliation in progress in Opera.
@@ -615,12 +618,13 @@ async def get_bank_reconciliation_status(bank_code: str):
         reconciler = StatementReconciler(sql_connector, config=config)
         rec_in_progress = reconciler.check_reconciliation_in_progress(bank_code)
 
-        # Sequential Statement Gating: if this bank has any imported-but-not-
-        # reconciled statement, the partial reconciliation markers in Opera
-        # belong to that prior statement (waiting on a deferred-row
-        # resolution). Reword the warning so the operator understands this is
-        # the expected state and not an abandoned reconciliation that needs
-        # fixing in Opera.
+        # Sequential Statement Gating: differentiate the message based on
+        # whether the user is processing THE statement that owns the partial
+        # markers (the deferred-row statement itself) vs a SUBSEQUENT
+        # statement in the chain. Subsequent statements should be told they
+        # can't fully reconcile until the prior statement is finished, NOT
+        # that a reconciliation is "in progress in Opera" (which sounds
+        # broken).
         try:
             if rec_in_progress.get('in_progress') and email_storage:
                 nr_filenames = email_storage.get_imported_not_reconciled_filenames()
@@ -634,14 +638,28 @@ async def get_bank_reconciliation_status(bank_code: str):
                         n_partial = rec_in_progress.get('partial_entries', 0)
                         names = ', '.join(pending_files[:2])
                         more = f" (+{len(pending_files)-2} more)" if len(pending_files) > 2 else ''
-                        rec_in_progress['message'] = (
-                            f"{n_partial} partial reconciliation markers belong to "
-                            f"statement {names}{more}, which is awaiting a deferred-row "
-                            f"resolution. They will clear automatically when that "
-                            f"statement reconciles. You can safely continue with this "
-                            f"statement."
-                        )
+                        is_self = bool(current_filename and current_filename in pending_files)
+                        if is_self:
+                            # The user is processing THE deferred-row statement.
+                            # The partial markers ARE this statement's — context fits.
+                            rec_in_progress['message'] = (
+                                f"This statement has {n_partial} partial reconciliation "
+                                f"markers from a previous session and is awaiting a "
+                                f"deferred-row resolution. Resolve the deferred row, then "
+                                f"reconcile — the markers will clear automatically."
+                            )
+                        else:
+                            # The user is processing a SUBSEQUENT statement.
+                            # The partial markers are NOT theirs.
+                            rec_in_progress['message'] = (
+                                f"This statement cannot be fully reconciled until "
+                                f"statement {names}{more} is completed (it's awaiting a "
+                                f"deferred-row resolution). You can still process and "
+                                f"import this statement to keep Opera up to date — "
+                                f"reconciliation will run once the prior statement is done."
+                            )
                         rec_in_progress['sequential_gating'] = True
+                        rec_in_progress['sequential_gating_self'] = is_self
         except Exception as _e:
             logger.warning(f"Sequential-gating message rewrite failed: {_e}")
 
@@ -650,6 +668,8 @@ async def get_bank_reconciliation_status(bank_code: str):
             "reconciliation_in_progress": rec_in_progress.get('in_progress', False),
             "reconciliation_in_progress_message": rec_in_progress.get('message') if rec_in_progress.get('in_progress') else None,
             "partial_entries": rec_in_progress.get('partial_entries', 0) if rec_in_progress.get('in_progress') else 0,
+            "sequential_gating": rec_in_progress.get('sequential_gating', False),
+            "sequential_gating_self": rec_in_progress.get('sequential_gating_self', False),
             **status
         }
     except Exception as e:
@@ -11131,7 +11151,8 @@ async def create_bank_transfer(
 @router.get("/api/opera3/reconcile/bank/{bank_code}/status")
 async def opera3_bank_reconciliation_status(
     bank_code: str,
-    data_path: str = Query(..., description="Path to Opera 3 company data folder")
+    data_path: str = Query(..., description="Path to Opera 3 company data folder"),
+    current_filename: Optional[str] = Query(None, description="Filename of the statement being processed (for context-aware messaging)"),
 ):
     """
     Get bank reconciliation status for Opera 3.
@@ -11143,9 +11164,9 @@ async def opera3_bank_reconciliation_status(
         provider = Opera3DataProvider(data_path)
         result = provider.get_bank_reconciliation_status(bank_code)
 
-        # Sequential Statement Gating: reword 'reconciliation_in_progress'
-        # message when the bank has imported-but-not-reconciled statement(s)
-        # — the partial markers are expected while a deferred row is pending.
+        # Sequential Statement Gating: differentiate the message based on
+        # whether the user is processing THE deferred-row statement itself
+        # vs a subsequent statement in the chain.
         try:
             if result.get('reconciliation_in_progress') and email_storage:
                 nr_filenames = email_storage.get_imported_not_reconciled_filenames()
@@ -11159,14 +11180,24 @@ async def opera3_bank_reconciliation_status(
                         n_partial = result.get('partial_entries', 0)
                         names = ', '.join(pending_files[:2])
                         more = f" (+{len(pending_files)-2} more)" if len(pending_files) > 2 else ''
-                        result['reconciliation_in_progress_message'] = (
-                            f"{n_partial} partial reconciliation markers belong to "
-                            f"statement {names}{more}, which is awaiting a deferred-row "
-                            f"resolution. They will clear automatically when that "
-                            f"statement reconciles. You can safely continue with this "
-                            f"statement."
-                        )
+                        is_self = bool(current_filename and current_filename in pending_files)
+                        if is_self:
+                            result['reconciliation_in_progress_message'] = (
+                                f"This statement has {n_partial} partial reconciliation "
+                                f"markers from a previous session and is awaiting a "
+                                f"deferred-row resolution. Resolve the deferred row, then "
+                                f"reconcile — the markers will clear automatically."
+                            )
+                        else:
+                            result['reconciliation_in_progress_message'] = (
+                                f"This statement cannot be fully reconciled until "
+                                f"statement {names}{more} is completed (it's awaiting a "
+                                f"deferred-row resolution). You can still process and "
+                                f"import this statement to keep Opera up to date — "
+                                f"reconciliation will run once the prior statement is done."
+                            )
                         result['sequential_gating'] = True
+                        result['sequential_gating_self'] = is_self
         except Exception as _e:
             logger.warning(f"Opera 3 sequential-gating message rewrite failed: {_e}")
 
