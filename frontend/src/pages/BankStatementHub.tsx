@@ -2168,16 +2168,15 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
               )}
             </>
           ) : onReconcile ? (
-            // For 'imported with deferred' statements, also show Re-Analyse so
-            // the operator can go back to Imports, click Analyse, and let the
-            // matcher re-pair previously-deferred rows that have since been
-            // entered manually in Opera.
+            // Imported statements: Process is also available so the operator
+            // can re-enter the Imports page and re-run Analyse — useful when
+            // a previously-deferred row has since been entered in Opera and
+            // the matcher should re-pair it.
             stmt.state === 'imported' && (stmt.deferred_count ?? 0) > 0 ? (
               <>
                 <button onClick={onProcess}
-                  className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1"
-                  title="Re-run Analyse — any deferred rows now in Opera will become matched">
-                  Re-Analyse <ArrowRight className="h-3 w-3" />
+                  className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
+                  Process <ArrowRight className="h-3 w-3" />
                 </button>
                 <button onClick={onReconcile}
                   className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">

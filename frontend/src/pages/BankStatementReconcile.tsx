@@ -3847,45 +3847,15 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                                           Awaiting manual entry
                                         </span>
                                         <button
-                                          onClick={async () => {
+                                          onClick={() => {
                                             const next = new Set(deferredLines);
                                             next.delete(line.statement_line);
                                             setDeferredLines(next);
-                                            // Remove the corresponding audit row so the statement's
-                                            // 'imported · N deferred' state derivation drops the count
-                                            // and the next-statement gate updates accordingly.
-                                            try {
-                                              await fetch(`/api/reconcile/bank/${selectedBank}/deferred-items`, {
-                                                method: 'DELETE',
-                                                headers: {
-                                                  'Content-Type': 'application/json',
-                                                  'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`,
-                                                },
-                                                credentials: 'include',
-                                                body: JSON.stringify({
-                                                  match: [{
-                                                    statement_date: line.statement_date || '',
-                                                    amount: line.statement_amount || 0,
-                                                    description: line.statement_description || line.statement_reference || '',
-                                                  }],
-                                                }),
-                                              });
-                                            } catch (err) {
-                                              console.warn('Failed to delete defer audit row (non-blocking):', err);
-                                            }
-                                            // Re-run match so this line picks up any newly-entered Opera entry.
-                                            try {
-                                              await runMatchingFromUnreconciled();
-                                            } catch (err) {
-                                              console.warn('Re-match failed after undo defer:', err);
-                                            }
-                                            // Refresh the deferred-items query so the audit panel updates.
-                                            queryClient.invalidateQueries({ queryKey: ['deferredItems', selectedBank] });
                                           }}
                                           className="text-xs px-2 py-1 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded"
-                                          title="Undo defer + re-match against Opera (use this once you've entered the transaction in Opera)"
+                                          title="Undo defer"
                                         >
-                                          Undo &amp; Re-match
+                                          Undo
                                         </button>
                                       </div>
                                     ) : (
