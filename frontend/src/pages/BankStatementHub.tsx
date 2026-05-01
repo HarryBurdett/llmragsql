@@ -2046,8 +2046,17 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
   bankExtractionComplete?: boolean;
 }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const isImportedWithData = stmt.status === 'imported' && inProgressData;
-  const hasPartialImport = inProgressData && inProgressData.transactions_imported < inProgressData.stored_transaction_count;
+  // Treat deferred rows as "accounted for" — a statement where every row is
+  // either imported OR deferred is NOT a partial import; it's fully decided
+  // and ready to reconcile (the deferred ones are deliberately unposted).
+  const hasPartialImport = inProgressData
+    && (inProgressData.transactions_imported + (stmt.deferred_count ?? 0))
+       < inProgressData.stored_transaction_count;
+  // Only show the in-progress UI variant (Continue Import + Clear + Reconcile)
+  // when there is genuinely unfinished work. Once everything is decided
+  // (imported + deferred = total), fall through to the standard
+  // Process + Reconcile buttons used everywhere else.
+  const isImportedWithData = stmt.status === 'imported' && inProgressData && hasPartialImport;
 
   const hasPartialReconcile = inProgressData && (inProgressData.reconciled_count || 0) > 0;
 

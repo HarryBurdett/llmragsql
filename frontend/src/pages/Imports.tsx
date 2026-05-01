@@ -424,6 +424,34 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
   // Track which unmatched rows the user has deferred (not posted, not permanently ignored, reappears on next scan)
   const [deferredRows, setDeferredRows] = useState<Set<number>>(new Set());
 
+  // Auto-undefer any row that the matcher now pairs with Opera. Fires every
+  // time the bank preview changes (after Analyse, after a fresh scan, after
+  // any re-match). Operator's mental model: "deferred items now in Opera
+  // should just be processed". No UI action required.
+  useEffect(() => {
+    if (!bankPreview) return;
+    const allMatched = new Set<number>([
+      ...(bankPreview.matched_receipts || []).map((t: any) => t.row),
+      ...(bankPreview.matched_payments || []).map((t: any) => t.row),
+      ...((bankPreview.matched_refunds || []).map((t: any) => t.row)),
+      ...(((bankPreview as any).already_posted || []).map((t: any) => t.row)),
+    ]);
+    setDeferredRows(prev => {
+      let changed = false;
+      const next = new Set<number>(prev);
+      for (const r of prev) {
+        if (allMatched.has(r)) {
+          next.delete(r);
+          changed = true;
+        }
+      }
+      if (changed) {
+        console.info(`[deferred] auto-undefer: ${prev.size - next.size} rows now matched in Opera`);
+      }
+      return changed ? next : prev;
+    });
+  }, [bankPreview]);
+
   // (persistDeferDecisions defined below — needs selectedPdfFile + selectedEmailStatement to be declared first)
 
   // =====================
