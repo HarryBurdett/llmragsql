@@ -7034,6 +7034,11 @@ async def scan_all_banks_for_statements(
                             stmt_entry['account_number'] = info_data.get('account_number')
                             stmt_entry['sort_code'] = info_data.get('sort_code')
                             stmt_entry['extraction_status'] = 'cached'
+                            logger.info(
+                                f"[opening-trace] folder-scan cache HIT {filename}: "
+                                f"hash={pdf_hash[:12]} open={stmt_entry['opening_balance']} "
+                                f"close={stmt_entry['closing_balance']}"
+                            )
 
                             stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
                             stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
@@ -7591,6 +7596,11 @@ async def scan_all_banks_for_statements(
                         )
 
                 stmt['deferred_count'] = deferred_count_for_stmt
+                logger.info(
+                    f"[opening-trace] final per-stmt {code} {stmt_filename}: "
+                    f"open={stmt.get('opening_balance')} close={stmt.get('closing_balance')} "
+                    f"period={period_start}->{period_end} status={stmt.get('status')}"
+                )
                 stmt['state'] = derive_statement_state(
                     is_reconciled=is_reconciled,
                     has_import_record=has_import_record,
