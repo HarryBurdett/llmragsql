@@ -3939,6 +3939,15 @@ async def import_bank_statement_from_pdf(
                 if _c.table == 'aentry' and _c.record_id:
                     consumed_at_entries.add(str(_c.record_id).strip())
 
+        # Pre-fetch the open-year start once — used to defend against
+        # closed-year postings.
+        from sql_rag.opera_config import (
+            get_open_year_start_date,
+            validate_posting_period,
+            get_ledger_type_for_transaction,
+        )
+        _open_year_start = get_open_year_start_date(sql_connector)
+
         for txn in transactions:
             # Skip rows not in selected_rows (if specified)
             if selected_rows_set is not None and txn.row_number not in selected_rows_set:
@@ -3948,6 +3957,42 @@ async def import_bank_statement_from_pdf(
             # Skip deferred rows — recorded above to the audit DB; never posted.
             if txn.action == 'defer':
                 continue
+
+            # Closed-year guard: never create a new posting in a previous
+            # nominal year. The matcher will pair late entries to existing
+            # atran rows; this guard only fires when the operator is trying
+            # to CREATE a new posting dated in a closed year.
+            if _open_year_start and txn.date and txn.date < _open_year_start:
+                errors.append({
+                    "row": txn.row_number,
+                    "error": (
+                        f"Transaction date {txn.date.isoformat()} is before "
+                        f"the open nominal year start ({_open_year_start.isoformat()}). "
+                        f"Year-end has been performed; postings to closed years are not allowed. "
+                        f"Edit the date or skip this row."
+                    ),
+                })
+                logger.warning(
+                    f"Row {txn.row_number}: refused — date {txn.date} is in closed year"
+                )
+                continue
+            # Belt-and-braces: also run the per-period status check (catches
+            # blocked / closed individual periods inside the open year).
+            if txn.action and txn.action not in ('skip', 'manual', None):
+                try:
+                    _ledger = get_ledger_type_for_transaction(txn.action) or 'NL'
+                    _pv = validate_posting_period(sql_connector, txn.date, _ledger)
+                    if not _pv.is_valid:
+                        errors.append({
+                            "row": txn.row_number,
+                            "error": _pv.error_message or "Posting period not open",
+                        })
+                        logger.warning(
+                            f"Row {txn.row_number}: period validation refused — {_pv.error_message}"
+                        )
+                        continue
+                except Exception as _pv_err:
+                    logger.debug(f"Row {txn.row_number}: period validation skipped: {_pv_err}")
 
             # Skip already-posted lines (partial recovery resume)
             if txn.row_number in already_posted:
