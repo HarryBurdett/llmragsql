@@ -6618,8 +6618,8 @@ class OperaSQLImport:
                         # Update nacnt balance for bank account fees (CREDIT gross)
                         self.update_nacnt_balance(conn, bank_account, -gross_fees, period, year)
 
-                        # Note: njmemo for fees shares the same journal number as receipts
-                        # which was already handled in the receipts posting section
+                        # Insert journal memo for fees NL posting (fees have their own journal number)
+                        self._insert_njmemo(conn, next_journal, 'Cashbook Ledger Transfer (RT)')
 
                     # Create SEPARATE cashbook entry for fees (not part of receipts batch)
                     # This ensures fees appear as a distinct payment in cashbook
@@ -8057,7 +8057,8 @@ class OperaSQLImport:
         account_code: str = '',
         account_type: str = 'nominal',
         date_tolerance_days: int = 1,
-        description: str = ''
+        description: str = '',
+        exclude_entry_numbers: Optional[set] = None,
     ) -> Dict[str, Any]:
         """
         Pre-flight duplicate check before posting a transaction to Opera.
@@ -8086,6 +8087,16 @@ class OperaSQLImport:
         date_from = (txn_date - timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
         date_to = (txn_date + timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
         amount_pence = int(round(amount_pounds * 100))
+        # Build SQL NOT IN clause to skip entries already claimed by prior
+        # identical-amount transactions in this batch (multi-occurrence support).
+        excl_clause = ''
+        if exclude_entry_numbers:
+            quoted = ','.join(
+                f"'{str(e).replace(chr(39), chr(39)+chr(39)).strip()}'"
+                for e in exclude_entry_numbers if e
+            )
+            if quoted:
+                excl_clause = f" AND RTRIM(a.at_entry) NOT IN ({quoted})"
 
         # Check 0: Bank transfer duplicate — at_type=8, same amount + date on this bank
         # Bank transfers appear on BOTH statements with different descriptions
@@ -8098,6 +8109,7 @@ class OperaSQLImport:
                 AND a.at_type = 8
                 AND a.at_pstdate BETWEEN '{date_from}' AND '{date_to}'
                 AND ABS(ABS(a.at_value) - {amount_pence}) < 1
+                {excl_clause}
             """
             df_bt = self.sql.execute_query(query_bt)
             if df_bt is not None and len(df_bt) > 0:
@@ -8120,6 +8132,7 @@ class OperaSQLImport:
             WHERE a.at_acnt = '{bank_account}'
             AND a.at_pstdate BETWEEN '{date_from}' AND '{date_to}'
             AND ABS(ABS(a.at_value) - {amount_pence}) < 1
+            {excl_clause}
         """
         df = self.sql.execute_query(query)
         if df is not None and len(df) > 0:

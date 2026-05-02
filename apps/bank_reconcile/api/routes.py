@@ -3924,6 +3924,19 @@ async def import_bank_statement_from_pdf(
         skipped_incomplete = 0
         skipped_duplicates = 0
         skipped_already_posted = 0
+        # Track Opera at_entry numbers already claimed by earlier identical-
+        # amount transactions in this batch so the per-row pre-posting
+        # duplicate check correctly allows multi-occurrence transactions.
+        consumed_at_entries: set = set()
+        # Seed with entries claimed during the matching phase so the very
+        # first iteration sees the correct exclusion list.
+        for _t in transactions:
+            for _c in (_t.duplicate_candidates or []):
+                d = getattr(_c, 'details', None) or {}
+                if d.get('ae_entry'):
+                    consumed_at_entries.add(str(d['ae_entry']).strip())
+                if _c.table == 'aentry' and _c.record_id:
+                    consumed_at_entries.add(str(_c.record_id).strip())
 
         for txn in transactions:
             # Skip rows not in selected_rows (if specified)
@@ -4026,12 +4039,18 @@ async def import_bank_statement_from_pdf(
                         amount_pounds=abs(txn.amount),
                         account_code=account,
                         account_type=acct_type,
-                        description=txn.name or ''
+                        description=txn.name or '',
+                        exclude_entry_numbers=consumed_at_entries,
                     )
                     if dup_check['is_duplicate']:
                         skipped_duplicates += 1
                         errors.append({"row": txn.row_number, "error": f"Skipped - {dup_check['details']}"})
                         logger.warning(f"Row {txn.row_number}: Pre-posting duplicate detected - {dup_check['details']}")
+                        # Claim the matched entry so the next identical-amount
+                        # txn doesn't re-detect it.
+                        en = dup_check.get('entry_number')
+                        if en:
+                            consumed_at_entries.add(str(en).strip())
                         continue
                 except Exception as dup_err:
                     logger.warning(f"Row {txn.row_number}: Pre-posting duplicate check failed: {dup_err}")
@@ -9398,6 +9417,16 @@ async def import_bank_statement_from_email(
         skipped_incomplete = 0
         skipped_duplicates = 0
         skipped_already_posted = 0
+        # Track Opera at_entry numbers already claimed by earlier identical-
+        # amount transactions in this batch — preserves multi-occurrence support.
+        consumed_at_entries: set = set()
+        for _t in transactions:
+            for _c in (_t.duplicate_candidates or []):
+                d = getattr(_c, 'details', None) or {}
+                if d.get('ae_entry'):
+                    consumed_at_entries.add(str(d['ae_entry']).strip())
+                if _c.table == 'aentry' and _c.record_id:
+                    consumed_at_entries.add(str(_c.record_id).strip())
 
         for txn in transactions:
             if selected_rows is not None and txn.row_number not in selected_rows:
@@ -9501,12 +9530,18 @@ async def import_bank_statement_from_email(
                         amount_pounds=abs(txn.amount),
                         account_code=account,
                         account_type=acct_type,
-                        description=txn.name or ''
+                        description=txn.name or '',
+                        exclude_entry_numbers=consumed_at_entries,
                     )
                     if dup_check['is_duplicate']:
                         skipped_duplicates += 1
                         errors.append({"row": txn.row_number, "error": f"Skipped - {dup_check['details']}"})
                         logger.warning(f"Row {txn.row_number}: Pre-posting duplicate detected - {dup_check['details']}")
+                        # Claim the matched entry so the next identical-amount
+                        # txn doesn't re-detect it.
+                        en = dup_check.get('entry_number')
+                        if en:
+                            consumed_at_entries.add(str(en).strip())
                         continue
                 except Exception as dup_err:
                     logger.warning(f"Row {txn.row_number}: Pre-posting duplicate check failed: {dup_err}")
