@@ -3054,7 +3054,8 @@ class Opera3FoxProImport:
         amount_pounds: float,
         account_code: str = '',
         account_type: str = 'nominal',
-        date_tolerance_days: int = 1
+        date_tolerance_days: int = 1,
+        signed_amount_pounds: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Pre-flight duplicate check before posting a transaction to Opera 3.
@@ -3065,10 +3066,16 @@ class Opera3FoxProImport:
         Args:
             bank_account: Bank account code (e.g. 'BC010')
             transaction_date: Date of transaction (date object or 'YYYY-MM-DD' string)
-            amount_pounds: Transaction amount in pounds (positive)
+            amount_pounds: Transaction amount in pounds (positive — magnitude only)
             account_code: Customer/supplier/nominal code
-            account_type: 'customer', 'supplier', or 'nominal'
+            account_type: 'customer', 'customer_refund', 'supplier',
+                          'supplier_refund', or 'nominal'
             date_tolerance_days: Days either side of date to check (default 1)
+            signed_amount_pounds: Signed amount (negative for outgoing). If
+                None, derived from account_type so callers that haven't
+                migrated still get sign-aware comparisons. Comparing
+                signed values prevents +£X receipts being flagged as
+                duplicates of -£X refunds.
 
         Returns:
             Dict with 'is_duplicate' bool and 'details' string if found
@@ -3084,15 +3091,28 @@ class Opera3FoxProImport:
         date_to = txn_date + timedelta(days=date_tolerance_days)
         amount_pence = int(round(amount_pounds * 100))
 
+        # Derive signed amount if not supplied — mirrors the SE convention
+        # (see opera_sql_import.check_duplicate_before_posting).
+        if signed_amount_pounds is None:
+            if account_type in ('supplier', 'customer_refund', 'nominal_payment', 'transfer_out'):
+                signed_amount_pounds = -abs(amount_pounds)
+            elif account_type in ('customer', 'supplier_refund', 'nominal_receipt', 'transfer_in'):
+                signed_amount_pounds = abs(amount_pounds)
+            else:
+                signed_amount_pounds = -abs(amount_pounds)
+        signed_amount_pence = int(round(signed_amount_pounds * 100))
+
         try:
-            # Check 1: Cashbook (atran) - amounts in PENCE
+            # Check 1: Cashbook (atran) - amounts in PENCE.
+            # Sign-aware: a -£X payment is NOT a duplicate of a +£X
+            # receipt. Compare against signed_amount_pence.
             atran_table = self._open_table('atran')
             for record in atran_table:
                 if not record.at_acnt or record.at_acnt.strip() != bank_account:
                     continue
                 rec_date = record.at_pstdate
                 if rec_date and date_from <= rec_date <= date_to:
-                    if abs(abs(record.at_value) - amount_pence) < 1:
+                    if abs(record.at_value - signed_amount_pence) < 1:
                         entry = getattr(record, 'at_entry', '?')
                         return {
                             'is_duplicate': True,
@@ -3101,17 +3121,17 @@ class Opera3FoxProImport:
                             'entry_number': str(entry)
                         }
 
-            # Check 2: Sales Ledger for customer receipts
-            if account_type == 'customer' and account_code:
+            # Check 2: Sales Ledger — customer receipts AND refunds.
+            # Sign-aware comparison; type filter dropped (Opera installations
+            # vary on whether refunds use type 'F' or signed 'R'/'C').
+            if account_type in ('customer', 'customer_refund') and account_code:
                 stran_table = self._open_table('stran')
                 for record in stran_table:
                     if not record.st_account or record.st_account.strip() != account_code:
                         continue
-                    if getattr(record, 'st_trtype', '') != 'R':
-                        continue
                     rec_date = record.st_trdate
                     if rec_date and date_from <= rec_date <= date_to:
-                        if abs(abs(record.st_trvalue) - amount_pounds) < 0.01:
+                        if abs(record.st_trvalue - signed_amount_pounds) < 0.01:
                             ref = (getattr(record, 'st_trref', '') or '').strip()
                             return {
                                 'is_duplicate': True,
@@ -3120,17 +3140,16 @@ class Opera3FoxProImport:
                                 'entry_number': ref
                             }
 
-            # Check 3: Purchase Ledger for supplier payments
-            if account_type == 'supplier' and account_code:
+            # Check 3: Purchase Ledger — supplier payments AND refunds.
+            # Sign-aware comparison; type filter dropped (see Check 2).
+            if account_type in ('supplier', 'supplier_refund') and account_code:
                 ptran_table = self._open_table('ptran')
                 for record in ptran_table:
                     if not record.pt_account or record.pt_account.strip() != account_code:
                         continue
-                    if getattr(record, 'pt_trtype', '') != 'P':
-                        continue
                     rec_date = record.pt_trdate
                     if rec_date and date_from <= rec_date <= date_to:
-                        if abs(abs(record.pt_trvalue) - amount_pounds) < 0.01:
+                        if abs(record.pt_trvalue - signed_amount_pounds) < 0.01:
                             ref = (getattr(record, 'pt_trref', '') or '').strip()
                             return {
                                 'is_duplicate': True,

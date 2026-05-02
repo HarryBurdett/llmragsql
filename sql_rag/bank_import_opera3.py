@@ -1161,35 +1161,40 @@ class BankStatementMatcherOpera3:
                 ))
                 return True, "Already in cashbook (amount + date match)"
 
-            # Check 2: Purchase Ledger (ptran) - for supplier payments
-            if txn.action == 'purchase_payment' and txn.matched_account:
+            # Check 2: Purchase Ledger (ptran) — for supplier payments AND
+            # refunds. Sign-aware comparison: a -£X payment is NOT a
+            # duplicate of a +£X refund (and vice-versa). Type filter
+            # dropped — Opera installations vary on whether refunds use
+            # type 'P'/'R' with sign or a dedicated 'F'.
+            signed_amount = float(txn.amount)
+            if txn.action in ('purchase_payment', 'purchase_refund') and txn.matched_account:
                 ptran_records = self.reader.read_table("ptran")
                 for record in ptran_records:
                     pt_account = record.get('PT_ACCOUNT', record.get('pt_account', '')).strip()
                     pt_trdate = record.get('PT_TRDATE', record.get('pt_trdate'))
                     pt_trvalue = record.get('PT_TRVALUE', record.get('pt_trvalue', 0))
-                    pt_trtype = record.get('PT_TRTYPE', record.get('pt_trtype', '')).strip()
+                    pt_trref = (record.get('PT_TRREF', record.get('pt_trref', '')) or '').strip()
                     if (pt_account == txn.matched_account and
                         dates_within_tolerance(pt_trdate, txn.date) and
-                        abs(abs(pt_trvalue) - txn.abs_amount) < 0.01 and
-                        pt_trtype == 'P'):
+                        abs(pt_trvalue - signed_amount) < 0.01):
                         txn.is_duplicate = True
-                        return True, f"Already in purchase ledger (ptran) for {txn.matched_account}"
+                        return True, f"Already in purchase ledger (ptran) for {txn.matched_account} (ref: {pt_trref})"
 
-            # Check 3: Sales Ledger (stran) - for customer receipts
-            if txn.action == 'sales_receipt' and txn.matched_account:
+            # Check 3: Sales Ledger (stran) — for customer receipts AND
+            # refunds. Sign-aware comparison + type filter dropped (see
+            # Check 2 rationale).
+            if txn.action in ('sales_receipt', 'sales_refund') and txn.matched_account:
                 stran_records = self.reader.read_table("stran")
                 for record in stran_records:
                     st_account = record.get('ST_ACCOUNT', record.get('st_account', '')).strip()
                     st_trdate = record.get('ST_TRDATE', record.get('st_trdate'))
                     st_trvalue = record.get('ST_TRVALUE', record.get('st_trvalue', 0))
-                    st_trtype = record.get('ST_TRTYPE', record.get('st_trtype', '')).strip()
+                    st_trref = (record.get('ST_TRREF', record.get('st_trref', '')) or '').strip()
                     if (st_account == txn.matched_account and
                         dates_within_tolerance(st_trdate, txn.date) and
-                        abs(abs(st_trvalue) - txn.abs_amount) < 0.01 and
-                        st_trtype == 'R'):
+                        abs(st_trvalue - signed_amount) < 0.01):
                         txn.is_duplicate = True
-                        return True, f"Already in sales ledger (stran) for {txn.matched_account}"
+                        return True, f"Already in sales ledger (stran) for {txn.matched_account} (ref: {st_trref})"
 
         except FileNotFoundError:
             # If table doesn't exist, can't be a duplicate

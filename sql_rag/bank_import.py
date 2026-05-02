@@ -1633,37 +1633,43 @@ class BankStatementImport:
             ))
             return True, f"Already in cashbook (amount + date match)"
 
-        # Check 2: Purchase Ledger (ptran) - for supplier payments
-        # Only check if we have a matched supplier
-        if txn.action == 'purchase_payment' and txn.matched_account:
-            # ptran amounts are in POUNDS, payments are usually negative or have type 'P'
+        # Check 2: Purchase Ledger (ptran) — for supplier payments AND refunds.
+        # Sign-aware comparison: a -£X payment is NOT a duplicate of a +£X
+        # refund (and vice-versa). Cover both purchase_payment and
+        # purchase_refund actions so refunds aren't silently let through here
+        # only to be caught at posting time.
+        signed_amount_pounds = float(txn.amount)
+        if txn.action in ('purchase_payment', 'purchase_refund') and txn.matched_account:
             query = f"""
-                SELECT COUNT(*) as cnt FROM ptran WITH (NOLOCK)
+                SELECT TOP 1 pt_trref FROM ptran WITH (NOLOCK)
                 WHERE RTRIM(pt_account) = '{txn.matched_account}'
                 AND pt_trdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(ABS(pt_trvalue) - {amount_pounds}) < 0.01
-                AND pt_trtype = 'P'
+                AND ABS(pt_trvalue - {signed_amount_pounds}) < 0.01
             """
             df = self.sql_connector.execute_query(query)
-            if int(df.iloc[0]['cnt']) > 0:
+            if df is not None and not df.empty:
+                ref = (df.iloc[0].get('pt_trref') or '').strip()
                 txn.is_duplicate = True
-                return True, f"Already in purchase ledger (ptran) for {txn.matched_account}"
+                return True, f"Already in purchase ledger (ptran) for {txn.matched_account} (ref: {ref})"
 
-        # Check 3: Sales Ledger (stran) - for customer receipts
-        # Only check if we have a matched customer
-        if txn.action == 'sales_receipt' and txn.matched_account:
-            # stran amounts are in POUNDS, receipts have type 'R'
+        # Check 3: Sales Ledger (stran) — for customer receipts AND refunds.
+        # Sign-aware comparison + cover both sales_receipt and sales_refund
+        # actions. The type filter is intentionally dropped: Opera
+        # installations vary on whether refunds use type 'F' or a negative
+        # value with type 'R' / 'C', so matching by signed amount alone is
+        # the reliable test.
+        if txn.action in ('sales_receipt', 'sales_refund') and txn.matched_account:
             query = f"""
-                SELECT COUNT(*) as cnt FROM stran WITH (NOLOCK)
+                SELECT TOP 1 st_trref FROM stran WITH (NOLOCK)
                 WHERE RTRIM(st_account) = '{txn.matched_account}'
                 AND st_trdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(ABS(st_trvalue) - {amount_pounds}) < 0.01
-                AND st_trtype = 'R'
+                AND ABS(st_trvalue - {signed_amount_pounds}) < 0.01
             """
             df = self.sql_connector.execute_query(query)
-            if int(df.iloc[0]['cnt']) > 0:
+            if df is not None and not df.empty:
+                ref = (df.iloc[0].get('st_trref') or '').strip()
                 txn.is_duplicate = True
-                return True, f"Already in sales ledger (stran) for {txn.matched_account}"
+                return True, f"Already in sales ledger (stran) for {txn.matched_account} (ref: {ref})"
 
         return False, ""
 
