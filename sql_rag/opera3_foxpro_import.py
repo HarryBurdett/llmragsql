@@ -3121,13 +3121,17 @@ class Opera3FoxProImport:
                             'entry_number': str(entry)
                         }
 
-            # Check 2: Sales Ledger — customer receipts AND refunds.
-            # Sign-aware comparison; type filter dropped (Opera installations
-            # vary on whether refunds use type 'F' or signed 'R'/'C').
-            if account_type in ('customer', 'customer_refund') and account_code:
+            # Check 2: Sales Ledger — type-specific AND sign-aware. customer
+            # → st_trtype='R', customer_refund → 'F'. Rows of the wrong
+            # type are allocation targets, not duplicates.
+            stran_type_for_account = {'customer': 'R', 'customer_refund': 'F'}
+            if account_type in stran_type_for_account and account_code:
+                st_type = stran_type_for_account[account_type]
                 stran_table = self._open_table('stran')
                 for record in stran_table:
                     if not record.st_account or record.st_account.strip() != account_code:
+                        continue
+                    if (getattr(record, 'st_trtype', '') or '').strip() != st_type:
                         continue
                     rec_date = record.st_trdate
                     if rec_date and date_from <= rec_date <= date_to:
@@ -3140,12 +3144,16 @@ class Opera3FoxProImport:
                                 'entry_number': ref
                             }
 
-            # Check 3: Purchase Ledger — supplier payments AND refunds.
-            # Sign-aware comparison; type filter dropped (see Check 2).
-            if account_type in ('supplier', 'supplier_refund') and account_code:
+            # Check 3: Purchase Ledger — type-specific. supplier →
+            # pt_trtype='P', supplier_refund → 'F'. See Check 2 rationale.
+            ptran_type_for_account = {'supplier': 'P', 'supplier_refund': 'F'}
+            if account_type in ptran_type_for_account and account_code:
+                pt_type = ptran_type_for_account[account_type]
                 ptran_table = self._open_table('ptran')
                 for record in ptran_table:
                     if not record.pt_account or record.pt_account.strip() != account_code:
+                        continue
+                    if (getattr(record, 'pt_trtype', '') or '').strip() != pt_type:
                         continue
                     rec_date = record.pt_trdate
                     if rec_date and date_from <= rec_date <= date_to:

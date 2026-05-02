@@ -337,16 +337,19 @@ class EnhancedDuplicateDetector:
         date_str = txn_date.strftime('%Y-%m-%d')
         abs_amount = abs(amount)
 
-        # Check cashbook (atran) - amounts in PENCE
+        # Check cashbook (atran) - amounts in PENCE.
+        # Sign-aware: a +£X receipt and a -£X payment are NOT duplicates of
+        # each other. Compare against the SIGNED at_value so opposite-
+        # direction transactions of the same magnitude don't false-match.
         if bank_code:
             try:
-                amount_pence = int(abs_amount * 100)
+                signed_amount_pence = int(round(amount * 100))
                 query = f"""
                     SELECT at_unique, at_pstdate, at_value, at_refer, at_acnt
                     FROM atran WITH (NOLOCK)
                     WHERE at_acnt = '{bank_code}'
                     AND at_pstdate = '{date_str}'
-                    AND ABS(ABS(at_value) - {amount_pence}) < 1
+                    AND ABS(at_value - {signed_amount_pence}) < 1
                 """
                 df = self.sql.execute_query(query)
 
@@ -366,16 +369,23 @@ class EnhancedDuplicateDetector:
             except Exception as e:
                 logger.warning(f"Error checking atran exact match: {e}")
 
-        # Determine if we should check stran or ptran based on amount sign
+        # Determine if we should check stran or ptran based on amount sign.
+        # Sign-aware comparison everywhere: ledger rows of the OPPOSITE
+        # direction (e.g. an existing +£X receipt vs a new -£X refund) are
+        # NOT duplicates — they're allocation targets.
+        signed_amount_pounds = float(amount)
         if amount > 0:
-            # Receipt - check stran
+            # Money in — check stran for an existing receipt of the same
+            # signed magnitude. (stran receipts in Opera are stored as
+            # negative values reducing customer balance; the matcher uses
+            # type='R' which captures that convention.)
             try:
                 query = f"""
                     SELECT st_unique, st_trdate, st_trvalue, st_trref, st_account
                     FROM stran WITH (NOLOCK)
                     WHERE RTRIM(st_account) = '{account}'
                     AND st_trdate = '{date_str}'
-                    AND ABS(ABS(st_trvalue) - {abs_amount}) < 0.01
+                    AND ABS(st_trvalue + {signed_amount_pounds}) < 0.01
                     AND st_trtype = 'R'
                 """
                 df = self.sql.execute_query(query)
@@ -396,14 +406,16 @@ class EnhancedDuplicateDetector:
             except Exception as e:
                 logger.warning(f"Error checking stran exact match: {e}")
         else:
-            # Payment - check ptran
+            # Money out — check ptran for an existing payment of the same
+            # signed magnitude. ptran payments are negative (-£X) and
+            # bank-line payments are also negative, so direct compare.
             try:
                 query = f"""
                     SELECT pt_unique, pt_trdate, pt_trvalue, pt_trref, pt_account
                     FROM ptran WITH (NOLOCK)
                     WHERE RTRIM(pt_account) = '{account}'
                     AND pt_trdate = '{date_str}'
-                    AND ABS(ABS(pt_trvalue) - {abs_amount}) < 0.01
+                    AND ABS(pt_trvalue - {signed_amount_pounds}) < 0.01
                     AND pt_trtype = 'P'
                 """
                 df = self.sql.execute_query(query)
@@ -530,12 +542,16 @@ class EnhancedDuplicateDetector:
         ref_escaped = reference.replace("'", "''")
 
         # Check stran
+        # Column name is st_trref, not st_ref (the latter doesn't exist —
+        # the typo silently swallowed the whole branch as a SQL warning,
+        # so reference-based stran duplicate detection never returned
+        # anything). Aligned with ptran's pt_trref (fixed earlier).
         try:
             query = f"""
-                SELECT TOP 5 st_unique, st_trdate, st_trvalue, st_ref, st_account
+                SELECT TOP 5 st_unique, st_trdate, st_trvalue, st_trref, st_account
                 FROM stran WITH (NOLOCK)
                 WHERE RTRIM(st_account) = '{account}'
-                AND st_ref LIKE '%{ref_escaped}%'
+                AND st_trref LIKE '%{ref_escaped}%'
                 ORDER BY st_trdate DESC
             """
             df = self.sql.execute_query(query)
@@ -550,7 +566,7 @@ class EnhancedDuplicateDetector:
                         details={
                             'matched_on': 'reference',
                             'reference': reference,
-                            'st_ref': row.get('st_ref', ''),
+                            'st_trref': row.get('st_trref', ''),
                             'st_trdate': str(row.get('st_trdate', '')),
                             'st_trvalue': row.get('st_trvalue', 0)
                         }
