@@ -1467,7 +1467,17 @@ class BankStatementImport:
         """
         consumed_entries = consumed_entries or set()
         def _is_consumed(c) -> bool:
-            return f"{c.table}:{c.record_id}" in consumed_entries
+            # Check the candidate's own (table, record_id) plus any aliases
+            # in its details. Different match_types can return different
+            # (table, record_id) pairs for the same underlying Opera posting,
+            # so we look up each known identifier.
+            keys = {f"{c.table}:{c.record_id}"}
+            d = getattr(c, 'details', None) or {}
+            if d.get('ae_entry'):
+                keys.add(f"aentry:{str(d['ae_entry']).strip()}")
+            if d.get('at_unique'):
+                keys.add(f"atran:{str(d['at_unique']).strip()}")
+            return any(k in consumed_entries for k in keys)
         # Priority 1: Fingerprint check (definitive if enabled)
         if self.use_fingerprinting and self.duplicate_detector:
             # Generate fingerprint for this transaction
@@ -1931,13 +1941,24 @@ class BankStatementImport:
                     else:
                         txn.action = 'skip'
                         txn.skip_reason = f'Already posted: {posted_reason}'
-                    # Record which Opera entry this txn consumed so subsequent
-                    # identical-amount lines don't double-claim it.
+                    # Record EVERY candidate pointing at the same underlying
+                    # Opera posting. find_duplicates returns separate candidates
+                    # per match_type — same posting can appear once as
+                    # table='atran'/at_unique and again as table='aentry'/
+                    # ae_entry. We must add all keys so the next identical-
+                    # amount line correctly sees the entry as 'consumed' under
+                    # any of those keys.
                     if txn.duplicate_candidates:
                         for c in txn.duplicate_candidates:
                             if c.match_type in ('fingerprint', 'bank_amount') or c.confidence >= 0.9:
                                 consumed_entries.add(f"{c.table}:{c.record_id}")
-                                break
+                                # Also key by underlying ae_entry / at_unique
+                                # from details, in case match_types differ.
+                                d = c.details or {}
+                                if d.get('ae_entry'):
+                                    consumed_entries.add(f"aentry:{str(d['ae_entry']).strip()}")
+                                if d.get('at_unique'):
+                                    consumed_entries.add(f"atran:{str(d['at_unique']).strip()}")
 
     def import_transaction(self, txn: BankTransaction, validate_only: bool = False) -> ImportResult:
         """
