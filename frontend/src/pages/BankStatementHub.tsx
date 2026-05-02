@@ -2152,23 +2152,21 @@ function StatementRow({ stmt, isNext, onProcess, onReconcile, onDelete, onView, 
       <td className="px-4 py-2 text-right">
         <div className="flex items-center gap-1.5 justify-end">
           {isImportedWithData ? (
-            // Imported statement: show Process only when there's still
-            // unfinished work (some rows not imported AND not deferred).
-            // Reconcile is always shown so the operator can move to Stage 4.
-            <>
-              {hasPartialImport && onContinueImport && (
-                <button onClick={() => onContinueImport(inProgressData)}
-                  className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
-                  Process <ArrowRight className="h-3 w-3" />
-                </button>
-              )}
-              {onResumeReconcile && (
-                <button onClick={() => onResumeReconcile(inProgressData)}
-                  className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
-                  Reconcile <ArrowRight className="h-3 w-3" />
-                </button>
-              )}
-            </>
+            // ONE button only — pick the next action in the workflow:
+            //   - hasPartialImport (some rows still need posting)        → Process
+            //   - everything imported, awaiting Stage 4 reconciliation   → Reconcile
+            // Never both. Operator's mental model: one clear next step.
+            hasPartialImport && onContinueImport ? (
+              <button onClick={() => onContinueImport(inProgressData)}
+                className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1">
+                Process <ArrowRight className="h-3 w-3" />
+              </button>
+            ) : onResumeReconcile ? (
+              <button onClick={() => onResumeReconcile(inProgressData)}
+                className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
+                Reconcile <ArrowRight className="h-3 w-3" />
+              </button>
+            ) : null
           ) : onReconcile ? (
             <button onClick={onReconcile}
               className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1">
