@@ -7728,11 +7728,6 @@ async def scan_all_banks_for_statements(
                     deferred_count=deferred_count_for_stmt,
                     extraction_status=stmt.get('extraction_status'),
                 )
-                logger.info(
-                    f"[hub-trace] {code} {stmt_filename}: state={stmt['state']} "
-                    f"status={stmt.get('status')} has_import={has_import_record} "
-                    f"deferred_count={deferred_count_for_stmt} is_reconciled={is_reconciled}"
-                )
 
         # Build message
         bank_count = len(banks_with_statements)
