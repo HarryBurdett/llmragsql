@@ -388,73 +388,9 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const [deferredLines, setDeferredLines] = useState<Set<number>>(new Set());
   const [enrichedUnmatched, setEnrichedUnmatched] = useState<UnmatchedStatementLine[]>([]);
 
-  // Auto-mark statement lines as deferred when they match a row in the
-  // deferred-transactions audit DB. Triggered whenever the unmatched lines
-  // are loaded or the deferred-items query refreshes. The match is by
-  // (date prefix, rounded amount, normalised description) — robust to
-  // whitespace and ISO-date suffix differences.
-  useEffect(() => {
-    if (!deferredItemsQuery.data?.items || deferredItemsQuery.data.items.length === 0) return;
-    if (!enrichedUnmatched || enrichedUnmatched.length === 0) return;
-    const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
-    const dateOnly = (s: string) => (s || '').split('T')[0];
-    const auditByKey = new Map<string, number>();
-    for (const it of deferredItemsQuery.data.items) {
-      const key = `${dateOnly(it.statement_date)}|${Math.round(it.amount * 100) / 100}|${norm(it.description)}`;
-      auditByKey.set(key, it.id);
-    }
-    setDeferredLines(prev => {
-      const next = new Set(prev);
-      let changed = false;
-      for (const line of enrichedUnmatched) {
-        const k = `${dateOnly(line.statement_date)}|${Math.round((line.statement_amount || 0) * 100) / 100}|${norm(line.statement_description || line.statement_reference || '')}`;
-        if (auditByKey.has(k) && !next.has(line.statement_line)) {
-          next.add(line.statement_line);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [deferredItemsQuery.data, enrichedUnmatched]);
-
-  // Auto-clean stale defer audit rows: when the matcher pairs a previously-
-  // deferred bank line with an Opera entry (the operator entered it manually),
-  // the audit row's purpose is done. Drop it silently so deferred_count drops
-  // to 0 and the statement's state cleanly transitions to 'reconciled' on
-  // the next scan. No UI action — just bookkeeping.
-  useEffect(() => {
-    if (!deferredItemsQuery.data?.items || deferredItemsQuery.data.items.length === 0) return;
-    if (!matchingResult) return;
-    const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
-    const dateOnly = (s: string) => (s || '').split('T')[0];
-    const matchedKeys = new Set<string>();
-    const collect = (e: { statement_date: string | null; statement_amount: number; statement_description: string; statement_reference?: string }) => {
-      const key = `${dateOnly(e.statement_date || '')}|${Math.round((e.statement_amount || 0) * 100) / 100}|${norm(e.statement_description || e.statement_reference || '')}`;
-      matchedKeys.add(key);
-    };
-    (matchingResult.auto_matched || []).forEach(collect);
-    (matchingResult.suggested_matched || []).forEach(collect);
-    const stale: number[] = [];
-    for (const it of deferredItemsQuery.data.items) {
-      const k = `${dateOnly(it.statement_date)}|${Math.round(it.amount * 100) / 100}|${norm(it.description)}`;
-      if (matchedKeys.has(k)) stale.push(it.id);
-    }
-    if (stale.length === 0) return;
-    fetch(`/api/reconcile/bank/${selectedBank}/deferred-items`, {
-      method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`,
-      },
-      credentials: 'include',
-      body: JSON.stringify({ ids: stale }),
-    })
-      .then(() => {
-        console.info(`[deferred] auto-cleaned ${stale.length} audit row(s) for now-matched lines`);
-        queryClient.invalidateQueries({ queryKey: ['deferredItems', selectedBank] });
-      })
-      .catch(err => console.warn('Auto-clean defer audit failed (non-blocking):', err));
-  }, [matchingResult, deferredItemsQuery.data, selectedBank, queryClient]);
+  // (deferred-items effects defined further down — they reference
+  // `deferredItemsQuery` and `matchingResult` which need to be declared
+  // first to avoid a temporal-dead-zone ReferenceError on mount.)
 
   const [isBatchImporting, setIsBatchImporting] = useState(false);
   const [batchImportProgress, setBatchImportProgress] = useState<{
@@ -1303,6 +1239,74 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     enabled: !!selectedBank,
     staleTime: 10000,
   });
+
+  // Auto-mark statement lines as deferred when they match a row in the
+  // deferred-transactions audit DB. Triggered whenever the unmatched lines
+  // are loaded or the deferred-items query refreshes. The match is by
+  // (date prefix, rounded amount, normalised description) — robust to
+  // whitespace and ISO-date suffix differences.
+  useEffect(() => {
+    if (!deferredItemsQuery.data?.items || deferredItemsQuery.data.items.length === 0) return;
+    if (!enrichedUnmatched || enrichedUnmatched.length === 0) return;
+    const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const dateOnly = (s: string) => (s || '').split('T')[0];
+    const auditByKey = new Map<string, number>();
+    for (const it of deferredItemsQuery.data.items) {
+      const key = `${dateOnly(it.statement_date)}|${Math.round(it.amount * 100) / 100}|${norm(it.description)}`;
+      auditByKey.set(key, it.id);
+    }
+    setDeferredLines(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const line of enrichedUnmatched) {
+        const k = `${dateOnly(line.statement_date)}|${Math.round((line.statement_amount || 0) * 100) / 100}|${norm(line.statement_description || line.statement_reference || '')}`;
+        if (auditByKey.has(k) && !next.has(line.statement_line)) {
+          next.add(line.statement_line);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [deferredItemsQuery.data, enrichedUnmatched]);
+
+  // Auto-clean stale defer audit rows: when the matcher pairs a previously-
+  // deferred bank line with an Opera entry (the operator entered it manually),
+  // the audit row's purpose is done. Drop it silently so deferred_count drops
+  // to 0 and the statement's state cleanly transitions to 'reconciled' on
+  // the next scan. No UI action — just bookkeeping.
+  useEffect(() => {
+    if (!deferredItemsQuery.data?.items || deferredItemsQuery.data.items.length === 0) return;
+    if (!matchingResult) return;
+    const norm = (s: string) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const dateOnly = (s: string) => (s || '').split('T')[0];
+    const matchedKeys = new Set<string>();
+    const collect = (e: { statement_date: string | null; statement_amount: number; statement_description: string; statement_reference?: string }) => {
+      const key = `${dateOnly(e.statement_date || '')}|${Math.round((e.statement_amount || 0) * 100) / 100}|${norm(e.statement_description || e.statement_reference || '')}`;
+      matchedKeys.add(key);
+    };
+    (matchingResult.auto_matched || []).forEach(collect);
+    (matchingResult.suggested_matched || []).forEach(collect);
+    const stale: number[] = [];
+    for (const it of deferredItemsQuery.data.items) {
+      const k = `${dateOnly(it.statement_date)}|${Math.round(it.amount * 100) / 100}|${norm(it.description)}`;
+      if (matchedKeys.has(k)) stale.push(it.id);
+    }
+    if (stale.length === 0) return;
+    fetch(`/api/reconcile/bank/${selectedBank}/deferred-items`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`,
+      },
+      credentials: 'include',
+      body: JSON.stringify({ ids: stale }),
+    })
+      .then(() => {
+        console.info(`[deferred] auto-cleaned ${stale.length} audit row(s) for now-matched lines`);
+        queryClient.invalidateQueries({ queryKey: ['deferredItems', selectedBank] });
+      })
+      .catch(err => console.warn('Auto-clean defer audit failed (non-blocking):', err));
+  }, [matchingResult, deferredItemsQuery.data, selectedBank, queryClient]);
 
   // Mark reconciled mutation (manual mode)
   const markReconciledMutation = useMutation<MarkReconciledResponse, Error, void>({
