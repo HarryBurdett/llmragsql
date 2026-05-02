@@ -3791,18 +3791,28 @@ async def import_bank_statement_from_pdf(
                     exclude_import_id=resume_import_id
                 )
                 if overlap:
-                    return {
-                        "success": False,
-                        "overlap_warning": True,
-                        "error": f"Statement period overlaps with a previously imported statement",
-                        "overlap_details": {
-                            "existing_import_id": overlap['import_id'],
-                            "existing_filename": overlap['filename'],
-                            "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
-                            "existing_import_date": overlap['import_date'],
-                            "new_period": f"{period_start_str} to {period_end_str}"
+                    # Same-filename re-import is a continuation, not a conflict.
+                    # Operator went back to add missed lines — accumulate them
+                    # on the existing import record.
+                    if (overlap.get('filename') or '').strip() == (filename or '').strip():
+                        resume_import_id = overlap['import_id']
+                        logger.info(
+                            f"import-from-pdf: same-filename re-import detected — "
+                            f"continuing on existing import_id={resume_import_id}"
+                        )
+                    else:
+                        return {
+                            "success": False,
+                            "overlap_warning": True,
+                            "error": f"Statement period overlaps with a previously imported statement",
+                            "overlap_details": {
+                                "existing_import_id": overlap['import_id'],
+                                "existing_filename": overlap['filename'],
+                                "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
+                                "existing_import_date": overlap['import_date'],
+                                "new_period": f"{period_start_str} to {period_end_str}"
+                            }
                         }
-                    }
 
         # Import using BankStatementImport
         importer = BankStatementImport(bank_code=bank_code, sql_connector=sql_connector)
@@ -9178,18 +9188,26 @@ async def import_bank_statement_from_email(
                             exclude_import_id=resume_import_id
                         )
                         if overlap:
-                            return {
-                                "success": False,
-                                "overlap_warning": True,
-                                "error": f"Statement period overlaps with a previously imported statement",
-                                "overlap_details": {
-                                    "existing_import_id": overlap['import_id'],
-                                    "existing_filename": overlap['filename'],
-                                    "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
-                                    "existing_import_date": overlap['import_date'],
-                                    "new_period": f"{period_start_str} to {period_end_str}"
+                            # Same-filename re-import is a continuation, not a conflict.
+                            if (overlap.get('filename') or '').strip() == (filename or '').strip():
+                                resume_import_id = overlap['import_id']
+                                logger.info(
+                                    f"import-with-overrides: same-filename re-import — "
+                                    f"continuing on import_id={resume_import_id}"
+                                )
+                            else:
+                                return {
+                                    "success": False,
+                                    "overlap_warning": True,
+                                    "error": f"Statement period overlaps with a previously imported statement",
+                                    "overlap_details": {
+                                        "existing_import_id": overlap['import_id'],
+                                        "existing_filename": overlap['filename'],
+                                        "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
+                                        "existing_import_date": overlap['import_date'],
+                                        "new_period": f"{period_start_str} to {period_end_str}"
+                                    }
                                 }
-                            }
 
                 # Convert StatementTransaction to BankTransaction format
                 transactions = []
@@ -12838,18 +12856,28 @@ async def opera3_import_bank_statement_from_pdf(
                     exclude_import_id=resume_import_id
                 )
                 if overlap:
-                    return {
-                        "success": False,
-                        "overlap_warning": True,
-                        "error": f"Statement period overlaps with a previously imported statement",
-                        "overlap_details": {
-                            "existing_import_id": overlap['import_id'],
-                            "existing_filename": overlap['filename'],
-                            "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
-                            "existing_import_date": overlap['import_date'],
-                            "new_period": f"{period_start_str} to {period_end_str}"
+                    # Same-filename re-import is a continuation, not a conflict.
+                    # Operator went back to add missed lines — accumulate them
+                    # on the existing import record.
+                    if (overlap.get('filename') or '').strip() == (filename or '').strip():
+                        resume_import_id = overlap['import_id']
+                        logger.info(
+                            f"import-from-pdf: same-filename re-import detected — "
+                            f"continuing on existing import_id={resume_import_id}"
+                        )
+                    else:
+                        return {
+                            "success": False,
+                            "overlap_warning": True,
+                            "error": f"Statement period overlaps with a previously imported statement",
+                            "overlap_details": {
+                                "existing_import_id": overlap['import_id'],
+                                "existing_filename": overlap['filename'],
+                                "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
+                                "existing_import_date": overlap['import_date'],
+                                "new_period": f"{period_start_str} to {period_end_str}"
+                            }
                         }
-                    }
 
         # Use matcher for transaction processing
         matcher = BankStatementMatcherOpera3(data_path)
