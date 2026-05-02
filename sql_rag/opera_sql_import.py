@@ -8411,6 +8411,12 @@ class OperaSQLImport:
                 - unmatched_cashbook: Cashbook entries not on statement
         """
         try:
+            # Open-year boundary — never match against atran rows posted in a
+            # closed nominal year (those rows can't be re-touched and can't
+            # represent a current bank-statement transaction anyway).
+            from sql_rag.opera_config import get_open_year_start_date
+            open_year_start = get_open_year_start_date(self.sql)
+
             # Get all unreconciled entries for this bank (both complete and incomplete)
             # Note: No JOIN to atran - one aentry can have multiple atran lines
             # which would cause duplicates. We only need aentry fields for matching.
@@ -8493,44 +8499,66 @@ class OperaSQLImport:
                             matched = True
                             break
 
-                # Tier 2: Amount + approximate date match (for existing entries)
+                # Tier 2: Amount + closest date (for existing entries).
+                # No hard date cutoff — operators may reconcile months late and
+                # still expect the matcher to find the underlying Opera entry.
+                # Lower bound is the start of the currently-open nominal year
+                # (postings to closed years are forbidden, so atran rows older
+                # than that boundary cannot be a legitimate match anyway).
+                # Date proximity drives confidence, not exclusion.
                 if not matched and stmt_amount in entries_by_amount:
+                    best_entry = None
+                    best_date_diff: Optional[int] = None
                     for entry in entries_by_amount[stmt_amount]:
                         entry_num = entry.get('ae_entry')
                         if entry_num in matched_entry_numbers:
                             continue
-
                         entry_date = entry.get('ae_lstdate')
-                        if entry_date:
-                            if isinstance(entry_date, str):
-                                entry_date = datetime.strptime(entry_date[:10], '%Y-%m-%d').date()
-                            elif hasattr(entry_date, 'date'):
-                                entry_date = entry_date.date()
-
-                            # Check date within tolerance
-                            if stmt_date and entry_date:
-                                date_diff = abs((stmt_date - entry_date).days)
-                                if date_diff <= date_tolerance_days:
-                                    match_entry = entry
-
-                                    # Confidence based on date proximity + description match
-                                    entry_comment = str(entry.get('ae_comment', '')).strip().lower()
-                                    stmt_desc_lower = stmt_desc.lower().strip()
-                                    # If the Opera comment contains the statement description (or vice versa),
-                                    # this is almost certainly the same transaction (e.g., imported from this statement)
-                                    desc_match = (stmt_desc_lower and entry_comment and
-                                                  (stmt_desc_lower[:20] in entry_comment or entry_comment[:20] in stmt_desc_lower))
-
-                                    if date_diff == 0 and desc_match:
-                                        match_confidence = 100  # Same date + description match = certain
-                                    elif date_diff == 0:
-                                        match_confidence = 95   # Same date + same amount = auto
-                                    elif date_diff <= 1:
-                                        match_confidence = 90
-                                    else:
-                                        match_confidence = 80
-                                    matched = True
-                                    break
+                        if not entry_date:
+                            continue
+                        if isinstance(entry_date, str):
+                            entry_date = datetime.strptime(entry_date[:10], '%Y-%m-%d').date()
+                        elif hasattr(entry_date, 'date'):
+                            entry_date = entry_date.date()
+                        # Skip entries that fall before the open-year start
+                        # (closed-year postings can't be matched to current
+                        # bank statement transactions).
+                        if open_year_start and entry_date < open_year_start:
+                            continue
+                        if not stmt_date:
+                            # No statement date to compare — accept first.
+                            best_entry = entry
+                            best_date_diff = None
+                            break
+                        date_diff = abs((stmt_date - entry_date).days)
+                        if best_date_diff is None or date_diff < best_date_diff:
+                            best_entry = entry
+                            best_date_diff = date_diff
+                    if best_entry is not None:
+                        match_entry = best_entry
+                        entry_comment = str(best_entry.get('ae_comment', '')).strip().lower()
+                        stmt_desc_lower = stmt_desc.lower().strip()
+                        desc_match = (stmt_desc_lower and entry_comment and
+                                      (stmt_desc_lower[:20] in entry_comment or entry_comment[:20] in stmt_desc_lower))
+                        # Confidence scales with date proximity. Far-apart
+                        # matches are still surfaced (as 'suggested') so the
+                        # operator can review — never silently filtered.
+                        dd = best_date_diff if best_date_diff is not None else 999
+                        if dd == 0 and desc_match:
+                            match_confidence = 100  # same day + description = certain
+                        elif dd == 0:
+                            match_confidence = 95
+                        elif dd <= 1:
+                            match_confidence = 90
+                        elif dd <= 7:
+                            match_confidence = 85
+                        elif dd <= 30:
+                            match_confidence = 75
+                        elif dd <= 90:
+                            match_confidence = 65
+                        else:
+                            match_confidence = 55
+                        matched = True
 
                 if matched and match_entry:
                     entry_num = match_entry.get('ae_entry')

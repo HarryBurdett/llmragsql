@@ -559,6 +559,42 @@ def get_period_for_date(sql_connector, post_date) -> Tuple[int, int]:
     return (post_date.month, post_date.year)
 
 
+def get_open_year_start_date(sql_connector):
+    """
+    Return the earliest date within Opera's currently-open nominal year.
+
+    Once a year-end is performed in Opera, the prior year is closed and no
+    new postings can be made to it. Anything older than this date is in a
+    closed year and must not be matched / posted to.
+
+    Returns:
+        datetime.date object — first day of the current open nominal year.
+        None if the lookup fails (caller should treat as "no constraint" so
+        late reconciliation still works on databases without nparm/nclndd).
+    """
+    try:
+        # nparm.np_year is the currently-open year. The nominal calendar
+        # (nclndd) stores period boundaries — the earliest start date for
+        # that year is the open-year start.
+        query = """
+            SELECT TOP 1 MIN(ncd_stdate) AS open_start
+            FROM nclndd WITH (NOLOCK)
+            WHERE ncd_year = (SELECT TOP 1 np_year FROM nparm WITH (NOLOCK))
+        """
+        df = sql_connector.execute_query(query)
+        if df is not None and not df.empty:
+            val = df.iloc[0]['open_start']
+            if val is not None:
+                if hasattr(val, 'date'):
+                    return val.date()
+                if isinstance(val, str):
+                    return datetime.strptime(val[:10], '%Y-%m-%d').date()
+                return val
+    except Exception as e:
+        logger.warning(f"Could not determine open-year start date: {e}")
+    return None
+
+
 def get_current_period_info(sql_connector) -> Dict[str, Any]:
     """
     Get current period information from nparm.

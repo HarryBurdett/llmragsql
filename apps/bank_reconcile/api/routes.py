@@ -129,11 +129,11 @@ def _auto_clean_resolved_defers(bank_code: str) -> int:
     matching unreconciled entry in Opera atran for this bank — meaning the
     operator has manually entered the transaction since deferring it.
 
-    Match criteria: same bank, ABS(at_value - amount_pence) < 1, at_pstdate
-    within ±45 days of the audit row's statement_date. Wider window than the
-    ±14d duplicate-detector elsewhere because real-world manual entries often
-    happen weeks after the bank statement (e.g. waiting for colleague's
-    answer on a deferred item).
+    Match criteria: same bank, ABS(at_value - amount_pence) < 1. Date is
+    bounded BELOW by the start of the currently-open nominal year (you
+    can't post to closed years anyway). No upper bound — operators may
+    enter the resolution any time after the bank statement date, even
+    months later.
 
     Idempotent and silent — fire from any scan-style endpoint to keep the
     deferred_count accurate. Returns number of rows cleaned.
@@ -143,28 +143,29 @@ def _auto_clean_resolved_defers(bank_code: str) -> int:
     try:
         from sql_rag.deferred_transactions_db import DeferredTransactionsDB
         from sql_rag.company_data import get_current_db_path
+        from sql_rag.opera_config import get_open_year_start_date
         defer_db = DeferredTransactionsDB(get_current_db_path("bank_reconcile/deferred_transactions.db"))
         items = defer_db.list_for_statement(bank_code=bank_code)
         if not items:
             return 0
+        open_year_start = get_open_year_start_date(sql_connector)
+        # If we can't determine the open-year start, default to a wide window
+        # rather than missing legit late entries. Use 2 years lookback as a
+        # safety floor for installations without nparm/nclndd populated.
+        from datetime import datetime, timedelta, date as _date
+        if open_year_start is None:
+            open_year_start = (_date.today() - timedelta(days=730))
+        date_from = open_year_start.strftime('%Y-%m-%d')
         cleaned: list = []
-        from datetime import datetime, timedelta
         for item in items:
             try:
-                sd_raw = (item.get('statement_date') or '')[:10]
-                if not sd_raw:
-                    continue
-                d0 = datetime.strptime(sd_raw, '%Y-%m-%d').date()
-                date_from = (d0 - timedelta(days=45)).strftime('%Y-%m-%d')
-                date_to = (d0 + timedelta(days=45)).strftime('%Y-%m-%d')
                 amount_pence = int(round(float(item.get('amount') or 0.0) * 100))
-                # Sign convention: bank statement amount is signed (positive=
-                # receipt). atran also stores signed values. Match on absolute
-                # to be tolerant — the duplicate detection elsewhere uses ABS.
+                # Bank-and-amount match within the open nominal year.
+                # No upper-bound on date — late posting must still resolve.
                 query = (
                     "SELECT TOP 1 at_unique FROM atran WITH (NOLOCK) "
                     f"WHERE at_acnt = '{bank_code}' "
-                    f"AND at_pstdate BETWEEN '{date_from}' AND '{date_to}' "
+                    f"AND at_pstdate >= '{date_from}' "
                     f"AND ABS(ABS(at_value) - {abs(amount_pence)}) < 1"
                 )
                 df = sql_connector.execute_query(query)
