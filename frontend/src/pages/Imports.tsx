@@ -2926,7 +2926,30 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             row,
             account: editedTxn?.manual_account || '',
             ledger_type: editedTxn?.manual_ledger_type || 'C',
-            transaction_type: txnType || (editedTxn?.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
+            // Sign-aware default: a -£X bank line going to a customer is
+            // a sales_refund (we paid them back), not a sales_receipt; a
+            // +£X line going to a supplier is a purchase_refund (they
+            // refunded us), not a purchase_payment. The previous default
+            // hard-coded sales_receipt/purchase_payment regardless of
+            // direction, so the post-time duplicate check fired against
+            // the wrong stran/ptran type filter and blocked legitimate
+            // refund imports.
+            transaction_type: txnType || (() => {
+              const ledger = editedTxn?.manual_ledger_type;
+              const allRows: any[] = [
+                ...(bankPreview?.unmatched || []),
+                ...(bankPreview?.matched_receipts || []),
+                ...(bankPreview?.matched_payments || []),
+                ...(bankPreview?.matched_refunds || []),
+                ...(bankPreview?.skipped || []),
+                ...(bankPreview?.already_posted || []),
+              ];
+              const txn = allRows.find(t => t?.row === row);
+              const amt = Number(editedTxn?.manual_amount ?? txn?.amount ?? 0);
+              if (ledger === 'C') return amt >= 0 ? 'sales_receipt' : 'sales_refund';
+              if (ledger === 'S') return amt <= 0 ? 'purchase_payment' : 'purchase_refund';
+              return 'sales_receipt';
+            })()
           };
           // Include bank transfer details when type is bank_transfer
           if (txnType === 'bank_transfer') {
@@ -3783,7 +3806,30 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             row,
             account: editedTxn?.manual_account || '',
             ledger_type: editedTxn?.manual_ledger_type || 'C',
-            transaction_type: txnType || (editedTxn?.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
+            // Sign-aware default: a -£X bank line going to a customer is
+            // a sales_refund (we paid them back), not a sales_receipt; a
+            // +£X line going to a supplier is a purchase_refund (they
+            // refunded us), not a purchase_payment. The previous default
+            // hard-coded sales_receipt/purchase_payment regardless of
+            // direction, so the post-time duplicate check fired against
+            // the wrong stran/ptran type filter and blocked legitimate
+            // refund imports.
+            transaction_type: txnType || (() => {
+              const ledger = editedTxn?.manual_ledger_type;
+              const allRows: any[] = [
+                ...(bankPreview?.unmatched || []),
+                ...(bankPreview?.matched_receipts || []),
+                ...(bankPreview?.matched_payments || []),
+                ...(bankPreview?.matched_refunds || []),
+                ...(bankPreview?.skipped || []),
+                ...(bankPreview?.already_posted || []),
+              ];
+              const txn = allRows.find(t => t?.row === row);
+              const amt = Number(editedTxn?.manual_amount ?? txn?.amount ?? 0);
+              if (ledger === 'C') return amt >= 0 ? 'sales_receipt' : 'sales_refund';
+              if (ledger === 'S') return amt <= 0 ? 'purchase_payment' : 'purchase_refund';
+              return 'sales_receipt';
+            })()
           };
           // Include bank transfer details when type is bank_transfer
           if (txnType === 'bank_transfer') {
@@ -4020,7 +4066,30 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
             row,
             account: editedTxn?.manual_account || '',
             ledger_type: editedTxn?.manual_ledger_type || 'C',
-            transaction_type: txnType || (editedTxn?.manual_ledger_type === 'C' ? 'sales_receipt' : 'purchase_payment')
+            // Sign-aware default: a -£X bank line going to a customer is
+            // a sales_refund (we paid them back), not a sales_receipt; a
+            // +£X line going to a supplier is a purchase_refund (they
+            // refunded us), not a purchase_payment. The previous default
+            // hard-coded sales_receipt/purchase_payment regardless of
+            // direction, so the post-time duplicate check fired against
+            // the wrong stran/ptran type filter and blocked legitimate
+            // refund imports.
+            transaction_type: txnType || (() => {
+              const ledger = editedTxn?.manual_ledger_type;
+              const allRows: any[] = [
+                ...(bankPreview?.unmatched || []),
+                ...(bankPreview?.matched_receipts || []),
+                ...(bankPreview?.matched_payments || []),
+                ...(bankPreview?.matched_refunds || []),
+                ...(bankPreview?.skipped || []),
+                ...(bankPreview?.already_posted || []),
+              ];
+              const txn = allRows.find(t => t?.row === row);
+              const amt = Number(editedTxn?.manual_amount ?? txn?.amount ?? 0);
+              if (ledger === 'C') return amt >= 0 ? 'sales_receipt' : 'sales_refund';
+              if (ledger === 'S') return amt <= 0 ? 'purchase_payment' : 'purchase_refund';
+              return 'sales_receipt';
+            })()
           };
           // Include bank transfer details when type is bank_transfer
           if (txnType === 'bank_transfer') {
