@@ -3871,10 +3871,10 @@ async def import_bank_statement_from_pdf(
         # surface 'imported' state on the next scan.
         deferred_count = 0
         try:
-            from sql_rag.deferred_transactions_db import DeferredTransactionsDB
-            from sql_rag.company_data import get_current_db_path as _gcdp
-            audit_path = _gcdp("bank_reconcile/deferred_transactions.db")
+            audit_path = get_current_db_path("bank_reconcile/deferred_transactions.db")
             audit_db = DeferredTransactionsDB(audit_path)
+            _current_user = getattr(request.state, 'user', None)
+            _by = (_current_user or {}).get('username') or 'unknown'
             for txn in transactions:
                 if txn.action == 'defer':
                     deferred_count += 1
@@ -3883,7 +3883,7 @@ async def import_bank_statement_from_pdf(
                         statement_date=txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date or ''),
                         amount=float(txn.amount or 0.0),
                         description=(txn.memo or txn.name or '')[:255],
-                        deferred_by="admin",
+                        deferred_by=_by,
                     )
         except Exception as _audit_err:
             logger.warning("Deferred-transaction audit failed (import-from-pdf): %s", _audit_err)
@@ -4604,10 +4604,10 @@ async def import_with_manual_overrides(
         # the user's choice was honoured.
         deferred_count = 0
         try:
-            from sql_rag.deferred_transactions_db import DeferredTransactionsDB
-            from sql_rag.company_data import get_current_db_path
             audit_path = get_current_db_path("bank_reconcile/deferred_transactions.db")
             audit_db = DeferredTransactionsDB(audit_path)
+            _current_user = getattr(request.state, 'user', None)
+            _by = (_current_user or {}).get('username') or 'unknown'
             for txn in transactions:
                 if txn.action == 'defer':
                     deferred_count += 1
@@ -4616,7 +4616,7 @@ async def import_with_manual_overrides(
                         statement_date=txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date or ''),
                         amount=float(txn.amount or 0.0),
                         description=(txn.memo or txn.name or '')[:255],
-                        deferred_by="admin",
+                        deferred_by=_by,
                     )
         except Exception as audit_err:
             logger.warning("Deferred-transaction audit failed: %s", audit_err)
@@ -12911,9 +12911,10 @@ async def opera3_import_bank_statement_from_pdf(
         deferred_count = 0
         try:
             from sql_rag.deferred_transactions_db import DeferredTransactionsDB
-            from sql_rag.company_data import get_current_db_path
             audit_path = get_current_db_path("bank_reconcile/deferred_transactions.db")
             audit_db = DeferredTransactionsDB(audit_path)
+            _current_user = getattr(request.state, 'user', None)
+            _by = (_current_user or {}).get('username') or 'unknown'
             for txn in transactions:
                 if txn.action == 'defer':
                     deferred_count += 1
@@ -12922,7 +12923,7 @@ async def opera3_import_bank_statement_from_pdf(
                         statement_date=txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date or ''),
                         amount=float(txn.amount or 0.0),
                         description=(txn.memo or txn.name or '')[:255],
-                        deferred_by="admin",
+                        deferred_by=_by,
                     )
         except Exception as audit_err:
             logger.warning("Deferred-transaction audit failed (Opera 3): %s", audit_err)
