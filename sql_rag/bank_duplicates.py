@@ -559,12 +559,16 @@ class EnhancedDuplicateDetector:
             logger.warning(f"Error checking stran reference match: {e}")
 
         # Check ptran
+        # Column name is pt_trref, not pt_ref (the latter doesn't exist in
+        # Opera's schema — using it caused this whole branch to throw and
+        # be silently swallowed, so reference-based ptran matches were
+        # never returned).
         try:
             query = f"""
-                SELECT TOP 5 pt_unique, pt_trdate, pt_trvalue, pt_ref, pt_account
+                SELECT TOP 5 pt_unique, pt_trdate, pt_trvalue, pt_trref, pt_account
                 FROM ptran WITH (NOLOCK)
                 WHERE RTRIM(pt_account) = '{account}'
-                AND pt_ref LIKE '%{ref_escaped}%'
+                AND pt_trref LIKE '%{ref_escaped}%'
                 ORDER BY pt_trdate DESC
             """
             df = self.sql.execute_query(query)
@@ -579,7 +583,7 @@ class EnhancedDuplicateDetector:
                         details={
                             'matched_on': 'reference',
                             'reference': reference,
-                            'pt_ref': row.get('pt_ref', ''),
+                            'pt_trref': row.get('pt_trref', ''),
                             'pt_trdate': str(row.get('pt_trdate', '')),
                             'pt_trvalue': row.get('pt_trvalue', 0)
                         }
