@@ -8166,14 +8166,17 @@ class OperaSQLImport:
                         'entry_number': str(entry)
                     }
 
-        # Check 2: Sales Ledger for customer receipts/refunds
+        # Check 2: Sales Ledger for customer receipts/refunds.
+        # Sign-aware: a +£X sales_receipt is NOT a duplicate of a -£X
+        # refund (and vice-versa). Compare st_trvalue against the signed
+        # bank-line amount.
         if account_type in ('customer', 'customer_refund') and account_code:
             query = f"""
                 SELECT TOP 1 st_trref, st_trdate, st_trvalue
                 FROM stran WITH (NOLOCK)
                 WHERE RTRIM(st_account) = '{account_code}'
                 AND st_trdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(ABS(st_trvalue) - {amount_pounds}) < 0.01
+                AND ABS(st_trvalue - {signed_amount_pounds}) < 0.01
                 AND st_trtype = '{"F" if account_type == "customer_refund" else "R"}'
             """
             df = self.sql.execute_query(query)
@@ -8187,21 +8190,18 @@ class OperaSQLImport:
                     'entry_number': ref
                 }
 
-        # Check 3: Purchase Ledger for supplier payments/refunds
-        # Must check transaction type to avoid confusing payments with refunds
+        # Check 3: Purchase Ledger for supplier payments/refunds.
+        # Sign-aware: a -£X supplier payment is NOT a duplicate of a +£X
+        # refund (and vice-versa). Compare pt_trvalue against the signed
+        # bank-line amount — the sign of signed_amount_pounds inherently
+        # selects payments (negative) vs refunds (positive).
         if account_type in ('supplier', 'supplier_refund') and account_code:
-            # Payments have pt_trvalue < 0, refunds have pt_trvalue > 0
-            if account_type == 'supplier_refund':
-                sign_filter = "AND pt_trvalue > 0"  # Refund — positive value
-            else:
-                sign_filter = "AND pt_trvalue < 0"  # Payment — negative value
             query = f"""
                 SELECT TOP 1 pt_trref, pt_trdate, pt_trvalue
                 FROM ptran WITH (NOLOCK)
                 WHERE RTRIM(pt_account) = '{account_code}'
                 AND pt_trdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(ABS(pt_trvalue) - {amount_pounds}) < 0.01
-                {sign_filter}
+                AND ABS(pt_trvalue - {signed_amount_pounds}) < 0.01
             """
             df = self.sql.execute_query(query)
             if df is not None and len(df) > 0:
