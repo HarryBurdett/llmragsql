@@ -1444,7 +1444,7 @@ class BankStatementImport:
                 else:
                     txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
 
-    def _is_already_posted(self, txn: BankTransaction) -> Tuple[bool, str]:
+    def _is_already_posted(self, txn: BankTransaction, consumed_entries: Optional[set] = None) -> Tuple[bool, str]:
         """
         Check if transaction has already been posted to Opera
 
@@ -1454,9 +1454,20 @@ class BankStatementImport:
         3. ptran (purchase ledger) - for supplier payments
         4. stran (sales ledger) - for customer receipts
 
+        Args:
+            txn: Transaction to check
+            consumed_entries: Optional set of "table:record_id" keys already
+                claimed by earlier txns in this batch. Candidates with these
+                keys are skipped, allowing multiple identical-amount bank
+                lines to be detected as new (instead of all marked duplicate
+                of the single existing Opera entry).
+
         Returns:
             Tuple of (is_posted, reason) where reason explains where duplicate was found
         """
+        consumed_entries = consumed_entries or set()
+        def _is_consumed(c) -> bool:
+            return f"{c.table}:{c.record_id}" in consumed_entries
         # Priority 1: Fingerprint check (definitive if enabled)
         if self.use_fingerprinting and self.duplicate_detector:
             # Generate fingerprint for this transaction
@@ -1479,20 +1490,21 @@ class BankStatementImport:
 
                 # Fingerprint match is definitive
                 for c in candidates:
-                    if c.match_type == 'fingerprint':
+                    if c.match_type == 'fingerprint' and not _is_consumed(c):
                         txn.is_duplicate = True
                         return True, f"Already imported (fingerprint match): {c.table}.{c.record_id}"
 
                 # High confidence matches are also considered duplicates
                 for c in candidates:
-                    if c.confidence >= 0.9:
+                    if c.confidence >= 0.9 and not _is_consumed(c):
                         txn.is_duplicate = True
                         return True, f"Already posted ({c.match_type}): {c.table}.{c.record_id}"
 
-                # Bank-level amount match — always treat as duplicate regardless of confidence
-                # (exact amount on same bank is strong enough evidence)
+                # Bank-level amount match — definitive evidence, but skip
+                # entries already claimed by earlier identical-amount lines in
+                # this batch so legit multi-occurrence transactions all post.
                 for c in candidates:
-                    if c.match_type == 'bank_amount':
+                    if c.match_type == 'bank_amount' and not _is_consumed(c):
                         txn.is_duplicate = True
                         return True, f"Already in cashbook ({c.details.get('ae_entref', c.record_id)}): {c.record_id}"
 
@@ -1885,7 +1897,17 @@ class BankStatementImport:
         Args:
             transactions: List of transactions to process
             check_posted: Whether to check if already posted
+
+        Multi-occurrence handling: when several bank-statement lines share the
+        same (bank, amount), each line consumes ONE matching Opera entry. If
+        the statement has more lines than Opera has entries (e.g. two £6.99
+        Lime card purchases on different dates but only one was posted), the
+        extras are correctly flagged as 'not yet posted' and will be imported.
         """
+        # Track Opera entries already claimed by earlier txns in this batch so
+        # repeated identical-amount transactions don't all see the same row.
+        consumed_entries: set = set()
+
         for txn in transactions:
             # Check if should skip (name pattern match)
             skip_reason = self._should_skip(txn.name, txn.subcategory)
@@ -1901,7 +1923,7 @@ class BankStatementImport:
             # Check if already posted — run for ALL transactions including skipped ones.
             # A GC payout or other "skipped" transaction may already be in Opera's cashbook.
             if check_posted:
-                is_posted, posted_reason = self._is_already_posted(txn)
+                is_posted, posted_reason = self._is_already_posted(txn, consumed_entries=consumed_entries)
                 if is_posted:
                     txn.is_duplicate = True
                     if txn.action == 'repeat_entry':
@@ -1909,6 +1931,13 @@ class BankStatementImport:
                     else:
                         txn.action = 'skip'
                         txn.skip_reason = f'Already posted: {posted_reason}'
+                    # Record which Opera entry this txn consumed so subsequent
+                    # identical-amount lines don't double-claim it.
+                    if txn.duplicate_candidates:
+                        for c in txn.duplicate_candidates:
+                            if c.match_type in ('fingerprint', 'bank_amount') or c.confidence >= 0.9:
+                                consumed_entries.add(f"{c.table}:{c.record_id}")
+                                break
 
     def import_transaction(self, txn: BankTransaction, validate_only: bool = False) -> ImportResult:
         """
