@@ -3962,18 +3962,23 @@ async def import_bank_statement_from_pdf(
             # nominal year. The matcher will pair late entries to existing
             # atran rows; this guard only fires when the operator is trying
             # to CREATE a new posting dated in a closed year.
-            if _open_year_start and txn.date and txn.date < _open_year_start:
+            # Normalise both sides to `date` — txn.date may arrive as a
+            # datetime (with time component) and direct < comparison against
+            # a `date` raises TypeError in Python.
+            from datetime import datetime as _dt
+            _txn_date_d = txn.date.date() if isinstance(txn.date, _dt) else txn.date
+            if _open_year_start and _txn_date_d and _txn_date_d < _open_year_start:
                 errors.append({
                     "row": txn.row_number,
                     "error": (
-                        f"Transaction date {txn.date.isoformat()} is before "
+                        f"Transaction date {_txn_date_d.isoformat()} is before "
                         f"the open nominal year start ({_open_year_start.isoformat()}). "
                         f"Year-end has been performed; postings to closed years are not allowed. "
                         f"Edit the date or skip this row."
                     ),
                 })
                 logger.warning(
-                    f"Row {txn.row_number}: refused — date {txn.date} is in closed year"
+                    f"Row {txn.row_number}: refused — date {_txn_date_d} is in closed year"
                 )
                 continue
             # Belt-and-braces: also run the per-period status check (catches
