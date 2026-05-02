@@ -4188,27 +4188,55 @@ async def import_bank_statement_from_pdf(
                         f"see this statement as 'imported'."
                     )
                 if email_storage:
-                    import_record_id = email_storage.record_bank_statement_import(
-                        bank_code=bank_code,
-                        filename=filename,
-                        transactions_imported=transactions_imported,
-                        source='file',
-                        target_system='opera_se',
-                        total_receipts=total_receipts,
-                        total_payments=total_payments,
-                        imported_by=imported_by,
-                        opening_balance=statement_info_dict.get('opening_balance'),
-                        closing_balance=statement_info_dict.get('closing_balance'),
-                        statement_date=statement_info_dict.get('statement_date'),
-                        account_number=statement_info_dict.get('account_number'),
-                        sort_code=statement_info_dict.get('sort_code'),
-                        period_start=statement_info_dict.get('period_start'),
-                        period_end=statement_info_dict.get('period_end'),
-                        file_path=file_path
-                    )
+                    if resume_import_id:
+                        # Continuation of an existing import (same-filename re-import
+                        # detected upstream OR explicit resume). UPDATE the existing
+                        # row's counters instead of inserting a new one — keeps a
+                        # single tracking record per statement, prevents duplicates.
+                        import_record_id = resume_import_id
+                        try:
+                            with email_storage._get_connection() as _conn:
+                                _conn.execute(
+                                    """
+                                    UPDATE bank_statement_imports
+                                    SET transactions_imported = COALESCE(transactions_imported, 0) + ?,
+                                        total_receipts = COALESCE(total_receipts, 0) + ?,
+                                        total_payments = COALESCE(total_payments, 0) + ?
+                                    WHERE id = ?
+                                    """,
+                                    (transactions_imported, total_receipts, total_payments, import_record_id),
+                                )
+                                _conn.commit()
+                            logger.info(
+                                f"import-from-pdf: continuation — incremented import_id={import_record_id} "
+                                f"by +{transactions_imported} transactions"
+                            )
+                        except Exception as _upd_err:
+                            logger.warning(f"Could not update existing import record {import_record_id}: {_upd_err}")
+                    else:
+                        import_record_id = email_storage.record_bank_statement_import(
+                            bank_code=bank_code,
+                            filename=filename,
+                            transactions_imported=transactions_imported,
+                            source='file',
+                            target_system='opera_se',
+                            total_receipts=total_receipts,
+                            total_payments=total_payments,
+                            imported_by=imported_by,
+                            opening_balance=statement_info_dict.get('opening_balance'),
+                            closing_balance=statement_info_dict.get('closing_balance'),
+                            statement_date=statement_info_dict.get('statement_date'),
+                            account_number=statement_info_dict.get('account_number'),
+                            sort_code=statement_info_dict.get('sort_code'),
+                            period_start=statement_info_dict.get('period_start'),
+                            period_end=statement_info_dict.get('period_end'),
+                            file_path=file_path
+                        )
                     result['import_id'] = import_record_id
 
-                    # Persist statement transactions for reconciliation lifecycle
+                    # Persist statement transactions for reconciliation lifecycle.
+                    # On a continuation, save_statement_transactions only adds rows
+                    # not already present (keyed by line_number) — safe to call.
                     if stmt_transactions and import_record_id:
                         try:
                             raw_txns = [
