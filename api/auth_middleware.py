@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 # Paths that don't require authentication
 PUBLIC_PATHS: Set[str] = {
     '/api/auth/login',
+    '/api/auth/force-clear-session',  # Escape hatch when admin is locked out — verifies username+password itself, no token possible
     '/api/auth/user-default-company',  # For login page to get user's default company
     '/api/licenses',  # For login page client dropdown
     '/api/companies/list',  # For login page company dropdown
