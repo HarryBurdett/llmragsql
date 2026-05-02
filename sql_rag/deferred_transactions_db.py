@@ -193,11 +193,13 @@ def derive_statement_state(
         return 'pending_extraction'
     if is_reconciled:
         return 'reconciled'
-    if has_import_record and deferred_count > 0:
-        return 'imported'
     if has_import_record:
-        # Imported with zero deferred — Stage 4 should have run cleanly.
-        return 'reconciled'
+        # Has an import record but Opera-side reconciliation flag (nk_recbal
+        # advance) hasn't been set yet → 'imported' (pending Stage 4).
+        # Distinguish: deferred rows still pending vs. nothing pending.
+        # Both render the same way (amber 'awaiting reconcile' badge);
+        # `deferred_count` flows through separately for the deferred pill.
+        return 'imported'
     if has_draft:
         return 'in_progress'
     return 'ready'

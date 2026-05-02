@@ -200,13 +200,15 @@ def test_derive_state_ready_default():
     ) == 'ready'
 
 
-def test_derive_state_imported_with_no_deferred_falls_to_reconciled_intent():
-    """An import record without deferred rows — Stage 4 should already have run.
-    Treat as 'reconciled' for the purpose of state derivation."""
+def test_derive_state_import_record_without_reconciled_flag_is_imported_not_reconciled():
+    """An import record exists but Opera's is_reconciled flag isn't set yet
+    (nk_recbal hasn't advanced). State must be 'imported' so the Hub shows
+    the appropriate awaiting-reconcile / partial-import affordances; only
+    is_reconciled=True can return 'reconciled'."""
     assert derive_statement_state(
         is_reconciled=False,
         has_import_record=True,
         has_draft=False,
         deferred_count=0,
         extraction_status='extracted',
-    ) == 'reconciled'
+    ) == 'imported'
