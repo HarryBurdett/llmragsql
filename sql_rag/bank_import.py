@@ -1557,6 +1557,12 @@ class BankStatementImport:
             ref_match = re.search(r'Ref[:\s]+(\S+)', txn.name, re.IGNORECASE)
             if ref_match:
                 txn_ref = ref_match.group(1)
+        # Signed amount comparison: respect direction. A bank-statement
+        # payment (-£X) and a same-amount receipt (+£X) in atran are
+        # different transactions, NOT duplicates of each other. We compare
+        # the signed pence value (ae_value already signed in Opera).
+        signed_amount_pence = int(round(txn.amount * 100))
+
         if txn_ref and len(txn_ref) >= 6:
             safe_ref = txn_ref.replace("'", "''").strip().upper()
             query_ref = f"""
@@ -1564,7 +1570,7 @@ class BankStatementImport:
                 FROM aentry WITH (NOLOCK)
                 WHERE ae_acnt = '{self.bank_code}'
                 AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(ABS(ae_value) - {amount_pence}) < 1
+                AND ABS(ae_value - {signed_amount_pence}) < 1
                 AND UPPER(RTRIM(ae_entref)) LIKE '%{safe_ref}%'
             """
             df_ref = self.sql_connector.execute_query(query_ref)
@@ -1590,7 +1596,7 @@ class BankStatementImport:
             SELECT TOP 1 ae_entry FROM aentry WITH (NOLOCK)
             WHERE ae_acnt = '{self.bank_code}'
             AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
-            AND ABS(ABS(ae_value) - {amount_pence}) < 1
+            AND ABS(ae_value - {signed_amount_pence}) < 1
             AND LEFT(RTRIM(ISNULL(ae_comment, '')), 15) = LEFT('{safe_comment}', 15)
             {excl_clause}
         """
@@ -1611,7 +1617,7 @@ class BankStatementImport:
             SELECT TOP 1 ae_entry FROM aentry WITH (NOLOCK)
             WHERE ae_acnt = '{self.bank_code}'
             AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
-            AND ABS(ABS(ae_value) - {amount_pence}) < 1
+            AND ABS(ae_value - {signed_amount_pence}) < 1
             {excl_clause}
         """
         df2 = self.sql_connector.execute_query(query2)

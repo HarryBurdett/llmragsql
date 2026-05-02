@@ -696,14 +696,19 @@ class EnhancedDuplicateDetector:
         days: int = 3
     ) -> List[DuplicateCandidate]:
         """
-        Check for matching aentry on the same bank by amount + date range.
+        Check for matching aentry on the same bank by SIGNED amount + date range.
 
         No account match needed — catches transactions entered directly in Opera
         (e.g. HMRC, standing orders) that won't have a matched account.
         Uses aentry (header total), not atran (nominal splits).
+
+        Sign-aware: a -£X bank payment is NOT a duplicate of a +£X aentry
+        receipt. ae_value preserves sign (negative=payment, positive=receipt).
         """
         candidates = []
-        amount_pence = int(round(abs(amount) * 100))
+        # Preserve sign — direction matters. Same |amount| with opposite
+        # direction is a different transaction, not a duplicate.
+        signed_amount_pence = int(round(amount * 100))
 
         start_date = (txn_date - timedelta(days=days)).strftime('%Y-%m-%d')
         end_date = (txn_date + timedelta(days=days)).strftime('%Y-%m-%d')
@@ -714,7 +719,7 @@ class EnhancedDuplicateDetector:
                 FROM aentry WITH (NOLOCK)
                 WHERE ae_acnt = '{bank_code}'
                 AND ae_lstdate BETWEEN '{start_date}' AND '{end_date}'
-                AND ABS(ABS(ae_value) - {amount_pence}) < 1
+                AND ABS(ae_value - {signed_amount_pence}) < 1
             """
             df = self.sql.execute_query(query)
 

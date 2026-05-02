@@ -8059,6 +8059,7 @@ class OperaSQLImport:
         date_tolerance_days: int = 1,
         description: str = '',
         exclude_entry_numbers: Optional[set] = None,
+        signed_amount_pounds: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Pre-flight duplicate check before posting a transaction to Opera.
@@ -8087,6 +8088,20 @@ class OperaSQLImport:
         date_from = (txn_date - timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
         date_to = (txn_date + timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
         amount_pence = int(round(amount_pounds * 100))
+        # Signed pence used by the cashbook check below — direction matters
+        # so a -£X bank payment is NOT detected as a duplicate of a +£X
+        # receipt with the same |amount|. If the caller doesn't supply a
+        # signed value, fall back to deriving from account_type.
+        if signed_amount_pounds is None:
+            if account_type in ('supplier', 'customer_refund', 'nominal_payment', 'transfer_out'):
+                signed_amount_pounds = -abs(amount_pounds)
+            elif account_type in ('customer', 'supplier_refund', 'nominal_receipt', 'transfer_in'):
+                signed_amount_pounds = abs(amount_pounds)
+            elif account_type == 'transfer':
+                signed_amount_pounds = -abs(amount_pounds)  # default to outgoing
+            else:
+                signed_amount_pounds = abs(amount_pounds)
+        signed_pence = int(round(signed_amount_pounds * 100))
         # Build SQL NOT IN clause to skip entries already claimed by prior
         # identical-amount transactions in this batch (multi-occurrence support).
         excl_clause = ''
@@ -8098,8 +8113,9 @@ class OperaSQLImport:
             if quoted:
                 excl_clause = f" AND RTRIM(a.at_entry) NOT IN ({quoted})"
 
-        # Check 0: Bank transfer duplicate — at_type=8, same amount + date on this bank
-        # Bank transfers appear on BOTH statements with different descriptions
+        # Check 0: Bank transfer duplicate — at_type=8, same SIGNED amount
+        # + date on this bank. Bank transfers appear on BOTH statements with
+        # different descriptions but matching direction on each bank.
         if account_type == 'transfer':
             query_bt = f"""
                 SELECT TOP 1 a.at_entry, e.ae_comment
@@ -8108,7 +8124,7 @@ class OperaSQLImport:
                 WHERE a.at_acnt = '{bank_account}'
                 AND a.at_type = 8
                 AND a.at_pstdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(ABS(a.at_value) - {amount_pence}) < 1
+                AND ABS(a.at_value - {signed_pence}) < 1
                 {excl_clause}
             """
             df_bt = self.sql.execute_query(query_bt)
@@ -8122,8 +8138,8 @@ class OperaSQLImport:
                     'entry_number': str(entry)
                 }
 
-        # Check 1: Cashbook (atran) - amounts in PENCE
-        # Compare description prefix to avoid false positives (different payees, same amount/date)
+        # Check 1: Cashbook (atran) - SIGNED amounts in PENCE.
+        # Compare description prefix to avoid false positives (different payees, same amount/date).
         safe_desc = (description or '').replace("'", "''").strip()[:15]
         query = f"""
             SELECT TOP 1 a.at_entry, a.at_pstdate, a.at_value, e.ae_entref, e.ae_comment
@@ -8131,7 +8147,7 @@ class OperaSQLImport:
             JOIN aentry e WITH (NOLOCK) ON e.ae_entry = a.at_entry AND e.ae_acnt = a.at_acnt
             WHERE a.at_acnt = '{bank_account}'
             AND a.at_pstdate BETWEEN '{date_from}' AND '{date_to}'
-            AND ABS(ABS(a.at_value) - {amount_pence}) < 1
+            AND ABS(a.at_value - {signed_pence}) < 1
             {excl_clause}
         """
         df = self.sql.execute_query(query)
