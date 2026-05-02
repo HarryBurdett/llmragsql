@@ -1572,9 +1572,18 @@ class BankStatementImport:
                 txn.is_duplicate = True
                 return True, f"Already in cashbook (reference match: {txn_ref})"
 
-        # Check 1: Cashbook — use aentry (header) not atran (splits)
-        # aentry.ae_value is the actual payment/receipt total
-        # atran may have multiple lines split across nominal accounts
+        # Check 1: Cashbook — use aentry (header) not atran (splits).
+        # Build SQL exclusion for any aentry already consumed by an earlier
+        # identical-amount line in this batch — preserves the multi-occurrence
+        # fix for legitimately-duplicated bank transactions.
+        consumed_aentries = [
+            k.split(':', 1)[1] for k in consumed_entries
+            if k.startswith('aentry:') and ':' in k
+        ]
+        excl_clause = ''
+        if consumed_aentries:
+            quoted = ','.join(f"'{e.replace(chr(39), chr(39)+chr(39))}'" for e in consumed_aentries)
+            excl_clause = f" AND RTRIM(ae_entry) NOT IN ({quoted})"
         safe_comment = (txn.name or '').replace("'", "''").strip()[:30]
         # First check: amount + date + comment prefix (strong match)
         query = f"""
@@ -1583,6 +1592,7 @@ class BankStatementImport:
             AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
             AND ABS(ABS(ae_value) - {amount_pence}) < 1
             AND LEFT(RTRIM(ISNULL(ae_comment, '')), 15) = LEFT('{safe_comment}', 15)
+            {excl_clause}
         """
         df = self.sql_connector.execute_query(query)
         if df is not None and not df.empty:
@@ -1602,6 +1612,7 @@ class BankStatementImport:
             WHERE ae_acnt = '{self.bank_code}'
             AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
             AND ABS(ABS(ae_value) - {amount_pence}) < 1
+            {excl_clause}
         """
         df2 = self.sql_connector.execute_query(query2)
         if df2 is not None and not df2.empty:
