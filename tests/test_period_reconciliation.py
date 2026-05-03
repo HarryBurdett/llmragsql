@@ -74,3 +74,55 @@ def test_datasource_protocol_signatures_pinned():
         # missing query_unreconciled_in_period
     assert isinstance(_Good(), DataSource)
     assert not isinstance(_Bad(), DataSource)
+
+
+from datetime import date
+
+class _FakeDataSource:
+    """In-memory DataSource for unit tests."""
+    def __init__(
+        self,
+        historical_recbals: set[int] | None = None,
+        unreconciled_count: int = 0,
+        raise_on_recbals: Exception | None = None,
+        raise_on_unrec: Exception | None = None,
+    ):
+        self._recbals = historical_recbals or set()
+        self._unrec = unreconciled_count
+        self._raise_on_recbals = raise_on_recbals
+        self._raise_on_unrec = raise_on_unrec
+
+    def query_historical_recbals(self, bank_code):
+        if self._raise_on_recbals:
+            raise self._raise_on_recbals
+        return self._recbals
+
+    def query_unreconciled_in_period(self, bank_code, ps, pe):
+        if self._raise_on_unrec:
+            raise self._raise_on_unrec
+        return self._unrec
+
+
+def test_fully_reconciled_when_closing_matches_historical_boundary_and_below_recbal():
+    """The Cloudsis March case: closing £50,377.38 matches a historical
+    batch boundary (T100000030 in batch 207) AND closing < current rec_bal
+    £82,557.56 → FULLY_RECONCILED, matched_historical_boundary=True.
+    """
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(
+        historical_recbals={5037738},  # £50,377.38 in pence
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 3, 31),
+        statement_closing=50377.38,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.FULLY_RECONCILED
+    assert result.matched_historical_boundary is True
+    assert "boundary" in result.reason.lower()

@@ -82,3 +82,84 @@ class DataSource(Protocol):
         [period_start, period_end] AND ae_reclnum is null or zero.
         """
         ...
+
+
+def _to_pence(amount: Optional[float]) -> Optional[int]:
+    """Convert pounds to pence, integer-rounded. None passes through."""
+    if amount is None:
+        return None
+    return int(round(amount * 100))
+
+
+def check_period_reconciled(
+    *,
+    data_source: DataSource,
+    bank_code: str,
+    period_start: Optional[date],
+    period_end: Optional[date],
+    statement_closing: Optional[float],
+    current_rec_bal: Optional[float],
+) -> PeriodReconciliationResult:
+    """Single source of truth for 'is this statement period fully reconciled?'.
+
+    Two-stage rule:
+      1. Historical match: if statement_closing matches a known reconcile-
+         batch boundary on this bank AND closing < current_rec_bal, the
+         period is from a prior closed cycle.
+      2. Period-aware: if closing equals current_rec_bal, count
+         unreconciled aentries in the period; zero means done.
+
+    Conservative default: returns UNKNOWN if inputs are missing or a
+    DataSource query fails. Callers MUST treat UNKNOWN as "show, don't
+    auto-promote" to match the project's no-quick-fixes mandate.
+
+    See docs/superpowers/specs/2026-05-03-period-reconciled-function-design.md
+    for the full design.
+    """
+    # Stage 0: input validation
+    if statement_closing is None:
+        return PeriodReconciliationResult(
+            status=PeriodReconciliationStatus.UNKNOWN,
+            unreconciled_count=None,
+            matched_historical_boundary=False,
+            reason="no statement closing balance — cannot determine state",
+        )
+
+    # Stage 1: historical match
+    closing_pence = _to_pence(statement_closing)
+    rec_bal_pence = _to_pence(current_rec_bal)
+    historical: set[int]
+    try:
+        historical = data_source.query_historical_recbals(bank_code)
+    except Exception as e:
+        return PeriodReconciliationResult(
+            status=PeriodReconciliationStatus.UNKNOWN,
+            unreconciled_count=None,
+            matched_historical_boundary=False,
+            reason=f"could not query historical recbals: {e}",
+        )
+
+    if (
+        rec_bal_pence is not None
+        and closing_pence < rec_bal_pence
+        and closing_pence in historical
+    ):
+        return PeriodReconciliationResult(
+            status=PeriodReconciliationStatus.FULLY_RECONCILED,
+            unreconciled_count=None,
+            matched_historical_boundary=True,
+            reason=(
+                f"closing £{statement_closing:,.2f} matches a historical "
+                f"batch boundary AND is below current rec_bal "
+                f"£{current_rec_bal:,.2f} (prior closed cycle)"
+            ),
+        )
+
+    # Stage 2 (placeholder for now — Task 3 implements)
+    # Stage 3 (placeholder for now — Task 4 implements)
+    return PeriodReconciliationResult(
+        status=PeriodReconciliationStatus.UNKNOWN,
+        unreconciled_count=None,
+        matched_historical_boundary=False,
+        reason="not implemented — task 3+ pending",
+    )
