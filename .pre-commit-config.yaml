@@ -10,3 +10,9 @@ repos:
         pass_filenames: false
         # Run on every commit that touches Python files; the validator
         # itself decides which subset to scan based on file path globs.
+      - id: kb-update-check
+        name: KB update required for Opera changes
+        entry: python scripts/kb_update_check.py
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
