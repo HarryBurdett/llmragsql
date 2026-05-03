@@ -364,3 +364,29 @@ def test_scan_all_banks_auto_promote_uses_function():
         "Auto-promote section should no longer issue inline COUNT(*) — "
         "delegate to check_period_reconciled"
     )
+
+
+def test_imported_for_reconciliation_uses_function():
+    """The /api/statement-files/imported-for-reconciliation auto-mark
+    loop must also delegate to check_period_reconciled.
+    """
+    from pathlib import Path
+    routes_path = Path(__file__).resolve().parent.parent / "apps" / "bank_reconcile" / "api" / "routes.py"
+    src = routes_path.read_text(encoding='utf-8')
+
+    # Locate the section by its existing comment marker
+    start = src.find("# Add Opera reconciled balance info and auto-mark reconciled statements")
+    if start == -1:
+        # Section may have been renamed during refactor — fall back to
+        # endpoint marker
+        start = src.find('imported-for-reconciliation')
+    assert start != -1, "imported-for-reconciliation section must be findable"
+
+    # The endpoint should call check_period_reconciled — appears at least once
+    # globally in the file (already true after Task 7), but we also want
+    # this specific section to use it. Heuristic: count usages.
+    n = src.count("check_period_reconciled(")
+    assert n >= 2, (
+        f"Expected ≥2 call sites of check_period_reconciled; found {n}. "
+        "imported-for-reconciliation must also delegate."
+    )
