@@ -356,30 +356,51 @@ async def get_employee_groups(data_source: str = Query("sql", description="Data 
 
 @router.get("/api/pension/payment-sources")
 async def get_pension_payment_sources(scheme_code: str = Query(...)):
-    """Get payment sources configured for a pension scheme."""
+    """Get payment sources from the wpnps lookup.
+
+    Note: wpnps is a flat company-wide lookup of payment sources keyed
+    by wpo_code; it has no scheme-code column. The wps_penps field on
+    wpnsc identifies the default payment source for a given scheme,
+    but the current schema does not expose a per-scheme set of
+    available payment sources. The scheme_code parameter is accepted
+    for forward-compatibility and used to look up the scheme's default.
+    """
     try:
         from api.main import sql_connector
 
-        # Get payment sources from wpnps (pension payment sources) table
-        sql = f"""
+        # Get all payment sources from wpnps (real columns: wpo_code,
+        # wpo_desc, wpo_memo).
+        sql = """
         SELECT
-            wpp_code,
-            wpp_name,
-            wpp_default
+            RTRIM(wpo_code) AS code,
+            RTRIM(wpo_desc) AS name
         FROM wpnps
-        WHERE wpp_schcode = '{scheme_code}'
-        ORDER BY wpp_name
+        ORDER BY wpo_desc
         """
         result = sql_connector.execute_query(sql)
         if hasattr(result, 'to_dict'):
             result = result.to_dict('records')
 
+        # Look up scheme's default payment source code (wpnsc.wps_penps)
+        default_code = ''
+        try:
+            df = sql_connector.execute_query(
+                f"SELECT TOP 1 RTRIM(wps_penps) AS def FROM wpnsc WHERE RTRIM(wps_code) = '{scheme_code}'"
+            )
+            if hasattr(df, 'to_dict'):
+                df = df.to_dict('records')
+            if df:
+                default_code = (df[0].get('def') or '').strip()
+        except Exception:
+            pass
+
         sources = []
         for row in result or []:
+            code = (row.get('code') or '').strip()
             sources.append({
-                'code': row['wpp_code'].strip() if row.get('wpp_code') else '',
-                'name': row['wpp_name'].strip() if row.get('wpp_name') else '',
-                'is_default': bool(row.get('wpp_default'))
+                'code': code,
+                'name': (row.get('name') or '').strip(),
+                'is_default': bool(default_code) and code == default_code,
             })
 
         # If no payment sources found, return a default one
