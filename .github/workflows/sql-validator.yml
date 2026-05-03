@@ -1,0 +1,40 @@
+# .github/workflows/sql-validator.yml
+name: SQL Schema Validator
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Run schema validator (strict)
+        id: validator
+        run: |
+          python scripts/validate_sql_columns.py --strict
+        continue-on-error: false
+
+      - name: Comment on PR if failure
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ Schema validator found unknown columns. Run `python scripts/validate_sql_columns.py --suggest` locally to see findings, then either fix the typo in code or add a suppression to `scripts/sql_validator_suppressions.yaml` with a clear reason.'
+            })
