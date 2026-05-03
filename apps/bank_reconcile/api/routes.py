@@ -1835,7 +1835,7 @@ async def confirm_statement_matches(
         batch_query = f"""
             SELECT ISNULL(MAX(ae_reclnum), 0) + 1 as next_batch
             FROM aentry WITH (NOLOCK)
-            WHERE ae_bank = '{bank_code}'
+            WHERE ae_acnt = '{bank_code}'
         """
         batch_result = sql_connector.execute_query(batch_query)
         next_batch = int(batch_result.iloc[0]['next_batch']) if batch_result is not None else 1
@@ -1859,7 +1859,7 @@ async def confirm_statement_matches(
                             ae_recbal = {int(statement_balance * 100)},
                             datemodified = '{now_str}'
                         WHERE ae_entry = '{entry_id}'
-                          AND ae_bank = '{bank_code}'
+                          AND ae_acnt = '{bank_code}'
                           AND ae_reclnum = 0
                     """
                     result = conn.execute(text(update_query))
@@ -1873,7 +1873,7 @@ async def confirm_statement_matches(
                         nk_lststno = ISNULL(nk_lststno, 0) + 1,
                         nk_lststdt = '{stmt_date.strftime('%Y-%m-%d')}',
                         datemodified = '{now_str}'
-                    WHERE nk_code = '{bank_code}'
+                    WHERE nk_acnt = '{bank_code}'
                 """
                 conn.execute(text(nbank_update))
 
