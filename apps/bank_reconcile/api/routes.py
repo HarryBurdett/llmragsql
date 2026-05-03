@@ -1388,10 +1388,10 @@ async def process_bank_statement(
 
         # Period-bound the Opera 3 candidate pool — same rule as SE matcher.
         # The reconciler's get_unreconciled_entries already accepts date_from/
-        # date_to args; supply them from the statement period with a 7-day
+        # date_to args; supply them from the statement period with a 14-day
         # grace window (parity with SE — see opera_sql_import.match_statement_to_cashbook).
         from datetime import timedelta as _td_pb
-        PERIOD_GRACE_DAYS = 7
+        PERIOD_GRACE_DAYS = 14
         period_grace_days = PERIOD_GRACE_DAYS
         period_start_for_query = None
         period_end_for_query = None
@@ -14408,10 +14408,10 @@ async def opera3_process_statement(
 
         # Period-bound the Opera 3 candidate pool — same rule as SE matcher.
         # The reconciler's get_unreconciled_entries already accepts date_from/
-        # date_to args; supply them from the statement period with a 7-day
+        # date_to args; supply them from the statement period with a 14-day
         # grace window (parity with SE — see opera_sql_import.match_statement_to_cashbook).
         from datetime import timedelta as _td_pb
-        PERIOD_GRACE_DAYS = 7
+        PERIOD_GRACE_DAYS = 14
         period_grace_days = PERIOD_GRACE_DAYS
         period_start_for_query = None
         period_end_for_query = None

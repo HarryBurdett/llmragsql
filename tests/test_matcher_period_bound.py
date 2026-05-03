@@ -45,7 +45,7 @@ def test_match_query_restricts_aentry_pool_by_period_bounds():
         statement_transactions=[],
         period_start=date(2026, 3, 1),
         period_end=date(2026, 3, 31),
-        period_grace_days=7,
+        period_grace_days=7,  # explicit override; default is 14
     )
     # At least one query targets aentry on this bank with the
     # period-bounded ae_lstdate filter.
@@ -131,24 +131,50 @@ def test_match_statement_endpoint_passes_period_bounds():
 
 
 def test_opera3_caller_applies_period_bounds_to_get_unreconciled_entries():
-    """The Opera 3 reconciler caller in routes.py must restrict
-    get_unreconciled_entries by period_start/period_end (with grace).
-    Source-level grep test — locks the discipline in.
+    """The Opera 3 reconciler caller must restrict the candidate pool
+    by date_from/date_to derived from the statement period, with a
+    documented grace window. Source-level test scoped to each
+    `reconciler.get_unreconciled_entries(` call site so a future
+    refactor that drops the period filter is caught.
     """
     from pathlib import Path
     routes = Path(__file__).resolve().parent.parent / "apps" / "bank_reconcile" / "api" / "routes.py"
     src = routes.read_text(encoding='utf-8')
 
-    # The Opera 3 reconcile flow uses statement_reconcile_opera3 reconciler.
-    # Find the call to get_unreconciled_entries that's followed by match_transactions
-    # and check it passes date_from/date_to derived from period bounds.
-    matches = src.count("reconciler.get_unreconciled_entries(")
-    assert matches >= 1, "Opera 3 reconciler caller not found"
+    # Find every reconciler.get_unreconciled_entries call
+    import re
+    call_starts = [m.start() for m in re.finditer(r"reconciler\.get_unreconciled_entries\(", src)]
+    assert call_starts, "Opera 3 reconciler.get_unreconciled_entries call not found"
 
-    # Ensure period bounds are computed before the call. Look for the
-    # period-from-grace pattern that the SE matcher introduced.
-    # Heuristic: 'period_grace' keyword appears at least once associated
-    # with this code path.
-    assert "period_grace" in src or "GRACE_DAYS" in src or "_grace" in src, (
-        "Opera 3 caller must compute period bounds with a grace window"
-    )
+    for start in call_starts:
+        # End of this call (next ')' at the right depth — heuristic: search forward until the line containing only ')' or matching close-paren)
+        end = src.find(')', start)
+        # Walk forward to handle nested parens
+        depth = 0
+        i = src.index('(', start)
+        while i < len(src):
+            c = src[i]
+            if c == '(':
+                depth += 1
+            elif c == ')':
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+            i += 1
+        call_block = src[start:end + 1]
+        assert "date_from=" in call_block, (
+            f"reconciler.get_unreconciled_entries call at {start} does not pass date_from"
+        )
+        assert "date_to=" in call_block, (
+            f"reconciler.get_unreconciled_entries call at {start} does not pass date_to"
+        )
+
+        # Check the preceding 1500 chars for grace-window evidence
+        preceding = src[max(0, start - 1500):start]
+        assert ("period_grace" in preceding or
+                "PERIOD_GRACE" in preceding or
+                "_grace" in preceding), (
+            f"reconciler.get_unreconciled_entries call at {start} not preceded "
+            f"by a grace-window computation"
+        )

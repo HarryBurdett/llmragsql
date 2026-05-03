@@ -8324,7 +8324,7 @@ class OperaSQLImport:
         date_tolerance_days: int = 14,
         period_start: Optional[date] = None,
         period_end: Optional[date] = None,
-        period_grace_days: int = 7,
+        period_grace_days: int = 14,
     ) -> Dict[str, Any]:
         """
         Match statement lines to unreconciled cashbook entries.
@@ -8366,8 +8366,9 @@ class OperaSQLImport:
             #
             # Period-bound the candidate pool (matcher-period-bound spec).
             # Statements never legitimately match aentries outside their
-            # own period — the 7-day grace window covers month-end
-            # postings dated a few days late.
+            # own period — the 14-day grace window covers GoCardless
+            # payouts and bank transfers that can take several days to
+            # settle on either side of the statement date.
             if period_start is not None and period_end is not None:
                 window_start = period_start - timedelta(days=period_grace_days)
                 window_end = period_end + timedelta(days=period_grace_days)
