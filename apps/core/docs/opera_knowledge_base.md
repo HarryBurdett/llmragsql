@@ -2232,3 +2232,20 @@ Orphan tmpstat reservations (entries with `ae_tmpstat > 0 AND ae_reclnum = 0` fr
 - Empty changes list omits the table-updated table.
 
 If you add a new module category (e.g. a new external integration that captures snapshots), add it to `MODULE_ORDER` to control its position; otherwise it lands at the end.
+
+## KB Update Policy (mechanically enforced)
+
+Every Opera-related code change must update the knowledge base. Enforced by:
+
+1. **Pre-commit hook** (`.pre-commit-config.yaml` `kb-update-check`) — runs `scripts/kb_update_check.py` before each commit. Refuses if any file in `scripts/kb_update_allowlist.yaml`'s `opera_files` glob list is staged without (a) a corresponding KB file change OR (b) `kb-not-required: <reason>` in the commit message body.
+2. **GitHub Actions PR gate** (`.github/workflows/kb-update-check.yml`) — runs the same check against the PR's full diff and concatenated commit messages, catching `--no-verify` local bypass.
+
+Both gates must pass before a PR can merge.
+
+**Reasons matter.** The `kb-not-required:` annotation requires a specific justification, not just "n/a". Reviewers should challenge weak reasons.
+
+**Both KBs.** The local KB lives at `apps/core/docs/opera_knowledge_base.md`. The central KB is the shared repo at `~/opera-knowledge-ref/packages/opera-knowledge/` (cloned from `https://github.com/jonathangintsys/aisam.git`). Local updates only satisfy the hook; **central updates are still mandatory but on the developer to commit + push** (the hook can't reach outside the repo).
+
+**Allowlist:** see `scripts/kb_update_allowlist.yaml`. Adding/removing a glob is a code-review step — explain the rationale.
+
+**Developer guide:** see `docs/kb-update-guide.md` for the directory taxonomy and examples.
