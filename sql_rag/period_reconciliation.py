@@ -9,10 +9,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
-from typing import Optional, Protocol
+from typing import Optional, Protocol, runtime_checkable
+
+__all__ = [
+    "PeriodReconciliationStatus",
+    "PeriodReconciliationResult",
+    "DataSource",
+]
 
 
 class PeriodReconciliationStatus(Enum):
+    """Status returned by check_period_reconciled.
+
+    Caller contract:
+      - FULLY_RECONCILED: hide / auto-promote — the period is finished.
+      - PARTIALLY_RECONCILED: show with a 'partial' label — operator
+        still has work to do.
+      - NOT_RECONCILED: show as ready — fresh statement to process.
+      - UNKNOWN: SHOW. Never silently auto-promote on UNKNOWN. The
+        function returns UNKNOWN when inputs are missing or a query
+        failed; consumers must default to visible.
+    """
     FULLY_RECONCILED = "fully_reconciled"
     PARTIALLY_RECONCILED = "partially_reconciled"
     NOT_RECONCILED = "not_reconciled"
@@ -21,12 +38,26 @@ class PeriodReconciliationStatus(Enum):
 
 @dataclass(frozen=True)
 class PeriodReconciliationResult:
+    """Result of check_period_reconciled.
+
+    Invariants (test-pinned):
+      - unreconciled_count is None when the count was not queried
+        (Stage 1 path or any UNKNOWN/NOT_RECONCILED path).
+      - unreconciled_count is 0 only when explicitly queried and zero —
+        i.e. status is FULLY_RECONCILED via Stage 2.
+      - matched_historical_boundary is True only when status is
+        FULLY_RECONCILED via Stage 1.
+      - reason is always a non-empty human-readable string.
+
+    Frozen: results are values, never mutated. Hashable for caching.
+    """
     status: PeriodReconciliationStatus
     unreconciled_count: Optional[int]
     matched_historical_boundary: bool
     reason: str
 
 
+@runtime_checkable
 class DataSource(Protocol):
     """Protocol for the data lookups the function needs.
 
