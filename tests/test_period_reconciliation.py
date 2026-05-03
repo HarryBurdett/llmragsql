@@ -334,3 +334,33 @@ def test_o3_datasource_filters_aentry_by_bank_and_reclnum():
         'BB005', date(2026, 4, 1), date(2026, 4, 28)
     )
     assert unrec == 1  # the 04-16 row with reclnum=0
+
+
+def test_scan_all_banks_auto_promote_uses_function():
+    """The scan-all-banks auto-promote loop must delegate to
+    check_period_reconciled — not maintain its own inline SQL.
+    Read the source file and assert the inline SQL pattern is gone.
+    """
+    from pathlib import Path
+    routes_path = Path(__file__).resolve().parent.parent / "apps" / "bank_reconcile" / "api" / "routes.py"
+    src = routes_path.read_text(encoding='utf-8')
+
+    # The auto-promote section must call the new function
+    assert "check_period_reconciled" in src, (
+        "scan-all-banks auto-promote should call check_period_reconciled"
+    )
+
+    # No more inline 'COUNT(*)' against aentry inside the auto-promote section
+    # (heuristic check — refine if false positive). The marker comment in the
+    # code identifies the section.
+    auto_promote_start = src.find("Auto-promote imported statements")
+    auto_promote_end = src.find("# Remove reconciled statements from bank lists", auto_promote_start)
+    assert auto_promote_start != -1 and auto_promote_end != -1, (
+        "Auto-promote section markers must remain so future maintainers "
+        "can find it"
+    )
+    section = src[auto_promote_start:auto_promote_end]
+    assert "COUNT(*)" not in section, (
+        "Auto-promote section should no longer issue inline COUNT(*) — "
+        "delegate to check_period_reconciled"
+    )

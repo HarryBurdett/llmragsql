@@ -7757,81 +7757,81 @@ async def scan_all_banks_for_statements(
         except Exception:
             final_rec_filenames = reconciled_filenames
 
-        # Auto-promote imported statements where Opera's reconciled balance
-        # exactly matches the statement's closing balance — AND every
-        # aentry row falling within the statement period is actually
-        # reconciled in Opera (ae_reclnum > 0).
-        #
-        # The earlier version only checked the balance match. That was
-        # too eager: Opera's nk_recbal can be set to a value that
-        # coincidentally matches a statement closing without all the
-        # underlying entries being individually reconciled (we hit this
-        # in production — the statement had 13 atran rows in its period,
-        # only 3 were ticked, but nk_recbal happened to match the close).
-        # Auto-promoting in that state hid the statement from operators
-        # who needed to finish ticking off the remaining entries.
+        # Auto-promote imported statements where the period is fully
+        # reconciled per check_period_reconciled — single source of truth
+        # for the "is this period done?" question. See
+        # sql_rag/period_reconciliation.py.
         try:
+            from sql_rag.period_reconciliation import (
+                check_period_reconciled,
+                PeriodReconciliationStatus,
+            )
+            from sql_rag.period_reconciliation_se import OperaSEDataSource
+            from datetime import date as _date_type, datetime as _dt
+
+            ds = OperaSEDataSource(sql_connector) if sql_connector else None
             for code, bank in all_banks.items():
                 rec_bal = bank.get('reconciled_balance')
-                if rec_bal is None:
+                if rec_bal is None or ds is None:
                     continue
                 for stmt in list(bank['statements']):
-                    closing = stmt.get('closing_balance')
-                    if not (closing is not None
-                            and stmt.get('is_imported')
-                            and abs(rec_bal - closing) < 0.01):
+                    if not stmt.get('is_imported'):
                         continue
-                    # Stricter check: count unreconciled aentry rows in
-                    # the statement period for this bank. If any exist,
-                    # the operator still has work to do — don't promote.
                     period_start = stmt.get('period_start')
                     period_end = stmt.get('period_end')
-                    if not (period_start and period_end and sql_connector):
-                        # No period info → conservative default: do NOT
-                        # auto-promote. The previous "fall back to balance-
-                        # only" default caused a regression when an upstream
-                        # SELECT was missing period_start/period_end —
-                        # statements got auto-marked despite having real
-                        # unreconciled entries.
-                        unreconciled_in_period = -1
-                    else:
-                        try:
-                            df = sql_connector.execute_query(f"""
-                                SELECT COUNT(*) AS n
-                                FROM aentry WITH (NOLOCK)
-                                WHERE ae_acnt = '{code}'
-                                AND ae_lstdate BETWEEN '{period_start}' AND '{period_end}'
-                                AND (ae_reclnum IS NULL OR ae_reclnum = 0)
-                            """)
-                            unreconciled_in_period = int(df.iloc[0]['n']) if df is not None and not df.empty else 0
-                        except Exception as _ck_err:
-                            logger.warning(
-                                f"Auto-promote: could not check unreconciled aentry for {code} "
-                                f"period {period_start}..{period_end}: {_ck_err} — skipping promote"
-                            )
-                            unreconciled_in_period = -1  # sentinel: don't promote on error
-
-                    if unreconciled_in_period != 0:
+                    # Normalise period strings → date
+                    def _to_date(v):
+                        if v is None:
+                            return None
+                        if isinstance(v, _date_type) and not isinstance(v, _dt):
+                            return v
+                        if isinstance(v, _dt):
+                            return v.date()
+                        if isinstance(v, str):
+                            try:
+                                return _dt.fromisoformat(v.replace('Z', '+00:00')).date()
+                            except ValueError:
+                                try:
+                                    return _date_type.fromisoformat(v[:10])
+                                except ValueError:
+                                    return None
+                        return None
+                    ps = _to_date(period_start)
+                    pe = _to_date(period_end)
+                    result = check_period_reconciled(
+                        data_source=ds,
+                        bank_code=code,
+                        period_start=ps,
+                        period_end=pe,
+                        statement_closing=stmt.get('closing_balance'),
+                        current_rec_bal=rec_bal,
+                    )
+                    if result.status is PeriodReconciliationStatus.FULLY_RECONCILED:
+                        fn = stmt.get('filename', '')
                         logger.info(
-                            f"Scan cleanup: NOT auto-marking '{stmt.get('filename', '')}' — "
-                            f"balance matches but {unreconciled_in_period} aentry rows in period "
-                            f"are still unreconciled in Opera"
+                            f"Scan cleanup: auto-marking '{fn}' as reconciled — "
+                            f"{result.reason}"
                         )
-                        continue
-
-                    fn = stmt.get('filename', '')
-                    logger.info(f"Scan cleanup: auto-marking '{fn}' as reconciled "
-                                f"(Opera reconciled £{rec_bal:.2f} matches closing £{closing:.2f}, "
-                                f"all aentry rows reconciled)")
-                    final_rec_filenames.add(fn)
-                    try:
-                        email_storage.mark_statement_reconciled(
-                            filename=fn,
-                            reconciled_count=0,
-                            bank_code=code
+                        final_rec_filenames.add(fn)
+                        try:
+                            email_storage.mark_statement_reconciled(
+                                filename=fn,
+                                reconciled_count=0,
+                                bank_code=code,
+                            )
+                        except Exception:
+                            pass
+                    elif result.status is PeriodReconciliationStatus.PARTIALLY_RECONCILED:
+                        logger.info(
+                            f"Scan cleanup: NOT auto-marking '{stmt.get('filename','?')}' — "
+                            f"{result.reason}"
                         )
-                    except Exception:
-                        pass
+                    elif result.status is PeriodReconciliationStatus.UNKNOWN:
+                        logger.info(
+                            f"Scan cleanup: NOT auto-marking '{stmt.get('filename','?')}' — "
+                            f"{result.reason}"
+                        )
+                    # NOT_RECONCILED: keep visible silently — normal case
         except Exception as promo_err:
             logger.warning(f"Auto-promote scan cleanup failed: {promo_err}")
 
