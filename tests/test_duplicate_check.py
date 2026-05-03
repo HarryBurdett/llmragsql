@@ -469,3 +469,25 @@ def test_is_already_posted_delegates_to_check_for_duplicate():
     # Heuristic: the legacy ABS(ABS( pattern is gone from this file
     assert "ABS(ABS(at_value)" not in src, \
         "Sign-blind ABS-on-ABS pattern reappeared in bank_import.py"
+
+
+def test_check_duplicate_before_posting_delegates():
+    from pathlib import Path
+    osi = Path(__file__).resolve().parent.parent / "sql_rag" / "opera_sql_import.py"
+    src = osi.read_text(encoding='utf-8')
+
+    # Find the check_duplicate_before_posting function body specifically
+    start = src.find("def check_duplicate_before_posting")
+    assert start != -1
+    # Approximate end: next "def " at the same indentation level
+    end = src.find("\n    def ", start + 10)
+    if end == -1:
+        end = start + 10000
+    body = src[start:end]
+
+    assert "check_for_duplicate" in body, \
+        "check_duplicate_before_posting must delegate to check_for_duplicate"
+    assert "ABS(ABS(st_trvalue)" not in body, \
+        "sign-blind stran regression in check_duplicate_before_posting"
+    assert "ABS(ABS(pt_trvalue)" not in body, \
+        "sign-blind ptran regression in check_duplicate_before_posting"

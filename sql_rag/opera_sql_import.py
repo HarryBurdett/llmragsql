@@ -8061,160 +8061,82 @@ class OperaSQLImport:
         exclude_entry_numbers: Optional[set] = None,
         signed_amount_pounds: Optional[float] = None,
     ) -> Dict[str, Any]:
+        """Pre-flight duplicate check before posting to Opera.
+
+        Single source of truth: delegates to
+        sql_rag.duplicate_check.check_for_duplicate. The wrapper only
+        exists to preserve the existing return shape used by callers
+        in apps/bank_reconcile/api/routes.py.
         """
-        Pre-flight duplicate check before posting a transaction to Opera.
+        from datetime import date as _date_type, datetime as _dt
+        from sql_rag.duplicate_check import (
+            check_for_duplicate,
+            DuplicateMatchKind,
+        )
+        from sql_rag.duplicate_check_se import OperaSEDataSource
 
-        Checks cashbook (atran), and optionally sales/purchase ledger,
-        for an existing entry with the same date (±tolerance), amount, and account.
-
-        Args:
-            bank_account: Bank account code (e.g. 'BC010')
-            transaction_date: Date of transaction (date object or 'YYYY-MM-DD' string)
-            amount_pounds: Transaction amount in pounds (positive)
-            account_code: Customer/supplier/nominal code
-            account_type: 'customer', 'supplier', or 'nominal'
-            date_tolerance_days: Days either side of date to check (default 1)
-
-        Returns:
-            Dict with 'is_duplicate' bool and 'details' string if found
-        """
-        from datetime import date, timedelta
-
+        # Normalise date input
         if isinstance(transaction_date, str):
-            txn_date = date.fromisoformat(transaction_date[:10])
+            txn_date = _date_type.fromisoformat(transaction_date[:10])
+        elif isinstance(transaction_date, _dt):
+            txn_date = transaction_date.date()
         else:
             txn_date = transaction_date
 
-        date_from = (txn_date - timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
-        date_to = (txn_date + timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
-        amount_pence = int(round(amount_pounds * 100))
-        # Signed pence used by the cashbook check below — direction matters
-        # so a -£X bank payment is NOT detected as a duplicate of a +£X
-        # receipt with the same |amount|. If the caller doesn't supply a
-        # signed value, fall back to deriving from account_type.
+        # Map account_type → action (the legacy contract this wrapper preserves)
+        type_to_action = {
+            'customer': 'sales_receipt',
+            'customer_refund': 'sales_refund',
+            'supplier': 'purchase_payment',
+            'supplier_refund': 'purchase_refund',
+            'transfer_out': 'bank_transfer',
+            'transfer_in': 'bank_transfer',
+            'transfer': 'bank_transfer',
+            'nominal_payment': 'nominal_payment',
+            'nominal_receipt': 'nominal_receipt',
+            'nominal': 'nominal_payment',  # default — sign decides downstream
+        }
+        action = type_to_action.get(account_type, 'nominal_payment')
+
+        # Derive signed amount if caller didn't pass one
         if signed_amount_pounds is None:
-            if account_type in ('supplier', 'customer_refund', 'nominal_payment', 'transfer_out'):
+            if account_type in ('supplier', 'customer_refund', 'nominal_payment',
+                                'transfer_out'):
                 signed_amount_pounds = -abs(amount_pounds)
-            elif account_type in ('customer', 'supplier_refund', 'nominal_receipt', 'transfer_in'):
-                signed_amount_pounds = abs(amount_pounds)
-            elif account_type == 'transfer':
-                signed_amount_pounds = -abs(amount_pounds)  # default to outgoing
             else:
                 signed_amount_pounds = abs(amount_pounds)
-        signed_pence = int(round(signed_amount_pounds * 100))
-        # Build SQL NOT IN clause to skip entries already claimed by prior
-        # identical-amount transactions in this batch (multi-occurrence support).
-        excl_clause = ''
-        if exclude_entry_numbers:
-            quoted = ','.join(
-                f"'{str(e).replace(chr(39), chr(39)+chr(39)).strip()}'"
-                for e in exclude_entry_numbers if e
+
+        ds = OperaSEDataSource(self.sql)
+        try:
+            result = check_for_duplicate(
+                data_source=ds,
+                bank_code=bank_account,
+                transaction_date=txn_date,
+                signed_amount_pounds=float(signed_amount_pounds),
+                action=action,
+                account_code=account_code or None,
+                description=description or '',
+                reference='',
+                date_tolerance_days=date_tolerance_days,
+                exclude_entry_numbers=list(exclude_entry_numbers or []) or None,
             )
-            if quoted:
-                excl_clause = f" AND RTRIM(a.at_entry) NOT IN ({quoted})"
+        except ValueError as e:
+            return {
+                'is_duplicate': False,
+                'details': f"unknown action_type {account_type!r}: {e}",
+            }
 
-        # Check 0: Bank transfer duplicate — at_type=8, same SIGNED amount
-        # + date on this bank. Bank transfers appear on BOTH statements with
-        # different descriptions but matching direction on each bank.
-        if account_type == 'transfer':
-            query_bt = f"""
-                SELECT TOP 1 a.at_entry, e.ae_comment
-                FROM atran a WITH (NOLOCK)
-                JOIN aentry e WITH (NOLOCK) ON e.ae_entry = a.at_entry AND e.ae_acnt = a.at_acnt
-                WHERE a.at_acnt = '{bank_account}'
-                AND a.at_type = 8
-                AND a.at_pstdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(a.at_value - {signed_pence}) < 1
-                {excl_clause}
-            """
-            df_bt = self.sql.execute_query(query_bt)
-            if df_bt is not None and len(df_bt) > 0:
-                entry = df_bt.iloc[0].get('at_entry', '?')
-                comment = (df_bt.iloc[0].get('ae_comment', '') or '').strip()
-                return {
-                    'is_duplicate': True,
-                    'location': 'cashbook',
-                    'details': f"Bank transfer {entry} already exists ({comment})",
-                    'entry_number': str(entry)
-                }
-
-        # Check 1: Cashbook (atran) - SIGNED amounts in PENCE.
-        # Compare description prefix to avoid false positives (different payees, same amount/date).
-        safe_desc = (description or '').replace("'", "''").strip()[:15]
-        query = f"""
-            SELECT TOP 1 a.at_entry, a.at_pstdate, a.at_value, e.ae_entref, e.ae_comment
-            FROM atran a WITH (NOLOCK)
-            JOIN aentry e WITH (NOLOCK) ON e.ae_entry = a.at_entry AND e.ae_acnt = a.at_acnt
-            WHERE a.at_acnt = '{bank_account}'
-            AND a.at_pstdate BETWEEN '{date_from}' AND '{date_to}'
-            AND ABS(a.at_value - {signed_pence}) < 1
-            {excl_clause}
-        """
-        df = self.sql.execute_query(query)
-        if df is not None and len(df) > 0:
-            # Verify description matches to avoid false positives
-            for _, row in df.iterrows():
-                entry = row.get('at_entry', '?')
-                ref = (row.get('ae_entref', '') or '').strip()
-                comment = (row.get('ae_comment', '') or '').strip()
-                # Match if descriptions are similar (first 15 chars) or no description to compare
-                if not safe_desc or comment[:15].lower().startswith(safe_desc.lower()[:10]):
-                    return {
-                        'is_duplicate': True,
-                        'location': 'cashbook',
-                        'details': f"Entry {entry} already exists in cashbook (ref: {ref}, {comment})",
-                        'entry_number': str(entry)
-                    }
-
-        # Check 2: Sales Ledger for customer receipts/refunds.
-        # Sign-aware: a +£X sales_receipt is NOT a duplicate of a -£X
-        # refund (and vice-versa). Compare st_trvalue against the signed
-        # bank-line amount.
-        if account_type in ('customer', 'customer_refund') and account_code:
-            query = f"""
-                SELECT TOP 1 st_trref, st_trdate, st_trvalue
-                FROM stran WITH (NOLOCK)
-                WHERE RTRIM(st_account) = '{account_code}'
-                AND st_trdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(st_trvalue - {signed_amount_pounds}) < 0.01
-                AND st_trtype = '{"F" if account_type == "customer_refund" else "R"}'
-            """
-            df = self.sql.execute_query(query)
-            if df is not None and len(df) > 0:
-                row = df.iloc[0]
-                ref = (row.get('st_trref', '') or '').strip()
-                return {
-                    'is_duplicate': True,
-                    'location': 'sales_ledger',
-                    'details': f"Receipt already exists in sales ledger for {account_code} (ref: {ref})",
-                    'entry_number': ref
-                }
-
-        # Check 3: Purchase Ledger for supplier payments/refunds.
-        # Sign-aware: a -£X supplier payment is NOT a duplicate of a +£X
-        # refund (and vice-versa). Compare pt_trvalue against the signed
-        # bank-line amount — the sign of signed_amount_pounds inherently
-        # selects payments (negative) vs refunds (positive).
-        if account_type in ('supplier', 'supplier_refund') and account_code:
-            query = f"""
-                SELECT TOP 1 pt_trref, pt_trdate, pt_trvalue
-                FROM ptran WITH (NOLOCK)
-                WHERE RTRIM(pt_account) = '{account_code}'
-                AND pt_trdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(pt_trvalue - {signed_amount_pounds}) < 0.01
-            """
-            df = self.sql.execute_query(query)
-            if df is not None and len(df) > 0:
-                row = df.iloc[0]
-                ref = (row.get('pt_trref', '') or '').strip()
-                return {
-                    'is_duplicate': True,
-                    'location': 'purchase_ledger',
-                    'details': f"Already exists in purchase ledger for {account_code} (ref: {ref})",
-                    'entry_number': ref
-                }
-
-        return {'is_duplicate': False, 'details': ''}
+        if result.kind is DuplicateMatchKind.CASHBOOK_DUPLICATE:
+            return {
+                'is_duplicate': True,
+                'location': 'cashbook',
+                'details': result.reason,
+                'entry_number': result.matched_entry,
+            }
+        # LEDGER_ALLOCATION_TARGET is informational, not a duplicate at
+        # post time — the new posting is the missing payment for the
+        # credit note.
+        return {'is_duplicate': False, 'details': result.reason}
 
     def get_unreconciled_entries(self, bank_account: str, include_incomplete: bool = False) -> List[Dict[str, Any]]:
         """
