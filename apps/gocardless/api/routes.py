@@ -488,7 +488,7 @@ async def match_gocardless_customers(
             # Query atran for receipts (at_type=1 is receipt, at_value is positive for receipts)
             # Also join to aentry to get the reference - check full cashbook history
             duplicate_check_df = sql_connector.execute_query(f"""
-                SELECT at_value, at_pstdate as at_date, at_cbtype, ae_entref as ae_ref, ae_pstdate as ae_date
+                SELECT at_value, at_pstdate as at_date, at_cbtype, ae_entref as ae_ref
                 FROM atran WITH (NOLOCK)
                 JOIN aentry WITH (NOLOCK) ON ae_acnt = at_acnt AND ae_cntr = at_cntr
                     AND ae_cbtype = at_cbtype AND ae_entry = at_entry
@@ -6163,7 +6163,7 @@ async def get_unposted_gocardless_payments():
                         WHERE at_type = 4
                           AND RTRIM(ae_comment) LIKE '%{account}%'
                           AND ABS(ae_value - {amount_pence}) <= 1
-                          AND ae_input = 'GOCARDLS'
+                          AND at_inputby = 'GOCARDLS'
                     """)
                     if df is not None and len(df) > 0:
                         already_posted = True
