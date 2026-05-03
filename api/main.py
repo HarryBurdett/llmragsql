@@ -6753,41 +6753,18 @@ async def _old_get_sales_categories():
             SELECT
                 COALESCE(NULLIF(RTRIM(it_anal), ''), 'Uncategorised') as category,
                 COUNT(*) as line_count,
-                SUM(it_value) / 100.0 as total_value
+                SUM(it_lineval) / 100.0 as total_value
             FROM itran
-            WHERE it_value > 0
+            WHERE it_lineval > 0
             GROUP BY COALESCE(NULLIF(RTRIM(it_anal), ''), 'Uncategorised')
-            HAVING SUM(it_value) > 0
-            ORDER BY SUM(it_value) DESC
-        """)
-        data = df_to_records(df)
-
-        if data:
-            return {
-                "success": True,
-                "source": "invoice_lines",
-                "categories": data
-            }
-
-        # Fallback to stock groups if no analysis codes
-        df = sql_connector.execute_query("""
-            SELECT
-                COALESCE(sg.sg_desc, 'Other') as category,
-                COUNT(*) as line_count,
-                SUM(it.it_value) / 100.0 as total_value
-            FROM itran it
-            LEFT JOIN cname cn ON it.it_prodcode = cn.cn_prodcode
-            LEFT JOIN sgroup sg ON cn.cn_catag = sg.sg_group
-            WHERE it.it_value > 0
-            GROUP BY COALESCE(sg.sg_desc, 'Other')
-            HAVING SUM(it.it_value) > 0
-            ORDER BY SUM(it.it_value) DESC
+            HAVING SUM(it_lineval) > 0
+            ORDER BY SUM(it_lineval) DESC
         """)
         data = df_to_records(df)
 
         return {
             "success": True,
-            "source": "stock_groups",
+            "source": "invoice_lines",
             "categories": data if data else []
         }
     except Exception as e:
@@ -7514,31 +7491,6 @@ async def _old_get_sales_by_product(year: int = 2024):
                     row['category'] = code
         except Exception:
             data = None
-
-        if not data:
-            # Fallback: Try using it_value instead of it_lineval
-            try:
-                df = sql_connector.execute_query(f"""
-                    SELECT
-                        COALESCE(NULLIF(RTRIM(it.it_anal), ''), 'Other') as category_code,
-                        COUNT(DISTINCT ih.ih_invno) as invoice_count,
-                        COUNT(*) as line_count,
-                        SUM(it.it_value) / 100.0 as total_value
-                    FROM itran it
-                    JOIN ihead ih ON it.it_invno = ih.ih_invno
-                    WHERE YEAR(ih.ih_invdat) = {year}
-                    AND it.it_value > 0
-                    GROUP BY COALESCE(NULLIF(RTRIM(it.it_anal), ''), 'Other')
-                    HAVING SUM(it.it_value) > 0
-                    ORDER BY SUM(it.it_value) DESC
-                """)
-                data = df_to_records(df)
-                # Add descriptions from nominal ledger
-                for row in data:
-                    code = row.get('category_code', '')
-                    row['category'] = nominal_descriptions.get(code, code)
-            except Exception:
-                data = None
 
         if not data:
             # Fallback: try nominal ledger categories
