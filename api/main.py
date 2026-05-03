@@ -10125,7 +10125,7 @@ async def check_recurring_entries(bank_code: str):
                         account_descs[str(r.get("code", "")).strip()] = str(r.get("description", "")).strip()
             if customer_accounts:
                 acct_list = ",".join(f"'{a}'" for a in customer_accounts)
-                cdf = sql_connector.execute_query(f"SELECT RTRIM(sn_acnt) as code, RTRIM(sn_name) as description FROM sname WITH (NOLOCK) WHERE RTRIM(sn_acnt) IN ({acct_list})")
+                cdf = sql_connector.execute_query(f"SELECT RTRIM(sn_account) as code, RTRIM(sn_name) as description FROM sname WITH (NOLOCK) WHERE RTRIM(sn_account) IN ({acct_list})")
                 if cdf is not None:
                     for _, r in cdf.iterrows():
                         account_descs[str(r.get("code", "")).strip()] = str(r.get("description", "")).strip()

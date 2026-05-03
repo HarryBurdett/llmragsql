@@ -11176,7 +11176,7 @@ async def auto_match_statement_lines(request: Request):
             purch_df = sql_connector.execute_query("""
                 SELECT pt.pt_account, pn.pn_name, pt.pt_trbal, pt.pt_trref
                 FROM ptran pt WITH (NOLOCK)
-                JOIN pname pn WITH (NOLOCK) ON pt.pt_account = pn.pn_acnt
+                JOIN pname pn WITH (NOLOCK) ON pt.pt_account = pn.pn_account
                 WHERE pt.pt_trbal > 0.01
             """)
             if purch_df is not None and not purch_df.empty:
@@ -11854,14 +11854,14 @@ async def opera3_check_recurring_entries(
             pname_data = reader.read_table("pname")
             if pname_data:
                 for p in pname_data:
-                    code = str(p.get("PN_ACNT", p.get("pn_acnt", ""))).strip()
+                    code = str(p.get("PN_ACCOUNT", p.get("pn_account", ""))).strip()
                     name = str(p.get("PN_NAME", p.get("pn_name", ""))).strip()
                     if code:
                         account_descs[code] = name
             sname_data = reader.read_table("sname")
             if sname_data:
                 for s in sname_data:
-                    code = str(s.get("SN_ACNT", s.get("sn_acnt", ""))).strip()
+                    code = str(s.get("SN_ACCOUNT", s.get("sn_account", ""))).strip()
                     name = str(s.get("SN_NAME", s.get("sn_name", ""))).strip()
                     if code:
                         account_descs[code] = name

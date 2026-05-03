@@ -13058,9 +13058,9 @@ class PurchaseInvoiceFileImport:
 
             # Validate supplier exists
             supplier_check = self.sql.execute_query(f"""
-                SELECT pn_acnt, pn_name, pn_addr1, pn_addr2, pn_addr3, pn_addr4, pn_pcode
+                SELECT pn_account, pn_name, pn_addr1, pn_addr2, pn_addr3, pn_addr4, pn_pstcode
                 FROM pname WITH (NOLOCK)
-                WHERE RTRIM(pn_acnt) = '{supplier_account}'
+                WHERE RTRIM(pn_account) = '{supplier_account}'
             """)
 
             if supplier_check is None or supplier_check.empty:
@@ -13083,7 +13083,7 @@ class PurchaseInvoiceFileImport:
                     str(supplier.get('pn_addr2', '') or '').strip(),
                     str(supplier.get('pn_addr3', '') or '').strip(),
                     str(supplier.get('pn_addr4', '') or '').strip(),
-                    str(supplier.get('pn_pcode', '') or '').strip()
+                    str(supplier.get('pn_pstcode', '') or '').strip()
                 ]
 
             # Pad delivery address to 5 elements

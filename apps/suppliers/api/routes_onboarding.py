@@ -98,7 +98,7 @@ def _get_supplier_names_opera3(data_path: str) -> dict:
         pname_data = reader.read_table("pname")
         if pname_data:
             for p in pname_data:
-                code = str(p.get("PN_ACNT", p.get("pn_acnt", ""))).strip()
+                code = str(p.get("PN_ACCOUNT", p.get("pn_account", ""))).strip()
                 name = str(p.get("PN_NAME", p.get("pn_name", ""))).strip()
                 if code:
                     supplier_names[code] = name
@@ -115,7 +115,7 @@ def _get_supplier_detail_opera3(data_path: str, account: str) -> Optional[dict]:
         pname_data = reader.read_table("pname")
         if pname_data:
             for p in pname_data:
-                code = str(p.get("PN_ACNT", p.get("pn_acnt", ""))).strip()
+                code = str(p.get("PN_ACCOUNT", p.get("pn_account", ""))).strip()
                 if code == account:
                     name = str(p.get("PN_NAME", p.get("pn_name", ""))).strip()
                     currbal = float(p.get("PN_CURRBAL", p.get("pn_currbal", 0)) or 0)
