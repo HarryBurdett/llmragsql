@@ -100,3 +100,31 @@ def test_match_falls_back_with_warning_when_period_bounds_missing():
 
     assert any("period bounds not provided" in m.lower() for m in captured_logs), \
         f"expected fallback warning; got logs: {captured_logs}"
+
+
+def test_match_statement_endpoint_passes_period_bounds():
+    """The /api/bank-reconciliation/match-statement endpoint must pass
+    period_start/period_end through to the matcher when the request
+    body includes them. Source-level test (we don't spin up FastAPI).
+    """
+    from pathlib import Path
+    routes = Path(__file__).resolve().parent.parent / "apps" / "bank_reconcile" / "api" / "routes.py"
+    src = routes.read_text(encoding='utf-8')
+
+    # Find the match_statement_to_cashbook endpoint body
+    start = src.find("@router.post(\"/api/bank-reconciliation/match-statement\"")
+    assert start != -1, "match-statement endpoint not found"
+    end = src.find("@router.", start + 10)
+    body = src[start:end] if end != -1 else src[start:start + 6000]
+
+    # The endpoint must extract period bounds from the request body
+    # and pass them to the matcher
+    assert "period_start" in body, \
+        "match-statement endpoint must read period_start from request body"
+    assert "period_end" in body, \
+        "match-statement endpoint must read period_end from request body"
+    assert ("period_start=period_start" in body
+            or "period_start=ps" in body
+            or "period_start=parsed_period_start" in body
+            or "period_start=" in body and "period_end=" in body), \
+        "endpoint must pass the period bounds to opera_import.match_statement_to_cashbook(...)"

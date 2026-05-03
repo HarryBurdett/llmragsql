@@ -10353,11 +10353,52 @@ async def match_statement_to_cashbook(
     try:
         from sql_rag.opera_sql_import import OperaSQLImport
 
+        # Extract period bounds from request (or from import_id if available).
+        # Required for the period-bound matcher restriction. If absent,
+        # the matcher logs a warning and falls back to unbounded behaviour
+        # — preserving backwards compat.
+        period_start = request_body.get('period_start') if request_body else None
+        period_end = request_body.get('period_end') if request_body else None
+        if (period_start is None or period_end is None) and import_id and email_storage:
+            with email_storage._get_connection() as _c:
+                _cur = _c.cursor()
+                _cur.execute(
+                    "SELECT period_start, period_end FROM bank_statement_imports WHERE id = ?",
+                    (import_id,),
+                )
+                row = _cur.fetchone()
+                if row is not None:
+                    period_start = period_start or row['period_start']
+                    period_end = period_end or row['period_end']
+
+        from datetime import date as _date_type, datetime as _dt
+        def _to_date(v):
+            if v is None:
+                return None
+            if isinstance(v, _date_type) and not isinstance(v, _dt):
+                return v
+            if isinstance(v, _dt):
+                return v.date()
+            if isinstance(v, str):
+                try:
+                    return _dt.fromisoformat(v.replace('Z', '+00:00')).date()
+                except ValueError:
+                    try:
+                        return _date_type.fromisoformat(v[:10])
+                    except ValueError:
+                        return None
+            return None
+
+        parsed_period_start = _to_date(period_start)
+        parsed_period_end = _to_date(period_end)
+
         opera_import = OperaSQLImport(sql_connector)
         result = opera_import.match_statement_to_cashbook(
             bank_account=bank_code,
             statement_transactions=statement_transactions,
-            date_tolerance_days=date_tolerance_days
+            date_tolerance_days=date_tolerance_days,
+            period_start=parsed_period_start,
+            period_end=parsed_period_end,
         )
 
         # Filter out ignored transactions from unmatched list
