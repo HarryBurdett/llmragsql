@@ -12867,13 +12867,14 @@ class PurchaseInvoiceFileImport:
 
             row = result.iloc[0]
 
-            # Get default warehouse from sprfls or use default
+            # Get default warehouse from cware (sprfls has no warehouse field)
             wh_result = self.sql.execute_query("""
-                SELECT TOP 1 sc_warehse FROM sprfls WITH (NOLOCK)
+                SELECT TOP 1 cw_code FROM cware WITH (NOLOCK)
+                ORDER BY cw_code
             """)
             default_warehouse = 'MAIN'
             if wh_result is not None and not wh_result.empty:
-                default_warehouse = str(wh_result.iloc[0].get('sc_warehse', 'MAIN') or 'MAIN').strip()
+                default_warehouse = str(wh_result.iloc[0].get('cw_code', 'MAIN') or 'MAIN').strip()
 
             return {
                 'next_po_ref': str(row.get('dp_dcref', 'CPO00001')).strip(),
@@ -12913,38 +12914,23 @@ class PurchaseInvoiceFileImport:
 
     def get_purchase_ledger_parameters(self) -> Dict[str, Any]:
         """
-        Get Purchase Ledger company parameters from pparm.
+        Get Purchase Ledger company parameters.
 
         Returns dict with:
         - vat_input_account: Nominal account for VAT input
-        - default_currency: Default currency code
+          (resolved from ztax via _get_any_vat_nominal())
+        - default_currency: Default currency code (blank = GBP home)
+
+        pparm has no direct VAT-input-nominal or default-currency
+        columns; previous attempts to read pp_vatpnom / pp_fcurr
+        always raised. The home currency is implied by blank fcurr
+        on transactional tables, and the VAT input nominal is sourced
+        from the ztax mapping for the active P-type VAT codes.
         """
-        try:
-            result = self.sql.execute_query("""
-                SELECT TOP 1
-                    pp_vatpnom,      -- VAT input nominal
-                    pp_fcurr         -- Default currency
-                FROM pparm WITH (NOLOCK)
-            """)
-
-            if result is None or result.empty:
-                return {
-                    'vat_input_account': self._get_any_vat_nominal(),
-                    'default_currency': '   '  # Blank = GBP
-                }
-
-            row = result.iloc[0]
-            vat_nom = str(row.get('pp_vatpnom', '')).strip()
-            return {
-                'vat_input_account': vat_nom or self._get_any_vat_nominal(),
-                'default_currency': str(row.get('pp_fcurr', '   ')).strip()
-            }
-        except Exception as e:
-            logger.error(f"Error getting PL parameters: {e}")
-            return {
-                'vat_input_account': self._get_any_vat_nominal(),
-                'default_currency': '   '
-            }
+        return {
+            'vat_input_account': self._get_any_vat_nominal(),
+            'default_currency': '   '  # Blank = GBP home
+        }
 
     def _increment_pop_number(self, current: str) -> str:
         """
@@ -13162,13 +13148,13 @@ class PurchaseInvoiceFileImport:
                         INSERT INTO doline (
                             id,
                             do_dcref, do_dcline, do_account, do_cnref, do_supref,
-                            do_desc, do_cwcode, do_reqqty, do_recqty, do_retqty, do_invqty,
+                            do_desc, do_cwcode, do_reqqty, do_recqty, do_invqty,
                             do_price, do_value, do_discp, do_reqdat, do_ledger,
                             datecreated, datemodified, state
                         ) VALUES (
                             {doline_id},
                             '{po_ref}', {line_no}, '{supplier_account}', '{stock_ref}', '{supplier_ref}',
-                            '{description}', '{line_wh}', {qty}, 0, 0, 0,
+                            '{description}', '{line_wh}', {qty}, 0, 0,
                             {price}, {line_value}, {disc}, '{req_date}', '{ledger_acct}',
                             '{now_str}', '{now_str}', 1
                         )
@@ -13390,7 +13376,7 @@ class PurchaseInvoiceFileImport:
                         conn.execute(text(f"""
                             UPDATE cname WITH (ROWLOCK)
                             SET cn_instock = cn_instock + {qty},
-                                cn_lastcst = {cost},
+                                cn_lcost = {cost},
                                 datemodified = '{now_str}'
                             WHERE RTRIM(cn_ref) = '{stock_ref}'
                         """))
