@@ -125,6 +125,14 @@ def check_period_reconciled(
             reason="no statement closing balance — cannot determine state",
         )
 
+    if current_rec_bal is None:
+        return PeriodReconciliationResult(
+            status=PeriodReconciliationStatus.UNKNOWN,
+            unreconciled_count=None,
+            matched_historical_boundary=False,
+            reason="no current rec_bal — cannot determine reconciliation state",
+        )
+
     # Stage 1: historical match
     closing_pence = _to_pence(statement_closing)
     rec_bal_pence = _to_pence(current_rec_bal)

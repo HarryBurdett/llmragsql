@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+import pandas as pd
+
 
 class OperaSEDataSource:
     """DataSource for Opera SQL SE.
@@ -40,7 +42,7 @@ class OperaSEDataSource:
         return {
             int(round(float(v)))
             for v in df['ae_recbal']
-            if v is not None
+            if v is not None and not pd.isna(v)
         }
 
     def query_unreconciled_in_period(

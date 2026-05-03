@@ -392,6 +392,28 @@ def test_imported_for_reconciliation_uses_function():
     )
 
 
+def test_unknown_when_current_rec_bal_is_none():
+    """Symmetric input validation: a None current_rec_bal returns
+    UNKNOWN with a clear reason. Defensive against future call-sites
+    that drop the existing 'if rec_bal is None: continue' guards.
+    """
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(historical_recbals={5037738})
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        statement_closing=82557.56,
+        current_rec_bal=None,
+    )
+    assert result.status is PeriodReconciliationStatus.UNKNOWN
+    assert "rec_bal" in result.reason.lower()
+
+
 def test_step_5_chain_filter_uses_function():
     """The Step 5 chain filter must also delegate the
     'is this period reconciled?' question to the function.
