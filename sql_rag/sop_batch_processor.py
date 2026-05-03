@@ -459,7 +459,7 @@ class SOPBatchProcessor:
                         conn.execute(text("""
                             UPDATE cstwh WITH (ROWLOCK)
                             SET cs_saleord = 1, cs_lastiss = :issdate, datemodified = GETDATE()
-                            WHERE RTRIM(cs_stock) = :stock AND RTRIM(cs_whouse) = :wh
+                            WHERE RTRIM(cs_ref) = :stock AND RTRIM(cs_whar) = :wh
                         """), {'stock': stock_code, 'wh': warehouse, 'issdate': posting_date})
 
             # Insert zpool (print spool)
