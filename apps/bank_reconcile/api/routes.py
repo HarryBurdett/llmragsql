@@ -1386,22 +1386,31 @@ async def process_bank_statement(
                 closing_balance=statement_info.closing_balance
             )
 
-        # Get unreconciled Opera entries for the date range
-        # Use wider date range to catch entries that might have been posted with slightly different dates
-        # Add 14 days buffer on each side to catch entries posted with different dates
-        # (GC payouts, bank transfers can take several days to settle)
-        from datetime import timedelta
-        date_from = statement_info.period_start - timedelta(days=14) if statement_info.period_start else None
-        date_to = statement_info.period_end + timedelta(days=14) if statement_info.period_end else None
+        # Period-bound the Opera 3 candidate pool — same rule as SE matcher.
+        # The reconciler's get_unreconciled_entries already accepts date_from/
+        # date_to args; supply them from the statement period with a 7-day
+        # grace window (parity with SE — see opera_sql_import.match_statement_to_cashbook).
+        from datetime import timedelta as _td_pb
+        PERIOD_GRACE_DAYS = 7
+        period_grace_days = PERIOD_GRACE_DAYS
+        period_start_for_query = None
+        period_end_for_query = None
+        try:
+            if hasattr(statement_info, 'period_start') and statement_info.period_start:
+                period_start_for_query = statement_info.period_start - _td_pb(days=period_grace_days)
+            if hasattr(statement_info, 'period_end') and statement_info.period_end:
+                period_end_for_query = statement_info.period_end + _td_pb(days=period_grace_days)
+        except Exception:
+            pass
 
         opera_entries = reconciler.get_unreconciled_entries(
             bank_code,
-            date_from=date_from,
-            date_to=date_to
+            date_from=period_start_for_query,
+            date_to=period_end_for_query
         )
 
         logger.info(f"Statement processing: {len(transactions)} stmt txns, {len(opera_entries)} unreconciled Opera entries")
-        logger.info(f"Date range: {date_from} to {date_to}")
+        logger.info(f"Period-bound date range: {period_start_for_query} to {period_end_for_query} (grace={period_grace_days}d)")
         if opera_entries:
             logger.info(f"Sample Opera entry: {opera_entries[0]}")
         if transactions:
@@ -14397,15 +14406,27 @@ async def opera3_process_statement(
                     closing_balance=statement_info.closing_balance
                 )
 
-        # Get unreconciled Opera entries for the date range (with 7 day buffer)
-        from datetime import timedelta
-        date_from = statement_info.period_start - timedelta(days=14) if statement_info.period_start else None
-        date_to = statement_info.period_end + timedelta(days=14) if statement_info.period_end else None
+        # Period-bound the Opera 3 candidate pool — same rule as SE matcher.
+        # The reconciler's get_unreconciled_entries already accepts date_from/
+        # date_to args; supply them from the statement period with a 7-day
+        # grace window (parity with SE — see opera_sql_import.match_statement_to_cashbook).
+        from datetime import timedelta as _td_pb
+        PERIOD_GRACE_DAYS = 7
+        period_grace_days = PERIOD_GRACE_DAYS
+        period_start_for_query = None
+        period_end_for_query = None
+        try:
+            if hasattr(statement_info, 'period_start') and statement_info.period_start:
+                period_start_for_query = statement_info.period_start - _td_pb(days=period_grace_days)
+            if hasattr(statement_info, 'period_end') and statement_info.period_end:
+                period_end_for_query = statement_info.period_end + _td_pb(days=period_grace_days)
+        except Exception:
+            pass
 
         opera_entries = reconciler.get_unreconciled_entries(
             bank_code,
-            date_from=date_from,
-            date_to=date_to
+            date_from=period_start_for_query,
+            date_to=period_end_for_query
         )
 
         # Match transactions - use 7 day tolerance to catch entries imported with different dates

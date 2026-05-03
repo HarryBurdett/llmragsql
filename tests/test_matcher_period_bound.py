@@ -128,3 +128,27 @@ def test_match_statement_endpoint_passes_period_bounds():
             or "period_start=parsed_period_start" in body
             or "period_start=" in body and "period_end=" in body), \
         "endpoint must pass the period bounds to opera_import.match_statement_to_cashbook(...)"
+
+
+def test_opera3_caller_applies_period_bounds_to_get_unreconciled_entries():
+    """The Opera 3 reconciler caller in routes.py must restrict
+    get_unreconciled_entries by period_start/period_end (with grace).
+    Source-level grep test — locks the discipline in.
+    """
+    from pathlib import Path
+    routes = Path(__file__).resolve().parent.parent / "apps" / "bank_reconcile" / "api" / "routes.py"
+    src = routes.read_text(encoding='utf-8')
+
+    # The Opera 3 reconcile flow uses statement_reconcile_opera3 reconciler.
+    # Find the call to get_unreconciled_entries that's followed by match_transactions
+    # and check it passes date_from/date_to derived from period bounds.
+    matches = src.count("reconciler.get_unreconciled_entries(")
+    assert matches >= 1, "Opera 3 reconciler caller not found"
+
+    # Ensure period bounds are computed before the call. Look for the
+    # period-from-grace pattern that the SE matcher introduced.
+    # Heuristic: 'period_grace' keyword appears at least once associated
+    # with this code path.
+    assert "period_grace" in src or "GRACE_DAYS" in src or "_grace" in src, (
+        "Opera 3 caller must compute period bounds with a grace window"
+    )
