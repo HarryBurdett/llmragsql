@@ -1235,7 +1235,7 @@ class OperaSQLImport:
         """
         try:
             df = self.sql.execute_query("""
-                SELECT nk_acnt, nk_name, nk_fcurr
+                SELECT nk_acnt, nk_desc, nk_fcurr
                 FROM nbank WITH (NOLOCK)
                 WHERE ISNULL(RTRIM(nk_fcurr), '') = ''
                 ORDER BY nk_acnt
@@ -1247,7 +1247,7 @@ class OperaSQLImport:
             return [
                 {
                     'code': row['nk_acnt'].strip(),
-                    'name': row['nk_name'].strip() if row['nk_name'] else ''
+                    'name': row['nk_desc'].strip() if row['nk_desc'] else ''
                 }
                 for _, row in df.iterrows()
             ]
