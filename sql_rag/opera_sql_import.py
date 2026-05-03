@@ -11670,18 +11670,9 @@ class PurchaseInvoiceFileImport:
                 line_val = line_qty * line_price
                 vat_code = line.get('vat_code', 'S')
 
-                # Look up VAT rate
-                vat_rate = 20.0  # Default
-                if vat_code in self._vat_cache:
-                    vat_rate = self._vat_cache[vat_code]
-                else:
-                    vat_check = self.sql.execute_query(f"""
-                        SELECT vc_rate FROM vat WITH (NOLOCK)
-                        WHERE RTRIM(vc_code) = '{vat_code}'
-                    """)
-                    if not vat_check.empty:
-                        vat_rate = float(vat_check.iloc[0]['vc_rate'] or 20)
-                        self._vat_cache[vat_code] = vat_rate
+                # Look up VAT rate from ztax (canonical Opera VAT table)
+                vat_info = self.get_vat_rate(vat_code, vat_type='S', as_of_date=quote_date)
+                vat_rate = vat_info.get('rate', 20.0) if vat_info.get('found') else 20.0
 
                 vat_val = line_val * vat_rate / 100
 
@@ -12051,18 +12042,9 @@ class PurchaseInvoiceFileImport:
                 stock_ref = str(line.get('stock_ref', ''))[:20]
                 line_wh = str(line.get('warehouse', warehouse))[:6]
 
-                # Look up VAT rate
-                vat_rate = 20.0
-                if vat_code in self._vat_cache:
-                    vat_rate = self._vat_cache[vat_code]
-                else:
-                    vat_check = self.sql.execute_query(f"""
-                        SELECT vc_rate FROM vat WITH (NOLOCK)
-                        WHERE RTRIM(vc_code) = '{vat_code}'
-                    """)
-                    if not vat_check.empty:
-                        vat_rate = float(vat_check.iloc[0]['vc_rate'] or 20)
-                        self._vat_cache[vat_code] = vat_rate
+                # Look up VAT rate from ztax (canonical Opera VAT table)
+                vat_info = self.get_vat_rate(vat_code, vat_type='S', as_of_date=order_date)
+                vat_rate = vat_info.get('rate', 20.0) if vat_info.get('found') else 20.0
 
                 vat_val = line_val * vat_rate / 100
 
