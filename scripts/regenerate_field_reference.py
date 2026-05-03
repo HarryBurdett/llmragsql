@@ -107,23 +107,105 @@ def load_and_validate(path: Path) -> Dict[str, Any]:
 def render_rollup(snapshots: List[Dict[str, Any]]) -> str:
     """Render the markdown rollup deterministically.
 
-    Implementation deferred — Task 2 builds the renderer.
+    Order:
+      1. Header.
+      2. Modules in MODULE_ORDER. Modules NOT in the list are appended
+         at the end, sorted lexicographically.
+      3. Within each module, snapshots sorted lexicographically by name.
+      4. Per snapshot: header (name, source, recorded_at), description,
+         tables-updated table, then per-table added-rows + modified-rows
+         blocks.
     """
-    lines = ["# Opera Transaction Posting — Complete Field Reference", ""]
-    lines.append(
-        "Generated from transaction snapshot library by "
-        "`scripts/regenerate_field_reference.py`."
-    )
-    lines.append(
-        "Every field value from real Opera postings — added AND "
-        "modified rows."
-    )
-    lines.append("**Use as definitive reference when writing transactions back to Opera.**")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    lines.append(f"_({len(snapshots)} snapshots indexed; module-by-module body in Task 2)_")
-    lines.append("")
+    lines: List[str] = [
+        "# Opera Transaction Posting — Complete Field Reference",
+        "",
+        "Generated from transaction snapshot library by `scripts/regenerate_field_reference.py`.",
+        "Every field value from real Opera postings — added AND modified rows.",
+        "**Use as definitive reference when writing transactions back to Opera.**",
+        "",
+        "---",
+        "",
+    ]
+
+    # Group by module
+    by_module: Dict[str, List[Dict[str, Any]]] = {}
+    for s in snapshots:
+        by_module.setdefault(s.get("module", "unknown"), []).append(s)
+
+    # Determine module order
+    known = [m for m in MODULE_ORDER if m in by_module]
+    unknown = sorted(m for m in by_module if m not in MODULE_ORDER)
+    module_order = known + unknown
+
+    for module in module_order:
+        items = sorted(by_module[module], key=lambda s: s.get("name", ""))
+        if not items:
+            continue
+        # Module heading from the first snapshot's module_name (or fallback)
+        module_name = items[0].get("module_name") or module.replace("_", " ").title()
+        lines.append(f"## {module_name}")
+        lines.append("")
+
+        for snap in items:
+            lines.append(f"### {snap.get('name', '?')}")
+            lines.append("")
+            if snap.get("source"):
+                lines.append(f"**Source:** {snap['source']}")
+            if snap.get("recorded_at"):
+                lines.append(f"**Recorded:** {snap['recorded_at']}")
+            lines.append("")
+            if snap.get("description"):
+                lines.append(snap["description"])
+                lines.append("")
+
+            changes = snap.get("changes", [])
+            if changes:
+                lines.append("**Tables Updated:**")
+                lines.append("")
+                lines.append(
+                    "| Database | Table | Rows Added | Rows Modified | Fields Changed |"
+                )
+                lines.append(
+                    "|----------|-------|-----------|--------------|----------------|"
+                )
+                for ch in changes:
+                    db = ch.get("database", "?")
+                    tab = ch.get("table", "?")
+                    added = ch.get("rows_added", 0)
+                    modified = len(ch.get("modified_rows", []))
+                    fields = ", ".join(ch.get("modified_fields", [])[:10])
+                    if len(ch.get("modified_fields", [])) > 10:
+                        fields += f" (+{len(ch['modified_fields']) - 10} more)"
+                    lines.append(
+                        f"| {db} | {tab} | {added} | {modified} | {fields} |"
+                    )
+                lines.append("")
+
+                # Per-table detail blocks
+                for ch in changes:
+                    tab = ch.get("table", "?")
+                    added_rows = ch.get("added_rows", [])
+                    if added_rows:
+                        lines.append(f"**{tab} — New rows:**")
+                        lines.append("")
+                        lines.append("```json")
+                        for row in added_rows[:3]:
+                            lines.append(json.dumps(row, indent=2, sort_keys=True))
+                        if len(added_rows) > 3:
+                            lines.append(f"... and {len(added_rows) - 3} more")
+                        lines.append("```")
+                        lines.append("")
+                    modified_rows = ch.get("modified_rows", [])
+                    if modified_rows:
+                        lines.append(f"**{tab} — Modified fields:**")
+                        lines.append("")
+                        for mod in modified_rows[:3]:
+                            for field, vals in (mod.get("changes", {}) or {}).items():
+                                lines.append(
+                                    f"- `{field}`: `{vals.get('before')}` → `{vals.get('after')}`"
+                                )
+                        lines.append("")
+
     return "\n".join(lines)
 
 
