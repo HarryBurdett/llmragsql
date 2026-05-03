@@ -2009,10 +2009,15 @@ async def get_imported_statements_for_reconciliation(
                         if stmt.get('is_reconciled'):
                             continue
                         # Stricter check: count unreconciled aentry rows in
-                        # the statement period.
+                        # the statement period. Default to NOT auto-promote
+                        # if we can't verify the period — the previous
+                        # default (treat-as-zero) caused a regression where
+                        # statements with missing period_start/period_end
+                        # in the SELECT got auto-marked despite real
+                        # unreconciled entries existing in Opera.
                         period_start = stmt.get('period_start')
                         period_end = stmt.get('period_end')
-                        unreconciled_in_period = 0
+                        unreconciled_in_period = -1  # conservative default — no promote unless verified
                         if period_start and period_end:
                             try:
                                 df = sql_connector.execute_query(f"""
@@ -2022,19 +2027,23 @@ async def get_imported_statements_for_reconciliation(
                                     AND ae_lstdate BETWEEN '{period_start}' AND '{period_end}'
                                     AND (ae_reclnum IS NULL OR ae_reclnum = 0)
                                 """)
-                                unreconciled_in_period = int(df.iloc[0]['n']) if df is not None and not df.empty else 0
+                                unreconciled_in_period = int(df.iloc[0]['n']) if df is not None and not df.empty else -1
                             except Exception as _ck_err:
                                 logger.warning(
                                     f"imported-for-reconciliation: could not check unreconciled aentry "
                                     f"for {bc} period {period_start}..{period_end}: {_ck_err} — skipping promote"
                                 )
-                                unreconciled_in_period = -1  # don't promote on error
+                                unreconciled_in_period = -1
 
                         if unreconciled_in_period != 0:
+                            reason = (
+                                f"{unreconciled_in_period} aentry rows in period are still unreconciled in Opera"
+                                if unreconciled_in_period > 0
+                                else "could not verify aentry reconciliation status (missing period info)"
+                            )
                             logger.info(
                                 f"imported-for-reconciliation: NOT auto-marking '{stmt.get('filename', '')}' — "
-                                f"balance matches but {unreconciled_in_period} aentry rows in period "
-                                f"are still unreconciled in Opera"
+                                f"balance matches but {reason}"
                             )
                             continue
 
@@ -7696,10 +7705,13 @@ async def scan_all_banks_for_statements(
                     period_start = stmt.get('period_start')
                     period_end = stmt.get('period_end')
                     if not (period_start and period_end and sql_connector):
-                        # No period info → fall back to the balance-only
-                        # auto-promote so we don't regress on the common
-                        # case where statements ARE genuinely complete.
-                        unreconciled_in_period = 0
+                        # No period info → conservative default: do NOT
+                        # auto-promote. The previous "fall back to balance-
+                        # only" default caused a regression when an upstream
+                        # SELECT was missing period_start/period_end —
+                        # statements got auto-marked despite having real
+                        # unreconciled entries.
+                        unreconciled_in_period = -1
                     else:
                         try:
                             df = sql_connector.execute_query(f"""

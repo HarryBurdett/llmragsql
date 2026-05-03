@@ -2192,6 +2192,8 @@ class EmailStorage:
                     bsi.opening_balance,
                     bsi.closing_balance,
                     bsi.statement_date,
+                    bsi.period_start,
+                    bsi.period_end,
                     bsi.account_number,
                     bsi.sort_code,
                     e.subject as email_subject,
