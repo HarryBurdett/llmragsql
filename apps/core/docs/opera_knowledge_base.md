@@ -2121,3 +2121,34 @@ Opera contact records linked to supplier/customer accounts.
 | `zc_name` | `zc_contact` | Main display name field |
 | `zc_role` | `zc_pos` | Position/job title |
 | `zc_dept` | Does NOT exist | No department field in zcontacts |
+
+## Bank Reconciliation Counters (CRITICAL — global vs per-bank)
+
+Three distinct counters track reconciliation state. They are NOT the same number and you cannot use one in place of another:
+
+| Counter | Where stored | Scope | What it counts | Example |
+|---|---|---|---|---|
+| `aentry.ae_reclnum` | per-aentry row | **GLOBAL across ALL banks** in the install | Reconcile-batch ID, increments every time a reconcile is committed on ANY bank | March 2026 BB005 entries: 207 |
+| `nbank.nk_lststno` | per-bank | **Per-bank** (BB005 only) | Last statement number that closed against this bank (the user-facing "Statement N") | BB005: 209 |
+| `nbank.nk_lstrecl` | per-bank | Per-bank | Last reconcile-line number used (for ae_statln assignment) | BB005: 212 |
+| `aentry.ae_statln` | per-aentry row | Per-statement-within-batch | Line number of this entry within its statement (10/20/30…) | Hiscox 04-01 in batch 209: 80 |
+
+**When Opera's UI shows "Statement 205" for the March BB005 reconcile**, it's reading `nk_lststno` for BB005 at the time that batch was committed. The same batch carries `ae_reclnum = 207` because two other reconciles happened on other banks (BB025/BB040) between BB005's previous reconcile and this one.
+
+**Practical consequence for code:**
+- Use `ae_reclnum > 0` as the test for *"is this entry reconciled?"* (works regardless of which bank).
+- Don't assume `ae_reclnum = nk_lststno` — they only match if every reconcile on the install happened on the same bank, which is rare in practice.
+- The "rec number" the user sees in Opera is the per-bank statement number, not `ae_reclnum`.
+
+## Detecting whether a statement period is fully reconciled
+
+Two complementary signals — needed for banks like Monzo whose statement filenames change on every download (no permanent filename-based marker):
+
+1. **Historical batch boundary match:** if the statement's closing balance equals any aentry's `ae_recbal` where `ae_reclnum > 0` (a closed reconcile boundary) AND closing < `nk_recbal`, the statement is from a prior closed reconcile cycle — it's done.
+2. **Period-aware aentry check:** if the closing equals `nk_recbal`, ambiguous — could be in-progress. Check whether every aentry in the statement period (`ae_lstdate BETWEEN period_start AND period_end`) has `ae_reclnum > 0`. If yes, done; if any is 0, in progress.
+
+**Why one signal isn't enough:**
+- Balance-only match is fooled by partial reconciles that bump `nk_recbal` to the closing without ticking every entry.
+- Period-only check is fooled by orphan contra entries that net to zero, never appear on any statement, and stay `ae_reclnum=0` forever — they make a fully-reconciled period look incomplete.
+
+The combined test is implemented in `apps/bank_reconcile/api/routes.py` Step 5 chain filter and `imported-for-reconciliation` auto-promote.
