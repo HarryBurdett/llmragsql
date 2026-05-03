@@ -196,3 +196,84 @@ def test_unknown_when_period_missing_at_recbal_boundary():
     )
     assert result.status is PeriodReconciliationStatus.UNKNOWN
     assert "period" in result.reason.lower()
+
+
+def test_not_reconciled_when_closing_above_recbal():
+    """A future statement: closing > current rec_bal."""
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(historical_recbals={5037738})
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 5, 31),
+        statement_closing=85000.00,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.NOT_RECONCILED
+    assert "future" in result.reason.lower() or "above" in result.reason.lower()
+
+
+def test_not_reconciled_when_closing_below_recbal_no_historical_match():
+    """An orphan: closing < rec_bal but doesn't match any historical
+    boundary. Likely a malformed statement or genuine gap in history.
+    """
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(historical_recbals={1000000, 2000000})  # neither match
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        statement_closing=12345.67,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.NOT_RECONCILED
+    assert "boundary" in result.reason.lower() or "investigate" in result.reason.lower()
+
+
+def test_unknown_when_recbals_query_fails():
+    """If we can't reach Opera, never auto-promote."""
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(raise_on_recbals=RuntimeError("Opera unreachable"))
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        statement_closing=82557.56,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.UNKNOWN
+    assert "Opera unreachable" in result.reason
+
+
+def test_unknown_when_unreconciled_query_fails_at_recbal_boundary():
+    """If we hit Stage 2 but the unreconciled query fails, UNKNOWN."""
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(
+        historical_recbals={8255756},
+        raise_on_unrec=RuntimeError("query timeout"),
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        statement_closing=82557.56,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.UNKNOWN
+    assert "timeout" in result.reason

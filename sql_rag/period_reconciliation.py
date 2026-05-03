@@ -196,10 +196,25 @@ def check_period_reconciled(
             ),
         )
 
-    # Stages 3 placeholder (task 4 implements)
+    # Stage 3: closing != rec_bal and not a historical match
+    if rec_bal_pence is not None and closing_pence > rec_bal_pence:
+        return PeriodReconciliationResult(
+            status=PeriodReconciliationStatus.NOT_RECONCILED,
+            unreconciled_count=None,
+            matched_historical_boundary=False,
+            reason=(
+                f"closing £{statement_closing:,.2f} is above current rec_bal "
+                f"£{current_rec_bal:,.2f} — future statement, awaiting reconcile"
+            ),
+        )
+
+    # closing < rec_bal but not a historical boundary: orphan / data gap
     return PeriodReconciliationResult(
-        status=PeriodReconciliationStatus.UNKNOWN,
+        status=PeriodReconciliationStatus.NOT_RECONCILED,
         unreconciled_count=None,
         matched_historical_boundary=False,
-        reason="not implemented — task 4 pending (closing != rec_bal, no historical match)",
+        reason=(
+            f"closing £{statement_closing:,.2f} is below rec_bal but doesn't "
+            f"match any historical boundary — investigate (orphan or gap)"
+        ),
     )
