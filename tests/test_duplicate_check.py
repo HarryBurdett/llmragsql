@@ -356,3 +356,50 @@ def test_ledger_advisory_requires_account_code():
         reference="",
     )
     assert result.kind is DuplicateMatchKind.NONE
+
+
+def test_se_datasource_construction_and_protocol():
+    """OperaSEDataSource exists, takes a SQLConnector, satisfies protocol."""
+    from sql_rag.duplicate_check_se import OperaSEDataSource
+    from sql_rag.duplicate_check import DataSource
+
+    class _StubConn:
+        def execute_query(self, q):
+            raise NotImplementedError
+    ds = OperaSEDataSource(_StubConn())
+    assert isinstance(ds, DataSource)
+
+
+def test_se_datasource_uses_signed_comparison_and_at_type():
+    """Smoke test — verify the SQL the SE DataSource emits uses signed
+    comparison (`a.at_value - signed_pence`) and a type filter
+    (`a.at_type = expected_at_type`). Catches regressions back to
+    sign-blind ABS-on-ABS.
+    """
+    captured_queries: list[str] = []
+
+    class _SpyConn:
+        def execute_query(self, q):
+            captured_queries.append(q)
+            class _DF:
+                empty = True
+                def to_dict(self, *a, **k): return []
+                def iterrows(self): return iter([])
+            return _DF()
+
+    from sql_rag.duplicate_check_se import OperaSEDataSource
+    from datetime import date as _date
+
+    ds = OperaSEDataSource(_SpyConn())
+    ds.find_aentry_by_signed_value(
+        'BB005', _date(2026, 4, 1), _date(2026, 4, 30),
+        signed_pence=-19800, expected_at_type=3,
+        exclude_entry_numbers=[],
+    )
+    assert any("ABS(a.at_value - -19800)" in q for q in captured_queries), \
+        f"signed comparison not found in queries: {captured_queries}"
+    assert any("a.at_type = 3" in q for q in captured_queries), \
+        f"at_type filter not found in queries: {captured_queries}"
+    # Critical: NO ABS(ABS(...)) — that's the sign-blind regression
+    assert not any("ABS(ABS(" in q for q in captured_queries), \
+        "sign-blind ABS-on-ABS regression: " + str(captured_queries)
