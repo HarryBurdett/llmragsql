@@ -2189,3 +2189,14 @@ Result kinds:
 The `ACTION_TYPE_MAP` in the module is the authoritative reference for which `at_type` / `st_trtype` / `pt_trtype` corresponds to each bank-import action. Cashbook conventions (1=Nominal Pmt, 2=Nominal Rcpt, 3=Sales Refund, 4=Sales Receipt, 5=Purchase Pmt, 6=Purchase Refund, 8=Bank Transfer) are mirrored from CLAUDE.md and the central KB.
 
 Sign-aware AND type-aware throughout. The historical bug class (`ABS(ABS(value) - amount)` matching opposite-direction transactions) is locked out by tests in `tests/test_duplicate_check.py` and `tests/test_duplicate_check_regression.py`.
+
+
+## Matcher Period-Bound Rule
+
+The bank-statement-to-cashbook matcher (`match_statement_to_cashbook`) restricts its candidate aentry pool to `ae_lstdate BETWEEN [period_start - grace, period_end + grace]`. Default grace = 14 days (covers month-end postings dated a few days late).
+
+The `/api/bank-reconciliation/match-statement` endpoint passes period bounds; the frontend reconcile view forwards `importedStatementData.period_start` / `period_end`. If a caller doesn't pass period bounds, the matcher logs a warning and falls back to unbounded candidates — but this is a deprecated path; new callers MUST pass them.
+
+The complete-reconciliation handler (`/api/bank-reconciliation/complete`) re-validates each entry's `ae_lstdate` against the period before applying any `ae_tmpstat` write. Out-of-period entries cause a structured 200 response with `success=false` and an `out_of_period` array — the frontend surfaces this as a modal listing each offender's date and the period bounds.
+
+Orphan tmpstat reservations (entries with `ae_tmpstat > 0 AND ae_reclnum = 0` from prior partial-reconcile attempts that didn't finalise) can be listed via `GET /api/reconcile/bank/{bank_code}/orphan-tmpstat` and cleared via `POST /api/reconcile/bank/{bank_code}/clear-orphan-tmpstat`. Clears use ROWLOCK and only touch `ae_tmpstat` — committed reconciliations (`ae_reclnum > 0`) are never affected.
