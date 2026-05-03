@@ -8321,7 +8321,10 @@ class OperaSQLImport:
         self,
         bank_account: str,
         statement_transactions: List[Dict[str, Any]],
-        date_tolerance_days: int = 14
+        date_tolerance_days: int = 14,
+        period_start: Optional[date] = None,
+        period_end: Optional[date] = None,
+        period_grace_days: int = 7,
     ) -> Dict[str, Any]:
         """
         Match statement lines to unreconciled cashbook entries.
@@ -8360,12 +8363,34 @@ class OperaSQLImport:
             # which would cause duplicates. We only need aentry fields for matching.
             # Include incomplete entries (ae_complet = 0) as they still represent
             # real bank transactions that should be reconcilable.
+            #
+            # Period-bound the candidate pool (matcher-period-bound spec).
+            # Statements never legitimately match aentries outside their
+            # own period — the 7-day grace window covers month-end
+            # postings dated a few days late.
+            if period_start is not None and period_end is not None:
+                window_start = period_start - timedelta(days=period_grace_days)
+                window_end = period_end + timedelta(days=period_grace_days)
+                period_filter = (
+                    f"AND ae_lstdate BETWEEN "
+                    f"'{window_start.isoformat()}' AND '{window_end.isoformat()}'"
+                )
+            else:
+                logger.warning(
+                    "match_statement_to_cashbook: period bounds not provided "
+                    "for bank %s — falling back to unbounded candidate pool. "
+                    "Pass period_start/period_end to enforce in-period matching.",
+                    bank_account,
+                )
+                period_filter = ""
+
             query = f"""
                 SELECT ae_entry, ae_value/100.0 as amount_pounds, ae_lstdate,
                        ae_entref, ae_comment, ae_cbtype, ae_complet
                 FROM aentry WITH (NOLOCK)
                 WHERE ae_acnt = '{bank_account}'
                   AND ae_reclnum = 0
+                  {period_filter}
                 ORDER BY ae_lstdate, ae_entry
             """
             df = self.sql.execute_query(query)
@@ -8569,8 +8594,17 @@ class OperaSQLImport:
                     if d:
                         stmt_dates.append(d)
                 if stmt_dates:
-                    win_start = (min(stmt_dates) - timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
-                    win_end = (max(stmt_dates) + timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
+                    # Period-bound the already-reconciled lookup too
+                    # (matcher-period-bound spec) — same grace window as
+                    # the unreconciled candidate query above. Falls back
+                    # to the legacy date-tolerance window when bounds
+                    # aren't supplied so existing callers don't break.
+                    if period_start is not None and period_end is not None:
+                        win_start = (period_start - timedelta(days=period_grace_days)).strftime('%Y-%m-%d')
+                        win_end = (period_end + timedelta(days=period_grace_days)).strftime('%Y-%m-%d')
+                    else:
+                        win_start = (min(stmt_dates) - timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
+                        win_end = (max(stmt_dates) + timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
                     rec_query = f"""
                         SELECT ae_entry, ae_value/100.0 as amount_pounds, ae_lstdate,
                                ae_entref, ae_comment, ae_cbtype, ae_reclnum, ae_recdate
