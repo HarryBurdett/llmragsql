@@ -291,3 +291,46 @@ def test_se_datasource_construction_and_protocol():
     ds = OperaSEDataSource(_StubConnector())
     assert hasattr(ds, 'query_historical_recbals')
     assert hasattr(ds, 'query_unreconciled_in_period')
+
+
+def test_o3_datasource_construction_and_protocol():
+    """Opera3DataSource exists, takes a FoxPro reader, satisfies the protocol."""
+    from sql_rag.period_reconciliation_o3 import Opera3DataSource
+
+    class _StubReader:
+        def read_table(self, name):
+            return []
+    ds = Opera3DataSource(_StubReader())
+    assert hasattr(ds, 'query_historical_recbals')
+    assert hasattr(ds, 'query_unreconciled_in_period')
+
+
+def test_o3_datasource_filters_aentry_by_bank_and_reclnum():
+    """O3 reader returns all aentry rows; the DataSource must filter them.
+    Uses an in-memory list to avoid touching real DBF files.
+    """
+    from sql_rag.period_reconciliation_o3 import Opera3DataSource
+    from datetime import date
+
+    aentry_rows = [
+        {'ae_acnt': 'BB005', 'ae_reclnum': 207.0, 'ae_recbal': 5037738.0,
+         'ae_lstdate': date(2026, 3, 27)},
+        {'ae_acnt': 'BB005', 'ae_reclnum': 0.0, 'ae_recbal': None,
+         'ae_lstdate': date(2026, 4, 16)},
+        {'ae_acnt': 'BB010', 'ae_reclnum': 100.0, 'ae_recbal': 12345.0,
+         'ae_lstdate': date(2026, 3, 1)},  # different bank, must be excluded
+    ]
+
+    class _StubReader:
+        def read_table(self, name):
+            assert name == 'aentry'
+            return aentry_rows
+
+    ds = Opera3DataSource(_StubReader())
+    rec = ds.query_historical_recbals('BB005')
+    assert rec == {5037738}
+
+    unrec = ds.query_unreconciled_in_period(
+        'BB005', date(2026, 4, 1), date(2026, 4, 28)
+    )
+    assert unrec == 1  # the 04-16 row with reclnum=0
