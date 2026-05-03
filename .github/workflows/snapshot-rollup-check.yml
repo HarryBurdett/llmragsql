@@ -1,0 +1,46 @@
+# .github/workflows/snapshot-rollup-check.yml
+name: Snapshot Rollup Check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  rollup-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main repo
+        uses: actions/checkout@v4
+
+      - name: Check out central knowledge repo
+        uses: actions/checkout@v4
+        with:
+          repository: jonathangintsys/aisam
+          path: opera-knowledge-ref
+          token: ${{ secrets.CENTRAL_KB_READ_TOKEN }}
+          # If the central repo is public, the token isn't needed; remove the line above.
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Run rollup check
+        run: |
+          python scripts/regenerate_field_reference.py \
+            --library opera-knowledge-ref/packages/opera-knowledge/transaction-library \
+            --check
+
+      - name: Comment on PR if stale
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'Snapshot rollup is stale relative to JSON inputs in central. Run `python scripts/regenerate_field_reference.py` locally and push the updated rollup to the central knowledge repo.'
+            })
