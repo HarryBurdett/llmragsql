@@ -155,11 +155,51 @@ def check_period_reconciled(
             ),
         )
 
-    # Stage 2 (placeholder for now — Task 3 implements)
-    # Stage 3 (placeholder for now — Task 4 implements)
+    # Stage 2: closing equals current rec_bal — query period
+    if rec_bal_pence is not None and abs(closing_pence - rec_bal_pence) <= 1:
+        if period_start is None or period_end is None:
+            return PeriodReconciliationResult(
+                status=PeriodReconciliationStatus.UNKNOWN,
+                unreconciled_count=None,
+                matched_historical_boundary=False,
+                reason="closing matches rec_bal but period bounds missing",
+            )
+        try:
+            unrec = data_source.query_unreconciled_in_period(
+                bank_code, period_start, period_end
+            )
+        except Exception as e:
+            return PeriodReconciliationResult(
+                status=PeriodReconciliationStatus.UNKNOWN,
+                unreconciled_count=None,
+                matched_historical_boundary=False,
+                reason=f"could not query unreconciled count: {e}",
+            )
+        if unrec == 0:
+            return PeriodReconciliationResult(
+                status=PeriodReconciliationStatus.FULLY_RECONCILED,
+                unreconciled_count=0,
+                matched_historical_boundary=False,
+                reason=(
+                    f"closing £{statement_closing:,.2f} equals rec_bal AND "
+                    f"every aentry in period {period_start}..{period_end} "
+                    f"is reconciled"
+                ),
+            )
+        return PeriodReconciliationResult(
+            status=PeriodReconciliationStatus.PARTIALLY_RECONCILED,
+            unreconciled_count=unrec,
+            matched_historical_boundary=False,
+            reason=(
+                f"closing £{statement_closing:,.2f} equals rec_bal but "
+                f"{unrec} aentry rows in period are still unreconciled"
+            ),
+        )
+
+    # Stages 3 placeholder (task 4 implements)
     return PeriodReconciliationResult(
         status=PeriodReconciliationStatus.UNKNOWN,
         unreconciled_count=None,
         matched_historical_boundary=False,
-        reason="not implemented — task 3+ pending",
+        reason="not implemented — task 4 pending (closing != rec_bal, no historical match)",
     )

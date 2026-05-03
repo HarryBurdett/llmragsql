@@ -126,3 +126,73 @@ def test_fully_reconciled_when_closing_matches_historical_boundary_and_below_rec
     assert result.status is PeriodReconciliationStatus.FULLY_RECONCILED
     assert result.matched_historical_boundary is True
     assert "boundary" in result.reason.lower()
+
+
+def test_partially_reconciled_when_closing_equals_recbal_with_unreconciled_aentries():
+    """The Cloudsis April case today: closing £82,557.56 == rec_bal,
+    9 aentry rows in period are still unreconciled → PARTIALLY_RECONCILED.
+    """
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(
+        historical_recbals={5037738, 8255756},  # March + April closings
+        unreconciled_count=9,
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 28),
+        statement_closing=82557.56,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.PARTIALLY_RECONCILED
+    assert result.unreconciled_count == 9
+    assert "9" in result.reason
+
+
+def test_fully_reconciled_when_closing_equals_recbal_and_zero_unreconciled():
+    """A fresh fully-reconciled state: closing = rec_bal, every aentry
+    in the period is reconciled.
+    """
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(
+        historical_recbals={8255756},
+        unreconciled_count=0,
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 4, 1),
+        period_end=date(2026, 4, 30),
+        statement_closing=82557.56,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.FULLY_RECONCILED
+    assert result.unreconciled_count == 0
+
+
+def test_unknown_when_period_missing_at_recbal_boundary():
+    """If closing == rec_bal but period info is missing, conservative
+    UNKNOWN — caller must keep statement visible.
+    """
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(historical_recbals={8255756})
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=None,
+        period_end=None,
+        statement_closing=82557.56,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.UNKNOWN
+    assert "period" in result.reason.lower()
