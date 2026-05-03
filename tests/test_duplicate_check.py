@@ -403,3 +403,54 @@ def test_se_datasource_uses_signed_comparison_and_at_type():
     # Critical: NO ABS(ABS(...)) — that's the sign-blind regression
     assert not any("ABS(ABS(" in q for q in captured_queries), \
         "sign-blind ABS-on-ABS regression: " + str(captured_queries)
+
+
+def test_o3_datasource_construction_and_protocol():
+    from sql_rag.duplicate_check_o3 import Opera3DataSource
+    from sql_rag.duplicate_check import DataSource
+    class _Stub:
+        def read_table(self, name): return []
+    assert isinstance(Opera3DataSource(_Stub()), DataSource)
+
+
+def test_o3_datasource_filters_aentry_by_bank_at_type_and_signed_value():
+    """Verify Opera3DataSource filters aentry rows correctly:
+    bank, signed pence (within tolerance), at_type, exclude list, date.
+    """
+    from sql_rag.duplicate_check_o3 import Opera3DataSource
+    from datetime import date as _date
+
+    rows_by_table = {
+        'atran': [
+            {'at_acnt': 'BB005', 'at_entry': 'P100000755',
+             'at_value': -19800, 'at_type': 3,
+             'at_pstdate': _date(2026, 4, 16)},
+            {'at_acnt': 'BB005', 'at_entry': 'R100000407',
+             'at_value': 19800, 'at_type': 4,
+             'at_pstdate': _date(2026, 4, 16)},
+            {'at_acnt': 'BB005', 'at_entry': 'P100000900',
+             'at_value': -19800, 'at_type': 3,
+             'at_pstdate': _date(2026, 5, 5)},  # outside window
+        ],
+        'aentry': [],
+    }
+
+    class _Reader:
+        def read_table(self, name): return rows_by_table.get(name, [])
+
+    ds = Opera3DataSource(_Reader())
+    rows = ds.find_aentry_by_signed_value(
+        'BB005', _date(2026, 4, 1), _date(2026, 4, 30),
+        signed_pence=-19800, expected_at_type=3,
+        exclude_entry_numbers=[],
+    )
+    assert len(rows) == 1
+    assert rows[0]['ae_entry'] == 'P100000755'
+
+    # Now exclude the matching entry — should return empty
+    rows = ds.find_aentry_by_signed_value(
+        'BB005', _date(2026, 4, 1), _date(2026, 4, 30),
+        signed_pence=-19800, expected_at_type=3,
+        exclude_entry_numbers=['P100000755'],
+    )
+    assert rows == []
