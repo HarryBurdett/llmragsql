@@ -1,0 +1,58 @@
+# .github/workflows/kb-update-check.yml
+name: KB Update Check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  kb-update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full history for diff
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Compute changed files
+        id: diff
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          changed=$(git diff --name-only "$base" "$head" | tr '\n' ' ')
+          echo "files=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Compute concatenated commit messages
+        id: messages
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          messages=$(git log "$base..$head" --pretty=format:"%B%n---%n")
+          # Write to a file because multi-line outputs are awkward in $GITHUB_OUTPUT
+          echo "$messages" > /tmp/all_messages.txt
+
+      - name: Run KB update check
+        run: |
+          python scripts/kb_update_check.py \
+            --files ${{ steps.diff.outputs.files }} \
+            --commit-msg-file /tmp/all_messages.txt
+        continue-on-error: false
+
+      - name: Comment on PR if failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'KB update required for Opera-related changes. Either update apps/core/docs/opera_knowledge_base.md (and the central KB) with the new knowledge, or add `kb-not-required: <reason>` to a commit message in this PR. See docs/kb-update-guide.md for the directory taxonomy and examples.'
+            })
