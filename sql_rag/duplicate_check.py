@@ -202,7 +202,44 @@ def check_for_duplicate(
             ),
         )
 
-    # 2. Ledger advisory (refund actions only) — task 3 implements
+    # 2. Ledger advisory — refund actions only
+    if action == 'sales_refund' and account_code:
+        st_trtype = type_map.get('st_trtype')
+        if st_trtype:
+            stran_rows = data_source.find_stran_by_signed_value(
+                account_code, date_from, date_to, signed_amount_pounds, st_trtype
+            )
+            if stran_rows:
+                row = stran_rows[0]
+                return DuplicateCheckResult(
+                    kind=DuplicateMatchKind.LEDGER_ALLOCATION_TARGET,
+                    matched_table='stran',
+                    matched_entry=str(row.get('st_trref', '')).strip() or None,
+                    reason=(
+                        f"stran row {row.get('st_trref')} (type={st_trtype}, "
+                        f"value={row.get('st_trvalue')}) is an allocation target "
+                        f"for this refund — POST, then optionally allocate"
+                    ),
+                )
+    elif action == 'purchase_refund' and account_code:
+        pt_trtype = type_map.get('pt_trtype')
+        if pt_trtype:
+            ptran_rows = data_source.find_ptran_by_signed_value(
+                account_code, date_from, date_to, signed_amount_pounds, pt_trtype
+            )
+            if ptran_rows:
+                row = ptran_rows[0]
+                return DuplicateCheckResult(
+                    kind=DuplicateMatchKind.LEDGER_ALLOCATION_TARGET,
+                    matched_table='ptran',
+                    matched_entry=str(row.get('pt_trref', '')).strip() or None,
+                    reason=(
+                        f"ptran row {row.get('pt_trref')} (type={pt_trtype}, "
+                        f"value={row.get('pt_trvalue')}) is an allocation target "
+                        f"for this refund — POST, then optionally allocate"
+                    ),
+                )
+
     # 3. NONE
     return DuplicateCheckResult(
         kind=DuplicateMatchKind.NONE,

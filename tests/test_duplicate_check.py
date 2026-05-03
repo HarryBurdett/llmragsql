@@ -265,3 +265,94 @@ def test_unknown_action_raises_value_error():
             description="",
             reference="",
         )
+
+
+def test_ledger_allocation_target_for_sales_refund():
+    """No cashbook entry, but stran has a type='F' or 'C' row matching the
+    refund amount → LEDGER_ALLOCATION_TARGET. The caller should post the
+    refund payment, not refuse it.
+    """
+    from sql_rag.duplicate_check import check_for_duplicate, DuplicateMatchKind
+    ds = _FakeDataSource(
+        aentry_results=[],
+        stran_results=[{'st_trref': 'CN0001', 'st_trvalue': -198.00,
+                        'st_trtype': 'F'}],
+    )
+    result = check_for_duplicate(
+        data_source=ds,
+        bank_code="BB005",
+        transaction_date=date(2026, 4, 16),
+        signed_amount_pounds=-198.00,
+        action="sales_refund",
+        account_code="P051",
+        description="",
+        reference="",
+    )
+    assert result.kind is DuplicateMatchKind.LEDGER_ALLOCATION_TARGET
+    assert result.matched_table == 'stran'
+    assert result.matched_entry == 'CN0001'
+
+
+def test_ledger_allocation_target_for_purchase_refund():
+    """ptran credit-note-type row matches purchase_refund amount."""
+    from sql_rag.duplicate_check import check_for_duplicate, DuplicateMatchKind
+    ds = _FakeDataSource(
+        aentry_results=[],
+        ptran_results=[{'pt_trref': 'CN9999', 'pt_trvalue': 100.00,
+                        'pt_trtype': 'F'}],
+    )
+    result = check_for_duplicate(
+        data_source=ds,
+        bank_code="BB005",
+        transaction_date=date(2026, 4, 17),
+        signed_amount_pounds=100.00,
+        action="purchase_refund",
+        account_code="SUPP1",
+        description="",
+        reference="",
+    )
+    assert result.kind is DuplicateMatchKind.LEDGER_ALLOCATION_TARGET
+    assert result.matched_table == 'ptran'
+    assert result.matched_entry == 'CN9999'
+
+
+def test_ledger_advisory_skipped_for_non_refund_actions():
+    """sales_receipt, purchase_payment, nominal_*, bank_transfer don't
+    consult the ledger — they're authoritatively decided by cashbook.
+    """
+    from sql_rag.duplicate_check import check_for_duplicate, DuplicateMatchKind
+    ds = _FakeDataSource(
+        aentry_results=[],
+        stran_results=[{'st_trref': 'X', 'st_trvalue': -50.00, 'st_trtype': 'F'}],
+    )
+    result = check_for_duplicate(
+        data_source=ds,
+        bank_code="BB005",
+        transaction_date=date(2026, 4, 16),
+        signed_amount_pounds=50.00,
+        action="sales_receipt",  # NOT a refund
+        account_code="P051",
+        description="",
+        reference="",
+    )
+    assert result.kind is DuplicateMatchKind.NONE
+
+
+def test_ledger_advisory_requires_account_code():
+    """Without account_code we can't query the ledger; result is NONE."""
+    from sql_rag.duplicate_check import check_for_duplicate, DuplicateMatchKind
+    ds = _FakeDataSource(
+        aentry_results=[],
+        stran_results=[{'st_trref': 'X', 'st_trvalue': -50.00, 'st_trtype': 'F'}],
+    )
+    result = check_for_duplicate(
+        data_source=ds,
+        bank_code="BB005",
+        transaction_date=date(2026, 4, 16),
+        signed_amount_pounds=-50.00,
+        action="sales_refund",
+        account_code=None,
+        description="",
+        reference="",
+    )
+    assert result.kind is DuplicateMatchKind.NONE
