@@ -147,3 +147,98 @@ def test_render_orders_modules_per_module_order():
     assert 0 < cb_idx < sl_idx, (
         f"cashbook should precede sales_ledger; cb={cb_idx} sl={sl_idx}"
     )
+
+
+def test_main_idempotent_on_clean_state(tmp_path):
+    """Running the regenerator twice in a row must produce no diff."""
+    src = tmp_path / "lib"
+    src.mkdir()
+    for f in FIXTURES.glob("*.json"):
+        shutil.copy(f, src)
+
+    proc1 = _run(["--library", str(src)])
+    assert proc1.returncode == 0, proc1.stderr
+    rollup1 = (src / "COMPLETE_FIELD_REFERENCE.md").read_text(encoding="utf-8")
+
+    proc2 = _run(["--library", str(src)])
+    assert proc2.returncode == 0, proc2.stderr
+    rollup2 = (src / "COMPLETE_FIELD_REFERENCE.md").read_text(encoding="utf-8")
+
+    assert rollup1 == rollup2, "regenerator is not idempotent"
+
+
+def test_check_mode_exit_1_when_stale(tmp_path):
+    """--check exits 1 if rollup is stale (existing != regenerated)."""
+    src = tmp_path / "lib"
+    src.mkdir()
+    for f in FIXTURES.glob("*.json"):
+        shutil.copy(f, src)
+    (src / "COMPLETE_FIELD_REFERENCE.md").write_text("STALE CONTENT")
+
+    proc = _run(["--library", str(src), "--check"])
+    assert proc.returncode == 1
+    assert "STALE" in (proc.stdout + proc.stderr)
+
+
+def test_check_mode_exit_0_when_current(tmp_path):
+    """--check exits 0 if existing rollup matches regenerated content."""
+    src = tmp_path / "lib"
+    src.mkdir()
+    for f in FIXTURES.glob("*.json"):
+        shutil.copy(f, src)
+
+    # Regenerate first to produce the canonical file
+    proc1 = _run(["--library", str(src)])
+    assert proc1.returncode == 0, proc1.stderr
+
+    # Then --check
+    proc2 = _run(["--library", str(src), "--check"])
+    assert proc2.returncode == 0, proc2.stdout
+    assert "OK" in proc2.stdout
+
+
+def test_deletion_reflected_in_rollup(tmp_path):
+    """Removing a snapshot JSON makes the regenerator drop it from rollup."""
+    src = tmp_path / "lib"
+    src.mkdir()
+    for f in FIXTURES.glob("*.json"):
+        shutil.copy(f, src)
+
+    proc = _run(["--library", str(src)])
+    rollup_with_all = (src / "COMPLETE_FIELD_REFERENCE.md").read_text()
+    assert "Sales Invoice (fixture)" in rollup_with_all
+
+    # Delete the sales-ledger snapshot
+    (src / "sales_ledger_invoice_20260103_140000.json").unlink()
+
+    proc2 = _run(["--library", str(src)])
+    rollup_after = (src / "COMPLETE_FIELD_REFERENCE.md").read_text()
+    assert "Sales Invoice (fixture)" not in rollup_after, (
+        "deleted snapshot still in rollup — deletion not honoured"
+    )
+
+
+def test_atomic_write_leaves_old_file_on_failure(tmp_path, monkeypatch):
+    """If the rendering raises after the rollup file exists, the old
+    rollup must remain intact (atomic_write semantics).
+    """
+    src = tmp_path / "lib"
+    src.mkdir()
+    for f in FIXTURES.glob("*.json"):
+        shutil.copy(f, src)
+
+    # First, write the rollup normally
+    proc = _run(["--library", str(src)])
+    assert proc.returncode == 0
+    original = (src / "COMPLETE_FIELD_REFERENCE.md").read_text()
+
+    # Now corrupt one fixture to force a parse failure on the next run
+    bad = src / "broken.json"
+    bad.write_text("{this is not valid json")
+
+    proc2 = _run(["--library", str(src)])
+    assert proc2.returncode == 4, "malformed JSON should exit 4"
+
+    # Old rollup must still be intact
+    after = (src / "COMPLETE_FIELD_REFERENCE.md").read_text()
+    assert after == original, "old rollup was corrupted by a failed run"
