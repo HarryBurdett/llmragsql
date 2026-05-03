@@ -7542,87 +7542,11 @@ async def scan_all_banks_for_statements(
             else:
                 stmts.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
 
-            # Filter out statements that Opera has already reconciled past.
-            # Daisy-chain from rec_bal: the next statement's opening must match
-            # rec_bal. Any statement that comes before it in the chain is done.
-            # We chain forward from rec_bal, collecting only reachable statements.
+            # Filter out statements that are already fully reconciled per
+            # check_period_reconciled — the single source of truth that
+            # combines historical-boundary match + period-aware aentry
+            # check. See sql_rag/period_reconciliation.py.
             if rec_bal is not None and len(stmts) > 0:
-                # Build lookup: opening_balance -> list of statements
-                by_opening: dict[float, list] = {}
-                no_balance = []
-                for s in stmts:
-                    ob = s.get('opening_balance')
-                    if ob is not None:
-                        key = round(ob, 2)
-                        by_opening.setdefault(key, []).append(s)
-                    else:
-                        no_balance.append(s)
-
-                # Sort helper
-                import re as _sort_re
-                def _period_sort_key(s):
-                    ps = s.get('period_start', '')
-                    if ps:
-                        return ps
-                    fn = s.get('filename', '')
-                    m = _sort_re.search(r'(\d{4}-\d{2}-\d{2})', fn)
-                    if m:
-                        return m.group(1)
-                    return '9999'
-
-                # Walk the chain from rec_bal forward
-                chained = []
-                current_bal = round(rec_bal, 2)
-                visited = set()
-                while True:
-                    candidates = by_opening.get(current_bal, [])
-                    picked = None
-                    for c in candidates:
-                        cid = id(c)
-                        if cid not in visited:
-                            picked = c
-                            visited.add(cid)
-                            break
-                    # If no match in by_opening, check no_balance for the next
-                    # statement chronologically (opening balance wasn't extracted)
-                    if picked is None and no_balance:
-                        no_balance.sort(key=_period_sort_key)
-                        picked = no_balance.pop(0)
-                        visited.add(id(picked))
-                    if picked is None:
-                        break
-                    chained.append(picked)
-                    cb = picked.get('closing_balance')
-                    if cb is None:
-                        break
-                    current_bal = round(cb, 2)
-
-                # Collect unchained statements with balances that don't connect.
-                # Two-stage filter (essential for banks whose filenames change
-                # on every download, e.g. Monzo, where we have no permanent
-                # filename-based 'reconciled' marker to compare against):
-                #
-                # 1. If the statement's closing balance matches a HISTORICAL
-                #    reconcile-batch boundary on this bank (any
-                #    aentry.ae_recbal where ae_reclnum > 0) AND that closing
-                #    is BEFORE rec_bal, the statement is from a prior closed
-                #    reconcile cycle — hide it.
-                # 2. If closing == rec_bal, it's ambiguous (could be the
-                #    in-progress reconcile or just-finished). Fall back to
-                #    period-aware aentry check: only hide if every aentry in
-                #    the statement period is reconciled.
-                # 3. Otherwise: show.
-                #
-                # The orphan-aentry case that broke the period-only check —
-                # contra pairs that don't appear on any statement and never
-                # get reconciled — is handled by stage 1: as long as the
-                # statement's closing matches a real prior batch boundary,
-                # those orphans don't matter.
-
-                # Filter out statements that are already fully reconciled per
-                # check_period_reconciled — the single source of truth that
-                # combines historical-boundary match + period-aware aentry
-                # check. See sql_rag/period_reconciliation.py.
                 from sql_rag.period_reconciliation import (
                     check_period_reconciled,
                     PeriodReconciliationStatus,
