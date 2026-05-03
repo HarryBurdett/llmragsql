@@ -3057,122 +3057,70 @@ class Opera3FoxProImport:
         date_tolerance_days: int = 1,
         signed_amount_pounds: Optional[float] = None
     ) -> Dict[str, Any]:
-        """
-        Pre-flight duplicate check before posting a transaction to Opera 3.
-
-        Checks cashbook (atran), and optionally sales/purchase ledger,
-        for an existing entry with the same date (±tolerance), amount, and account.
-
-        Args:
-            bank_account: Bank account code (e.g. 'BC010')
-            transaction_date: Date of transaction (date object or 'YYYY-MM-DD' string)
-            amount_pounds: Transaction amount in pounds (positive — magnitude only)
-            account_code: Customer/supplier/nominal code
-            account_type: 'customer', 'customer_refund', 'supplier',
-                          'supplier_refund', or 'nominal'
-            date_tolerance_days: Days either side of date to check (default 1)
-            signed_amount_pounds: Signed amount (negative for outgoing). If
-                None, derived from account_type so callers that haven't
-                migrated still get sign-aware comparisons. Comparing
-                signed values prevents +£X receipts being flagged as
-                duplicates of -£X refunds.
-
-        Returns:
-            Dict with 'is_duplicate' bool and 'details' string if found
-        """
-        from datetime import timedelta
+        """Opera 3 mirror of opera_sql_import.check_duplicate_before_posting."""
+        from datetime import date as _date_type
+        from sql_rag.duplicate_check import (
+            check_for_duplicate,
+            DuplicateMatchKind,
+        )
+        from sql_rag.duplicate_check_o3 import Opera3DataSource
 
         if isinstance(transaction_date, str):
-            txn_date = date.fromisoformat(transaction_date[:10])
+            txn_date = _date_type.fromisoformat(transaction_date[:10])
+        elif hasattr(transaction_date, 'date'):
+            txn_date = transaction_date.date()
         else:
             txn_date = transaction_date
 
-        date_from = txn_date - timedelta(days=date_tolerance_days)
-        date_to = txn_date + timedelta(days=date_tolerance_days)
-        amount_pence = int(round(amount_pounds * 100))
+        type_to_action = {
+            'customer': 'sales_receipt',
+            'customer_refund': 'sales_refund',
+            'supplier': 'purchase_payment',
+            'supplier_refund': 'purchase_refund',
+            'transfer_out': 'bank_transfer',
+            'transfer_in': 'bank_transfer',
+            'transfer': 'bank_transfer',
+            'nominal_payment': 'nominal_payment',
+            'nominal_receipt': 'nominal_receipt',
+            'nominal': 'nominal_payment',
+        }
+        action = type_to_action.get(account_type, 'nominal_payment')
 
-        # Derive signed amount if not supplied — mirrors the SE convention
-        # (see opera_sql_import.check_duplicate_before_posting).
         if signed_amount_pounds is None:
-            if account_type in ('supplier', 'customer_refund', 'nominal_payment', 'transfer_out'):
+            if account_type in ('supplier', 'customer_refund',
+                                'nominal_payment', 'transfer_out'):
                 signed_amount_pounds = -abs(amount_pounds)
-            elif account_type in ('customer', 'supplier_refund', 'nominal_receipt', 'transfer_in'):
-                signed_amount_pounds = abs(amount_pounds)
             else:
-                signed_amount_pounds = -abs(amount_pounds)
-        signed_amount_pence = int(round(signed_amount_pounds * 100))
+                signed_amount_pounds = abs(amount_pounds)
 
+        # Opera3FoxProImport doesn't keep a persistent reader; build one
+        # ad-hoc against the same data_path the importer is using.
+        from sql_rag.opera3_foxpro import Opera3Reader
+        reader = Opera3Reader(str(self.data_path), encoding=self.encoding)
+        ds = Opera3DataSource(reader)
         try:
-            # Check 1: Cashbook (atran) - amounts in PENCE.
-            # Sign-aware: a -£X payment is NOT a duplicate of a +£X
-            # receipt. Compare against signed_amount_pence.
-            atran_table = self._open_table('atran')
-            for record in atran_table:
-                if not record.at_acnt or record.at_acnt.strip() != bank_account:
-                    continue
-                rec_date = record.at_pstdate
-                if rec_date and date_from <= rec_date <= date_to:
-                    if abs(record.at_value - signed_amount_pence) < 1:
-                        entry = getattr(record, 'at_entry', '?')
-                        return {
-                            'is_duplicate': True,
-                            'location': 'cashbook',
-                            'details': f"Entry {entry} already exists in cashbook",
-                            'entry_number': str(entry)
-                        }
+            result = check_for_duplicate(
+                data_source=ds,
+                bank_code=bank_account,
+                transaction_date=txn_date,
+                signed_amount_pounds=float(signed_amount_pounds),
+                action=action,
+                account_code=account_code or None,
+                description='',
+                reference='',
+                date_tolerance_days=date_tolerance_days,
+            )
+        except ValueError as e:
+            return {'is_duplicate': False, 'details': f"unknown action_type {account_type!r}: {e}"}
 
-            # Check 2: Sales Ledger — type-specific AND sign-aware. customer
-            # → st_trtype='R', customer_refund → 'F'. Rows of the wrong
-            # type are allocation targets, not duplicates.
-            stran_type_for_account = {'customer': 'R', 'customer_refund': 'F'}
-            if account_type in stran_type_for_account and account_code:
-                st_type = stran_type_for_account[account_type]
-                stran_table = self._open_table('stran')
-                for record in stran_table:
-                    if not record.st_account or record.st_account.strip() != account_code:
-                        continue
-                    if (getattr(record, 'st_trtype', '') or '').strip() != st_type:
-                        continue
-                    rec_date = record.st_trdate
-                    if rec_date and date_from <= rec_date <= date_to:
-                        if abs(record.st_trvalue - signed_amount_pounds) < 0.01:
-                            ref = (getattr(record, 'st_trref', '') or '').strip()
-                            return {
-                                'is_duplicate': True,
-                                'location': 'sales_ledger',
-                                'details': f"Receipt already exists in sales ledger for {account_code} (ref: {ref})",
-                                'entry_number': ref
-                            }
-
-            # Check 3: Purchase Ledger — type-specific. supplier →
-            # pt_trtype='P', supplier_refund → 'F'. See Check 2 rationale.
-            ptran_type_for_account = {'supplier': 'P', 'supplier_refund': 'F'}
-            if account_type in ptran_type_for_account and account_code:
-                pt_type = ptran_type_for_account[account_type]
-                ptran_table = self._open_table('ptran')
-                for record in ptran_table:
-                    if not record.pt_account or record.pt_account.strip() != account_code:
-                        continue
-                    if (getattr(record, 'pt_trtype', '') or '').strip() != pt_type:
-                        continue
-                    rec_date = record.pt_trdate
-                    if rec_date and date_from <= rec_date <= date_to:
-                        if abs(record.pt_trvalue - signed_amount_pounds) < 0.01:
-                            ref = (getattr(record, 'pt_trref', '') or '').strip()
-                            return {
-                                'is_duplicate': True,
-                                'location': 'purchase_ledger',
-                                'details': f"Payment already exists in purchase ledger for {account_code} (ref: {ref})",
-                                'entry_number': ref
-                            }
-
-            return {'is_duplicate': False, 'details': ''}
-
-        except Exception as e:
-            logger.error(f"Error in pre-posting duplicate check: {e}")
-            return {'is_duplicate': False, 'details': ''}
-        finally:
-            self._close_all_tables()
+        if result.kind is DuplicateMatchKind.CASHBOOK_DUPLICATE:
+            return {
+                'is_duplicate': True,
+                'location': 'cashbook',
+                'details': result.reason,
+                'entry_number': result.matched_entry,
+            }
+        return {'is_duplicate': False, 'details': result.reason}
 
     def import_gocardless_batch(
         self,

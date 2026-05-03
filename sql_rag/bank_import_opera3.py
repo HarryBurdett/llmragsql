@@ -1056,160 +1056,39 @@ class BankStatementMatcherOpera3:
         return transactions
 
     def _is_already_posted(self, txn: BankTransaction, bank_code: str = "") -> Tuple[bool, str]:
+        """Opera 3 mirror of bank_import._is_already_posted — delegates
+        to the same check_for_duplicate function, just with a FoxPro
+        DataSource instead of SQL.
         """
-        Check if transaction has already been posted to Opera 3.
+        from sql_rag.duplicate_check import (
+            check_for_duplicate,
+            DuplicateMatchKind,
+        )
+        from sql_rag.duplicate_check_o3 import Opera3DataSource
 
-        Checks multiple tables to prevent duplicates:
-        1. atran (cashbook) - bank account transactions
-        2. ptran (purchase ledger) - for supplier payments
-        3. stran (sales ledger) - for customer receipts
+        if not txn.action or txn.action in ('skip',):
+            return False, ""
 
-        Args:
-            txn: Transaction to check
-            bank_code: Bank account code
-
-        Returns:
-            Tuple of (is_posted, reason) where reason explains where duplicate was found
-        """
-        amount_pence = int(round(txn.abs_amount * 100))
-
-        def dates_within_tolerance(db_date, txn_date, tolerance_days=14) -> bool:
-            """Compare dates with ±N day tolerance to catch transactions posted on different dates."""
-            if db_date is None or txn_date is None:
-                return False
-            from datetime import date as date_type, timedelta
-            # Convert db_date to a date object
-            if isinstance(db_date, str):
-                try:
-                    db_dt = date_type.fromisoformat(db_date[:10])
-                except (ValueError, TypeError):
-                    return False
-            elif hasattr(db_date, 'date'):
-                db_dt = db_date.date()
-            elif isinstance(db_date, date_type):
-                db_dt = db_date
-            else:
-                return False
-            # Convert txn_date
-            if isinstance(txn_date, str):
-                try:
-                    txn_dt = date_type.fromisoformat(txn_date[:10])
-                except (ValueError, TypeError):
-                    return False
-            elif hasattr(txn_date, 'date'):
-                txn_dt = txn_date.date()
-            elif isinstance(txn_date, date_type):
-                txn_dt = txn_date
-            else:
-                return False
-            return abs((db_dt - txn_dt).days) <= tolerance_days
-
+        ds = Opera3DataSource(self.reader)
         try:
-            # Check 0: Bank transfer — at_type=8, same amount + date on this bank
-            if txn.action == 'bank_transfer':
-                atran_records_bt = self.reader.read_table("atran")
-                for record in atran_records_bt:
-                    at_acnt = record.get('AT_ACNT', record.get('at_acnt', '')).strip()
-                    at_type = int(record.get('AT_TYPE', record.get('at_type', 0)) or 0)
-                    at_pstdate = record.get('AT_PSTDATE', record.get('at_pstdate'))
-                    at_value = record.get('AT_VALUE', record.get('at_value', 0))
-                    if (at_acnt == bank_code and at_type == 8 and
-                        dates_within_tolerance(at_pstdate, txn.date) and
-                        abs(abs(at_value) - amount_pence) < 1):
-                        txn.is_duplicate = True
-                        return True, "Already in cashbook (bank transfer)"
+            result = check_for_duplicate(
+                data_source=ds,
+                bank_code=bank_code or self.bank_code,
+                transaction_date=txn.date,
+                signed_amount_pounds=float(txn.amount),
+                action=txn.action,
+                account_code=getattr(txn, 'matched_account', None) or '',
+                description=getattr(txn, 'name', '') or '',
+                reference=getattr(txn, 'reference', '') or '',
+            )
+        except ValueError:
+            return False, ""
 
-            # Check 1: Cashbook — use aentry (header total) not atran (nominal splits)
-            # First try description match, then amount + date only (catches Opera-entered transactions)
-            txn_comment = (txn.name or '').strip()[:15].lower()
-            aentry_records = self.reader.read_table("aentry")
-            matched_entry_ref = None
-            comment_match = False
-            amount_date_match = False
-            for record in aentry_records:
-                ae_acnt = record.get('AE_ACNT', record.get('ae_acnt', '')).strip()
-                ae_lstdate = record.get('AE_LSTDATE', record.get('ae_lstdate'))
-                ae_value = record.get('AE_VALUE', record.get('ae_value', 0))
-                ae_comment = record.get('AE_COMMENT', record.get('ae_comment', '')).strip()[:15].lower()
-                ae_entry = record.get('AE_ENTRY', record.get('ae_entry', '')).strip()
-                if (ae_acnt == bank_code and
-                    dates_within_tolerance(ae_lstdate, txn.date) and
-                    abs(abs(ae_value) - amount_pence) < 1):
-                    matched_entry_ref = ae_entry
-                    if ae_comment == txn_comment or not txn_comment:
-                        comment_match = True
-                        break
-                    amount_date_match = True
-
-            if comment_match and matched_entry_ref:
-                txn.is_duplicate = True
-                from sql_rag.bank_duplicates import DuplicateCandidate
-                txn.duplicate_candidates.append(DuplicateCandidate(
-                    table='aentry', record_id=matched_entry_ref,
-                    match_type='fallback_comment', confidence=0.95,
-                    details={'ae_entry': matched_entry_ref}
-                ))
-                return True, "Already in cashbook"
-
-            if amount_date_match and matched_entry_ref:
-                txn.is_duplicate = True
-                from sql_rag.bank_duplicates import DuplicateCandidate
-                txn.duplicate_candidates.append(DuplicateCandidate(
-                    table='aentry', record_id=matched_entry_ref,
-                    match_type='fallback_amount_date', confidence=0.9,
-                    details={'ae_entry': matched_entry_ref}
-                ))
-                return True, "Already in cashbook (amount + date match)"
-
-            # Check 2: Purchase Ledger (ptran) — type-specific AND sign-aware.
-            # purchase_payment looks for pt_trtype='P', purchase_refund for
-            # pt_trtype='F'. Rows of the wrong type are allocation targets,
-            # not duplicates (e.g. an unallocated credit note awaiting the
-            # refund payment).
-            signed_amount = float(txn.amount)
-            ptran_type_for_action = {'purchase_payment': 'P', 'purchase_refund': 'F'}
-            if txn.action in ptran_type_for_action and txn.matched_account:
-                pt_type = ptran_type_for_action[txn.action]
-                ptran_records = self.reader.read_table("ptran")
-                for record in ptran_records:
-                    pt_account = record.get('PT_ACCOUNT', record.get('pt_account', '')).strip()
-                    pt_trdate = record.get('PT_TRDATE', record.get('pt_trdate'))
-                    pt_trvalue = record.get('PT_TRVALUE', record.get('pt_trvalue', 0))
-                    pt_trtype = (record.get('PT_TRTYPE', record.get('pt_trtype', '')) or '').strip()
-                    pt_trref = (record.get('PT_TRREF', record.get('pt_trref', '')) or '').strip()
-                    if (pt_account == txn.matched_account and
-                        dates_within_tolerance(pt_trdate, txn.date) and
-                        abs(pt_trvalue - signed_amount) < 0.01 and
-                        pt_trtype == pt_type):
-                        txn.is_duplicate = True
-                        return True, f"Already in purchase ledger (ptran) for {txn.matched_account} (ref: {pt_trref})"
-
-            # Check 3: Sales Ledger (stran) — type-specific. sales_receipt
-            # looks for st_trtype='R', sales_refund for st_trtype='F'.
-            # See Check 2 rationale.
-            stran_type_for_action = {'sales_receipt': 'R', 'sales_refund': 'F'}
-            if txn.action in stran_type_for_action and txn.matched_account:
-                st_type = stran_type_for_action[txn.action]
-                stran_records = self.reader.read_table("stran")
-                for record in stran_records:
-                    st_account = record.get('ST_ACCOUNT', record.get('st_account', '')).strip()
-                    st_trdate = record.get('ST_TRDATE', record.get('st_trdate'))
-                    st_trvalue = record.get('ST_TRVALUE', record.get('st_trvalue', 0))
-                    st_trtype = (record.get('ST_TRTYPE', record.get('st_trtype', '')) or '').strip()
-                    st_trref = (record.get('ST_TRREF', record.get('st_trref', '')) or '').strip()
-                    if (st_account == txn.matched_account and
-                        dates_within_tolerance(st_trdate, txn.date) and
-                        abs(st_trvalue - signed_amount) < 0.01 and
-                        st_trtype == st_type):
-                        txn.is_duplicate = True
-                        return True, f"Already in sales ledger (stran) for {txn.matched_account} (ref: {st_trref})"
-
-        except FileNotFoundError:
-            # If table doesn't exist, can't be a duplicate
-            pass
-        except Exception as e:
-            logger.warning(f"Error checking for duplicates: {e}")
-
+        if result.kind is DuplicateMatchKind.CASHBOOK_DUPLICATE:
+            txn.is_duplicate = True
+            return True, result.reason
+        if result.kind is DuplicateMatchKind.LEDGER_ALLOCATION_TARGET:
+            return False, f"allocation target: {result.reason}"
         return False, ""
 
     def process_transactions(self, transactions: List[BankTransaction],

@@ -502,3 +502,20 @@ def test_bank_duplicates_exact_path_uses_signed_comparison():
     # NOT ABS-on-ABS
     assert "ABS(ABS(at_value)" not in src, \
         "Sign-blind ABS regression in bank_duplicates.py exact path"
+
+
+def test_opera3_bank_import_uses_check_for_duplicate():
+    from pathlib import Path
+    f = Path(__file__).resolve().parent.parent / "sql_rag" / "bank_import_opera3.py"
+    src = f.read_text(encoding='utf-8')
+    assert "check_for_duplicate" in src, \
+        "Opera 3 _is_already_posted should delegate"
+    assert "ABS(ABS(" not in src.replace("ABS(ABS()", "")  # noqa: helper for grep
+
+
+def test_opera3_foxpro_import_uses_check_for_duplicate():
+    from pathlib import Path
+    f = Path(__file__).resolve().parent.parent / "sql_rag" / "opera3_foxpro_import.py"
+    src = f.read_text(encoding='utf-8')
+    assert "check_for_duplicate" in src, \
+        "Opera 3 check_duplicate_before_posting should delegate"
