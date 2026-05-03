@@ -7600,15 +7600,51 @@ async def scan_all_banks_for_statements(
                         break
                     current_bal = round(cb, 2)
 
-                # Collect unchained statements with balances that don't connect
-                # Filter out any whose closing balance matches rec_bal (already done)
+                # Collect unchained statements with balances that don't connect.
+                # Previously we filtered any whose closing equals rec_bal as
+                # "already done" — but that's the same too-eager balance-only
+                # heuristic that bit the auto-promote logic. A statement's
+                # closing can equal nk_recbal because Opera was bumped to
+                # that closing during a *partial* reconcile attempt; it does
+                # NOT mean every aentry on the statement is reconciled.
+                # Apply the same period-aware check: only skip if every
+                # aentry in the statement period for this bank is actually
+                # reconciled (ae_reclnum > 0). Conservative default if we
+                # can't verify (no period info / SQL error): keep visible.
                 unchained = []
                 for bal_list in by_opening.values():
                     for s in bal_list:
                         if id(s) not in visited:
                             cb = s.get('closing_balance')
-                            # Skip if closing equals rec_bal — this was the last reconciled statement
-                            if cb is not None and abs(cb - rec_bal) < 0.01:
+                            if cb is None or abs(cb - rec_bal) >= 0.01:
+                                unchained.append(s)
+                                continue
+                            # closing matches rec_bal — verify it's truly done
+                            ps = s.get('period_start')
+                            pe = s.get('period_end')
+                            unrec = -1  # default: don't skip without verification
+                            if ps and pe and sql_connector:
+                                try:
+                                    df = sql_connector.execute_query(f"""
+                                        SELECT COUNT(*) AS n
+                                        FROM aentry WITH (NOLOCK)
+                                        WHERE ae_acnt = '{code}'
+                                        AND ae_lstdate BETWEEN '{ps}' AND '{pe}'
+                                        AND (ae_reclnum IS NULL OR ae_reclnum = 0)
+                                    """)
+                                    unrec = int(df.iloc[0]['n']) if df is not None and not df.empty else -1
+                                except Exception as _ck:
+                                    logger.warning(
+                                        f"Step 5 chain: could not verify period reconciliation for "
+                                        f"{s.get('filename','?')} ({code} {ps}..{pe}): {_ck}"
+                                    )
+                                    unrec = -1
+                            if unrec == 0:
+                                # Genuinely fully reconciled — skip
+                                logger.info(
+                                    f"Step 5 chain: skipping {s.get('filename','?')} — "
+                                    f"closing matches rec_bal AND all aentry reconciled"
+                                )
                                 continue
                             unchained.append(s)
                 unchained.sort(key=_period_sort_key)
