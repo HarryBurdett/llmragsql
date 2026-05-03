@@ -7619,81 +7619,64 @@ async def scan_all_banks_for_statements(
                 # statement's closing matches a real prior batch boundary,
                 # those orphans don't matter.
 
-                # Pre-compute historical batch boundary balances for this bank
-                hist_recbals: set = set()
-                if sql_connector:
-                    try:
-                        rb_df = sql_connector.execute_query(f"""
-                            SELECT DISTINCT ae_recbal
-                            FROM aentry WITH (NOLOCK)
-                            WHERE ae_acnt = '{code}' AND ae_reclnum > 0
-                              AND ae_recbal IS NOT NULL
-                        """)
-                        if rb_df is not None and not rb_df.empty:
-                            hist_recbals = {
-                                round(float(v) / 100.0, 2)
-                                for v in rb_df['ae_recbal']
-                                if v is not None
-                            }
-                    except Exception as _hr:
-                        logger.warning(
-                            f"Step 5 chain: could not load historical recbals for {code}: {_hr}"
-                        )
+                # Filter out statements that are already fully reconciled per
+                # check_period_reconciled — the single source of truth that
+                # combines historical-boundary match + period-aware aentry
+                # check. See sql_rag/period_reconciliation.py.
+                from sql_rag.period_reconciliation import (
+                    check_period_reconciled,
+                    PeriodReconciliationStatus,
+                )
+                from sql_rag.period_reconciliation_se import OperaSEDataSource
+                from datetime import date as _date_type, datetime as _dt
 
-                rec_bal_r = round(rec_bal, 2)
+                ds = OperaSEDataSource(sql_connector) if sql_connector else None
+
+                def _to_date(v):
+                    if v is None:
+                        return None
+                    if isinstance(v, _date_type) and not isinstance(v, _dt):
+                        return v
+                    if isinstance(v, _dt):
+                        return v.date()
+                    if isinstance(v, str):
+                        try:
+                            return _dt.fromisoformat(v.replace('Z', '+00:00')).date()
+                        except ValueError:
+                            try:
+                                return _date_type.fromisoformat(v[:10])
+                            except ValueError:
+                                return None
+                    return None
+
+                chained = []
                 unchained = []
-                for bal_list in by_opening.values():
-                    for s in bal_list:
-                        if id(s) in visited:
-                            continue
-                        cb = s.get('closing_balance')
-                        if cb is None:
-                            unchained.append(s)
-                            continue
-                        cb_r = round(float(cb), 2)
-
-                        # Stage 1: prior closed reconcile cycle
-                        if cb_r < rec_bal_r and cb_r in hist_recbals:
-                            logger.info(
-                                f"Step 5 chain: skipping {s.get('filename','?')} — "
-                                f"closing £{cb_r} matches a prior reconciled boundary "
-                                f"(< current rec_bal £{rec_bal_r})"
-                            )
-                            continue
-
-                        # Stage 2: closing matches current rec_bal — ambiguous
-                        if abs(cb_r - rec_bal_r) < 0.01:
-                            ps = s.get('period_start')
-                            pe = s.get('period_end')
-                            unrec = -1  # conservative: keep visible if we can't verify
-                            if ps and pe and sql_connector:
-                                try:
-                                    df = sql_connector.execute_query(f"""
-                                        SELECT COUNT(*) AS n
-                                        FROM aentry WITH (NOLOCK)
-                                        WHERE ae_acnt = '{code}'
-                                        AND ae_lstdate BETWEEN '{ps}' AND '{pe}'
-                                        AND (ae_reclnum IS NULL OR ae_reclnum = 0)
-                                    """)
-                                    unrec = int(df.iloc[0]['n']) if df is not None and not df.empty else -1
-                                except Exception as _ck:
-                                    logger.warning(
-                                        f"Step 5 chain: could not verify period reconciliation for "
-                                        f"{s.get('filename','?')} ({code} {ps}..{pe}): {_ck}"
-                                    )
-                            if unrec == 0:
-                                logger.info(
-                                    f"Step 5 chain: skipping {s.get('filename','?')} — "
-                                    f"closing matches rec_bal AND all aentry in period are reconciled"
-                                )
-                                continue
-
-                        # Stage 3: show
+                for s in stmts:
+                    if ds is None or rec_bal is None:
                         unchained.append(s)
-                unchained.sort(key=_period_sort_key)
-                no_balance.sort(key=_period_sort_key)
-                stmts = chained + unchained + no_balance
-                logger.info(f"Step 5 chain: {code} chained={len(chained)} unchained={len(unchained)} no_balance={len(no_balance)} total={len(stmts)}")
+                        continue
+                    result = check_period_reconciled(
+                        data_source=ds,
+                        bank_code=code,
+                        period_start=_to_date(s.get('period_start')),
+                        period_end=_to_date(s.get('period_end')),
+                        statement_closing=s.get('closing_balance'),
+                        current_rec_bal=rec_bal,
+                    )
+                    if result.status is PeriodReconciliationStatus.FULLY_RECONCILED:
+                        chained.append(s)  # done — will be filtered out below
+                        logger.info(
+                            f"Step 5 chain: filtering {s.get('filename','?')} — "
+                            f"{result.reason}"
+                        )
+                    else:
+                        unchained.append(s)
+
+                # `chained` is the set we hide; `unchained` we keep
+                stmts = unchained
+                logger.info(
+                    f"Step 5 chain: {code} chained={len(chained)} unchained={len(unchained)}"
+                )
 
             bank['statements'] = stmts
             logger.info(f"Step 5 final: {code} = {len(stmts)} statements")

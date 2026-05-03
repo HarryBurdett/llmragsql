@@ -390,3 +390,34 @@ def test_imported_for_reconciliation_uses_function():
         f"Expected ≥2 call sites of check_period_reconciled; found {n}. "
         "imported-for-reconciliation must also delegate."
     )
+
+
+def test_step_5_chain_filter_uses_function():
+    """The Step 5 chain filter must also delegate the
+    'is this period reconciled?' question to the function.
+    """
+    from pathlib import Path
+    routes_path = Path(__file__).resolve().parent.parent / "apps" / "bank_reconcile" / "api" / "routes.py"
+    src = routes_path.read_text(encoding='utf-8')
+
+    # After this task, ≥3 call sites total
+    n = src.count("check_period_reconciled(")
+    assert n >= 3, (
+        f"Expected ≥3 call sites of check_period_reconciled; found {n}. "
+        "Step 5 chain filter must also delegate."
+    )
+
+    # The chain section's inline historical-recbals query must be gone
+    chain_start = src.find("# Pre-compute historical batch boundary balances for this bank")
+    if chain_start == -1:
+        chain_start = src.find("Step 5 chain")
+    assert chain_start != -1, "Step 5 chain section must be findable"
+
+    chain_end = src.find("bank['statements'] = stmts", chain_start)
+    if chain_end == -1:
+        chain_end = chain_start + 5000
+    section = src[chain_start:chain_end]
+    assert "SELECT DISTINCT ae_recbal" not in section, (
+        "Step 5 chain section should no longer issue its own historical-"
+        "recbals query — delegate to check_period_reconciled"
+    )
