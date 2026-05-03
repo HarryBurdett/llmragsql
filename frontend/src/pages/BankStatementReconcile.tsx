@@ -1750,9 +1750,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             statement_transactions: statementTransactions,
             // Period bounds enforce in-period matching — out-of-period
             // aentries cannot pair with this statement, preventing the
-            // tmpstat-on-wrong-row class of bug.
-            period_start: importedStatementData?.period_start ?? null,
-            period_end: importedStatementData?.period_end ?? null,
+            // tmpstat-on-wrong-row class of bug. The bounds live under
+            // `statement_info` on this data structure, not at the top
+            // level (initial plan had this path wrong; fixed here so
+            // we don't always send null and force the backend onto its
+            // import_id-fallback path).
+            period_start: importedStatementData?.statement_info?.period_start ?? null,
+            period_end: importedStatementData?.statement_info?.period_end ?? null,
           }),
         }
       );
