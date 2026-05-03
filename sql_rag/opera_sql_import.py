@@ -11612,7 +11612,7 @@ class PurchaseInvoiceFileImport:
             # VALIDATE CUSTOMER
             # =====================
             customer_check = self.sql.execute_query(f"""
-                SELECT sn_account, sn_name, sn_addr1, sn_addr2, sn_addr3, sn_addr4, sn_postcode
+                SELECT sn_account, sn_name, sn_addr1, sn_addr2, sn_addr3, sn_addr4, sn_pstcode
                 FROM sname WITH (NOLOCK)
                 WHERE RTRIM(sn_account) = '{customer_account}'
             """)
@@ -11631,7 +11631,7 @@ class PurchaseInvoiceFileImport:
             cust_addr2 = str(cust['sn_addr2'] or '').strip()[:35]
             cust_addr3 = str(cust['sn_addr3'] or '').strip()[:35]
             cust_addr4 = str(cust['sn_addr4'] or '').strip()[:35]
-            cust_postcode = str(cust['sn_postcode'] or '').strip()[:10]
+            cust_postcode = str(cust['sn_pstcode'] or '').strip()[:10]
 
             # =====================
             # VALIDATE WAREHOUSE
@@ -11991,7 +11991,7 @@ class PurchaseInvoiceFileImport:
             # VALIDATE CUSTOMER
             # =====================
             customer_check = self.sql.execute_query(f"""
-                SELECT sn_account, sn_name, sn_addr1, sn_addr2, sn_addr3, sn_addr4, sn_postcode
+                SELECT sn_account, sn_name, sn_addr1, sn_addr2, sn_addr3, sn_addr4, sn_pstcode
                 FROM sname WITH (NOLOCK)
                 WHERE RTRIM(sn_account) = '{customer_account}'
             """)
@@ -12010,7 +12010,7 @@ class PurchaseInvoiceFileImport:
             cust_addr2 = str(cust['sn_addr2'] or '').strip()[:35]
             cust_addr3 = str(cust['sn_addr3'] or '').strip()[:35]
             cust_addr4 = str(cust['sn_addr4'] or '').strip()[:35]
-            cust_postcode = str(cust['sn_postcode'] or '').strip()[:10]
+            cust_postcode = str(cust['sn_pstcode'] or '').strip()[:10]
 
             # =====================
             # VALIDATE WAREHOUSE
