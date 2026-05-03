@@ -277,3 +277,17 @@ def test_unknown_when_unreconciled_query_fails_at_recbal_boundary():
     )
     assert result.status is PeriodReconciliationStatus.UNKNOWN
     assert "timeout" in result.reason
+
+
+def test_se_datasource_construction_and_protocol():
+    """OperaSEDataSource exists, takes a SQLConnector, satisfies the protocol."""
+    from sql_rag.period_reconciliation_se import OperaSEDataSource
+
+    # We don't need a real connector for this test — just check the
+    # class exists, takes the connector, and exposes the protocol methods.
+    class _StubConnector:
+        def execute_query(self, q):
+            raise NotImplementedError
+    ds = OperaSEDataSource(_StubConnector())
+    assert hasattr(ds, 'query_historical_recbals')
+    assert hasattr(ds, 'query_unreconciled_in_period')
