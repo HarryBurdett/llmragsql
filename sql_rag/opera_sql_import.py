@@ -12577,13 +12577,13 @@ class PurchaseInvoiceFileImport:
 
                     # ----- 3a. ISSUE STOCK (if applicable) -----
                     if issue_stock and stock_ref and sop_params.get('update_transactions', True):
-                        # Get product's sales nominal account
-                        prod_check = conn.execute(text(f"""
-                            SELECT cn_salesac FROM cname WITH (NOLOCK)
-                            WHERE RTRIM(cn_ref) = '{stock_ref}'
-                        """)).fetchone()
-
-                        sales_nominal = str(prod_check[0]).strip() if prod_check and prod_check[0] else 'E1000'
+                        # TODO: Resolve product sales nominal from cn_anal via
+                        # sprfls/cprfls profile lookup. cname does not store a
+                        # direct sales-account column — the previous
+                        # `SELECT cn_salesac FROM cname` always raised and we
+                        # fell back to the default. Until the proper resolver
+                        # is wired up, use the company default sales nominal.
+                        sales_nominal = 'E1000'
 
                         # Create ctran record (stock issue)
                         ctran_unique = OperaUniqueIdGenerator.generate()
@@ -12918,14 +12918,12 @@ class PurchaseInvoiceFileImport:
 
         Returns dict with:
         - vat_input_account: Nominal account for VAT input
-          (resolved from ztax via _get_any_vat_nominal())
-        - default_currency: Default currency code (blank = GBP home)
+          (resolved via the active P-type VAT mapping helper).
+        - default_currency: Default currency code (blank = GBP home).
 
-        pparm has no direct VAT-input-nominal or default-currency
-        columns; previous attempts to read pp_vatpnom / pp_fcurr
-        always raised. The home currency is implied by blank fcurr
-        on transactional tables, and the VAT input nominal is sourced
-        from the ztax mapping for the active P-type VAT codes.
+        pparm does not expose direct VAT-input-nominal or default-
+        currency columns, so we resolve the VAT nominal via the
+        helper and assume the home currency for the default.
         """
         return {
             'vat_input_account': self._get_any_vat_nominal(),
