@@ -1700,7 +1700,14 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ statement_transactions: statementTransactions })
+          body: JSON.stringify({
+            statement_transactions: statementTransactions,
+            // Period bounds enforce in-period matching — out-of-period
+            // aentries cannot pair with this statement, preventing the
+            // tmpstat-on-wrong-row class of bug.
+            period_start: importedStatementData?.period_start ?? null,
+            period_end: importedStatementData?.period_end ?? null,
+          }),
         }
       );
 
