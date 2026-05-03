@@ -7601,28 +7601,74 @@ async def scan_all_banks_for_statements(
                     current_bal = round(cb, 2)
 
                 # Collect unchained statements with balances that don't connect.
-                # Previously we filtered any whose closing equals rec_bal as
-                # "already done" — but that's the same too-eager balance-only
-                # heuristic that bit the auto-promote logic. A statement's
-                # closing can equal nk_recbal because Opera was bumped to
-                # that closing during a *partial* reconcile attempt; it does
-                # NOT mean every aentry on the statement is reconciled.
-                # Apply the same period-aware check: only skip if every
-                # aentry in the statement period for this bank is actually
-                # reconciled (ae_reclnum > 0). Conservative default if we
-                # can't verify (no period info / SQL error): keep visible.
+                # Two-stage filter (essential for banks whose filenames change
+                # on every download, e.g. Monzo, where we have no permanent
+                # filename-based 'reconciled' marker to compare against):
+                #
+                # 1. If the statement's closing balance matches a HISTORICAL
+                #    reconcile-batch boundary on this bank (any
+                #    aentry.ae_recbal where ae_reclnum > 0) AND that closing
+                #    is BEFORE rec_bal, the statement is from a prior closed
+                #    reconcile cycle — hide it.
+                # 2. If closing == rec_bal, it's ambiguous (could be the
+                #    in-progress reconcile or just-finished). Fall back to
+                #    period-aware aentry check: only hide if every aentry in
+                #    the statement period is reconciled.
+                # 3. Otherwise: show.
+                #
+                # The orphan-aentry case that broke the period-only check —
+                # contra pairs that don't appear on any statement and never
+                # get reconciled — is handled by stage 1: as long as the
+                # statement's closing matches a real prior batch boundary,
+                # those orphans don't matter.
+
+                # Pre-compute historical batch boundary balances for this bank
+                hist_recbals: set = set()
+                if sql_connector:
+                    try:
+                        rb_df = sql_connector.execute_query(f"""
+                            SELECT DISTINCT ae_recbal
+                            FROM aentry WITH (NOLOCK)
+                            WHERE ae_acnt = '{code}' AND ae_reclnum > 0
+                              AND ae_recbal IS NOT NULL
+                        """)
+                        if rb_df is not None and not rb_df.empty:
+                            hist_recbals = {
+                                round(float(v) / 100.0, 2)
+                                for v in rb_df['ae_recbal']
+                                if v is not None
+                            }
+                    except Exception as _hr:
+                        logger.warning(
+                            f"Step 5 chain: could not load historical recbals for {code}: {_hr}"
+                        )
+
+                rec_bal_r = round(rec_bal, 2)
                 unchained = []
                 for bal_list in by_opening.values():
                     for s in bal_list:
-                        if id(s) not in visited:
-                            cb = s.get('closing_balance')
-                            if cb is None or abs(cb - rec_bal) >= 0.01:
-                                unchained.append(s)
-                                continue
-                            # closing matches rec_bal — verify it's truly done
+                        if id(s) in visited:
+                            continue
+                        cb = s.get('closing_balance')
+                        if cb is None:
+                            unchained.append(s)
+                            continue
+                        cb_r = round(float(cb), 2)
+
+                        # Stage 1: prior closed reconcile cycle
+                        if cb_r < rec_bal_r and cb_r in hist_recbals:
+                            logger.info(
+                                f"Step 5 chain: skipping {s.get('filename','?')} — "
+                                f"closing £{cb_r} matches a prior reconciled boundary "
+                                f"(< current rec_bal £{rec_bal_r})"
+                            )
+                            continue
+
+                        # Stage 2: closing matches current rec_bal — ambiguous
+                        if abs(cb_r - rec_bal_r) < 0.01:
                             ps = s.get('period_start')
                             pe = s.get('period_end')
-                            unrec = -1  # default: don't skip without verification
+                            unrec = -1  # conservative: keep visible if we can't verify
                             if ps and pe and sql_connector:
                                 try:
                                     df = sql_connector.execute_query(f"""
@@ -7638,15 +7684,15 @@ async def scan_all_banks_for_statements(
                                         f"Step 5 chain: could not verify period reconciliation for "
                                         f"{s.get('filename','?')} ({code} {ps}..{pe}): {_ck}"
                                     )
-                                    unrec = -1
                             if unrec == 0:
-                                # Genuinely fully reconciled — skip
                                 logger.info(
                                     f"Step 5 chain: skipping {s.get('filename','?')} — "
-                                    f"closing matches rec_bal AND all aentry reconciled"
+                                    f"closing matches rec_bal AND all aentry in period are reconciled"
                                 )
                                 continue
-                            unchained.append(s)
+
+                        # Stage 3: show
+                        unchained.append(s)
                 unchained.sort(key=_period_sort_key)
                 no_balance.sort(key=_period_sort_key)
                 stmts = chained + unchained + no_balance
