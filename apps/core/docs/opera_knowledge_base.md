@@ -2200,3 +2200,17 @@ The `/api/bank-reconciliation/match-statement` endpoint passes period bounds; th
 The complete-reconciliation handler (`/api/bank-reconciliation/complete`) re-validates each entry's `ae_lstdate` against the period before applying any `ae_tmpstat` write. Out-of-period entries cause a structured 200 response with `success=false` and an `out_of_period` array — the frontend surfaces this as a modal listing each offender's date and the period bounds.
 
 Orphan tmpstat reservations (entries with `ae_tmpstat > 0 AND ae_reclnum = 0` from prior partial-reconcile attempts that didn't finalise) can be listed via `GET /api/reconcile/bank/{bank_code}/orphan-tmpstat` and cleared via `POST /api/reconcile/bank/{bank_code}/clear-orphan-tmpstat`. Clears use ROWLOCK and only touch `ae_tmpstat` — committed reconciliations (`ae_reclnum > 0`) are never affected.
+
+
+## SQL Schema Validator (CI gate)
+
+`scripts/validate_sql_columns.py` runs in CI (and as a pre-commit hook) and refuses any commit that introduces a SQL column reference not present in `scripts/opera_snapshot.json`. Closes the silent-typo bug class (`pt_ref`, `st_ref`, `at_date`, `nk_lstdate`, etc.) that pyodbc swallowed as warnings.
+
+**False-positive suppressions:** `scripts/sql_validator_suppressions.yaml` is the authoritative list. Each suppression carries `file`, `line`, `column`, `reason`, `added`, `added_by`. Adding a suppression IS a code-review step; don't try to bulk-silence findings — the YAML refuses to parse if any suppression is missing required keys.
+
+**When the validator flags something new in CI:**
+1. Run `python scripts/validate_sql_columns.py --suggest` locally to see "did you mean…" suggestions.
+2. If the column genuinely doesn't exist in Opera (typo), fix it in the code.
+3. If the identifier is a Python variable that just matches the column-shape regex, add a suppression with a specific reason.
+
+**Refreshing the snapshot:** the validator reads `scripts/opera_snapshot.json` — re-run `scripts/snapshot_opera_schema.py` if Opera schema changes (rare). The snapshot is committed to git so CI uses a deterministic version.
