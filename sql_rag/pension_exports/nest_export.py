@@ -129,7 +129,7 @@ class NestExport:
             w.wn_addrs2,
             w.wn_addrs3,
             w.wn_pstcde,
-            w.wn_gender
+            w.wn_sex
         FROM wepen e
         JOIN wname w ON e.wep_ref = w.wn_ref
         WHERE e.wep_code = '{self.SCHEME_CODE}'
