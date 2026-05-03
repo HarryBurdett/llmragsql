@@ -1894,7 +1894,7 @@ class OperaSQLImport:
 
         return f"""
             INSERT INTO ntran (
-                nt_account, nt_date, nt_ref, nt_details, nt_value,
+                nt_acnt, nt_entr, nt_ref, nt_cmnt, nt_value,
                 nt_type, nt_year, nt_period
             ) VALUES (
                 '{journal['account']}',
