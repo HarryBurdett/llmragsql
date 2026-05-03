@@ -89,6 +89,19 @@ COL_FALSE_POSITIVES = {
 # Prefixes that are NOT Opera but match the column-shaped regex. These
 # typically belong to SQL Server DMVs (sys.dm_*), PostgreSQL system
 # catalogs (pg_*), application-local SQLite tables, or Python locals.
+#
+# Triage policy (2026-05-03): each prefix added MUST have ZERO columns
+# in scripts/opera_snapshot.json. If a prefix is used by ANY Opera table
+# (even a small one like zcodat for co_), do NOT add it — adding it
+# would mask real-typo bugs in queries against that table. For those
+# cases use per-line suppressions in scripts/sql_validator_suppressions.yaml.
+#
+# Note: the existing entries below pre-date this policy and DO mask
+# some Opera columns (dm→dmaddr/dmcomp, pg→pdealloct, fx→fnoml,
+# as→astat, zc→zcontacts, db→pdbufs). They were grandfathered because
+# this codebase consistently uses those prefixes for Python locals
+# rather than for queries against those Opera tables. Do not extend
+# the grandfather list without explicit triage and reviewer sign-off.
 SKIP_PREFIXES = {
     'dm',   # SQL Server dynamic management views (sys.dm_exec_*)
     'pg',   # PostgreSQL system tables
@@ -97,6 +110,12 @@ SKIP_PREFIXES = {
     'as',   # as_of_date param
     # Application-local SQLite columns (not Opera schema)
     'zc',   # zcontacts (our local supplier-contacts table)
+    # Triage of the initial 170 unknown findings (2026-05-03) found NO
+    # additional prefixes safe to add: every remaining prefix in the
+    # findings (pl, it, co, sg, na, ih, wpp, ae, nt, pt, no, nk, cs,
+    # cn, cc, al, wn, sp, sn, cp, at, do, pn, pp, sc, vc, wo) is used
+    # by at least one Opera table. The remaining false positives are
+    # either real typos (Task 3) or per-line suppressions (Task 4).
 }
 
 # Map common Opera column prefixes back to the table they belong to. Built
