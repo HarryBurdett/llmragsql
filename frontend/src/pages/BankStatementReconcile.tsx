@@ -1213,6 +1213,39 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     enabled: !!selectedBank,
   });
 
+  // Orphan-tmpstat utility (cleanup for partial-reconcile residue)
+  const orphanTmpstatQuery = useQuery({
+    queryKey: ['orphanTmpstat', selectedBank],
+    queryFn: async () => {
+      const res = await authFetch(
+        `/api/reconcile/bank/${selectedBank}/orphan-tmpstat`,
+      );
+      const data = await res.json();
+      return data;
+    },
+    enabled: !!selectedBank,
+    staleTime: 60_000,
+  });
+
+  const clearOrphanTmpstatMutation = useMutation<any, Error, void>({
+    mutationFn: async () => {
+      const res = await authFetch(
+        `/api/reconcile/bank/${selectedBank}/clear-orphan-tmpstat`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),  // no entry_numbers = clear all on bank
+        },
+      );
+      return res.json();
+    },
+    onSuccess: () => {
+      orphanTmpstatQuery.refetch();
+      entriesQuery.refetch();
+      statusQuery.refetch();
+    },
+  });
+
   // Fetch deferred audit rows for this bank+period so the reconcile page can
   // surface items the operator earlier marked 'awaiting manual entry'.
   // Used to pre-populate `deferredLines` and add a "Re-match" affordance once
@@ -4449,6 +4482,50 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
               {filteredEntries.length === selectedEntries.size ? 'Untick All' : 'Tick All'}
             </button>
           </div>
+
+          {orphanTmpstatQuery.data?.success && orphanTmpstatQuery.data.count > 0 && (
+            <div className="my-3 p-3 bg-amber-50 border border-amber-300 rounded-md">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-amber-900">
+                    {orphanTmpstatQuery.data.count} orphan partial-reconcile reservation{orphanTmpstatQuery.data.count === 1 ? '' : 's'}
+                  </p>
+                  <p className="text-xs text-amber-800 mt-1">
+                    These entries have a ae_tmpstat marker from an earlier reconcile
+                    attempt that did not finalise. Until cleared, they block the
+                    entries from being reconciled normally.
+                  </p>
+                  <details className="mt-2 text-xs">
+                    <summary className="cursor-pointer text-amber-900">Show entries</summary>
+                    <ul className="mt-1 ml-4 list-disc text-amber-800">
+                      {(orphanTmpstatQuery.data.entries || []).map((e: any) => (
+                        <li key={e.entry}>
+                          <span className="font-mono">{e.entry}</span> · {e.date} · £{Number(e.value).toFixed(2)} · tmpstat={e.tmpstat}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                </div>
+                <button
+                  onClick={() => clearOrphanTmpstatMutation.mutate()}
+                  disabled={clearOrphanTmpstatMutation.isPending}
+                  className="px-3 py-1.5 text-sm font-medium bg-amber-200 hover:bg-amber-300 border border-amber-400 rounded disabled:opacity-50"
+                >
+                  {clearOrphanTmpstatMutation.isPending ? 'Clearing…' : 'Clear all'}
+                </button>
+              </div>
+              {clearOrphanTmpstatMutation.isSuccess && (
+                <p className="text-xs text-green-700 mt-2">
+                  Cleared {clearOrphanTmpstatMutation.data?.cleared || 0} reservation(s).
+                </p>
+              )}
+              {clearOrphanTmpstatMutation.isError && (
+                <p className="text-xs text-red-700 mt-2">
+                  {clearOrphanTmpstatMutation.error?.message}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Entries Table */}
           <div className="border border-gray-400 bg-white">
