@@ -172,12 +172,18 @@ interface MatchingResult {
   success: boolean;
   auto_matched: MatchedEntry[];
   suggested_matched: MatchedEntry[];
+  // Statement lines that match an aentry already reconciled in Opera
+  // (ae_reclnum > 0). They're 'done' from Opera's perspective — the UI
+  // should render them as ✓ (no further action needed) rather than as
+  // unmatched, which is the same render as 'this needs new work'.
+  already_reconciled?: MatchedEntry[];
   unmatched_statement: UnmatchedStatementLine[];
   unmatched_cashbook: UnmatchedCashbookEntry[];
   summary: {
     total_statement_lines: number;
     auto_matched_count: number;
     suggested_matched_count: number;
+    already_reconciled_count?: number;
     unmatched_statement_count: number;
     unmatched_cashbook_count: number;
   };
@@ -4239,8 +4245,13 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   const postedCount = stmtTxns.filter((t: any) => t.posted_entry_number).length;
                   const safeCurrency = (v: any) => { const n = Number(v); return isNaN(n) ? '0.00' : n.toFixed(2); };
 
-                  // Build match info from matchingResult if available
+                  // Build match info from matchingResult if available.
+                  // already_reconciled lines are also treated as 'matched'
+                  // for display purposes — they show ✓ in the Match column
+                  // alongside auto/suggested matches, because from the
+                  // operator's point of view they're done.
                   const matchedLines = new Set<number>();
+                  const alreadyReconciledLines = new Set<number>();
                   const matchedEntryByLine = new Map<number, string>();
                   if (matchingResult) {
                     matchingResult.auto_matched?.forEach(m => {
@@ -4249,6 +4260,11 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                     });
                     matchingResult.suggested_matched?.forEach(m => {
                       matchedLines.add(m.statement_line);
+                      matchedEntryByLine.set(m.statement_line, m.entry_number);
+                    });
+                    matchingResult.already_reconciled?.forEach(m => {
+                      matchedLines.add(m.statement_line);
+                      alreadyReconciledLines.add(m.statement_line);
                       matchedEntryByLine.set(m.statement_line, m.entry_number);
                     });
                   }
@@ -4260,9 +4276,17 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                           Statement {stmtNo} — {stmtTxns.length} transactions
                           {matchingResult ? (
                             matchingResult.summary != null && matchingResult.summary.unmatched_statement_count === 0
-                              ? <span className="ml-2 text-green-600">• All {stmtTxns.length} matched to Opera</span>
+                              ? <span className="ml-2 text-green-600">
+                                  • All {stmtTxns.length} matched to Opera
+                                  {alreadyReconciledLines.size > 0 && (
+                                    <span className="text-green-700"> ({alreadyReconciledLines.size} already reconciled)</span>
+                                  )}
+                                </span>
                               : <span className="ml-2">
                                   <span className="text-green-600">• {matchedLines.size} matched</span>
+                                  {alreadyReconciledLines.size > 0 && (
+                                    <span className="text-green-700"> ({alreadyReconciledLines.size} already reconciled)</span>
+                                  )}
                                   <span className="text-red-600 ml-1">• {matchingResult.summary?.unmatched_statement_count || 0} unmatched</span>
                                 </span>
                           ) : postedCount > 0 ? (

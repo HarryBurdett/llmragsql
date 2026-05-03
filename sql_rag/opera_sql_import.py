@@ -8622,7 +8622,98 @@ class OperaSQLImport:
                         'entry_description': str(entry.get('ae_comment', '')).strip()
                     })
 
-            logger.info(f"Statement matching result: auto={len(auto_matched)}, suggested={len(suggested_matched)}, unmatched_stmt={len(unmatched_statement)}, unmatched_cb={len(unmatched_cashbook)}")
+            # Second pass: surface statement lines that match an
+            # already-reconciled cashbook entry (ae_reclnum > 0). The
+            # primary matcher above only scans unreconciled entries — by
+            # design, since reconciled entries can't be re-ticked. But a
+            # statement line that matches a reconciled entry isn't
+            # 'unmatched' in any meaningful sense; it's already done. The
+            # operator needs to see it as ✓ Already in Opera, not ✗
+            # Unmatched (which is the same render as 'this needs new
+            # work'). Move such lines from unmatched_statement → a new
+            # already_reconciled bucket the UI can render distinctly.
+            already_reconciled: List[Dict[str, Any]] = []
+            if unmatched_statement:
+                # Bound the lookup to the period the statement covers so
+                # we don't pull years of historical reconciled entries.
+                stmt_dates = []
+                for s in statement_transactions:
+                    d = s.get('date')
+                    if isinstance(d, str):
+                        try:
+                            d = datetime.strptime(d[:10], '%Y-%m-%d').date()
+                        except ValueError:
+                            d = None
+                    if d:
+                        stmt_dates.append(d)
+                if stmt_dates:
+                    win_start = (min(stmt_dates) - timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
+                    win_end = (max(stmt_dates) + timedelta(days=date_tolerance_days)).strftime('%Y-%m-%d')
+                    rec_query = f"""
+                        SELECT ae_entry, ae_value/100.0 as amount_pounds, ae_lstdate,
+                               ae_entref, ae_comment, ae_cbtype, ae_reclnum, ae_recdate
+                        FROM aentry WITH (NOLOCK)
+                        WHERE ae_acnt = '{bank_account}'
+                          AND ae_reclnum > 0
+                          AND ae_lstdate BETWEEN '{win_start}' AND '{win_end}'
+                    """
+                    rec_df = self.sql.execute_query(rec_query)
+                    rec_records = rec_df.to_dict('records') if rec_df is not None else []
+                    rec_by_amount: Dict[float, List[Dict[str, Any]]] = {}
+                    for r in rec_records:
+                        amt = round(float(r.get('amount_pounds', 0)), 2)
+                        rec_by_amount.setdefault(amt, []).append(r)
+
+                    still_unmatched: List[Dict[str, Any]] = []
+                    rec_used: set = set()
+                    for u in unmatched_statement:
+                        ua = round(float(u.get('statement_amount', 0)), 2)
+                        candidates = rec_by_amount.get(ua, [])
+                        # Pick the closest-date candidate (most likely to be the
+                        # actual posting), preferring one not already claimed
+                        # by another unmatched line in this same loop.
+                        u_date = u.get('statement_date')
+                        if isinstance(u_date, str):
+                            try:
+                                u_date = datetime.strptime(u_date[:10], '%Y-%m-%d').date()
+                            except ValueError:
+                                u_date = None
+                        best = None
+                        best_dd = None
+                        for c in candidates:
+                            if c.get('ae_entry') in rec_used:
+                                continue
+                            c_date = c.get('ae_lstdate')
+                            if hasattr(c_date, 'date'):
+                                c_date = c_date.date()
+                            elif isinstance(c_date, str):
+                                try:
+                                    c_date = datetime.strptime(c_date[:10], '%Y-%m-%d').date()
+                                except ValueError:
+                                    c_date = None
+                            dd = abs((c_date - u_date).days) if (c_date and u_date) else 999
+                            if best is None or dd < best_dd:
+                                best = c
+                                best_dd = dd
+                        if best is not None and best_dd is not None and best_dd <= date_tolerance_days:
+                            rec_used.add(best.get('ae_entry'))
+                            already_reconciled.append({
+                                **u,
+                                'entry_number': best.get('ae_entry'),
+                                'entry_date': str(best.get('ae_lstdate', ''))[:10],
+                                'entry_amount': round(float(best.get('amount_pounds', 0)), 2),
+                                'entry_reference': str(best.get('ae_entref', '')).strip(),
+                                'entry_description': str(best.get('ae_comment', '')).strip(),
+                                'reclnum': best.get('ae_reclnum'),
+                                'rec_date': str(best.get('ae_recdate', ''))[:10],
+                                'match_type': 'already_reconciled',
+                                'confidence': 100,
+                            })
+                        else:
+                            still_unmatched.append(u)
+                    unmatched_statement = still_unmatched
+
+            logger.info(f"Statement matching result: auto={len(auto_matched)}, suggested={len(suggested_matched)}, already_reconciled={len(already_reconciled)}, unmatched_stmt={len(unmatched_statement)}, unmatched_cb={len(unmatched_cashbook)}")
             if unmatched_statement:
                 for u in unmatched_statement[:3]:
                     logger.info(f"  Unmatched stmt line {u.get('statement_line')}: amount={u.get('statement_amount')}, date={u.get('statement_date')}, ref='{u.get('statement_reference','')}'")
@@ -8643,12 +8734,14 @@ class OperaSQLImport:
                 'success': True,
                 'auto_matched': auto_matched,
                 'suggested_matched': suggested_matched,
+                'already_reconciled': already_reconciled,
                 'unmatched_statement': unmatched_statement,
                 'unmatched_cashbook': unmatched_cashbook,
                 'summary': {
                     'total_statement_lines': len(statement_transactions),
                     'auto_matched_count': len(auto_matched),
                     'suggested_matched_count': len(suggested_matched),
+                    'already_reconciled_count': len(already_reconciled),
                     'unmatched_statement_count': len(unmatched_statement),
                     'unmatched_cashbook_count': len(unmatched_cashbook)
                 }
