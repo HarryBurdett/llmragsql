@@ -5402,7 +5402,7 @@ class Opera3FoxProImport:
                 return result
 
             payment_balance = abs(float(payment_record.pt_trbal))
-            payment_suppref = payment_record.pt_suppref.strip() if hasattr(payment_record, 'pt_suppref') and payment_record.pt_suppref else ''
+            payment_suppref = payment_record.pt_supref.strip() if hasattr(payment_record, 'pt_supref') and payment_record.pt_supref else ''
 
             if payment_balance <= 0:
                 result["message"] = "Payment already fully allocated"
@@ -5416,7 +5416,7 @@ class Opera3FoxProImport:
                         and float(record.pt_trbal or 0) > 0):
                     invoices.append({
                         'ref': record.pt_trref.strip(),
-                        'suppref': record.pt_suppref.strip() if hasattr(record, 'pt_suppref') and record.pt_suppref else '',
+                        'suppref': record.pt_supref.strip() if hasattr(record, 'pt_supref') and record.pt_supref else '',
                         'balance': float(record.pt_trbal),
                         'date': record.pt_trdate,
                         'unique': record.pt_unique.strip() if hasattr(record, 'pt_unique') and record.pt_unique else '',
@@ -5438,7 +5438,7 @@ class Opera3FoxProImport:
             if description:
                 inv_matches = re.findall(r'(?:PI|INV|PINV|P/INV)[\s-]?\d+', description.upper())
                 if not inv_matches:
-                    # Look for references in ptran pt_suppref format
+                    # Look for references in ptran pt_supref format
                     for inv in invoices:
                         suppref = inv['suppref']
                         if suppref and suppref.upper() in description.upper():

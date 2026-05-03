@@ -7465,7 +7465,7 @@ class OperaSQLImport:
         try:
             # Get the payment from ptran
             payment_df = self.sql.execute_query(f"""
-                SELECT id, pt_trref, pt_trvalue, pt_trbal, pt_paid, pt_suppref, pt_unique
+                SELECT id, pt_trref, pt_trvalue, pt_trbal, pt_paid, pt_supref, pt_unique
                 FROM ptran WITH (NOLOCK)
                 WHERE pt_account = '{supplier_account}'
                   AND RTRIM(pt_trref) = '{payment_ref}'
@@ -7479,7 +7479,7 @@ class OperaSQLImport:
 
             payment = payment_df.iloc[0]
             payment_balance = abs(float(payment['pt_trbal']))
-            payment_suppref = payment['pt_suppref'].strip() if payment['pt_suppref'] else ''
+            payment_suppref = payment['pt_supref'].strip() if payment['pt_supref'] else ''
             payment_unique = payment['pt_unique'].strip() if payment['pt_unique'] else ''
             payment_ptran_id = int(payment['id'])  # ptran row id — used as pl_unique per Opera convention
 
@@ -7489,7 +7489,7 @@ class OperaSQLImport:
 
             # Get outstanding invoices for supplier
             invoices_df = self.sql.execute_query(f"""
-                SELECT id, pt_trref, pt_trvalue, pt_trbal, pt_suppref, pt_trdate, pt_unique
+                SELECT id, pt_trref, pt_trvalue, pt_trbal, pt_supref, pt_trdate, pt_unique
                 FROM ptran WITH (NOLOCK)
                 WHERE pt_account = '{supplier_account}'
                   AND pt_trtype = 'I'
@@ -7517,9 +7517,9 @@ class OperaSQLImport:
                 inv_matches = re.findall(r'(?:PI|INV|PINV|P/INV)[\s-]?\d+', description.upper())
                 # Also try generic numeric references that might be supplier invoice numbers
                 if not inv_matches:
-                    # Look for references in ptran pt_suppref format
+                    # Look for references in ptran pt_supref format
                     for _, inv in invoices_df.iterrows():
-                        suppref = inv['pt_suppref'].strip() if inv['pt_suppref'] else ''
+                        suppref = inv['pt_supref'].strip() if inv['pt_supref'] else ''
                         if suppref and suppref.upper() in description.upper():
                             inv_matches.append(suppref)
 
@@ -7529,7 +7529,7 @@ class OperaSQLImport:
                     inv_ref_clean = re.sub(r'[\s-]', '', inv_ref_pattern.upper())
                     for _, inv in invoices_df.iterrows():
                         inv_trref = inv['pt_trref'].strip().upper()
-                        inv_suppref = (inv['pt_suppref'].strip().upper() if inv['pt_suppref'] else '')
+                        inv_suppref = (inv['pt_supref'].strip().upper() if inv['pt_supref'] else '')
                         inv_trref_clean = re.sub(r'[\s-]', '', inv_trref)
                         inv_suppref_clean = re.sub(r'[\s-]', '', inv_suppref)
 
@@ -7541,7 +7541,7 @@ class OperaSQLImport:
                                 if not already_added:
                                     invoices_to_allocate.append({
                                         'ref': inv['pt_trref'].strip(),
-                                        'suppref': inv['pt_suppref'].strip() if inv['pt_suppref'] else '',
+                                        'suppref': inv['pt_supref'].strip() if inv['pt_supref'] else '',
                                         'amount': inv_balance,
                                         'full_allocation': True,
                                         'unique': inv['pt_unique'].strip() if inv['pt_unique'] else '',
@@ -7580,7 +7580,7 @@ class OperaSQLImport:
                         if inv_balance > 0:
                             invoices_to_allocate.append({
                                 'ref': inv['pt_trref'].strip(),
-                                'suppref': inv['pt_suppref'].strip() if inv['pt_suppref'] else '',
+                                'suppref': inv['pt_supref'].strip() if inv['pt_supref'] else '',
                                 'amount': inv_balance,
                                 'full_allocation': True,
                                 'unique': inv['pt_unique'].strip() if inv['pt_unique'] else '',
