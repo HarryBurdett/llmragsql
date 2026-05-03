@@ -2152,3 +2152,21 @@ Two complementary signals — needed for banks like Monzo whose statement filena
 - Period-only check is fooled by orphan contra entries that net to zero, never appear on any statement, and stay `ae_reclnum=0` forever — they make a fully-reconciled period look incomplete.
 
 The combined test is implemented in `apps/bank_reconcile/api/routes.py` Step 5 chain filter and `imported-for-reconciliation` auto-promote.
+
+## Period-Reconciled Decision Function
+
+**Single source of truth** for "is this statement period fully reconciled in Opera?". Lives at `sql_rag/period_reconciliation.py`. Used by:
+
+- `scan-all-banks` auto-promote
+- `imported-for-reconciliation` auto-mark
+- `Step 5 chain filter` in scan-all-banks
+
+Two-stage rule:
+1. **Historical match:** statement closing equals an `aentry.ae_recbal` from a closed reconcile batch AND closing < current `nk_recbal` → `FULLY_RECONCILED`. The period was finalised in a prior cycle.
+2. **Period-aware:** if closing equals current `nk_recbal`, count aentries in the period with `ae_reclnum = 0`. Zero → `FULLY_RECONCILED`. Non-zero → `PARTIALLY_RECONCILED`.
+
+Conservative default: returns `UNKNOWN` if inputs are missing or a query fails. Callers MUST treat `UNKNOWN` as "show the statement, don't auto-promote".
+
+**Critical for Monzo-style banks** whose statement filenames change on every download — there's no permanent filename-based reconciled marker, so we derive reconciliation state from Opera's ae_recbal history.
+
+**Do not duplicate this logic.** If you find inline period-reconciliation SQL anywhere, replace it with a `check_period_reconciled` call.
