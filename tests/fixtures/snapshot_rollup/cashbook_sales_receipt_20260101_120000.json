@@ -1,0 +1,18 @@
+{
+  "name": "Sales Receipt (fixture)",
+  "module": "cashbook",
+  "module_name": "Cashbook Transactions",
+  "source": "opera_se",
+  "recorded_at": "2026-01-01T12:00:00",
+  "description": "Test fixture.",
+  "changes": [
+    {
+      "database": "opera_se",
+      "table": "aentry",
+      "rows_added": 1,
+      "added_rows": [{"ae_entry": "R0001", "ae_value": 5000}],
+      "modified_rows": [],
+      "modified_fields": []
+    }
+  ]
+}

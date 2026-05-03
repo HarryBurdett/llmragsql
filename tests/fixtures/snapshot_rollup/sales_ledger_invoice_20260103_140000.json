@@ -1,0 +1,18 @@
+{
+  "name": "Sales Invoice (fixture)",
+  "module": "sales_ledger",
+  "module_name": "Sales Ledger Transactions",
+  "source": "opera_se",
+  "recorded_at": "2026-01-03T14:00:00",
+  "description": "Test fixture for sales ledger module.",
+  "changes": [
+    {
+      "database": "opera_se",
+      "table": "stran",
+      "rows_added": 1,
+      "added_rows": [{"st_account": "C001", "st_trvalue": 100.00}],
+      "modified_rows": [],
+      "modified_fields": []
+    }
+  ]
+}
