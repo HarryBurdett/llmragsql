@@ -1,0 +1,12 @@
+# .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: sql-validator
+        name: SQL schema validator
+        entry: python scripts/validate_sql_columns.py --strict
+        language: system
+        types_or: [python]
+        pass_filenames: false
+        # Run on every commit that touches Python files; the validator
+        # itself decides which subset to scan based on file path globs.
