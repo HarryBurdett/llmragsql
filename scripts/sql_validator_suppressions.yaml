@@ -14,4 +14,326 @@
 #         positive" alone is not enough.
 #       added: 2026-05-03
 #       added_by: <username or 'claude'>
-suppressions: []
+suppressions:
+  # ---------------------------------------------------------------------------
+  # Local SQLite tables — application's own schema, not Opera columns.
+  # ---------------------------------------------------------------------------
+  - file: /Users/maccb/llmragsql/api/email/storage.py
+    line: 95
+    column: cc_addresses
+    reason: |
+      Column on the local SQLite 'emails' table (this app's email storage),
+      not Opera. Defined in the CREATE TABLE IF NOT EXISTS emails statement
+      a few lines above.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/api/email/storage.py
+    line: 741
+    column: cc_addresses
+    reason: |
+      Column on the local SQLite 'emails' table (this app's email storage),
+      not Opera. Used in INSERT INTO emails for stored email metadata.
+    added: 2026-05-03
+    added_by: claude
+
+  # ---------------------------------------------------------------------------
+  # Python f-string placeholder variable names. The validator regex matches
+  # them because they share Opera's column shape (prefix_suffix), but they
+  # are local Python variables, not column references.
+  # ---------------------------------------------------------------------------
+  - file: /Users/maccb/llmragsql/api/main.py
+    line: 14455
+    column: wo_number
+    reason: |
+      Python f-string placeholder — the works-order number passed in by
+      the caller. The actual column being filtered is cx_ref on chead.
+      No Opera column 'wo_number' exists.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/api/main.py
+    line: 14493
+    column: wo_number
+    reason: |
+      Python f-string placeholder — the works-order number passed in by
+      the caller. The actual column being filtered is cy_cxref on cline.
+      No Opera column 'wo_number' exists.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_sql_import.py
+    line: 9929
+    column: at_type_code
+    reason: |
+      Python f-string placeholder — local variable holding the at_type
+      integer (1-8) for an atran INSERT. The actual column being written
+      is at_type. Not an Opera column.
+    added: 2026-05-03
+    added_by: claude
+
+  # ---------------------------------------------------------------------------
+  # Opera SYSTEM database tables not captured in scripts/opera_snapshot.json.
+  #
+  # The snapshot is taken from Opera3SECompanyXX (per-company DB). Tables
+  # like seqco / compny / alogin / sysparm live in Opera3SESystem (the
+  # shared system DB), so the snapshot doesn't have them — but they are
+  # real Opera tables with real columns, queried via fully-qualified
+  # Opera3SESystem.dbo.<table> names. Verified manually against a live
+  # Opera SE installation.
+  # ---------------------------------------------------------------------------
+  # opera3_config.py — co_opanl / co_rtupdnl on seqco (system table)
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_config.py
+    line: 188
+    column: co_opanl
+    reason: |
+      Docstring describing the seqco.co_opanl field. seqco is an Opera
+      system DB table not in the snapshot; the column is real on a
+      live install.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_config.py
+    line: 223
+    column: co_rtupdnl
+    reason: |
+      Docstring describing the seqco.co_rtupdnl field. seqco is an Opera
+      system DB table not in the snapshot; the column is real on a
+      live install.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_config.py
+    line: 240
+    column: co_rtupdnl
+    reason: |
+      Debug log string referencing seqco.co_rtupdnl. seqco is an Opera
+      system DB table not in the snapshot; the column is real on a
+      live install.
+    added: 2026-05-03
+    added_by: claude
+
+  # opera3_foxpro.py — docstring fields on seqco.dbf (FoxPro company file)
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_foxpro.py
+    line: 522
+    column: co_code
+    reason: |
+      Docstring describing seqco.dbf field co_code. seqco is an Opera 3
+      FoxPro system DBF not in the SQL snapshot; the field is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_foxpro.py
+    line: 523
+    column: co_name
+    reason: |
+      Docstring describing seqco.dbf field co_name. seqco is an Opera 3
+      FoxPro system DBF not in the SQL snapshot; the field is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_foxpro.py
+    line: 524
+    column: co_subdir
+    reason: |
+      Docstring describing seqco.dbf field co_subdir. seqco is an Opera 3
+      FoxPro system DBF not in the SQL snapshot; the field is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_foxpro.py
+    line: 620
+    column: co_subdir
+    reason: |
+      Docstring referencing seqco.dbf field co_subdir. seqco is an Opera 3
+      FoxPro system DBF not in the SQL snapshot; the field is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_foxpro.py
+    line: 623
+    column: co_code
+    reason: |
+      Docstring referencing seqco.dbf field co_code. seqco is an Opera 3
+      FoxPro system DBF not in the SQL snapshot; the field is real.
+    added: 2026-05-03
+    added_by: claude
+
+  # opera_config.py — co_* on Opera3SESystem.dbo.seqco (SQL system DB)
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 306
+    column: sp_year
+    reason: |
+      Real column on Opera's sysparm system table (system parameters).
+      sysparm lives in the shared Opera system DB, not in the per-company
+      snapshot. Verified to exist via live query.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 344
+    column: co_name
+    reason: |
+      Real column on Opera's seqco system table (queried as
+      'SELECT TOP 1 co_name FROM seqco'). seqco is an Opera system DB
+      table not in the snapshot; verified to exist on a live install.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 372
+    column: co_opanl
+    reason: |
+      Docstring referencing Opera3SESystem.dbo.seqco.co_opanl. seqco is
+      a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 386
+    column: co_opanl
+    reason: |
+      SQL select against Opera3SESystem.dbo.seqco.co_opanl. seqco is
+      a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 388
+    column: co_code
+    reason: |
+      WHERE clause against Opera3SESystem.dbo.seqco.co_code. seqco is
+      a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 428
+    column: co_rtupdnl
+    reason: |
+      Docstring referencing Opera3SESystem.dbo.seqco.co_rtupdnl. seqco
+      is a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 437
+    column: co_rtupdnl
+    reason: |
+      SQL select against Opera3SESystem.dbo.seqco.co_rtupdnl. seqco is
+      a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 439
+    column: co_code
+    reason: |
+      WHERE clause against Opera3SESystem.dbo.seqco.co_code. seqco is
+      a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 445
+    column: co_rtupdnl
+    reason: |
+      Debug log string referencing Opera3SESystem.dbo.seqco.co_rtupdnl.
+      seqco is a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 476
+    column: co_advproj
+    reason: |
+      SQL select against Opera3SESystem.dbo.seqco.co_advproj. seqco is
+      a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 476
+    column: co_advjob
+    reason: |
+      SQL select against Opera3SESystem.dbo.seqco.co_advjob. seqco is
+      a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 478
+    column: co_code
+    reason: |
+      WHERE clause against Opera3SESystem.dbo.seqco.co_code. seqco is
+      a system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 489
+    column: co_advproj
+    reason: |
+      Fallback SQL select against local seqco.co_advproj. seqco is a
+      system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_config.py
+    line: 489
+    column: co_advjob
+    reason: |
+      Fallback SQL select against local seqco.co_advjob. seqco is a
+      system DB table not in the snapshot; the column is real.
+    added: 2026-05-03
+    added_by: claude
+
+  # transaction_monitor.py — compny / alogin Opera system tables
+  - file: /Users/maccb/llmragsql/sql_rag/transaction_monitor.py
+    line: 164
+    column: cp_name
+    reason: |
+      Real column on Opera's compny system table (company info).
+      compny lives in the shared Opera system DB, not in the per-company
+      snapshot. Verified to exist via live query.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/transaction_monitor.py
+    line: 186
+    column: al_login
+    reason: |
+      Real column on Opera's alogin system table (Opera user accounts).
+      alogin lives in the shared Opera system DB, not in the per-company
+      snapshot. Verified to exist via live query.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/transaction_monitor.py
+    line: 186
+    column: al_name
+    reason: |
+      Real column on Opera's alogin system table (Opera user accounts).
+      alogin lives in the shared Opera system DB, not in the per-company
+      snapshot. Verified to exist via live query.
+    added: 2026-05-03
+    added_by: claude
+
+  # ---------------------------------------------------------------------------
+  # Docstring / comment / AI-prompt strings (not real SQL).
+  # ---------------------------------------------------------------------------
+  - file: /Users/maccb/llmragsql/sql_rag/opera3_foxpro_import.py
+    line: 980
+    column: na_balc
+    reason: |
+      Docstring describing the na_balc{period} update pattern. The
+      actual column written is na_balcNN (e.g. na_balc01); 'na_balc'
+      with no period suffix is not a real column, just the prose
+      description of the pattern.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/opera_sql_import.py
+    line: 599
+    column: na_balc
+    reason: |
+      Docstring describing the na_balc{period} update pattern. The
+      actual column written is na_balcNN (e.g. na_balc01); 'na_balc'
+      with no period suffix is not a real column, just the prose
+      description of the pattern.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/statement_reconcile.py
+    line: 699
+    column: no_balance
+    reason: |
+      String literal inside the Gemini bank-statement-extraction prompt.
+      "no_balance" is one of the FORMAT enum values the AI is asked to
+      report — not an Opera column reference.
+    added: 2026-05-03
+    added_by: claude
+  - file: /Users/maccb/llmragsql/sql_rag/statement_reconcile_opera3.py
+    line: 441
+    column: no_balance
+    reason: |
+      String literal inside the Gemini bank-statement-extraction prompt
+      (Opera 3 mirror of statement_reconcile.py). "no_balance" is one of
+      the FORMAT enum values the AI is asked to report — not an Opera
+      column reference.
+    added: 2026-05-03
+    added_by: claude
