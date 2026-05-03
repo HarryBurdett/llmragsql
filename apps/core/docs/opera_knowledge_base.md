@@ -2170,3 +2170,22 @@ Conservative default: returns `UNKNOWN` if inputs are missing or a query fails. 
 **Critical for Monzo-style banks** whose statement filenames change on every download — there's no permanent filename-based reconciled marker, so we derive reconciliation state from Opera's ae_recbal history.
 
 **Do not duplicate this logic.** If you find inline period-reconciliation SQL anywhere, replace it with a `check_period_reconciled` call.
+
+## Duplicate-Check Decision Function
+
+**Single source of truth** for "is this bank line already in Opera?". Lives at `sql_rag/duplicate_check.py::check_for_duplicate`. Six call sites across SE and Opera 3 delegate to it:
+
+- `sql_rag/bank_import.py::_is_already_posted` (analyse-time, SE)
+- `sql_rag/bank_import_opera3.py::_is_already_posted` (analyse-time, O3)
+- `sql_rag/opera_sql_import.py::check_duplicate_before_posting` (post-time, SE)
+- `sql_rag/opera3_foxpro_import.py::check_duplicate_before_posting` (post-time, O3)
+- `sql_rag/bank_duplicates.py::find_duplicates` (cashbook "exact" match)
+
+Result kinds:
+- `CASHBOOK_DUPLICATE`: an aentry of the action's expected at_type and signed amount exists. Refuse to post.
+- `LEDGER_ALLOCATION_TARGET`: no cashbook entry, but a stran/ptran credit-note-type row matches the refund. POST and optionally allocate.
+- `NONE`: safe to post.
+
+The `ACTION_TYPE_MAP` in the module is the authoritative reference for which `at_type` / `st_trtype` / `pt_trtype` corresponds to each bank-import action. Cashbook conventions (1=Nominal Pmt, 2=Nominal Rcpt, 3=Sales Refund, 4=Sales Receipt, 5=Purchase Pmt, 6=Purchase Refund, 8=Bank Transfer) are mirrored from CLAUDE.md and the central KB.
+
+Sign-aware AND type-aware throughout. The historical bug class (`ABS(ABS(value) - amount)` matching opposite-direction transactions) is locked out by tests in `tests/test_duplicate_check.py` and `tests/test_duplicate_check_regression.py`.
