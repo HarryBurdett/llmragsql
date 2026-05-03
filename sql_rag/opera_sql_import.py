@@ -7481,7 +7481,7 @@ class OperaSQLImport:
             payment_balance = abs(float(payment['pt_trbal']))
             payment_suppref = payment['pt_supref'].strip() if payment['pt_supref'] else ''
             payment_unique = payment['pt_unique'].strip() if payment['pt_unique'] else ''
-            payment_ptran_id = int(payment['id'])  # ptran row id — used as pl_unique per Opera convention
+            payment_ptran_id = int(payment['id'])  # ptran row id — used as al_unique per Opera convention
 
             if payment_balance <= 0:
                 result["message"] = "Payment already fully allocated"
@@ -7612,12 +7612,12 @@ class OperaSQLImport:
             with self.sql.engine.begin() as conn:
                 conn.execute(text(get_lock_timeout_sql()))
 
-                # pl_unique uses the ptran.id (row ID) per Opera convention — NOT MAX+1
+                # al_unique uses the ptran.id (row ID) per Opera convention — NOT MAX+1
 
-                # Get next pl_payflag (sequential, links payment to invoice(s))
+                # Get next al_payflag (sequential, links payment to invoice(s))
                 max_payflag_result = conn.execute(text("""
-                    SELECT ISNULL(MAX(pl_payflag), 0) FROM palloc WITH (UPDLOCK, ROWLOCK)
-                    WHERE pl_account = :account
+                    SELECT ISNULL(MAX(al_payflag), 0) FROM palloc WITH (UPDLOCK, ROWLOCK)
+                    WHERE al_account = :account
                 """), {"account": supplier_account})
                 next_payflag = int(max_payflag_result.scalar() or 0) + 1
 
@@ -7639,17 +7639,17 @@ class OperaSQLImport:
                 """))
 
                 # Insert palloc record for payment (if fully allocated)
-                # pl_ref2 indicates allocation method for audit trail
-                # pl_unique = ptran row id (Opera convention)
+                # al_ref2 indicates allocation method for audit trail
+                # al_unique = ptran row id (Opera convention)
                 if payment_fully_allocated:
                     alloc_ref2 = "AUTO:INV_REF" if allocation_method == "invoice_reference" else "AUTO:CLR_ACCT"
                     palloc_id = self._get_next_id(conn, 'palloc')
                     conn.execute(text(f"""
                         INSERT INTO palloc (
                             id,
-                            pl_account, pl_date, pl_ref1, pl_ref2, pl_type, pl_val,
-                            pl_payind, pl_payflag, pl_payday, pl_fcurr, pl_fval, pl_fdec,
-                            pl_advind, pl_acnt, pl_cntr, pl_preprd, pl_unique, pl_adjsv,
+                            al_account, al_date, al_ref1, al_ref2, al_type, al_val,
+                            al_payind, al_payflag, al_payday, al_fcurr, al_fval, al_fdec,
+                            al_advind, al_acnt, al_cntr, al_preprd, al_unique, al_adjsv,
                             datecreated, datemodified, state
                         ) VALUES (
                             {palloc_id},
@@ -7699,15 +7699,15 @@ class OperaSQLImport:
                         """))
 
                         # Insert palloc record for invoice (if fully paid)
-                        # pl_unique = ptran row id (Opera convention)
+                        # al_unique = ptran row id (Opera convention)
                         if new_inv_bal < 0.01:
                             palloc_inv_id = self._get_next_id(conn, 'palloc')
                             conn.execute(text(f"""
                                 INSERT INTO palloc (
                                     id,
-                                    pl_account, pl_date, pl_ref1, pl_ref2, pl_type, pl_val,
-                                    pl_payind, pl_payflag, pl_payday, pl_fcurr, pl_fval, pl_fdec,
-                                    pl_advind, pl_acnt, pl_cntr, pl_preprd, pl_unique, pl_adjsv,
+                                    al_account, al_date, al_ref1, al_ref2, al_type, al_val,
+                                    al_payind, al_payflag, al_payday, al_fcurr, al_fval, al_fdec,
+                                    al_advind, al_acnt, al_cntr, al_preprd, al_unique, al_adjsv,
                                     datecreated, datemodified, state
                                 ) VALUES (
                                     {palloc_inv_id},

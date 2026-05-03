@@ -257,36 +257,21 @@ async def get_recent_payments(
 
             payment_method = _format_payment_method(pay_ref)
 
-            # Get allocated invoices from palloc
+            # Get allocated invoices from palloc (al_* columns per Opera schema)
             invoices = []
             if payflag > 0:
-                try:
-                    alloc_df = sql_connector.execute_query(f"""
-                        SELECT
-                            RTRIM(pl_ref1) AS ref,
-                            pl_date AS alloc_date,
-                            pl_val AS alloc_amount,
-                            pl_type
-                        FROM palloc WITH (NOLOCK)
-                        WHERE RTRIM(pl_account) = '{acct}'
-                          AND pl_payflag = {payflag}
-                          AND pl_type = 'I'
-                        ORDER BY pl_date
-                    """)
-                except Exception:
-                    # Retry with al_ prefix column names (alternate Opera schema)
-                    alloc_df = sql_connector.execute_query(f"""
-                        SELECT
-                            RTRIM(al_ref1) AS ref,
-                            al_date AS alloc_date,
-                            al_val AS alloc_amount,
-                            al_type
-                        FROM palloc WITH (NOLOCK)
-                        WHERE RTRIM(al_account) = '{acct}'
-                          AND al_payflag = {payflag}
-                          AND al_type = 'I'
-                        ORDER BY al_date
-                    """)
+                alloc_df = sql_connector.execute_query(f"""
+                    SELECT
+                        RTRIM(al_ref1) AS ref,
+                        al_date AS alloc_date,
+                        al_val AS alloc_amount,
+                        al_type
+                    FROM palloc WITH (NOLOCK)
+                    WHERE RTRIM(al_account) = '{acct}'
+                      AND al_payflag = {payflag}
+                      AND al_type = 'I'
+                    ORDER BY al_date
+                """)
 
                 if alloc_df is not None and len(alloc_df) > 0:
                     for _, alloc_row in alloc_df.iterrows():
@@ -381,36 +366,21 @@ async def generate_remittance(
         payflag = int(row["pt_payflag"] or 0)
         payment_method = _format_payment_method(pay_ref)
 
-        # Get allocated invoices
+        # Get allocated invoices (palloc al_* columns per Opera schema)
         invoices = []
         if payflag > 0:
-            try:
-                alloc_df = sql_connector.execute_query(f"""
-                    SELECT
-                        RTRIM(pl_ref1) AS ref,
-                        pl_date AS alloc_date,
-                        pl_val AS alloc_amount,
-                        pl_type
-                    FROM palloc WITH (NOLOCK)
-                    WHERE RTRIM(pl_account) = '{account}'
-                      AND pl_payflag = {payflag}
-                      AND pl_type = 'I'
-                    ORDER BY pl_date
-                """)
-            except Exception:
-                # Retry with al_ prefix column names (alternate Opera schema)
-                alloc_df = sql_connector.execute_query(f"""
-                    SELECT
-                        RTRIM(al_ref1) AS ref,
-                        al_date AS alloc_date,
-                        al_val AS alloc_amount,
-                        al_type
-                    FROM palloc WITH (NOLOCK)
-                    WHERE RTRIM(al_account) = '{account}'
-                      AND al_payflag = {payflag}
-                      AND al_type = 'I'
-                    ORDER BY al_date
-                """)
+            alloc_df = sql_connector.execute_query(f"""
+                SELECT
+                    RTRIM(al_ref1) AS ref,
+                    al_date AS alloc_date,
+                    al_val AS alloc_amount,
+                    al_type
+                FROM palloc WITH (NOLOCK)
+                WHERE RTRIM(al_account) = '{account}'
+                  AND al_payflag = {payflag}
+                  AND al_type = 'I'
+                ORDER BY al_date
+            """)
 
             if alloc_df is not None and len(alloc_df) > 0:
                 for _, alloc_row in alloc_df.iterrows():
@@ -526,34 +496,20 @@ async def send_remittance(account: str, body: SendRemittanceRequest):
         payflag = int(row["pt_payflag"] or 0)
         payment_method = _format_payment_method(payment_ref)
 
-        # Get allocated invoices for the log
+        # Get allocated invoices for the log (palloc al_* columns per Opera schema)
         invoices = []
         if payflag > 0:
-            try:
-                alloc_df = sql_connector.execute_query(f"""
-                    SELECT
-                        RTRIM(pl_ref1) AS ref,
-                        pl_date AS alloc_date,
-                        pl_val AS alloc_amount
-                    FROM palloc WITH (NOLOCK)
-                    WHERE RTRIM(pl_account) = '{account}'
-                      AND pl_payflag = {payflag}
-                      AND pl_type = 'I'
-                    ORDER BY pl_date
-                """)
-            except Exception:
-                # Retry with al_ prefix column names (alternate Opera schema)
-                alloc_df = sql_connector.execute_query(f"""
-                    SELECT
-                        RTRIM(al_ref1) AS ref,
-                        al_date AS alloc_date,
-                        al_val AS alloc_amount
-                    FROM palloc WITH (NOLOCK)
-                    WHERE RTRIM(al_account) = '{account}'
-                      AND al_payflag = {payflag}
-                      AND al_type = 'I'
-                    ORDER BY al_date
-                """)
+            alloc_df = sql_connector.execute_query(f"""
+                SELECT
+                    RTRIM(al_ref1) AS ref,
+                    al_date AS alloc_date,
+                    al_val AS alloc_amount
+                FROM palloc WITH (NOLOCK)
+                WHERE RTRIM(al_account) = '{account}'
+                  AND al_payflag = {payflag}
+                  AND al_type = 'I'
+                ORDER BY al_date
+            """)
 
             if alloc_df is not None and len(alloc_df) > 0:
                 for _, alloc_row in alloc_df.iterrows():
@@ -903,20 +859,21 @@ async def opera3_get_recent_payments(
         palloc_records = reader.read_table("palloc")
 
         # Index palloc by (account, payflag) for invoice allocations
+        # palloc uses al_* prefix per Opera schema (same in DBF and SQL)
         alloc_by_key = {}
         for rec in palloc_records:
-            pl_type = _o3_get_str(rec, "pl_type")
-            if pl_type != "I":
+            al_type = _o3_get_str(rec, "al_type")
+            if al_type != "I":
                 continue
-            acct = _o3_get_str(rec, "pl_account")
-            payflag = _o3_get_int(rec, "pl_payflag")
+            acct = _o3_get_str(rec, "al_account")
+            payflag = _o3_get_int(rec, "al_payflag")
             key = (acct.upper(), payflag)
             if key not in alloc_by_key:
                 alloc_by_key[key] = []
             alloc_by_key[key].append({
-                "ref": _o3_get_str(rec, "pl_ref1"),
-                "date": _o3_get_date(rec, "pl_date"),
-                "amount": abs(_o3_get_num(rec, "pl_val")),
+                "ref": _o3_get_str(rec, "al_ref1"),
+                "date": _o3_get_date(rec, "al_date"),
+                "amount": abs(_o3_get_num(rec, "al_val")),
             })
 
         # Index ptran invoices for getting original dates
@@ -1047,12 +1004,12 @@ async def opera3_generate_remittance(
                     invoice_dates[inv_ref] = _o3_get_date(rec, "pt_trdate")
 
             for rec in palloc_records:
-                if (_o3_get_str(rec, "pl_account").upper() == account.upper()
-                        and _o3_get_int(rec, "pl_payflag") == payflag
-                        and _o3_get_str(rec, "pl_type") == "I"):
-                    inv_ref = _o3_get_str(rec, "pl_ref1")
-                    inv_date = invoice_dates.get(inv_ref, _o3_get_date(rec, "pl_date"))
-                    inv_amount = abs(_o3_get_num(rec, "pl_val"))
+                if (_o3_get_str(rec, "al_account").upper() == account.upper()
+                        and _o3_get_int(rec, "al_payflag") == payflag
+                        and _o3_get_str(rec, "al_type") == "I"):
+                    inv_ref = _o3_get_str(rec, "al_ref1")
+                    inv_date = invoice_dates.get(inv_ref, _o3_get_date(rec, "al_date"))
+                    inv_amount = abs(_o3_get_num(rec, "al_val"))
                     invoices.append({
                         "ref": inv_ref,
                         "date": inv_date,
