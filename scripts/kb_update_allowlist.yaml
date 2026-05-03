@@ -1,0 +1,27 @@
+# scripts/kb_update_allowlist.yaml
+# Authoritative list of Opera-related file globs. A commit that
+# touches any matching file requires a corresponding KB update OR an
+# explicit `kb-not-required: <reason>` annotation in the commit body.
+#
+# Adding a glob here is a code-review step — it widens the hook's
+# coverage. Removing one is also reviewable for the same reason.
+
+opera_files:
+  - "apps/bank_reconcile/api/routes.py"
+  - "sql_rag/opera_*.py"
+  - "sql_rag/opera3_*.py"
+  - "sql_rag/opera3_foxpro.py"
+  - "sql_rag/bank_import*.py"
+  - "sql_rag/statement_reconcile*.py"
+  - "sql_rag/duplicate_check*.py"
+  - "sql_rag/period_reconciliation*.py"
+
+# Files that satisfy the KB-update requirement when staged in the same
+# commit as an Opera-files change. Any one of these counts.
+kb_files:
+  - "apps/core/docs/opera_knowledge_base.md"
+  - "apps/core/docs/opera_transaction_field_reference.md"
+
+# Note: the central knowledge repo lives outside this repo. The hook
+# can't see staged files there. The CI gate is best-effort (checks the
+# main repo only); the *push* policy for central is on the developer.
