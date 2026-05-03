@@ -1444,239 +1444,61 @@ class BankStatementImport:
                 else:
                     txn.skip_reason = f'No supplier match found (best score: {supp_result.score:.2f})'
 
-    def _is_already_posted(self, txn: BankTransaction, consumed_entries: Optional[set] = None) -> Tuple[bool, str]:
+    def _is_already_posted(
+        self,
+        txn,
+        consumed_entries: Optional[set] = None,
+    ) -> Tuple[bool, str]:
+        """Decide whether this transaction is already in Opera.
+
+        Single source of truth: delegates to
+        sql_rag.duplicate_check.check_for_duplicate. The wrapper exists
+        only to preserve the existing return contract used by callers
+        (the (bool, reason) tuple plus side-effects on `txn` and
+        `consumed_entries`).
         """
-        Check if transaction has already been posted to Opera
+        from sql_rag.duplicate_check import (
+            check_for_duplicate,
+            DuplicateMatchKind,
+        )
+        from sql_rag.duplicate_check_se import OperaSEDataSource
 
-        Uses multiple detection strategies:
-        1. Fingerprint check (definitive - highest priority)
-        2. atran (cashbook) - bank account transactions
-        3. ptran (purchase ledger) - for supplier payments
-        4. stran (sales ledger) - for customer receipts
+        if not txn.action or txn.action in ('skip',):
+            return False, ""
 
-        Args:
-            txn: Transaction to check
-            consumed_entries: Optional set of "table:record_id" keys already
-                claimed by earlier txns in this batch. Candidates with these
-                keys are skipped, allowing multiple identical-amount bank
-                lines to be detected as new (instead of all marked duplicate
-                of the single existing Opera entry).
+        ds = OperaSEDataSource(self.sql_connector)
 
-        Returns:
-            Tuple of (is_posted, reason) where reason explains where duplicate was found
-        """
-        consumed_entries = consumed_entries or set()
-        def _is_consumed(c) -> bool:
-            # Check the candidate's own (table, record_id) plus any aliases
-            # in its details. Different match_types can return different
-            # (table, record_id) pairs for the same underlying Opera posting,
-            # so we look up each known identifier.
-            keys = {f"{c.table}:{c.record_id}"}
-            d = getattr(c, 'details', None) or {}
-            if d.get('ae_entry'):
-                keys.add(f"aentry:{str(d['ae_entry']).strip()}")
-            if d.get('at_unique'):
-                keys.add(f"atran:{str(d['at_unique']).strip()}")
-            return any(k in consumed_entries for k in keys)
-        # Priority 1: Fingerprint check (definitive if enabled)
-        if self.use_fingerprinting and self.duplicate_detector:
-            # Generate fingerprint for this transaction
-            if DUPLICATES_AVAILABLE:
-                txn.fingerprint = generate_import_fingerprint(txn.name, txn.amount, txn.date)
+        # Translate consumed_entries to ae_entry exclude list
+        excluded: list[str] = []
+        for k in (consumed_entries or set()):
+            if isinstance(k, str) and k.startswith('aentry:'):
+                excluded.append(k.split(':', 1)[1].strip())
+            elif isinstance(k, str) and ':' not in k:
+                excluded.append(k.strip())
 
-                # Check using enhanced duplicate detector
-                candidates = self.duplicate_detector.find_duplicates(
-                    name=txn.name,
-                    amount=txn.amount,
-                    txn_date=txn.date,
-                    account=txn.matched_account,
-                    bank_code=self.bank_code,
-                    fit_id=txn.fit_id,
-                    reference=txn.reference
-                )
+        try:
+            result = check_for_duplicate(
+                data_source=ds,
+                bank_code=self.bank_code,
+                transaction_date=txn.date,
+                signed_amount_pounds=float(txn.amount),
+                action=txn.action,
+                account_code=getattr(txn, 'matched_account', None) or '',
+                description=getattr(txn, 'name', '') or '',
+                reference=getattr(txn, 'reference', '') or '',
+                exclude_entry_numbers=excluded or None,
+            )
+        except ValueError:
+            # Unknown action — propagate as "not posted" so the caller
+            # surfaces a clearer downstream error. Don't silently match.
+            return False, ""
 
-                # Store candidates for UI display
-                txn.duplicate_candidates = candidates
-
-                # Fingerprint match is definitive
-                for c in candidates:
-                    if c.match_type == 'fingerprint' and not _is_consumed(c):
-                        txn.is_duplicate = True
-                        return True, f"Already imported (fingerprint match): {c.table}.{c.record_id}"
-
-                # High confidence matches are also considered duplicates
-                for c in candidates:
-                    if c.confidence >= 0.9 and not _is_consumed(c):
-                        txn.is_duplicate = True
-                        return True, f"Already posted ({c.match_type}): {c.table}.{c.record_id}"
-
-                # Bank-level amount match — definitive evidence, but skip
-                # entries already claimed by earlier identical-amount lines in
-                # this batch so legit multi-occurrence transactions all post.
-                for c in candidates:
-                    if c.match_type == 'bank_amount' and not _is_consumed(c):
-                        txn.is_duplicate = True
-                        return True, f"Already in cashbook ({c.details.get('ae_entref', c.record_id)}): {c.record_id}"
-
-        # Fallback to legacy duplicate detection
-        date_str = txn.date.strftime('%Y-%m-%d')
-        amount_pounds = txn.abs_amount
-
-        # Use ±14 day date tolerance — Opera posting date can differ significantly
-        # from bank statement date (e.g. HMRC posted a week after bank date)
-        from datetime import timedelta
-        date_from = (txn.date - timedelta(days=14)).strftime('%Y-%m-%d')
-        date_to = (txn.date + timedelta(days=14)).strftime('%Y-%m-%d')
-
-        # Check 0: Bank transfer duplicate detection
-        # Bank transfers appear on BOTH bank statements with different descriptions:
-        #   BC055 statement: "TO 37686658" (sending to BC056)
-        #   BC056 statement: "FROM 41638069" (receiving from BC055)
-        # Check by at_type=8 (bank transfer) + same amount + date range on this bank
-        if txn.action == 'bank_transfer':
-            query_bt = f"""
-                SELECT COUNT(*) as cnt FROM atran WITH (NOLOCK)
-                WHERE at_acnt = '{self.bank_code}'
-                AND at_type = 8
-                AND at_pstdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(ABS(at_value) - {int(round(amount_pounds * 100))}) < 1
-            """
-            df_bt = self.sql_connector.execute_query(query_bt)
-            if int(df_bt.iloc[0]['cnt']) > 0:
-                txn.is_duplicate = True
-                return True, "Already in cashbook (bank transfer)"
-
-        # Check 0b: Reference-based match — strongest non-fingerprint check
-        # If the transaction has a reference, check if any Opera entry has the same reference + amount
-        # This catches GoCardless payouts, BACS refs, etc. where descriptions differ but refs match
-        amount_pence = int(round(amount_pounds * 100))
-        txn_ref = (txn.reference or '').strip()
-        if not txn_ref and txn.name:
-            # Extract reference from description (e.g., "Direct Credit From GC C1 Ref: Intsysukltd-HG3E2C")
-            import re
-            ref_match = re.search(r'Ref[:\s]+(\S+)', txn.name, re.IGNORECASE)
-            if ref_match:
-                txn_ref = ref_match.group(1)
-        # Signed amount comparison: respect direction. A bank-statement
-        # payment (-£X) and a same-amount receipt (+£X) in atran are
-        # different transactions, NOT duplicates of each other. We compare
-        # the signed pence value (ae_value already signed in Opera).
-        signed_amount_pence = int(round(txn.amount * 100))
-
-        if txn_ref and len(txn_ref) >= 6:
-            safe_ref = txn_ref.replace("'", "''").strip().upper()
-            query_ref = f"""
-                SELECT COUNT(*) as cnt
-                FROM aentry WITH (NOLOCK)
-                WHERE ae_acnt = '{self.bank_code}'
-                AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(ae_value - {signed_amount_pence}) < 1
-                AND UPPER(RTRIM(ae_entref)) LIKE '%{safe_ref}%'
-            """
-            df_ref = self.sql_connector.execute_query(query_ref)
-            if int(df_ref.iloc[0]['cnt']) > 0:
-                txn.is_duplicate = True
-                return True, f"Already in cashbook (reference match: {txn_ref})"
-
-        # Check 1: Cashbook — use aentry (header) not atran (splits).
-        # Build SQL exclusion for any aentry already consumed by an earlier
-        # identical-amount line in this batch — preserves the multi-occurrence
-        # fix for legitimately-duplicated bank transactions.
-        consumed_aentries = [
-            k.split(':', 1)[1] for k in consumed_entries
-            if k.startswith('aentry:') and ':' in k
-        ]
-        excl_clause = ''
-        if consumed_aentries:
-            quoted = ','.join(f"'{e.replace(chr(39), chr(39)+chr(39))}'" for e in consumed_aentries)
-            excl_clause = f" AND RTRIM(ae_entry) NOT IN ({quoted})"
-        safe_comment = (txn.name or '').replace("'", "''").strip()[:30]
-        # First check: amount + date + comment prefix (strong match)
-        query = f"""
-            SELECT TOP 1 ae_entry FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{self.bank_code}'
-            AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
-            AND ABS(ae_value - {signed_amount_pence}) < 1
-            AND LEFT(RTRIM(ISNULL(ae_comment, '')), 15) = LEFT('{safe_comment}', 15)
-            {excl_clause}
-        """
-        df = self.sql_connector.execute_query(query)
-        if df is not None and not df.empty:
-            entry_ref = str(df.iloc[0]['ae_entry']).strip()
+        if result.kind is DuplicateMatchKind.CASHBOOK_DUPLICATE:
             txn.is_duplicate = True
-            from sql_rag.bank_duplicates import DuplicateCandidate
-            txn.duplicate_candidates.append(DuplicateCandidate(
-                table='aentry', record_id=entry_ref,
-                match_type='fallback_comment', confidence=0.95,
-                details={'ae_entry': entry_ref}
-            ))
-            return True, "Already in cashbook"
-        # Second check: amount + date range only — catches transactions entered
-        # in Opera with different descriptions (e.g. HMRC entered manually)
-        query2 = f"""
-            SELECT TOP 1 ae_entry FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{self.bank_code}'
-            AND ae_lstdate BETWEEN '{date_from}' AND '{date_to}'
-            AND ABS(ae_value - {signed_amount_pence}) < 1
-            {excl_clause}
-        """
-        df2 = self.sql_connector.execute_query(query2)
-        if df2 is not None and not df2.empty:
-            entry_ref = str(df2.iloc[0]['ae_entry']).strip()
-            txn.is_duplicate = True
-            # Store entry as candidate so it flows to the reconcile view
-            from sql_rag.bank_duplicates import DuplicateCandidate
-            txn.duplicate_candidates.append(DuplicateCandidate(
-                table='aentry', record_id=entry_ref,
-                match_type='fallback_amount_date', confidence=0.9,
-                details={'ae_entry': entry_ref}
-            ))
-            return True, f"Already in cashbook (amount + date match)"
-
-        # Check 2: Purchase Ledger (ptran) — for supplier payments AND refunds.
-        # Type-specific AND sign-aware: a sales/purchase payment looks for
-        # pt_trtype='P', a refund looks for pt_trtype='F'. Stran/ptran rows
-        # of the *wrong* type are not duplicates — for refunds especially,
-        # the existing -£X credit-note row in ptran is an *allocation target*
-        # (the thing the refund payment will be allocated to), not a
-        # duplicate of the refund payment itself.
-        signed_amount_pounds = float(txn.amount)
-        ptran_type_for_action = {'purchase_payment': 'P', 'purchase_refund': 'F'}
-        if txn.action in ptran_type_for_action and txn.matched_account:
-            pt_type = ptran_type_for_action[txn.action]
-            query = f"""
-                SELECT TOP 1 pt_trref FROM ptran WITH (NOLOCK)
-                WHERE RTRIM(pt_account) = '{txn.matched_account}'
-                AND pt_trdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(pt_trvalue - {signed_amount_pounds}) < 0.01
-                AND pt_trtype = '{pt_type}'
-            """
-            df = self.sql_connector.execute_query(query)
-            if df is not None and not df.empty:
-                ref = (df.iloc[0].get('pt_trref') or '').strip()
-                txn.is_duplicate = True
-                return True, f"Already in purchase ledger (ptran) for {txn.matched_account} (ref: {ref})"
-
-        # Check 3: Sales Ledger (stran) — type-specific. sales_receipt
-        # looks for st_trtype='R', sales_refund looks for st_trtype='F'.
-        # Same rationale as Check 2: stran rows of the wrong type are
-        # allocation targets, not duplicates.
-        stran_type_for_action = {'sales_receipt': 'R', 'sales_refund': 'F'}
-        if txn.action in stran_type_for_action and txn.matched_account:
-            st_type = stran_type_for_action[txn.action]
-            query = f"""
-                SELECT TOP 1 st_trref FROM stran WITH (NOLOCK)
-                WHERE RTRIM(st_account) = '{txn.matched_account}'
-                AND st_trdate BETWEEN '{date_from}' AND '{date_to}'
-                AND ABS(st_trvalue - {signed_amount_pounds}) < 0.01
-                AND st_trtype = '{st_type}'
-            """
-            df = self.sql_connector.execute_query(query)
-            if df is not None and not df.empty:
-                ref = (df.iloc[0].get('st_trref') or '').strip()
-                txn.is_duplicate = True
-                return True, f"Already in sales ledger (stran) for {txn.matched_account} (ref: {ref})"
-
+            return True, result.reason
+        # LEDGER_ALLOCATION_TARGET → caller posts; we surface the info.
+        if result.kind is DuplicateMatchKind.LEDGER_ALLOCATION_TARGET:
+            return False, f"allocation target: {result.reason}"
         return False, ""
 
     def parse_csv(self, filepath: str) -> List[BankTransaction]:

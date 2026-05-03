@@ -454,3 +454,18 @@ def test_o3_datasource_filters_aentry_by_bank_at_type_and_signed_value():
         exclude_entry_numbers=['P100000755'],
     )
     assert rows == []
+
+
+def test_is_already_posted_delegates_to_check_for_duplicate():
+    """The _is_already_posted method must call check_for_duplicate —
+    not maintain its own per-action SQL.
+    """
+    from pathlib import Path
+    bi = Path(__file__).resolve().parent.parent / "sql_rag" / "bank_import.py"
+    src = bi.read_text(encoding='utf-8')
+
+    assert "check_for_duplicate" in src, \
+        "_is_already_posted should call check_for_duplicate"
+    # Heuristic: the legacy ABS(ABS( pattern is gone from this file
+    assert "ABS(ABS(at_value)" not in src, \
+        "Sign-blind ABS-on-ABS pattern reappeared in bank_import.py"
