@@ -1989,26 +1989,64 @@ async def get_imported_statements_for_reconciliation(
                         for _, row in rec_df.iterrows():
                             rec_balances[row['bank_code'].strip()] = float(row['reconciled_balance'])
 
-                    # Add Opera reconciled balance info and auto-mark reconciled statements
+                    # Add Opera reconciled balance info and auto-mark reconciled statements.
+                    # Same stricter rule as scan-all-banks: balance match alone is
+                    # NOT sufficient — every aentry row in the statement period
+                    # must also be individually reconciled (ae_reclnum > 0).
+                    # nk_recbal can sit at a value that coincidentally matches a
+                    # statement closing without all entries being ticked off,
+                    # which would otherwise hide the statement from operators
+                    # who still need to finish reconciling.
                     for stmt in statements:
                         bc = stmt.get('bank_code', '').strip()
                         rec_bal = rec_balances.get(bc)
-                        if rec_bal is not None:
-                            stmt['opera_reconciled_balance'] = rec_bal
-                            # If closing balance matches Opera reconciled balance, statement is complete
-                            closing = stmt.get('closing_balance')
-                            if closing is not None and abs(float(closing) - rec_bal) < 0.02:
-                                if not stmt.get('is_reconciled'):
-                                    # Auto-mark as reconciled in tracking DB
-                                    try:
-                                        email_storage.mark_statement_reconciled(
-                                            filename=stmt['filename'],
-                                            bank_code=bc
-                                        )
-                                        stmt['is_reconciled'] = 1
-                                        logger.info(f"Auto-marked statement '{stmt['filename']}' as reconciled (closing {closing} matches Opera reconciled balance {rec_bal})")
-                                    except Exception as mark_err:
-                                        logger.warning(f"Failed to auto-mark statement reconciled: {mark_err}")
+                        if rec_bal is None:
+                            continue
+                        stmt['opera_reconciled_balance'] = rec_bal
+                        closing = stmt.get('closing_balance')
+                        if closing is None or abs(float(closing) - rec_bal) >= 0.02:
+                            continue
+                        if stmt.get('is_reconciled'):
+                            continue
+                        # Stricter check: count unreconciled aentry rows in
+                        # the statement period.
+                        period_start = stmt.get('period_start')
+                        period_end = stmt.get('period_end')
+                        unreconciled_in_period = 0
+                        if period_start and period_end:
+                            try:
+                                df = sql_connector.execute_query(f"""
+                                    SELECT COUNT(*) AS n
+                                    FROM aentry WITH (NOLOCK)
+                                    WHERE ae_acnt = '{bc}'
+                                    AND ae_lstdate BETWEEN '{period_start}' AND '{period_end}'
+                                    AND (ae_reclnum IS NULL OR ae_reclnum = 0)
+                                """)
+                                unreconciled_in_period = int(df.iloc[0]['n']) if df is not None and not df.empty else 0
+                            except Exception as _ck_err:
+                                logger.warning(
+                                    f"imported-for-reconciliation: could not check unreconciled aentry "
+                                    f"for {bc} period {period_start}..{period_end}: {_ck_err} — skipping promote"
+                                )
+                                unreconciled_in_period = -1  # don't promote on error
+
+                        if unreconciled_in_period != 0:
+                            logger.info(
+                                f"imported-for-reconciliation: NOT auto-marking '{stmt.get('filename', '')}' — "
+                                f"balance matches but {unreconciled_in_period} aentry rows in period "
+                                f"are still unreconciled in Opera"
+                            )
+                            continue
+
+                        try:
+                            email_storage.mark_statement_reconciled(
+                                filename=stmt['filename'],
+                                bank_code=bc
+                            )
+                            stmt['is_reconciled'] = 1
+                            logger.info(f"Auto-marked statement '{stmt['filename']}' as reconciled (closing {closing} matches Opera reconciled balance {rec_bal}, all aentry reconciled)")
+                        except Exception as mark_err:
+                            logger.warning(f"Failed to auto-mark statement reconciled: {mark_err}")
 
                     # Filter out auto-reconciled statements if not including reconciled
                     if not include_reconciled:
