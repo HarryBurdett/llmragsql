@@ -40,7 +40,12 @@ import sys
 from collections import defaultdict
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
+
+try:
+    import yaml  # type: ignore
+except ImportError:
+    yaml = None  # validated at runtime
 
 ROOT = Path(__file__).resolve().parent.parent
 SNAPSHOT_PATH = ROOT / 'scripts' / 'opera_snapshot.json'
@@ -103,9 +108,10 @@ PREFIX_OVERRIDES = {
 }
 
 
-def load_snapshot() -> Dict[str, List[str]]:
+def load_snapshot(path: Optional[Path] = None) -> Dict[str, List[str]]:
     """Return mapping of table_name -> list of column names."""
-    with open(SNAPSHOT_PATH) as f:
+    snap_path = path if path is not None else SNAPSHOT_PATH
+    with open(snap_path) as f:
         snap = json.load(f)
     tables = snap.get('tables', {})
     return {tname: list(tdef.get('columns', [])) for tname, tdef in tables.items()}
@@ -143,10 +149,14 @@ def build_indices(schema: Dict[str, List[str]]) -> Tuple[Set[str], Dict[str, Set
     return all_columns, dict(col_to_tables), prefix_to_tables
 
 
-def iter_python_files() -> List[Path]:
+def iter_python_files(scan_roots: Optional[list[Path]] = None) -> List[Path]:
     files: List[Path] = []
-    for top in SCAN_ROOTS:
-        root = ROOT / top
+    roots: list[Path]
+    if scan_roots:
+        roots = [Path(r).resolve() for r in scan_roots]
+    else:
+        roots = [ROOT / top for top in SCAN_ROOTS]
+    for root in roots:
         if not root.exists():
             continue
         for p in root.rglob('*.py'):
@@ -156,6 +166,28 @@ def iter_python_files() -> List[Path]:
                 continue
             files.append(p)
     return sorted(files)
+
+
+def _is_suppressed(finding: Dict, file_path: Path, suppressions: list) -> bool:
+    """Match a finding against the suppression list. A suppression
+    matches if file path resolves to the same path AND line number
+    matches AND column matches.
+    """
+    finding_file = file_path.resolve()
+    for s in suppressions:
+        try:
+            sup_file = Path(s['file']).resolve()
+        except Exception:
+            continue
+        if sup_file != finding_file:
+            continue
+        if s['column'] != finding['column']:
+            continue
+        # Line is exact for now; allow integer or string
+        if int(s['line']) != int(finding['line']):
+            continue
+        return True
+    return False
 
 
 def extract_sql_blocks(source: str) -> List[Tuple[int, str]]:
@@ -304,17 +336,62 @@ def validate_file(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--strict', action='store_true',
-                        help='Exit 1 if any unknown columns are found.')
+                        help='Exit 1 if any unsuppressed unknown columns are found.')
     parser.add_argument('--suggest', action='store_true',
-                        help='Show Levenshtein suggestions for each unknown column.')
+                        help='Show Levenshtein near-misses for each unknown column.')
     parser.add_argument('--include-wrong-table', action='store_true',
                         help='Also report columns that exist but in a different table than the FROM/UPDATE.')
+    parser.add_argument('--snapshot', type=str, default=None,
+                        help='Path to opera_snapshot.json (default: scripts/opera_snapshot.json under repo root).')
+    parser.add_argument('--scan-root', action='append', default=None,
+                        help='Override default scan roots; can be repeated.')
+    parser.add_argument('--suppressions', type=str, default=None,
+                        help='Path to sql_validator_suppressions.yaml (default: scripts/sql_validator_suppressions.yaml).')
     args = parser.parse_args()
 
-    schema = load_snapshot()
+    # Resolve paths
+    snapshot_path = Path(args.snapshot).resolve() if args.snapshot else SNAPSHOT_PATH
+    if not snapshot_path.exists():
+        print(f"ERROR: snapshot not found: {snapshot_path}", file=sys.stderr)
+        print("Run scripts/snapshot_opera_schema.py to generate it.", file=sys.stderr)
+        return 2
+
+    suppressions_path = (
+        Path(args.suppressions).resolve() if args.suppressions
+        else ROOT / "scripts" / "sql_validator_suppressions.yaml"
+    )
+    suppressions: list = []
+    if suppressions_path.exists():
+        if yaml is None:
+            print(f"ERROR: PyYAML required to read {suppressions_path}", file=sys.stderr)
+            return 2
+        try:
+            with open(suppressions_path) as f:
+                data = yaml.safe_load(f) or {}
+            if not isinstance(data, dict) or 'suppressions' not in data:
+                print(f"ERROR: {suppressions_path} must have top-level 'suppressions' list", file=sys.stderr)
+                return 3
+            suppressions = data.get('suppressions') or []
+            if not isinstance(suppressions, list):
+                print(f"ERROR: 'suppressions' must be a list in {suppressions_path}", file=sys.stderr)
+                return 3
+            # Each entry must be a dict with at least file/line/column/reason
+            for i, s in enumerate(suppressions):
+                if not isinstance(s, dict):
+                    print(f"ERROR: suppression #{i} is not a mapping in {suppressions_path}", file=sys.stderr)
+                    return 3
+                for k in ('file', 'line', 'column', 'reason'):
+                    if k not in s:
+                        print(f"ERROR: suppression #{i} missing required key '{k}' in {suppressions_path}", file=sys.stderr)
+                        return 3
+        except yaml.YAMLError as e:
+            print(f"ERROR: cannot parse suppressions file {suppressions_path}: {e}", file=sys.stderr)
+            return 3
+
+    schema = load_snapshot(snapshot_path)
     all_columns, col_to_tables, prefix_to_tables = build_indices(schema)
 
-    files = iter_python_files()
+    files = iter_python_files(args.scan_root)
     print(f"Scanning {len(files)} Python files against {len(schema)} Opera tables "
           f"({len(all_columns)} unique columns)…\n")
 
@@ -329,8 +406,9 @@ def main() -> int:
         findings_by_file[path] = findings
 
     for path, findings in sorted(findings_by_file.items()):
-        rel = path.relative_to(ROOT)
-        unknowns = [f for f in findings if f['category'] == 'unknown']
+        rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+        unknowns = [f for f in findings if f['category'] == 'unknown'
+                    and not _is_suppressed(f, path, suppressions)]
         wrong = [f for f in findings if f['category'] == 'wrong_table']
         if not unknowns and not wrong:
             continue

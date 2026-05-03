@@ -1,0 +1,17 @@
+# Schema-validator suppression list.
+#
+# Adding a suppression is a code-review step — explain WHY the false
+# positive exists. The validator refuses to start if this file is
+# malformed, so be careful with the YAML.
+#
+# Schema:
+#   suppressions:
+#     - file: <absolute or repo-relative path>
+#       line: <integer line number>
+#       column: <the identifier the validator flagged, e.g. db_name>
+#       reason: |
+#         Free-form text. Multi-line OK. Keep it specific — "false
+#         positive" alone is not enough.
+#       added: 2026-05-03
+#       added_by: <username or 'claude'>
+suppressions: []
