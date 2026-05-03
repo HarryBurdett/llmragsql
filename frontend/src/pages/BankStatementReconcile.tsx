@@ -1327,7 +1327,20 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
         statement_date: statementDate,
         reconciliation_date: statementDate,
       });
-      return response.data;
+      const data = response.data;
+
+      // Period validation surface (matcher-period-bound spec): the API
+      // returns success=false with an out_of_period list when the
+      // matched entries straddle the statement period.
+      if (data && (data as any).out_of_period && Array.isArray((data as any).out_of_period)) {
+        const oop = (data as any).out_of_period as Array<{entry: string; date: string; period_start: string; period_end: string}>;
+        const lines = oop.map(e => `  • ${e.entry} dated ${e.date}`).join('\n');
+        const period = oop.length > 0 ? `${oop[0].period_start} to ${oop[0].period_end}` : '';
+        const msg = `Cannot reconcile — these entries fall outside the statement period (${period}):\n\n${lines}\n\nEdit your selection to include only in-period entries, or extend the period if these legitimately belong.`;
+        throw new Error(msg);
+      }
+
+      return data;
     },
     onSuccess: () => {
       setSelectedEntries(new Set());
