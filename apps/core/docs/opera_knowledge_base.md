@@ -2214,3 +2214,21 @@ Orphan tmpstat reservations (entries with `ae_tmpstat > 0 AND ae_reclnum = 0` fr
 3. If the identifier is a Python variable that just matches the column-shape regex, add a suppression with a specific reason.
 
 **Refreshing the snapshot:** the validator reads `scripts/opera_snapshot.json` — re-run `scripts/snapshot_opera_schema.py` if Opera schema changes (rare). The snapshot is committed to git so CI uses a deterministic version.
+
+## Snapshot Rollup + Local Mirror + CI Gate
+
+**`scripts/regenerate_field_reference.py`** is the deterministic regenerator for `COMPLETE_FIELD_REFERENCE.md` — the rollup of all JSON snapshots in the central knowledge library at `~/opera-knowledge-ref/packages/opera-knowledge/transaction-library/`. Same snapshots in → byte-identical markdown out. Idempotent. Atomic write.
+
+**The local mirror at `apps/core/docs/opera_transaction_field_reference.md` is a symlink** to the central rollup. Reading the local path always reads central — drift is impossible by construction. Set up via `scripts/setup_local_kb_mirror.py` (idempotent installer; renames any existing local copy to `.md.bak`).
+
+**CI gate:** `.github/workflows/snapshot-rollup-check.yml` runs on every PR and main push, regenerating the rollup against the central JSON inputs and comparing to what's committed. PR blocked from merge if stale. To fix: run `python scripts/regenerate_field_reference.py` locally, commit the updated rollup to central, push, then re-run the failed workflow.
+
+**Determinism guarantees** (test-pinned in `tests/test_regenerate_field_reference.py`):
+- File ordering: lexicographic by snapshot filename.
+- Module ordering: fixed `MODULE_ORDER` constant; modules outside the list appended sorted lexicographically at the end.
+- Within-module ordering: lexicographic by snapshot's `name` field.
+- JSON in code blocks: `sort_keys=True`.
+- No timestamps in output (would break determinism).
+- Empty changes list omits the table-updated table.
+
+If you add a new module category (e.g. a new external integration that captures snapshots), add it to `MODULE_ORDER` to control its position; otherwise it lands at the end.
