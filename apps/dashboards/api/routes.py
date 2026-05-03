@@ -1689,7 +1689,7 @@ async def get_revenue_composition(year: int = 2026):
                 COALESCE(NULLIF(RTRIM(na.na_subt), ''), 'Other') as category,
                 SUM(-nt_value) as revenue
             FROM ntran WITH (NOLOCK) nt
-            LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt) AND na.na_year = nt.nt_year
+            LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt)
             WHERE RTRIM(nt.nt_type) IN ('E', '30')
             AND nt.nt_year IN ({year}, {year - 1})
             GROUP BY nt.nt_year, COALESCE(NULLIF(RTRIM(na.na_subt), ''), 'Other')
@@ -2487,7 +2487,7 @@ async def get_revenue_by_category_detailed(year: int = 2026):
                 ) as category,
                 SUM(-nt.nt_value) as revenue
             FROM ntran WITH (NOLOCK) nt
-            LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt) AND na.na_year = nt.nt_year
+            LEFT JOIN nacnt na ON RTRIM(nt.nt_acnt) = RTRIM(na.na_acnt)
             WHERE RTRIM(nt.nt_type) IN ('E', '30')
             AND nt.nt_year IN ({year}, {year - 1})
             GROUP BY nt.nt_year, nt.nt_period,
