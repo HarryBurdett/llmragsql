@@ -10516,6 +10516,91 @@ async def complete_reconciliation(
     if not matched_entries:
         return {"success": False, "error": "No matched entries provided"}
 
+    # Period-bound validation (matcher-period-bound spec).
+    # Entries paired by the matcher must fall within the statement's
+    # own period (with the same grace window the matcher uses) before
+    # we apply ae_tmpstat or commit reconcile state. Today's bug
+    # silently set tmpstat on a Feb entry because the matcher's old
+    # 45-day tolerance pulled it in against a March statement.
+    from datetime import date as _date_type, datetime as _dt, timedelta as _td
+
+    def _to_date(v):
+        if v is None:
+            return None
+        if isinstance(v, _date_type) and not isinstance(v, _dt):
+            return v
+        if isinstance(v, _dt):
+            return v.date()
+        if isinstance(v, str):
+            try:
+                return _dt.fromisoformat(v.replace('Z', '+00:00')).date()
+            except ValueError:
+                try:
+                    return _date_type.fromisoformat(v[:10])
+                except ValueError:
+                    return None
+        return None
+
+    # Period from request body (preferred) or from import_id lookup
+    period_start = _to_date(request_body.get('period_start') if request_body else None)
+    period_end = _to_date(request_body.get('period_end') if request_body else None)
+    if (period_start is None or period_end is None) and import_id and email_storage:
+        with email_storage._get_connection() as _c:
+            _cur = _c.cursor()
+            _cur.execute(
+                "SELECT period_start, period_end FROM bank_statement_imports WHERE id = ?",
+                (import_id,),
+            )
+            _row = _cur.fetchone()
+            if _row is not None:
+                period_start = period_start or _to_date(_row['period_start'])
+                period_end = period_end or _to_date(_row['period_end'])
+
+    period_grace_days = 7
+    if period_start is not None and period_end is not None and matched_entries:
+        grace_start = period_start - _td(days=period_grace_days)
+        grace_end = period_end + _td(days=period_grace_days)
+        entry_numbers = [
+            str(m.get('entry_number', '')).strip()
+            for m in matched_entries
+            if m.get('entry_number')
+        ]
+        if entry_numbers:
+            quoted = ','.join(f"'{e.replace(chr(39), chr(39)+chr(39))}'" for e in entry_numbers)
+            df = sql_connector.execute_query(f"""
+                SELECT ae_entry, ae_lstdate
+                FROM aentry WITH (NOLOCK)
+                WHERE ae_acnt = '{bank_code}'
+                AND RTRIM(ae_entry) IN ({quoted})
+            """)
+            date_by_entry = {}
+            if df is not None and not df.empty:
+                for _, r in df.iterrows():
+                    ent = str(r.get('ae_entry', '')).strip()
+                    d = _to_date(r.get('ae_lstdate'))
+                    date_by_entry[ent] = d
+
+            out_of_period = []
+            for m in matched_entries:
+                ent = str(m.get('entry_number', '')).strip()
+                d = date_by_entry.get(ent)
+                if d is None:
+                    continue  # entry not found — let the existing flow handle that
+                if d < grace_start or d > grace_end:
+                    out_of_period.append({
+                        'entry': ent,
+                        'date': d.isoformat(),
+                        'period_start': period_start.isoformat(),
+                        'period_end': period_end.isoformat(),
+                    })
+
+            if out_of_period:
+                return {
+                    "success": False,
+                    "error": "Entries fall outside the statement period",
+                    "out_of_period": out_of_period,
+                }
+
     # Acquire bank-level lock
     from sql_rag.import_lock import acquire_import_lock, release_import_lock
     if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="bank-reconciliation-complete"):
