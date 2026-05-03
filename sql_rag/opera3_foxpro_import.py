@@ -908,7 +908,7 @@ class Opera3FoxProImport:
             profile_code = None
             for record in sname_table:
                 if record.sn_account.strip().upper() == customer_account.upper():
-                    profile_code = record.sn_sprfl.strip() if hasattr(record, 'sn_sprfl') else ''
+                    profile_code = record.sn_cprfl.strip() if hasattr(record, 'sn_cprfl') else ''
                     break
 
             if not profile_code:

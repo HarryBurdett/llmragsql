@@ -1406,7 +1406,7 @@ class BankStatementMatcherOpera3:
         """
         Get the debtors control account for a specific customer.
 
-        Looks up the customer's profile (sn_sprfl) and gets the control account
+        Looks up the customer's profile (sn_cprfl) and gets the control account
         from the profile (sc_dbtctrl). If blank or not found, returns company default.
 
         Args:
@@ -1434,7 +1434,7 @@ class BankStatementMatcherOpera3:
             for record in customer_records:
                 acct = record.get('sn_account', '').strip()
                 if acct.upper() == customer_account.upper():
-                    profile_code = record.get('sn_sprfl', '').strip()
+                    profile_code = record.get('sn_cprfl', '').strip()
                     break
 
             if not profile_code:
