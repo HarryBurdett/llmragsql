@@ -1112,6 +1112,120 @@ async def unignore_transaction_by_match(
         return {"success": False, "error": str(e)}
 
 
+@router.get("/api/reconcile/bank/{bank_code}/orphan-tmpstat")
+async def list_orphan_tmpstat(bank_code: str):
+    """List aentries on this bank with dangling ae_tmpstat reservations
+    that aren't part of a real reconciliation (ae_reclnum = 0). These
+    are the residue of partial-reconcile attempts that didn't finalise
+    — they block the entries from future reconciliations until cleared.
+
+    Read-only: returns the list. Use the matching POST to clear.
+    """
+    if not sql_connector:
+        return {"success": False, "error": "No database connection"}
+    try:
+        df = sql_connector.execute_query(f"""
+            SELECT ae_entry, ae_lstdate, ae_value/100.0 AS value_pds,
+                   ae_entref, ae_tmpstat, ae_statln
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{bank_code}'
+              AND ae_tmpstat > 0
+              AND (ae_reclnum IS NULL OR ae_reclnum = 0)
+            ORDER BY ae_lstdate, ae_entry
+        """)
+        rows = []
+        if df is not None and not df.empty:
+            for _, r in df.iterrows():
+                rows.append({
+                    'entry': str(r.get('ae_entry', '')).strip(),
+                    'date': str(r.get('ae_lstdate', ''))[:10],
+                    'value': float(r.get('value_pds', 0) or 0),
+                    'reference': (r.get('ae_entref') or '').strip(),
+                    'tmpstat': int(r.get('ae_tmpstat') or 0),
+                    'statement_line': int(r.get('ae_statln') or 0),
+                })
+        return {"success": True, "count": len(rows), "entries": rows}
+    except Exception as e:
+        logger.error(f"list_orphan_tmpstat failed for {bank_code}: {e}")
+        return {"success": False, "error": friendly_db_error(e) if 'friendly_db_error' in globals() else str(e)}
+
+
+@router.post("/api/reconcile/bank/{bank_code}/clear-orphan-tmpstat")
+async def clear_orphan_tmpstat(bank_code: str, request: Request):
+    """Clear ae_tmpstat reservations on aentries that are not part of
+    a real reconciliation (ae_reclnum = 0). Use the GET endpoint above
+    to preview what will be cleared.
+
+    Optional request body: {"entry_numbers": ["P10000...", ...]} to
+    restrict to specific entries. Without it, clears ALL orphan tmpstats
+    on the bank.
+
+    SAFE: only touches ae_tmpstat (the temporary-status field), and
+    only on entries with ae_reclnum = 0 (no committed reconcile data).
+    """
+    if not sql_connector:
+        return {"success": False, "error": "No database connection"}
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    entry_numbers = body.get('entry_numbers') if isinstance(body, dict) else None
+
+    extra_filter = ""
+    if entry_numbers:
+        # Validate
+        if not isinstance(entry_numbers, list) or any(not isinstance(e, str) for e in entry_numbers):
+            return {"success": False, "error": "entry_numbers must be a list of strings"}
+        quoted = ','.join(f"'{e.replace(chr(39), chr(39)+chr(39))}'" for e in entry_numbers)
+        extra_filter = f" AND RTRIM(ae_entry) IN ({quoted})"
+
+    try:
+        # Preview the affected rows for the response
+        df = sql_connector.execute_query(f"""
+            SELECT ae_entry, ae_lstdate, ae_value/100.0 AS value_pds, ae_tmpstat
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{bank_code}'
+              AND ae_tmpstat > 0
+              AND (ae_reclnum IS NULL OR ae_reclnum = 0)
+              {extra_filter}
+        """)
+        affected = []
+        if df is not None and not df.empty:
+            for _, r in df.iterrows():
+                affected.append({
+                    'entry': str(r.get('ae_entry', '')).strip(),
+                    'date': str(r.get('ae_lstdate', ''))[:10],
+                    'value': float(r.get('value_pds', 0) or 0),
+                    'previous_tmpstat': int(r.get('ae_tmpstat') or 0),
+                })
+
+        if not affected:
+            return {"success": True, "cleared": 0, "entries": []}
+
+        # Apply the clear in a short, locked update
+        sql_connector.execute_non_query(f"""
+            UPDATE aentry WITH (ROWLOCK)
+            SET ae_tmpstat = 0
+            WHERE ae_acnt = '{bank_code}'
+              AND ae_tmpstat > 0
+              AND (ae_reclnum IS NULL OR ae_reclnum = 0)
+              {extra_filter}
+        """)
+
+        for a in affected:
+            logger.info(
+                f"clear_orphan_tmpstat: {bank_code} cleared {a['entry']} "
+                f"({a['date']}, £{a['value']:.2f}, was tmpstat={a['previous_tmpstat']})"
+            )
+
+        return {"success": True, "cleared": len(affected), "entries": affected}
+    except Exception as e:
+        logger.error(f"clear_orphan_tmpstat failed for {bank_code}: {e}")
+        return {"success": False, "error": friendly_db_error(e) if 'friendly_db_error' in globals() else str(e)}
+
+
 
 
 
