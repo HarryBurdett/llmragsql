@@ -491,3 +491,14 @@ def test_check_duplicate_before_posting_delegates():
         "sign-blind stran regression in check_duplicate_before_posting"
     assert "ABS(ABS(pt_trvalue)" not in body, \
         "sign-blind ptran regression in check_duplicate_before_posting"
+
+
+def test_bank_duplicates_exact_path_uses_signed_comparison():
+    from pathlib import Path
+    bd = Path(__file__).resolve().parent.parent / "sql_rag" / "bank_duplicates.py"
+    src = bd.read_text(encoding='utf-8')
+
+    # The "exact" cashbook match in find_duplicates uses signed,
+    # NOT ABS-on-ABS
+    assert "ABS(ABS(at_value)" not in src, \
+        "Sign-blind ABS regression in bank_duplicates.py exact path"
