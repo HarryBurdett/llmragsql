@@ -139,6 +139,10 @@ The system matches statement lines to Opera in this order:
 - If the difference is < 15%, neither is used (too ambiguous — user must choose)
 - If one clearly wins, it's used
 
+### Correction-pair-matched entries
+
+Entries that have been matched in Opera (via Opera's own matching facility — used to link a mistaken posting with its reversing entry) are **automatically excluded** from new-statement matching. They show neither as "in Opera" nor as "needs posting" — they're settled and out of the rec process. This mirrors Opera's own reconciliation behaviour.
+
 ---
 
 ## Pattern Learning

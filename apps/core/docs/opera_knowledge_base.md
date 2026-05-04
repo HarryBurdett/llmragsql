@@ -583,6 +583,28 @@ The local SQL RAG `intsys` data folder is the *installation* identity (the user'
 
 ---
 
+## Bank Rec Open-Items Rule (CRITICAL)
+
+An `aentry` row is a candidate for matching against a new bank statement iff:
+
+```
+ae_reclnum = 0 AND ae_remove = 0
+```
+
+**Why both filters:**
+- `ae_reclnum > 0` means the entry was reconciled in a past batch. Per Opera convention, a reconciled entry is deemed a correct accounting entry and never re-matches against a new statement.
+- `ae_remove = True` means the entry has been matched out via Opera's matching facility (e.g. linked with its reversing entry as a correction pair). Both sides of the pair cancel out and are settled — they do not appear in bank reconciliation.
+
+**Single source of truth:** `sql_rag/opera_open_items.py` exports:
+- `OPEN_FOR_REC_SQL = "ae_reclnum = 0 AND ae_remove = 0"` — SQL fragment
+- `is_open_for_rec(aentry_row) -> bool` — Python helper for in-memory filters
+
+Every site that fetches Opera atran/aentry candidates for bank-rec MUST apply this rule. Tests in `tests/test_bank_rec_candidate_filter.py` enforce it.
+
+**Read-side only:** the filter never modifies Opera data. If an entry should appear / not appear in bank rec, the operator changes its state in Opera (reconcile it, or use the matching facility); the code respects whatever Opera holds.
+
+---
+
 ## Opera 3 (FoxPro Version)
 
 Opera 3 is the older version of Pegasus Opera that uses Visual FoxPro DBF files instead of SQL Server.
