@@ -1464,7 +1464,22 @@ class BankStatementImport:
         from sql_rag.duplicate_check_se import OperaSEDataSource
 
         if not txn.action or txn.action in ('skip',):
-            return False, ""
+            # Type-blind fallback: when the customer/supplier matcher couldn't
+            # classify this transaction (action is None), the type-aware
+            # check_for_duplicate below CAN'T run — it requires action to
+            # pick the at_type filter. But before commit 856d5ad the function
+            # had its own type-blind atran lookup that would still catch
+            # "this signed amount on this bank on this date already exists in
+            # Opera" regardless of which posting type it was. Without that
+            # fallback, scan results show transactions as 'unmatched/needs
+            # posting' even though Opera already has them.
+            #
+            # Restore the type-blind fallback here. Match by:
+            #   - same bank account (at_acnt = bank_code)
+            #   - same signed amount in pence (at_value = amount × 100, sign-aware)
+            #   - posted date within ±7 days of the statement date
+            # Read-only NOLOCK; never writes Opera.
+            return self._is_already_posted_typeblind(txn)
 
         ds = OperaSEDataSource(self.sql_connector)
 
@@ -1499,6 +1514,74 @@ class BankStatementImport:
         # LEDGER_ALLOCATION_TARGET → caller posts; we surface the info.
         if result.kind is DuplicateMatchKind.LEDGER_ALLOCATION_TARGET:
             return False, f"allocation target: {result.reason}"
+        return False, ""
+
+    def _is_already_posted_typeblind(
+        self, txn, date_tolerance_days: int = 7
+    ) -> Tuple[bool, str]:
+        """Type-blind fallback for `_is_already_posted` when no action is set.
+
+        Looks for ANY atran row on the same bank with the same signed amount
+        within the date tolerance. Sign-aware (a -£32.66 statement line will
+        NOT match a +£32.66 atran row). Used when the customer/supplier
+        matcher couldn't classify the transaction so the type-aware
+        check_for_duplicate can't run.
+
+        Returns (True, reason) and sets txn.is_duplicate=True if a match is
+        found, so the UI categorises the row as "already in Opera" instead
+        of "unmatched / needs posting".
+
+        Read-only NOLOCK; never writes Opera. Bypasses ledger (stran/ptran)
+        and allocation paths — those require an action to disambiguate.
+        """
+        if self.sql_connector is None:
+            return False, ""
+
+        try:
+            from datetime import timedelta as _td
+        except Exception:
+            return False, ""
+
+        # Signed amount in pence — at_value already carries the sign
+        amount_pence = int(round(float(txn.amount) * 100))
+        if amount_pence == 0:
+            return False, ""
+
+        date_from = txn.date - _td(days=date_tolerance_days)
+        date_to = txn.date + _td(days=date_tolerance_days)
+
+        try:
+            df = self.sql_connector.execute_query(f"""
+                SELECT TOP 1 ae_entry, ae_cbtype, at_value, at_pstdate, at_type
+                FROM atran WITH (NOLOCK)
+                WHERE at_acnt = '{self.bank_code}'
+                  AND at_value = {amount_pence}
+                  AND at_pstdate BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
+                ORDER BY ABS(DATEDIFF(day, at_pstdate, '{txn.date.isoformat()}'))
+            """)
+        except Exception as e:
+            logger.debug(f"_is_already_posted_typeblind: SQL error: {e}")
+            return False, ""
+
+        if df is None or getattr(df, 'empty', True):
+            return False, ""
+
+        try:
+            row = df.iloc[0] if hasattr(df, 'iloc') else df[0]
+            entry_number = str(row['ae_entry']).strip() if 'ae_entry' in row else None
+            posted_date = row['at_pstdate'] if 'at_pstdate' in row else None
+            at_type = int(row['at_type']) if 'at_type' in row else None
+        except Exception:
+            return False, ""
+
+        if entry_number:
+            txn.is_duplicate = True
+            reason = (
+                f"Already in Opera as {entry_number} "
+                f"(at_type={at_type}, posted {str(posted_date)[:10]}) "
+                f"— type-blind match"
+            )
+            return True, reason
         return False, ""
 
     def parse_csv(self, filepath: str) -> List[BankTransaction]:
