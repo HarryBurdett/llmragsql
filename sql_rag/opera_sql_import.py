@@ -8398,12 +8398,13 @@ class OperaSQLImport:
                 )
                 period_filter = ""
 
+            from sql_rag.opera_open_items import OPEN_FOR_REC_SQL
             query = f"""
                 SELECT ae_entry, ae_value/100.0 as amount_pounds, ae_lstdate,
                        ae_entref, ae_comment, ae_cbtype, ae_complet
                 FROM aentry WITH (NOLOCK)
                 WHERE ae_acnt = '{bank_account}'
-                  AND ae_reclnum = 0
+                  AND {OPEN_FOR_REC_SQL}
                   {period_filter}
                 ORDER BY ae_lstdate, ae_entry
             """
