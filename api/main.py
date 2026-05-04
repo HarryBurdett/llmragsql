@@ -270,6 +270,17 @@ def _ensure_company_context(company_id: str) -> None:
                 customer_linker.clear_cache()
             except Exception:
                 pass
+
+        # 9. Bank-rec integrity check on the new company. Read-only with NOLOCK;
+        # logs WARNING per offending bank if any. Defensive: never blocks the
+        # context switch even if the DB is unreachable.
+        try:
+            from sql_rag.bank_rec_integrity import log_bank_rec_integrity
+            if company_id in _company_sql_connectors:
+                log_bank_rec_integrity(_company_sql_connectors[company_id], company_id=company_id)
+        except Exception as _bri_err:
+            logger.warning(f"Bank-rec integrity check skipped for {company_id}: {_bri_err}")
+
         logger.info(f"Company context switched to {company_id}")
 
     _last_active_company_id = company_id
