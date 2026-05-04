@@ -123,7 +123,7 @@ _FINANCE_LOG_NAMES = (
     'sql_rag.bank_import_opera3',
     'sql_rag.opera_sql_import',
     'sql_rag.opera3_foxpro_import',
-    'sql_rag.email_storage',
+    'api.email.storage',  # emits "Recorded bank statement import:..." — KEY for tracing missing rows
     'api.auth_middleware',
 )
 for _name in _FINANCE_LOG_NAMES:

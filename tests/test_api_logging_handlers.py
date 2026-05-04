@@ -22,7 +22,6 @@ must land in the durable log file. These tests pin that contract.
 """
 
 import logging
-import re
 from pathlib import Path
 
 API_MAIN_FILE = Path(__file__).parent.parent / "api" / "main.py"
@@ -37,7 +36,7 @@ REQUIRED_LOGGERS = (
     "sql_rag.bank_import_opera3",
     "sql_rag.opera_sql_import",
     "sql_rag.opera3_foxpro_import",
-    "sql_rag.email_storage",
+    "api.email.storage",  # emits "Recorded bank statement import:..." log — must be captured
     "api.auth_middleware",
     "apps.gocardless.api.routes",
     "apps.suppliers.api.routes",
