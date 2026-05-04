@@ -85,10 +85,22 @@ After import, the reconciliation view shows:
 
 ### Stage 5: Complete
 
-When the difference reaches **zero**, all statement lines are accounted for:
-- Reconciled entries are stamped with the batch number and statement date
-- Opera's reconciled balance (`nk_recbal`) is updated to the statement closing balance
-- The statement counter is incremented
+When the difference reaches **zero**, all statement lines are accounted for. The system writes both halves of the reconciliation in a single transaction:
+
+**Per cashbook entry (Stage A):**
+- Stamped with the rec batch number (taken from Opera's bank counter, not derived)
+- Reconciliation date set
+- Running reconciled balance recorded after each entry (in statement-line order)
+- Statement line position assigned (10, 20, 30, ...)
+- Statement number stamped on entry
+
+**Per bank account (Stage B):**
+- Reconciled balance (`nk_recbal`) updated to the statement closing balance
+- Last-rec batch number, last-rec date, last-rec line all advanced
+- Statement number, statement date, statement period (from/to) updated
+- Carried-forward balance cleared
+
+If a reconciliation needs to be reversed (wrong statement, edge-case bug, etc.) the operator should contact support — there is a dedicated reversal tool that cleanly undoes both halves of the rec while preserving the underlying postings and writing a JSON audit trail.
 
 ---
 
@@ -203,4 +215,4 @@ If an import fails partway through (e.g. network error, database lock):
 
 ---
 
-*Last updated: 2026-04-30*
+*Last updated: 2026-05-04*

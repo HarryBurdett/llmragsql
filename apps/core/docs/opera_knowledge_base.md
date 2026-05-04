@@ -275,6 +275,44 @@ The reconciliation page (`BankStatementReconcile.tsx`) calls a dedicated endpoin
 
 Files: `sql_rag/deferred_transactions_db.py`, `apps/bank_reconcile/api/routes.py` (endpoints: `/api/reconcile/bank/{bank_code}/audit-defer`, `/api/bank-import/import-with-overrides`, `/api/opera3/bank-import/import-from-pdf`), `frontend/src/pages/BankStatementReconcile.tsx`.
 
+### Bank Reconciliation Completion Contract (CRITICAL — Stage A + Stage B)
+
+When the user clicks "Confirm Matches" to mark cashbook entries as reconciled, the code MUST:
+
+**Stage A — per aentry row** (one UPDATE per entry):
+- `ae_reclnum` = the rec batch number, **read from `nbank.nk_lstrecl`** (NEVER `MAX(ae_reclnum)+1`)
+- `ae_recdate` = reconciliation date
+- `ae_recbal` = **running balance after this entry** (cumulative, not flat) — start from `nbank.nk_recbal` and add each entry's value in statement-line order
+- `ae_statln` = statement line position (10, 20, 30, ...)
+- `ae_frstat` = `ae_tostat` = statement number
+- `ae_tmpstat` = 0 (cleared)
+
+**Stage B — single UPDATE on `nbank`** (full rec only):
+- `nk_recbal` = closing reconciled balance (running total after all entries)
+- `nk_reclnum` = next batch number (current + 1)
+- `nk_recldte` = reconciliation date
+- `nk_lstrecl` = next batch number
+- `nk_lststno` = the statement number just used
+- `nk_lststdt` = statement date
+- `nk_recstdt` = reconciliation date
+- `nk_recstfr` = `nk_recstto` = statement number
+- `nk_recstln` = max statement line used
+- `nk_reccfwd` = 0 (cleared on full rec; populated on partial rec to track in-progress closing balance)
+
+**Canonical implementation:**
+- Opera SQL SE: `OperaSQLImport.mark_entries_reconciled()` in `sql_rag/opera_sql_import.py` (line 7750)
+- Opera 3: `Opera3FoxProImport.mark_entries_reconciled()` in `sql_rag/opera3_foxpro_import.py` (line 5652)
+
+**Forbidden patterns** (will fail `tests/test_bank_rec_completion_contract.py`):
+- `MAX(ae_reclnum) + 1` to compute next batch (same rule as journals: see CLAUDE.md "Opera Posting Checklist")
+- Flat `ae_recbal = statement_balance × 100` for every entry (must be running balance)
+- Skipping Stage B fields on `nbank` (leaves Opera reports stale)
+- Re-implementing rec writes anywhere other than the canonical functions above
+
+**Reversal tool**: `scripts/reverse_bank_rec_batch.py` cleanly reverses a bad batch (clears Stage A flags, reverts Stage B fields to prior batch close). Backs up to `data/_audit/bank_rec_reversals/` before any write. Idempotent. ROWLOCK on every UPDATE.
+
+**Historical context**: `confirm-matches` route handler and the legacy `StatementReconciler.reconcile_matches()` method violated all of the above until the 2026-05-04 Cloudsis batch 209 fix. See commit `aa9dfc4`.
+
 ### Sequential Statement Gating (Bank Statement Reconciliation)
 
 Per bank, every statement carries a derived state — one of `pending_extraction`, `ready`, `in_progress`, `imported`, `reconciled` — computed by `derive_statement_state()` in `sql_rag/deferred_transactions_db.py` from existing flags (`bank_statement_imports.is_reconciled`, presence in `deferred_transactions.db`, drafts in email storage).
