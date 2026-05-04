@@ -1820,79 +1820,74 @@ async def confirm_statement_matches(
         return {"success": False, "error": f"Bank account {bank_code} is currently being modified by another user. Please wait and try again."}
 
     try:
-        from datetime import datetime
+        from datetime import datetime, date as _date
+        from sql_rag.opera_sql_import import OperaSQLImport
 
-        stmt_date = datetime.strptime(statement_date, '%Y-%m-%d')
+        stmt_date = datetime.strptime(statement_date, '%Y-%m-%d').date()
 
-        # Get the entry IDs to reconcile
+        # Pull the entry IDs to reconcile from the matches list
         entry_ids = [m.get('ae_entry') or m.get('opera_entry', {}).get('ae_entry') for m in matches]
-        entry_ids = [e for e in entry_ids if e]  # Filter out None values
-
+        entry_ids = [e for e in entry_ids if e]
         if not entry_ids:
             return {"success": False, "error": "No valid entry IDs provided"}
 
-        # Get next batch number
-        batch_query = f"""
-            SELECT ISNULL(MAX(ae_reclnum), 0) + 1 as next_batch
-            FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{bank_code}'
-        """
-        batch_result = sql_connector.execute_query(batch_query)
-        next_batch = int(batch_result.iloc[0]['next_batch']) if batch_result is not None else 1
+        # Build entries in the shape expected by OperaSQLImport.mark_entries_reconciled
+        # — statement line numbers start at 10 and step by 10 (matching Opera's
+        # convention).
+        entries = [
+            {'entry_number': eid, 'statement_line': (i + 1) * 10}
+            for i, eid in enumerate(entry_ids)
+        ]
 
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        reconciled_count = 0
+        # Derive the next statement number from nbank.nk_lststno. This mirrors
+        # the previous behaviour ("nk_lststno + 1 each rec") and matches how
+        # Opera itself sequences statements; we MUST NOT compute this from
+        # MAX(ae_reclnum) (CLAUDE.md: never use MAX+1 for sequence allocation).
+        from sqlalchemy import text as _sa_text
+        with sql_connector.engine.connect() as _peek:
+            row = _peek.execute(_sa_text(
+                "SELECT ISNULL(nk_lststno, 0) AS lststno FROM nbank WITH (NOLOCK) WHERE nk_acnt = :b"
+            ), {"b": bank_code}).fetchone()
+        if not row:
+            return {"success": False, "error": f"Bank account {bank_code} not found in nbank"}
+        next_statement_number = int(row[0]) + 1
 
-        with sql_connector.engine.connect() as conn:
-            trans = conn.begin()
-            try:
-                from sqlalchemy import text
+        # Delegate to the canonical Path C implementation. It:
+        #   - reads the rec batch number from nbank.nk_lstrecl (no MAX+1)
+        #   - calculates a per-entry running ae_recbal
+        #   - updates every Stage B field on nbank (nk_recbal, nk_reclnum,
+        #     nk_recldte, nk_lstrecl, nk_lststno, nk_lststdt, nk_recstdt,
+        #     nk_recstfr, nk_recstto, nk_recstln, nk_reccfwd)
+        #   - uses ROWLOCK on every UPDATE
+        opera_import = OperaSQLImport(sql_connector)
+        result = opera_import.mark_entries_reconciled(
+            bank_account=bank_code,
+            entries=entries,
+            statement_number=next_statement_number,
+            statement_date=stmt_date,
+            reconciliation_date=_date.today(),
+            partial=False,
+            closing_balance=statement_balance,
+        )
 
-                for i, entry_id in enumerate(entry_ids):
-                    line_number = (i + 1) * 10
+        release_import_lock(_bank_lock_key(bank_code))
 
-                    update_query = f"""
-                        UPDATE aentry WITH (ROWLOCK)
-                        SET ae_reclnum = {next_batch},
-                            ae_statln = {line_number},
-                            ae_recdate = '{stmt_date.strftime('%Y-%m-%d')}',
-                            ae_recbal = {int(statement_balance * 100)},
-                            datemodified = '{now_str}'
-                        WHERE ae_entry = '{entry_id}'
-                          AND ae_acnt = '{bank_code}'
-                          AND ae_reclnum = 0
-                    """
-                    result = conn.execute(text(update_query))
-                    reconciled_count += result.rowcount
-
-                # Update nbank
-                nbank_update = f"""
-                    UPDATE nbank WITH (ROWLOCK)
-                    SET nk_recbal = {int(statement_balance * 100)},
-                        nk_lstrecl = {next_batch},
-                        nk_lststno = ISNULL(nk_lststno, 0) + 1,
-                        nk_lststdt = '{stmt_date.strftime('%Y-%m-%d')}',
-                        datemodified = '{now_str}'
-                    WHERE nk_acnt = '{bank_code}'
-                """
-                conn.execute(text(nbank_update))
-
-                trans.commit()
-
-                release_import_lock(_bank_lock_key(bank_code))
-                return {
-                    "success": True,
-                    "message": f"Reconciled {reconciled_count} entries",
-                    "reconciled_count": reconciled_count,
-                    "batch_number": next_batch,
-                    "statement_balance": statement_balance
-                }
-            except Exception as e:
-                trans.rollback()
-                raise
+        if result.success:
+            return {
+                "success": True,
+                "message": f"Reconciled {len(entries)} entries",
+                "reconciled_count": len(entries),
+                "batch_number": next_statement_number - 1,  # the batch just used
+                "statement_balance": statement_balance,
+            }
+        else:
+            return {
+                "success": False,
+                "error": "; ".join(result.errors) if getattr(result, 'errors', None) else "Reconciliation failed",
+            }
 
     except Exception as e:
-        logger.error(f"Failed to confirm matches for {bank_code}: {e}")
+        logger.error(f"Failed to confirm matches for {bank_code}: {e}", exc_info=True)
         try:
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:

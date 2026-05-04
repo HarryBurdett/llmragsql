@@ -1384,82 +1384,22 @@ A typical business bank statement has 20-100+ transactions.
 
         return min(score, 1.0), reasons
 
-    def reconcile_matches(self, bank_acnt: str, matches: List[ReconciliationMatch],
-                         statement_balance: float, statement_date: datetime) -> Dict[str, Any]:
-        """
-        Mark matched entries as reconciled in Opera.
-
-        Args:
-            bank_acnt: The bank account code
-            matches: List of confirmed matches to reconcile
-            statement_balance: The closing balance from the statement
-            statement_date: The date of the statement
-
-        Returns:
-            Dict with reconciliation results
-        """
-        if not matches:
-            return {'success': False, 'message': 'No matches to reconcile', 'reconciled_count': 0}
-
-        # Get the next reconciliation batch number
-        batch_query = f"""
-            SELECT ISNULL(MAX(ae_reclnum), 0) + 1 as next_batch
-            FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{bank_acnt}'
-        """
-        batch_result = self.sql_connector.execute_query(batch_query)
-        next_batch = int(batch_result.iloc[0]['next_batch']) if batch_result is not None else 1
-
-        # Get the last statement line number
-        line_query = f"""
-            SELECT ISNULL(nk_lstrecl, 0) as last_line
-            FROM nbank WITH (NOLOCK)
-            WHERE nk_acnt = '{bank_acnt}'
-        """
-        line_result = self.sql_connector.execute_query(line_query)
-        last_line = int(line_result.iloc[0]['last_line']) if line_result is not None else 0
-
-        # Mark each matched entry as reconciled
-        entry_ids = [m.opera_entry['ae_entry'] for m in matches]
-        reconciled_count = 0
-
-        for i, entry_id in enumerate(entry_ids):
-            line_number = (i + 1) * 10  # 10, 20, 30, etc.
-
-            update_query = f"""
-                UPDATE aentry WITH (ROWLOCK)
-                SET ae_reclnum = {next_batch},
-                    ae_statln = {line_number},
-                    ae_recdate = '{statement_date.strftime('%Y-%m-%d')}',
-                    ae_recbal = {int(statement_balance * 100)}
-                WHERE ae_entry = {entry_id}
-                  AND ae_acnt = '{bank_acnt}'
-                  AND ae_reclnum = 0
-            """
-
-            result = self.sql_connector.execute_non_query(update_query)
-            if result:
-                reconciled_count += 1
-
-        # Update nbank with new reconciled balance
-        if reconciled_count > 0:
-            nbank_update = f"""
-                UPDATE nbank WITH (ROWLOCK)
-                SET nk_recbal = {int(statement_balance * 100)},
-                    nk_lstrecl = {next_batch},
-                    nk_lststno = nk_lststno + 1,
-                    nk_lststdt = '{statement_date.strftime('%Y-%m-%d')}'
-                WHERE nk_acnt = '{bank_acnt}'
-            """
-            self.sql_connector.execute_non_query(nbank_update)
-
-        return {
-            'success': True,
-            'message': f'Reconciled {reconciled_count} entries',
-            'reconciled_count': reconciled_count,
-            'batch_number': next_batch,
-            'statement_balance': statement_balance
-        }
+    # NOTE: The legacy `reconcile_matches()` method that used to live here was
+    # removed on 2026-05-04. It had zero callers but was a footgun: it computed
+    # the rec batch number with `MAX(ae_reclnum)+1` (forbidden by CLAUDE.md —
+    # rec sequence numbers must come from `nbank.nk_lstrecl`, never MAX), set
+    # every aentry's `ae_recbal` to a flat closing balance instead of a
+    # running balance, and never updated `nk_reclnum` / `nk_recldte` — the
+    # exact pattern that caused the Cloudsis batch 209 incident.
+    #
+    # Anyone needing to mark cashbook entries as reconciled MUST call:
+    #
+    #     OperaSQLImport.mark_entries_reconciled(...)   # for SQL SE
+    #     Opera3FoxProImport.mark_entries_reconciled(...)  # for Opera 3
+    #
+    # Both implementations correctly use the nbank counters, compute a
+    # per-entry running balance, and update every Stage B field on nbank.
+    # See `tests/test_bank_rec_completion_contract.py` for the contract.
 
     def get_all_entries(self, bank_acnt: str, date_from: Optional[datetime] = None,
                         date_to: Optional[datetime] = None) -> List[Dict[str, Any]]:
