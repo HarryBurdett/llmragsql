@@ -515,6 +515,36 @@ Variance = NL Total - SL Total
 
 ---
 
+## Opera SQL SE — Company → Database Mapping (CRITICAL)
+
+**Source of truth**: `Opera3SESystem.seqco` (the System database, NOT a per-company DB).
+
+Each Opera SQL SE installation has one System database (`Opera3SESystem`) that holds the master list of companies. Each company has a row in `seqco` with these key fields:
+
+| Field | Meaning |
+|---|---|
+| `co_code` | Single-letter company code (`C`, `I`, `K`, `Z`, etc.) |
+| `co_name` | Human-readable company name |
+| `co_databasename` | The actual SQL Server database name, e.g. `Opera3SECompany00C` |
+| `co_servername` | Host\instance, e.g. `SC-INTSYS-MAIN\SQLEXPRESS` |
+| `state` | `1` = active |
+
+**The naming pattern `Opera3SECompany00<code>` is convention, not guaranteed** — always look up `co_databasename` in `seqco` rather than constructing the name from the code.
+
+**Lookup query** (use this before any cross-database query):
+```sql
+SELECT co_code, co_name, co_databasename, co_servername
+FROM Opera3SESystem.dbo.seqco WITH (NOLOCK)
+WHERE state = 1
+ORDER BY co_code;
+```
+
+**Never guess which database holds a given company's data.** Always read `seqco` first. Mis-matching company-to-database is a top source of integrity bugs (writing to the wrong company, reading the wrong figures).
+
+The local SQL RAG `intsys` data folder is the *installation* identity (the user's login + their per-installation app state); inside it, the active company is selected per-request and may switch between any of the active `seqco` rows.
+
+---
+
 ## Opera 3 (FoxPro Version)
 
 Opera 3 is the older version of Pegasus Opera that uses Visual FoxPro DBF files instead of SQL Server.
