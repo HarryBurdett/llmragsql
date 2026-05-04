@@ -83,6 +83,8 @@ After import, the reconciliation view shows:
 - Tick entries to mark them as reconciled
 - The **difference** (statement balance minus Opera reconciled balance) updates in real-time
 
+**Toggle a line in or out of the rec batch:** Each row's status indicator (green ✓ when matched, red ✗ when unmatched) is clickable. Click it to flip — auto-matched lines drop out of this rec batch, manually-matched rows can be excluded, and either can be re-included by clicking again. Lines flipped to ✗ stay open in Opera (`ae_reclnum=0`) and the operator handles them in Opera the same as any other outstanding entry. Use this when the auto-matcher paired a line with the wrong Opera entry, or when an entry needs to stay open for a manual correction in Opera. It's a rare circumstance — most batches reconcile clean — but if you toggle by mistake, completing the rec for that one line in Opera is trivial.
+
 ### Stage 5: Complete
 
 When the difference reaches **zero**, all statement lines are accounted for. The system writes both halves of the reconciliation in a single transaction:
@@ -219,4 +221,4 @@ If an import fails partway through (e.g. network error, database lock):
 
 ---
 
-*Last updated: 2026-05-04*
+*Last updated: 2026-05-04 — Stage 4 click-to-toggle Match status documented*
