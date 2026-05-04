@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from sql_rag.opera_open_items import OPEN_FOR_REC_SQL
+
 
 class OperaSEDataSource:
     def __init__(self, sql_connector: Any) -> None:
@@ -41,6 +43,7 @@ class OperaSEDataSource:
             AND a.at_pstdate BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
             AND ABS(a.at_value - {signed_pence}) < 1
             AND a.at_type = {expected_at_type}
+            AND e.{OPEN_FOR_REC_SQL.replace('AND ', 'AND e.')}
             {excl_clause}
         """
         df = self._sql.execute_query(query)
