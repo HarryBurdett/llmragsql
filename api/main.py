@@ -106,10 +106,33 @@ _file_handler = logging.FileHandler('/Users/maccb/llmragsql/api_debug.log')
 _file_handler.setLevel(logging.INFO)
 _file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(_file_handler)
-# Also add to the opera_sql_import logger
-logging.getLogger('sql_rag.opera_sql_import').addHandler(_file_handler)
-logging.getLogger('api.auth_middleware').addHandler(_file_handler)
-logging.getLogger('api.auth_middleware').setLevel(logging.INFO)
+
+# Loggers that emit information critical for finance-correctness debugging.
+# Every entry here MUST land in api_debug.log — when a posting silently
+# misses a tracking row (e.g. bank_statement_imports), the warnings emitted
+# by these modules are how we find out *why* after the fact.
+#
+# Adding a new module that touches Opera or finance flows? Add it here.
+# Tests in tests/test_api_logging_handlers.py pin this contract.
+_FINANCE_LOG_NAMES = (
+    'apps.bank_reconcile.api.routes',
+    'apps.bank_reconcile',
+    'apps.gocardless.api.routes',
+    'apps.suppliers.api.routes',
+    'sql_rag.bank_import',
+    'sql_rag.bank_import_opera3',
+    'sql_rag.opera_sql_import',
+    'sql_rag.opera3_foxpro_import',
+    'sql_rag.email_storage',
+    'api.auth_middleware',
+)
+for _name in _FINANCE_LOG_NAMES:
+    _lg = logging.getLogger(_name)
+    _lg.addHandler(_file_handler)
+    # Force INFO level so records aren't filtered before reaching the
+    # file handler. (Root logger may be at WARNING in some setups —
+    # basicConfig is a no-op once any handler is configured elsewhere.)
+    _lg.setLevel(logging.INFO)
 
 # --- Per-request company resolution ---
 # Multiple users may be logged into different companies simultaneously.
