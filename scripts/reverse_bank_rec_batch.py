@@ -74,7 +74,8 @@ def snapshot_aentry(cur: pyodbc.Cursor, bank: str, batch: int) -> list[dict]:
     cur.execute(
         """
         SELECT id, ae_acnt, ae_cbtype, ae_entry, ae_value,
-               ae_reclnum, ae_recdate, ae_recbal, ae_statln, ae_complet
+               ae_reclnum, ae_recdate, ae_recbal, ae_statln,
+               ae_frstat, ae_tostat, ae_tmpstat, ae_complet
         FROM aentry WITH (NOLOCK)
         WHERE ae_acnt = ? AND ae_reclnum = ?
         ORDER BY ae_statln, ae_entry
@@ -195,7 +196,9 @@ def main() -> int:
     # Build the planned changes
     print(f"\n=== Planned changes ===")
     print(f"  STAGE A: aentry rows in batch {args.batch} ({len(aentry_pre)} rows)")
-    print(f"    SET ae_reclnum=0, ae_recdate=NULL, ae_recbal=0, ae_statln=0  WHERE ae_acnt='{args.bank}' AND ae_reclnum={args.batch}")
+    print(f"    SET ae_reclnum=0, ae_recdate=NULL, ae_recbal=0, ae_statln=0,")
+    print(f"        ae_frstat=0, ae_tostat=0, ae_tmpstat=0")
+    print(f"    WHERE ae_acnt='{args.bank}' AND ae_reclnum={args.batch}")
     print(f"    (ae_complet stays at 1 — NL transfer was correctly recorded; rec reversal does not undo NL transfer)")
 
     new_recbal = (prior.get('ae_recbal_pence') if prior else 0) or 0
@@ -232,7 +235,10 @@ def main() -> int:
     cur = conn.cursor()
 
     try:
-        # STAGE A — clear rec flags on each aentry row
+        # STAGE A — clear EVERY field that Path C (mark_entries_reconciled)
+        # writes during a rec, on every aentry row in the target batch.
+        # Missing any one of these leaves the entry in a half-reverted state
+        # (e.g. ae_frstat/ae_tostat still showing the old statement number).
         cur.execute(
             """
             UPDATE aentry WITH (ROWLOCK)
@@ -240,6 +246,9 @@ def main() -> int:
                 ae_recdate = NULL,
                 ae_recbal = 0,
                 ae_statln = 0,
+                ae_frstat = 0,
+                ae_tostat = 0,
+                ae_tmpstat = 0,
                 datemodified = SYSUTCDATETIME()
             WHERE ae_acnt = ? AND ae_reclnum = ?
             """,
