@@ -46,10 +46,13 @@ def _build_importer_with_fake_sql(rows):
     from sql_rag.bank_import import BankStatementImport
 
     if rows:
+        # The atran table uses at_* columns. The fallback SELECTs
+        # at_entry, at_cbtype, at_value, at_pstdate, at_type. Tests
+        # build rows under those names so the test data matches the
+        # production query.
         fake_df = MagicMock()
         fake_df.empty = False
         first_row = MagicMock()
-        # Make the row support dict-style access AND `in` checks
         first_row.__getitem__.side_effect = lambda k: rows[0][k]
         first_row.__contains__.side_effect = lambda k: k in rows[0]
         fake_df.iloc = MagicMock()
@@ -76,8 +79,8 @@ def test_unset_action_still_falls_back_to_type_blind_atran_lookup():
     """
     importer, fake_sql = _build_importer_with_fake_sql([
         {
-            'ae_entry': 'P100000754',
-            'ae_cbtype': 'P1',
+            'at_entry': 'P100000754',
+            'at_cbtype': 'P1',
             'at_value': -3266,
             'at_pstdate': date(2026, 4, 1),
             'at_type': 5,
@@ -136,8 +139,8 @@ def test_set_action_falls_back_when_type_aware_finds_nothing():
 
     importer, fake_sql = _build_importer_with_fake_sql([
         {
-            'ae_entry': 'P100000754',
-            'ae_cbtype': 'P1',
+            'at_entry': 'P100000754',
+            'at_cbtype': 'P1',
             'at_value': -3266,
             'at_pstdate': date(2026, 4, 1),
             'at_type': 1,  # nominal_payment — DIFFERENT from action's at_type=5
@@ -175,6 +178,68 @@ def test_set_action_falls_back_when_type_aware_finds_nothing():
     assert type_blind_calls, "Type-blind fallback SQL must run after type-aware misses"
 
 
+def test_typeblind_query_uses_correct_atran_column_names():
+    """The fallback's SQL must reference atran's actual column names.
+
+    Real-world bug: an early version selected `ae_entry, ae_cbtype` from
+    `atran`, but those are aentry's columns. atran uses `at_entry,
+    at_cbtype`. The query failed silently (caught by except Exception
+    and returned False), so every transaction showed as 'unmatched' even
+    though they existed in Opera.
+
+    This test pins that the fallback's SQL contains atran-prefixed
+    column names and does NOT contain aentry-prefixed ones. It also
+    cross-checks against scripts/opera_snapshot.json — the canonical
+    schema source — so any future column-name change in Opera is caught.
+    """
+    import inspect
+    import json
+    import re
+    from sql_rag.bank_import import BankStatementImport
+
+    src = inspect.getsource(BankStatementImport._is_already_posted_typeblind)
+
+    # Strip ONLY the function docstring (first triple-quoted string after
+    # `def ...:`). Don't strip inline triple-quoted SQL strings — those
+    # carry the production query we're inspecting. Also strip Python
+    # comments so historical-bug notes don't trigger false positives.
+    code_only = re.sub(
+        r'(def [^\n]*?:\s*\n\s*)""".*?"""',
+        r'\1',
+        src,
+        count=1,
+        flags=re.DOTALL,
+    )
+    code_only = re.sub(r'#[^\n]*', '', code_only)
+
+    # WHERE-clause + filter columns that the fallback must use
+    must_use = ('at_acnt', 'at_value', 'at_pstdate')
+    for col in must_use:
+        assert col in code_only, f"Fallback SQL must reference {col} (atran column)"
+
+    # Confirm aentry-prefixed columns are NOT used to address atran rows
+    # (these would silently fail at runtime via the swallowed exception).
+    assert 'ae_entry' not in code_only, (
+        "Fallback code must not reference ae_entry — that's an aentry "
+        "column. atran uses at_entry."
+    )
+    assert 'ae_cbtype' not in code_only, (
+        "Fallback code must not reference ae_cbtype — atran uses at_cbtype."
+    )
+
+    # Cross-check against the canonical schema snapshot
+    from pathlib import Path
+    snap_path = Path(__file__).parent.parent / "scripts" / "opera_snapshot.json"
+    if snap_path.exists():
+        snap = json.loads(snap_path.read_text())
+        atran_cols = set(snap.get('tables', {}).get('atran', {}).get('columns', []))
+        for col in must_use + ('at_entry', 'at_cbtype', 'at_type'):
+            assert col in atran_cols, (
+                f"{col} not in canonical atran schema — opera_snapshot.json "
+                f"says atran columns are {sorted(atran_cols)}"
+            )
+
+
 def test_set_action_with_type_aware_match_does_not_run_fallback():
     """When type-aware finds a match, the type-blind fallback must NOT also
     run. Avoid redundant SQL and avoid weakening the type-aware protection.
@@ -184,8 +249,8 @@ def test_set_action_with_type_aware_match_does_not_run_fallback():
 
     importer, fake_sql = _build_importer_with_fake_sql([
         {
-            'ae_entry': 'P100000754',
-            'ae_cbtype': 'P1',
+            'at_entry': 'P100000754',
+            'at_cbtype': 'P1',
             'at_value': -3266,
             'at_pstdate': date(2026, 4, 1),
             'at_type': 5,

@@ -1562,8 +1562,12 @@ class BankStatementImport:
         date_to = txn.date + _td(days=date_tolerance_days)
 
         try:
+            # NOTE: atran uses at_* columns (at_entry, at_cbtype). Earlier
+            # version of this query mistakenly selected ae_entry/ae_cbtype
+            # (those are aentry's columns) and silently returned no rows
+            # via the swallowed exception — see test pinning column names.
             df = self.sql_connector.execute_query(f"""
-                SELECT TOP 1 ae_entry, ae_cbtype, at_value, at_pstdate, at_type
+                SELECT TOP 1 at_entry, at_cbtype, at_value, at_pstdate, at_type
                 FROM atran WITH (NOLOCK)
                 WHERE at_acnt = '{self.bank_code}'
                   AND at_value = {amount_pence}
@@ -1571,7 +1575,7 @@ class BankStatementImport:
                 ORDER BY ABS(DATEDIFF(day, at_pstdate, '{txn.date.isoformat()}'))
             """)
         except Exception as e:
-            logger.debug(f"_is_already_posted_typeblind: SQL error: {e}")
+            logger.warning(f"_is_already_posted_typeblind: SQL error: {e}")
             return False, ""
 
         if df is None or getattr(df, 'empty', True):
@@ -1579,7 +1583,7 @@ class BankStatementImport:
 
         try:
             row = df.iloc[0] if hasattr(df, 'iloc') else df[0]
-            entry_number = str(row['ae_entry']).strip() if 'ae_entry' in row else None
+            entry_number = str(row['at_entry']).strip() if 'at_entry' in row else None
             posted_date = row['at_pstdate'] if 'at_pstdate' in row else None
             at_type = int(row['at_type']) if 'at_type' in row else None
         except Exception:
