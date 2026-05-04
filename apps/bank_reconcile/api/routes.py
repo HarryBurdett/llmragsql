@@ -1370,20 +1370,21 @@ async def process_bank_statement(
         rec_bal_validated = sequence_validation.get('reconciled_balance')
 
         # If the extracted opening balance doesn't match the reconciled balance,
-        # the AI likely misread the PDF (e.g. picked up a savings account balance).
-        # Use the reconciled balance as the authoritative opening balance.
+        # surface a WARNING but keep the AI extraction as the source of truth.
+        #
+        # Earlier versions auto-overrode opening_balance with reconciled_balance
+        # whenever the two differed — but that corrupted the values for any
+        # statement that wasn't the *next* unreconciled one (re-scans of older
+        # statements, statements after a sequence gap, etc.). The override was
+        # also written back to pdf_extraction_cache.db, poisoning the cache so
+        # later scans returned the corrupted values too. Cloudsis BB005,
+        # 2026-05-04 — see commit 309e96e and analysis.
         if sequence_validation['status'] != 'process' and rec_bal_validated is not None:
-            logger.warning(f"Opening balance mismatch: extracted £{statement_info.opening_balance}, "
-                           f"Opera reconciled £{rec_bal_validated:.2f} — using reconciled balance")
-            statement_info = StatementInfo(
-                bank_name=statement_info.bank_name,
-                account_number=statement_info.account_number,
-                sort_code=statement_info.sort_code,
-                statement_date=statement_info.statement_date,
-                period_start=statement_info.period_start,
-                period_end=statement_info.period_end,
-                opening_balance=rec_bal_validated,
-                closing_balance=statement_info.closing_balance
+            logger.warning(
+                f"Opening balance mismatch on {bank_code}: extracted "
+                f"£{statement_info.opening_balance}, Opera reconciled "
+                f"£{rec_bal_validated:.2f}. Keeping AI extraction. "
+                f"Operator should review if this looks wrong."
             )
 
         # Period-bound the Opera 3 candidate pool — same rule as SE matcher.
@@ -3584,11 +3585,15 @@ async def preview_bank_import_from_pdf(
                     "error": "Bank account mismatch"
                 }
 
-        # Check statement sequence — correct opening balance if AI got it wrong.
-        # Sequential Statement Gating: if the extracted opening matches the closing
-        # of a prior statement that has been imported but not yet reconciled, KEEP
-        # the extracted opening (the chain advances virtually — the prior is in
-        # 'imported' state waiting on a deferred row).
+        # Trust the AI's extraction. Surface a warning if the extracted opening
+        # doesn't match the reconciled balance OR an imported-pending closing,
+        # but DO NOT override — the AI value is the source of truth from the
+        # PDF. The override behaviour was removed on 2026-05-04 (Cloudsis BB005
+        # incident) because it corrupted balances on any statement that wasn't
+        # the next unreconciled one (re-scans, sequence gaps, historical
+        # statements) and poisoned pdf_extraction_cache.db with the wrong
+        # values, so subsequent re-scans returned corrupted data even though
+        # the PDF on disk hadn't changed.
         opening_balance = statement_info_dict.get('opening_balance')
         if opening_balance is not None and reconciled_balance is not None:
             tolerance = 0.02
@@ -3596,18 +3601,26 @@ async def preview_bank_import_from_pdf(
                 ipc = _build_imported_pending_closings(email_storage, bank_code)
                 if round(opening_balance, 2) in ipc:
                     logger.info(
-                        f"preview-from-pdf: opening £{opening_balance:,.2f} differs from "
-                        f"reconciled £{reconciled_balance:,.2f} but matches an imported-"
-                        f"pending prior's closing — keeping extracted opening (sequential gating)"
+                        f"preview-from-pdf: opening £{opening_balance:,.2f} matches an "
+                        f"imported-pending prior's closing — sequential gating chain "
+                        f"advances virtually."
                     )
                 else:
-                    # AI likely extracted wrong opening balance — use reconciled balance
-                    logger.warning(f"preview-from-pdf: Opening balance mismatch: extracted £{opening_balance:,.2f} vs reconciled £{reconciled_balance:,.2f} — using reconciled")
-                    statement_info_dict['opening_balance'] = reconciled_balance
-                    opening_balance = reconciled_balance
+                    logger.warning(
+                        f"preview-from-pdf: Opening balance mismatch on {bank_code}: "
+                        f"extracted £{opening_balance:,.2f} vs Opera reconciled "
+                        f"£{reconciled_balance:,.2f}. Keeping AI extraction "
+                        f"(operator should review if this looks wrong)."
+                    )
         elif opening_balance is None and reconciled_balance is not None:
+            # AI didn't extract any opening — fall back to reconciled balance.
+            # This is a true fallback (no value to override), not a correction.
             statement_info_dict['opening_balance'] = reconciled_balance
             opening_balance = reconciled_balance
+            logger.info(
+                f"preview-from-pdf: AI did not extract opening balance — "
+                f"using Opera reconciled £{reconciled_balance:,.2f} as fallback"
+            )
 
         # Validate closing balance using transaction balance chain from opening.
         # Walks from opening, finding each transaction where current + amount = balance.
@@ -13017,39 +13030,30 @@ async def opera3_preview_bank_import_from_pdf(
                         "error": "Bank account mismatch"
                     }
 
-        # Check statement sequence — correct opening balance if AI got it wrong
-        # (parity with SE preview-from-pdf: don't reject, just correct).
-        # Sequential Statement Gating: if the extracted opening matches the
-        # closing of a prior statement that has been imported but not yet
-        # reconciled, KEEP the extracted opening (the chain advances virtually
-        # — the prior is in 'imported' state waiting on a deferred row).
+        # Trust the AI's extraction. Surface a warning if the extracted opening
+        # differs from the reconciled balance, but DO NOT override — the AI
+        # value is the source of truth from the PDF. The override behaviour
+        # was removed on 2026-05-04 (Cloudsis BB005 incident, parity with the
+        # SE preview-from-pdf fix in the same commit). Auto-overrides corrupted
+        # historical statements and poisoned the extraction cache.
         opening_balance = statement_info.opening_balance if statement_info else None
         if opening_balance is not None and reconciled_balance is not None:
             tolerance = 0.02
             if abs(opening_balance - reconciled_balance) > tolerance:
-                # Check imported-pending prior before overwriting.
                 ipc = _build_imported_pending_closings(email_storage, bank_code)
                 if round(opening_balance, 2) in ipc:
                     logger.info(
-                        f"Opera 3 preview-from-pdf: opening £{opening_balance:,.2f} differs "
-                        f"from reconciled £{reconciled_balance:,.2f} but matches an imported-"
-                        f"pending prior's closing — keeping extracted opening (sequential gating)"
+                        f"Opera 3 preview-from-pdf: opening £{opening_balance:,.2f} matches "
+                        f"an imported-pending prior's closing — sequential gating chain "
+                        f"advances virtually."
                     )
                 else:
-                    # AI likely extracted wrong opening balance — use reconciled balance
-                    logger.warning(f"Opera 3 preview-from-pdf: Opening balance mismatch: extracted £{opening_balance:,.2f} vs reconciled £{reconciled_balance:,.2f} — using reconciled")
-                    if statement_info:
-                        statement_info = type(statement_info)(
-                            bank_name=statement_info.bank_name,
-                            account_number=statement_info.account_number,
-                            sort_code=statement_info.sort_code,
-                            statement_date=statement_info.statement_date,
-                            period_start=statement_info.period_start,
-                            period_end=statement_info.period_end,
-                            opening_balance=reconciled_balance,
-                            closing_balance=statement_info.closing_balance
-                        )
-                    opening_balance = reconciled_balance
+                    logger.warning(
+                        f"Opera 3 preview-from-pdf: Opening balance mismatch on "
+                        f"{bank_code}: extracted £{opening_balance:,.2f} vs Opera "
+                        f"reconciled £{reconciled_balance:,.2f}. Keeping AI extraction "
+                        f"(operator should review if this looks wrong)."
+                    )
         elif opening_balance is None and reconciled_balance is not None:
             if statement_info:
                 statement_info = type(statement_info)(
