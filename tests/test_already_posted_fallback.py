@@ -217,14 +217,14 @@ def test_typeblind_query_uses_correct_atran_column_names():
     for col in must_use:
         assert col in code_only, f"Fallback SQL must reference {col} (atran column)"
 
-    # Confirm aentry-prefixed columns are NOT used to address atran rows
-    # (these would silently fail at runtime via the swallowed exception).
-    assert 'ae_entry' not in code_only, (
-        "Fallback code must not reference ae_entry — that's an aentry "
-        "column. atran uses at_entry."
+    # Confirm atran-aliased columns are used for atran selection/filtering
+    # (not aentry-only references like `FROM atran ... WHERE ae_entry`).
+    # After JOIN aentry, it's OK to reference ae_* in the JOIN condition.
+    assert 'at_entry' in code_only, (
+        "Fallback code must reference at_entry from atran (not ae_entry)"
     )
-    assert 'ae_cbtype' not in code_only, (
-        "Fallback code must not reference ae_cbtype — atran uses at_cbtype."
+    assert 'at_cbtype' in code_only, (
+        "Fallback code must reference at_cbtype from atran (not ae_cbtype)"
     )
 
     # Cross-check against the canonical schema snapshot
@@ -281,4 +281,36 @@ def test_set_action_with_type_aware_match_does_not_run_fallback():
     assert not type_blind_calls, (
         "When type-aware found a match, type-blind fallback must NOT also "
         "run (avoids redundant SQL and unintended behaviour)."
+    )
+
+
+def test_typeblind_skips_removed_entry():
+    """An aentry with ae_remove=True must NOT be a candidate.
+
+    Real-world: Cloudsis BB005 P100000755 (-£198). The operator matched
+    it in Opera as a correction pair so ae_remove=True. The fallback's
+    candidate query must JOIN aentry and exclude this row.
+    """
+    importer, fake_sql = _build_importer_with_fake_sql([])  # empty result
+    txn = _make_txn(
+        name='P Flannery refund',
+        amount=-198.00,
+        txn_date=date(2026, 4, 16),
+        action=None,
+    )
+
+    # Even though we didn't put a row in fake_sql, the SQL it issues
+    # must contain both filters (this is what produces empty in
+    # production when ae_remove=True). Capture and inspect.
+    importer._is_already_posted(txn)
+
+    sql = fake_sql.execute_query.call_args[0][0]
+    assert 'ae_reclnum = 0' in sql, (
+        "Type-blind fallback must filter by ae_reclnum=0 (open items only)"
+    )
+    assert 'ae_remove = 0' in sql, (
+        "Type-blind fallback must filter by ae_remove=0 (exclude correction-pair-matched)"
+    )
+    assert 'JOIN aentry' in sql, (
+        "Type-blind fallback must JOIN aentry to apply the filter"
     )

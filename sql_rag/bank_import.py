@@ -1562,17 +1562,22 @@ class BankStatementImport:
         date_to = txn.date + _td(days=date_tolerance_days)
 
         try:
-            # NOTE: atran uses at_* columns (at_entry, at_cbtype). Earlier
-            # version of this query mistakenly selected ae_entry/ae_cbtype
-            # (those are aentry's columns) and silently returned no rows
-            # via the swallowed exception — see test pinning column names.
+            # JOIN aentry and apply the open-items rule so reconciled or
+            # correction-pair-matched (ae_remove=True) entries are NOT
+            # returned as candidates. See sql_rag/opera_open_items.py.
+            from sql_rag.opera_open_items import OPEN_FOR_REC_SQL
             df = self.sql_connector.execute_query(f"""
-                SELECT TOP 1 at_entry, at_cbtype, at_value, at_pstdate, at_type
-                FROM atran WITH (NOLOCK)
-                WHERE at_acnt = '{self.bank_code}'
-                  AND at_value = {amount_pence}
-                  AND at_pstdate BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
-                ORDER BY ABS(DATEDIFF(day, at_pstdate, '{txn.date.isoformat()}'))
+                SELECT TOP 1 t.at_entry, t.at_cbtype, t.at_value, t.at_pstdate, t.at_type
+                FROM atran t WITH (NOLOCK)
+                JOIN aentry a WITH (NOLOCK)
+                  ON a.ae_acnt = t.at_acnt
+                 AND a.ae_cbtype = t.at_cbtype
+                 AND a.ae_entry = t.at_entry
+                WHERE t.at_acnt = '{self.bank_code}'
+                  AND t.at_value = {amount_pence}
+                  AND t.at_pstdate BETWEEN '{date_from.isoformat()}' AND '{date_to.isoformat()}'
+                  AND a.{OPEN_FOR_REC_SQL.replace('AND ', 'AND a.')}
+                ORDER BY ABS(DATEDIFF(day, t.at_pstdate, '{txn.date.isoformat()}'))
             """)
         except Exception as e:
             logger.warning(f"_is_already_posted_typeblind: SQL error: {e}")
