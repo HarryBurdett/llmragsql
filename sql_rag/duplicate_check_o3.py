@@ -44,7 +44,30 @@ class Opera3DataSource:
         expected_at_type: int,
         exclude_entry_numbers: Optional[List[str]],
     ) -> List[Dict[str, Any]]:
+        """Find atran rows on `bank_code` matching signed_pence/at_type
+        within the date window, restricted to OPEN-FOR-REC aentry headers.
+
+        Open = ae_reclnum=0 AND ae_remove=False (see opera_open_items.py).
+        """
+        from sql_rag.opera_open_items import is_open_for_rec
+
         excluded = set(exclude_entry_numbers or [])
+
+        # Build a lookup of aentry headers keyed by (acnt, entry) so we can
+        # cheaply test the open-items rule per atran row.
+        open_keys: set = set()
+        for row in self._reader.read_table('aentry'):
+            acnt = _row_get(row, 'ae_acnt')
+            entry = _row_get(row, 'ae_entry')
+            if acnt is None or entry is None:
+                continue
+            if not is_open_for_rec({
+                'ae_reclnum': _row_get(row, 'ae_reclnum'),
+                'ae_remove': _row_get(row, 'ae_remove'),
+            }):
+                continue
+            open_keys.add((str(acnt).strip(), str(entry).strip()))
+
         out: List[Dict[str, Any]] = []
         for row in self._reader.read_table('atran'):
             acnt = _row_get(row, 'at_acnt')
@@ -53,6 +76,9 @@ class Opera3DataSource:
             entry = _row_get(row, 'at_entry')
             entry_str = str(entry).strip() if entry is not None else ''
             if entry_str in excluded:
+                continue
+            # Open-items filter — orphan atran (no aentry header) is excluded.
+            if (str(acnt).strip(), entry_str) not in open_keys:
                 continue
             value = _row_get(row, 'at_value')
             if value is None or abs(float(value) - signed_pence) >= 1:

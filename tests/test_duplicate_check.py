@@ -416,6 +416,7 @@ def test_o3_datasource_construction_and_protocol():
 def test_o3_datasource_filters_aentry_by_bank_at_type_and_signed_value():
     """Verify Opera3DataSource filters aentry rows correctly:
     bank, signed pence (within tolerance), at_type, exclude list, date.
+    Must also filter by aentry open-items rule (ae_reclnum=0, ae_remove=False).
     """
     from sql_rag.duplicate_check_o3 import Opera3DataSource
     from datetime import date as _date
@@ -432,7 +433,17 @@ def test_o3_datasource_filters_aentry_by_bank_at_type_and_signed_value():
              'at_value': -19800, 'at_type': 3,
              'at_pstdate': _date(2026, 5, 5)},  # outside window
         ],
-        'aentry': [],
+        'aentry': [
+            # P100000755: open item, matches the query
+            {'ae_acnt': 'BB005', 'ae_entry': 'P100000755',
+             'ae_reclnum': 0, 'ae_remove': False},
+            # R100000407: open item, but outside query params
+            {'ae_acnt': 'BB005', 'ae_entry': 'R100000407',
+             'ae_reclnum': 0, 'ae_remove': False},
+            # P100000900: open item, but outside date window
+            {'ae_acnt': 'BB005', 'ae_entry': 'P100000900',
+             'ae_reclnum': 0, 'ae_remove': False},
+        ],
     }
 
     class _Reader:
