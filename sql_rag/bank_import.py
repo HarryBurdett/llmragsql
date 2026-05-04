@@ -1514,7 +1514,18 @@ class BankStatementImport:
         # LEDGER_ALLOCATION_TARGET → caller posts; we surface the info.
         if result.kind is DuplicateMatchKind.LEDGER_ALLOCATION_TARGET:
             return False, f"allocation target: {result.reason}"
-        return False, ""
+
+        # Type-aware found no match — fall through to a type-BLIND atran
+        # lookup as a safety net. This catches transactions that genuinely
+        # exist in Opera but were posted under a different at_type than the
+        # action implies (e.g. statement payee matches a supplier so action=
+        # purchase_payment / at_type=5, but Opera holds the entry as
+        # at_type=1 nominal_payment to that supplier's NL account). The
+        # entry IS in Opera; the matcher classified it differently. Without
+        # this fallback the operator sees the row as 'unmatched / needs
+        # posting' and risks double-posting. Real example: Cloudsis BB005
+        # April 2026 statement, HISCOX direct debit P100000754.
+        return self._is_already_posted_typeblind(txn)
 
     def _is_already_posted_typeblind(
         self, txn, date_tolerance_days: int = 7

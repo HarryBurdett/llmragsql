@@ -121,11 +121,67 @@ def test_unset_action_with_no_matching_atran_returns_false():
     assert txn.is_duplicate is False
 
 
-def test_set_action_does_not_fall_back():
-    """When action IS set, the fallback must NOT run — the type-aware
-    `check_for_duplicate` path is the correct one. Pinning this prevents
-    the fallback from weakening the existing type-specific protection.
+def test_set_action_falls_back_when_type_aware_finds_nothing():
+    """When action IS set BUT the type-aware check finds no match, the
+    type-blind fallback runs as a safety net.
+
+    Real-world example: HISCOX statement transaction with action=
+    purchase_payment (at_type=5). Opera has the entry posted as a
+    nominal_payment (at_type=1) to HISCOX's NL account. Type-aware
+    check filters by at_type=5 → finds nothing. But the entry IS in
+    Opera — type-blind fallback catches it by amount+bank+date.
     """
+    from unittest.mock import patch
+    from sql_rag.duplicate_check import DuplicateCheckResult, DuplicateMatchKind
+
+    importer, fake_sql = _build_importer_with_fake_sql([
+        {
+            'ae_entry': 'P100000754',
+            'ae_cbtype': 'P1',
+            'at_value': -3266,
+            'at_pstdate': date(2026, 4, 1),
+            'at_type': 1,  # nominal_payment — DIFFERENT from action's at_type=5
+        }
+    ])
+
+    txn = _make_txn(
+        name='HISCOX',
+        amount=-32.66,
+        txn_date=date(2026, 4, 1),
+        action='purchase_payment',  # action IS set, but Opera has at_type=1
+    )
+
+    # Stub the type-aware path to return NONE (no match found via at_type=5)
+    with patch('sql_rag.duplicate_check.check_for_duplicate') as mock_check:
+        mock_check.return_value = DuplicateCheckResult(
+            kind=DuplicateMatchKind.NONE,
+            matched_table=None,
+            matched_entry=None,
+            reason='no match',
+        )
+        is_posted, reason = importer._is_already_posted(txn)
+
+    assert is_posted, (
+        "Type-aware found no match (action=purchase_payment but Opera entry "
+        "is at_type=1) — type-blind fallback must catch it as a safety net."
+    )
+    assert txn.is_duplicate is True
+    assert 'P100000754' in reason
+    # Confirm the type-blind SQL ran
+    type_blind_calls = [
+        c for c in fake_sql.execute_query.call_args_list
+        if c[0] and 'at_value = -3266' in c[0][0]
+    ]
+    assert type_blind_calls, "Type-blind fallback SQL must run after type-aware misses"
+
+
+def test_set_action_with_type_aware_match_does_not_run_fallback():
+    """When type-aware finds a match, the type-blind fallback must NOT also
+    run. Avoid redundant SQL and avoid weakening the type-aware protection.
+    """
+    from unittest.mock import patch
+    from sql_rag.duplicate_check import DuplicateCheckResult, DuplicateMatchKind
+
     importer, fake_sql = _build_importer_with_fake_sql([
         {
             'ae_entry': 'P100000754',
@@ -143,23 +199,21 @@ def test_set_action_does_not_fall_back():
         action='purchase_payment',
     )
 
-    # We don't care what the type-aware check returns here — only that
-    # the type-blind fallback SQL is NOT issued (action is set, so it
-    # shouldn't fire). The type-blind path uses `at_value = -3266` in its
-    # SQL; assert that string never appears in any execute_query call.
-    try:
-        importer._is_already_posted(txn)
-    except Exception:
-        # The real `check_for_duplicate` may raise for various reasons in
-        # this stubbed environment — that's fine. We only care about which
-        # path was taken.
-        pass
+    with patch('sql_rag.duplicate_check.check_for_duplicate') as mock_check:
+        mock_check.return_value = DuplicateCheckResult(
+            kind=DuplicateMatchKind.CASHBOOK_DUPLICATE,
+            matched_table='aentry',
+            matched_entry='P100000754',
+            reason='Already in Opera as P100000754',
+        )
+        is_posted, _ = importer._is_already_posted(txn)
 
+    assert is_posted, "Type-aware match must still flag as duplicate"
     type_blind_calls = [
         c for c in fake_sql.execute_query.call_args_list
         if c[0] and 'at_value = -3266' in c[0][0]
     ]
     assert not type_blind_calls, (
-        "When action is set, the type-blind fallback SQL must NOT run; "
-        "the function should delegate to check_for_duplicate instead."
+        "When type-aware found a match, type-blind fallback must NOT also "
+        "run (avoids redundant SQL and unintended behaviour)."
     )
