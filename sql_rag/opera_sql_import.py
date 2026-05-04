@@ -7833,7 +7833,20 @@ class OperaSQLImport:
                     current_rec_balance = float(nbank_row[1])  # nk_recbal (in pence)
                     current_balance = float(nbank_row[2])  # nk_curbal (in pence)
 
-                    # The reconciliation batch number to assign to entries
+                    # The reconciliation batch number to assign to entries.
+                    # MUST be >= 1: ae_reclnum=0 is the "unreconciled" sentinel
+                    # in Opera, so writing 0 would silently leave entries
+                    # unreconciled. nk_lstrecl normally already points at the
+                    # next batch (>=1), but for fresh banks or post-reversal
+                    # state it may be 0 — refuse rather than corrupt.
+                    if current_rec_line < 1:
+                        raise ValueError(
+                            f"Bank {bank_account} nk_lstrecl is {current_rec_line} — "
+                            f"too low to start a reconciliation batch (ae_reclnum=0 "
+                            f"is the unreconciled sentinel). Run "
+                            f"scripts/reset_bank_rec_sequence.py to set nk_lstrecl "
+                            f"and nk_reclnum to the correct next batch number."
+                        )
                     rec_batch_number = current_rec_line
 
                     # 2. Get the entries to reconcile and validate they exist

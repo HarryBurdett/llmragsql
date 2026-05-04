@@ -5725,6 +5725,21 @@ class Opera3FoxProImport:
                     errors=[f"Bank account {bank_account} not found in nbank"]
                 )
 
+            # MUST be >= 1: ae_reclnum=0 is the "unreconciled" sentinel in Opera,
+            # so writing 0 would silently leave entries unreconciled. Refuse
+            # rather than corrupt. (Mirrors the SE guard in
+            # OperaSQLImport.mark_entries_reconciled.)
+            if current_rec_line < 1:
+                return Opera3ImportResult(
+                    success=False,
+                    errors=[
+                        f"Bank {bank_account} nk_lstrecl is {current_rec_line} — "
+                        f"too low to start a reconciliation batch (ae_reclnum=0 "
+                        f"is the unreconciled sentinel). Reset the bank's nbank "
+                        f"sequence to the correct next batch number first."
+                    ]
+                )
+
             rec_batch_number = current_rec_line
 
             # Build entry lookup map and validate
