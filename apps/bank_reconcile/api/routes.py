@@ -4059,109 +4059,34 @@ async def import_bank_statement_from_pdf(
             "closing_balance": statement_info.closing_balance
         }
 
-        # Check for statement period overlap (prevent double-posting)
-        skip_overlap_check = body.get('skip_overlap_check', False)
-        if not skip_overlap_check and email_storage:
-            period_start_str = statement_info_dict.get('period_start')
-            period_end_str = statement_info_dict.get('period_end')
-            # Fall back to first/last transaction dates if period not explicitly available
-            if not period_start_str and stmt_transactions:
-                dates = [st.date for st in stmt_transactions if st.date]
-                if dates:
-                    period_start_str = min(dates).isoformat() if hasattr(min(dates), 'isoformat') else str(min(dates))
-                    period_end_str = max(dates).isoformat() if hasattr(max(dates), 'isoformat') else str(max(dates))
-
-            if period_start_str and period_end_str:
-                overlap = email_storage.check_period_overlap(
-                    bank_code=bank_code,
-                    period_start=period_start_str,
-                    period_end=period_end_str,
-                    exclude_import_id=resume_import_id
-                )
-                if overlap:
-                    # Same-filename re-import is a continuation, not a conflict.
-                    # Operator went back to add missed lines — accumulate them
-                    # on the existing import record.
-                    if (overlap.get('filename') or '').strip() == (filename or '').strip():
-                        resume_import_id = overlap['import_id']
-                        logger.info(
-                            f"import-from-pdf: same-filename re-import detected — "
-                            f"continuing on existing import_id={resume_import_id}"
-                        )
-                    else:
-                        return {
-                            "success": False,
-                            "overlap_warning": True,
-                            "error": f"Statement period overlaps with a previously imported statement",
-                            "overlap_details": {
-                                "existing_import_id": overlap['import_id'],
-                                "existing_filename": overlap['filename'],
-                                "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
-                                "existing_import_date": overlap['import_date'],
-                                "new_period": f"{period_start_str} to {period_end_str}"
-                            }
-                        }
+        # F9 wedge: shared period-overlap guard + transaction shaping
+        # pipeline. See apps/bank_reconcile/logic/import_orchestration.py.
+        from apps.bank_reconcile.logic.import_orchestration import (
+            check_statement_period_overlap as _check_overlap,
+            convert_to_bank_transactions as _convert_txns,
+            apply_date_overrides as _apply_dates,
+            apply_manual_overrides as _apply_overrides,
+        )
+        overlap_err, resume_import_id = _check_overlap(
+            email_storage=email_storage,
+            bank_code=bank_code,
+            period_start=statement_info_dict.get('period_start'),
+            period_end=statement_info_dict.get('period_end'),
+            stmt_transactions=stmt_transactions,
+            filename=filename,
+            resume_import_id=resume_import_id,
+            skip_overlap_check=body.get('skip_overlap_check', False),
+        )
+        if overlap_err:
+            return overlap_err
 
         # Import using BankStatementImport
         importer = BankStatementImport(bank_code=bank_code, sql_connector=sql_connector)
 
-        # Convert StatementTransaction to BankTransaction format
-        from sql_rag.bank_import import BankTransaction
-        transactions = []
-        for i, st in enumerate(stmt_transactions, start=1):
-            bt = BankTransaction(
-                row_number=i,
-                date=st.date,
-                amount=st.amount,
-                subcategory=st.transaction_type or '',
-                memo=st.description or '',
-                name=st.description or '',
-                reference=st.reference or '',
-                fit_id=''
-            )
-            transactions.append(bt)
-
-        # Process transactions to match accounts
+        transactions = _convert_txns(stmt_transactions)
         importer.process_transactions(transactions)
-
-        # Apply date overrides
-        date_override_map = {d['row']: d['date'] for d in date_overrides}
-        for txn in transactions:
-            if txn.row_number in date_override_map:
-                new_date_str = date_override_map[txn.row_number]
-                txn.original_date = txn.date
-                txn.date = datetime.strptime(new_date_str, '%Y-%m-%d').date()
-
-        # Apply manual overrides
-        override_map = {o['row']: o for o in overrides}
-        for txn in transactions:
-            if txn.row_number in override_map:
-                override = override_map[txn.row_number]
-                if override.get('account'):
-                    txn.manual_account = override.get('account')
-                    txn.manual_ledger_type = override.get('ledger_type')
-                # Apply cashbook type override
-                if override.get('cbtype'):
-                    txn.cbtype = override.get('cbtype')
-                transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer', 'defer'):
-                    txn.action = transaction_type
-                    # Store bank transfer details on the transaction
-                    if transaction_type == 'bank_transfer':
-                        txn.bank_transfer_details = override.get('bank_transfer_details', {})
-                elif override.get('ledger_type') == 'C':
-                    txn.action = 'sales_receipt'
-                elif override.get('ledger_type') == 'S':
-                    txn.action = 'purchase_payment'
-                elif override.get('ledger_type') == 'N':
-                    txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
-                # Apply project/department/VAT codes for nominal entries
-                if override.get('project_code'):
-                    txn.project_code = override['project_code']
-                if override.get('department_code'):
-                    txn.department_code = override['department_code']
-                if override.get('vat_code'):
-                    txn.vat_code = override['vat_code']
+        _apply_dates(transactions, date_overrides)
+        _apply_overrides(transactions, overrides)
 
         # --- Audit deferred rows ---
         # Rows the user marked as 'defer' must NOT be posted to Opera but must
@@ -9610,61 +9535,28 @@ async def import_bank_statement_from_email(
                         if stmt_acct and opera_acct and stmt_acct != opera_acct:
                             return {"success": False, "error": f"Bank account mismatch: statement account {statement_info.account_number} does not match Opera bank {bank_code} account. Please select the correct bank."}
 
-                # Check for statement period overlap (prevent double-posting)
-                skip_overlap_check = request_body.get('skip_overlap_check', False) if request_body else False
-                if not skip_overlap_check and email_storage and statement_info:
-                    period_start_str = statement_info.period_start.isoformat() if hasattr(statement_info, 'period_start') and statement_info.period_start else None
-                    period_end_str = statement_info.period_end.isoformat() if hasattr(statement_info, 'period_end') and statement_info.period_end else None
-                    # Fall back to first/last transaction dates
-                    if not period_start_str and stmt_transactions:
-                        dates = [st.date for st in stmt_transactions if st.date]
-                        if dates:
-                            period_start_str = min(dates).isoformat() if hasattr(min(dates), 'isoformat') else str(min(dates))
-                            period_end_str = max(dates).isoformat() if hasattr(max(dates), 'isoformat') else str(max(dates))
+                # F9 wedge: shared period-overlap guard.
+                from apps.bank_reconcile.logic.import_orchestration import (
+                    check_statement_period_overlap as _check_overlap,
+                    convert_to_bank_transactions as _convert_txns,
+                )
+                _ps = statement_info.period_start.isoformat() if (statement_info and hasattr(statement_info, 'period_start') and statement_info.period_start) else None
+                _pe = statement_info.period_end.isoformat() if (statement_info and hasattr(statement_info, 'period_end') and statement_info.period_end) else None
+                overlap_err, resume_import_id = _check_overlap(
+                    email_storage=email_storage if statement_info else None,
+                    bank_code=bank_code,
+                    period_start=_ps,
+                    period_end=_pe,
+                    stmt_transactions=stmt_transactions,
+                    filename=filename,
+                    resume_import_id=resume_import_id,
+                    skip_overlap_check=(request_body.get('skip_overlap_check', False) if request_body else False),
+                )
+                if overlap_err:
+                    return overlap_err
 
-                    if period_start_str and period_end_str:
-                        overlap = email_storage.check_period_overlap(
-                            bank_code=bank_code,
-                            period_start=period_start_str,
-                            period_end=period_end_str,
-                            exclude_import_id=resume_import_id
-                        )
-                        if overlap:
-                            # Same-filename re-import is a continuation, not a conflict.
-                            if (overlap.get('filename') or '').strip() == (filename or '').strip():
-                                resume_import_id = overlap['import_id']
-                                logger.info(
-                                    f"import-with-overrides: same-filename re-import — "
-                                    f"continuing on import_id={resume_import_id}"
-                                )
-                            else:
-                                return {
-                                    "success": False,
-                                    "overlap_warning": True,
-                                    "error": f"Statement period overlaps with a previously imported statement",
-                                    "overlap_details": {
-                                        "existing_import_id": overlap['import_id'],
-                                        "existing_filename": overlap['filename'],
-                                        "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
-                                        "existing_import_date": overlap['import_date'],
-                                        "new_period": f"{period_start_str} to {period_end_str}"
-                                    }
-                                }
-
-                # Convert StatementTransaction to BankTransaction format
-                transactions = []
-                for i, st in enumerate(stmt_transactions, start=1):
-                    txn = BankTransaction(
-                        row_number=i,
-                        date=st.date,
-                        amount=st.amount,
-                        subcategory=st.transaction_type or '',
-                        memo=st.description or '',
-                        name=st.description or '',
-                        reference=st.reference or '',
-                        fit_id=''
-                    )
-                    transactions.append(txn)
+                # F9 wedge: shared BankTransaction creation.
+                transactions = _convert_txns(stmt_transactions)
 
                 detected_format = "PDF (AI Extraction)"
             finally:
@@ -9681,76 +9573,25 @@ async def import_bank_statement_from_email(
             transactions, detected_format = importer.parse_content(content, filename)
         importer.process_transactions(transactions)
 
-        # Apply date overrides
-        date_override_map = {d['row']: d['date'] for d in date_overrides}
-        for txn in transactions:
-            if txn.row_number in date_override_map:
-                new_date_str = date_override_map[txn.row_number]
-                txn.original_date = txn.date
-                txn.date = datetime.strptime(new_date_str, '%Y-%m-%d').date()
+        # F9 wedge: shared date + manual override application.
+        from apps.bank_reconcile.logic.import_orchestration import (
+            apply_date_overrides as _apply_dates,
+            apply_manual_overrides as _apply_overrides,
+            validate_transaction_periods as _validate_periods,
+            find_unprocessed_repeat_entries as _find_repeats,
+        )
+        _apply_dates(transactions, date_overrides)
+        _apply_overrides(transactions, overrides)
 
-        # Apply manual overrides
-        override_map = {o['row']: o for o in overrides}
-        for txn in transactions:
-            if txn.row_number in override_map:
-                override = override_map[txn.row_number]
-                if override.get('account'):
-                    txn.manual_account = override.get('account')
-                    txn.manual_ledger_type = override.get('ledger_type')
-
-                # Apply cashbook type override
-                if override.get('cbtype'):
-                    txn.cbtype = override.get('cbtype')
-
-                transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
-                    txn.action = transaction_type
-                    # Store bank transfer details on the transaction
-                    if transaction_type == 'bank_transfer':
-                        txn.bank_transfer_details = override.get('bank_transfer_details', {})
-                elif override.get('ledger_type') == 'C':
-                    txn.action = 'sales_receipt'
-                elif override.get('ledger_type') == 'S':
-                    txn.action = 'purchase_payment'
-                elif override.get('ledger_type') == 'N':
-                    txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
-                # Apply project/department/VAT codes for nominal entries
-                if override.get('project_code'):
-                    txn.project_code = override['project_code']
-                if override.get('department_code'):
-                    txn.department_code = override['department_code']
-                if override.get('vat_code'):
-                    txn.vat_code = override['vat_code']
-
-        # Validate periods
+        # F9 wedge: shared period validation.
         period_info = get_current_period_info(sql_connector)
-        period_violations = []
-
-        for txn in transactions:
-            if selected_rows is not None and txn.row_number not in selected_rows:
-                continue
-            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
-                continue
-            if txn.is_duplicate:
-                continue
-
-            ledger_type = get_ledger_type_for_transaction(txn.action)
-            period_result = validate_posting_period(sql_connector, txn.date, ledger_type)
-
-            if not period_result.is_valid:
-                ledger_names = {'SL': 'Sales Ledger', 'PL': 'Purchase Ledger', 'NL': 'Nominal Ledger'}
-                period_violations.append({
-                    "row": txn.row_number,
-                    "date": txn.date.isoformat(),
-                    "name": txn.name,
-                    "amount": txn.amount,
-                    "action": txn.action,
-                    "ledger_type": ledger_type,
-                    "ledger_name": ledger_names.get(ledger_type, ledger_type),
-                    "error": period_result.error_message,
-                    "year": period_result.year,
-                    "period": period_result.period
-                })
+        period_violations = _validate_periods(
+            transactions=transactions,
+            selected_rows=selected_rows,
+            sql_connector=sql_connector,
+            get_ledger_type_for_transaction=get_ledger_type_for_transaction,
+            validate_posting_period=validate_posting_period,
+        )
 
         if period_violations:
             return {
@@ -9763,20 +9604,8 @@ async def import_bank_statement_from_email(
                 }
             }
 
-        # Check for unprocessed repeat entries in OPEN periods only
-        # Period-blocked repeat entries are silently skipped (they can't be posted anyway)
-        unprocessed_repeat_entries = []
-        for txn in transactions:
-            if txn.action == 'repeat_entry' and getattr(txn, 'period_valid', True):
-                unprocessed_repeat_entries.append({
-                    "row": txn.row_number,
-                    "name": txn.name,
-                    "amount": txn.amount,
-                    "date": txn.date.isoformat(),
-                    "entry_ref": getattr(txn, 'repeat_entry_ref', None),
-                    "entry_desc": getattr(txn, 'repeat_entry_desc', None)
-                })
-
+        # F9 wedge: shared unprocessed-repeat-entry detector.
+        unprocessed_repeat_entries = _find_repeats(transactions)
         if unprocessed_repeat_entries:
             return {
                 "success": False,
@@ -13478,48 +13307,24 @@ async def opera3_import_bank_statement_from_pdf(
         if not statement_info:
             return {"success": False, "error": "Failed to extract statement information from PDF"}
 
-        # Check for statement period overlap (prevent double-posting)
-        skip_overlap_check = body.get('skip_overlap_check', False)
-        if not skip_overlap_check and email_storage:
-            period_start_str = statement_info.period_start.isoformat() if hasattr(statement_info, 'period_start') and statement_info.period_start else None
-            period_end_str = statement_info.period_end.isoformat() if hasattr(statement_info, 'period_end') and statement_info.period_end else None
-            # Fall back to first/last transaction dates
-            if not period_start_str and stmt_transactions:
-                dates = [st.date for st in stmt_transactions if st.date]
-                if dates:
-                    period_start_str = min(dates).isoformat() if hasattr(min(dates), 'isoformat') else str(min(dates))
-                    period_end_str = max(dates).isoformat() if hasattr(max(dates), 'isoformat') else str(max(dates))
-
-            if period_start_str and period_end_str:
-                overlap = email_storage.check_period_overlap(
-                    bank_code=bank_code,
-                    period_start=period_start_str,
-                    period_end=period_end_str,
-                    exclude_import_id=resume_import_id
-                )
-                if overlap:
-                    # Same-filename re-import is a continuation, not a conflict.
-                    # Operator went back to add missed lines — accumulate them
-                    # on the existing import record.
-                    if (overlap.get('filename') or '').strip() == (filename or '').strip():
-                        resume_import_id = overlap['import_id']
-                        logger.info(
-                            f"import-from-pdf: same-filename re-import detected — "
-                            f"continuing on existing import_id={resume_import_id}"
-                        )
-                    else:
-                        return {
-                            "success": False,
-                            "overlap_warning": True,
-                            "error": f"Statement period overlaps with a previously imported statement",
-                            "overlap_details": {
-                                "existing_import_id": overlap['import_id'],
-                                "existing_filename": overlap['filename'],
-                                "existing_period": f"{overlap['period_start']} to {overlap['period_end']}",
-                                "existing_import_date": overlap['import_date'],
-                                "new_period": f"{period_start_str} to {period_end_str}"
-                            }
-                        }
+        # F9 wedge: shared period-overlap guard (same as SE handlers).
+        from apps.bank_reconcile.logic.import_orchestration import (
+            check_statement_period_overlap as _check_overlap,
+        )
+        _ps = statement_info.period_start.isoformat() if (hasattr(statement_info, 'period_start') and statement_info.period_start) else None
+        _pe = statement_info.period_end.isoformat() if (hasattr(statement_info, 'period_end') and statement_info.period_end) else None
+        overlap_err, resume_import_id = _check_overlap(
+            email_storage=email_storage,
+            bank_code=bank_code,
+            period_start=_ps,
+            period_end=_pe,
+            stmt_transactions=stmt_transactions,
+            filename=filename,
+            resume_import_id=resume_import_id,
+            skip_overlap_check=body.get('skip_overlap_check', False),
+        )
+        if overlap_err:
+            return overlap_err
 
         # Use matcher for transaction processing
         matcher = BankStatementMatcherOpera3(data_path)
