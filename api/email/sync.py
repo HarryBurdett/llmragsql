@@ -118,18 +118,36 @@ class EmailSyncManager:
 
         Returns:
             Dictionary with sync results per provider
+
+        Snapshot self.storage and self.providers at entry — the
+        per-request company-context middleware in api/main.py mutates
+        these attributes when the active company changes; a sync
+        started under company A would otherwise read company B's
+        storage mid-flight if the company was switched. Per audit
+        2026-05-05 cross-cutting F4. By taking a local snapshot we
+        guarantee the sync that started under company A finishes
+        against company A's storage even if the middleware swaps the
+        instance attributes during the run.
         """
+        _storage = self.storage
+        _providers = self.providers
+
         results = {}
-        enabled_providers = self.storage.get_all_providers(enabled_only=True)
+        enabled_providers = _storage.get_all_providers(enabled_only=True)
 
         for provider_info in enabled_providers:
             provider_id = provider_info['id']
-            if provider_id not in self.providers:
+            if provider_id not in _providers:
                 logger.warning(f"Provider {provider_id} not registered")
                 continue
 
             try:
-                result = await self.sync_provider(provider_id)
+                # Pass the snapshotted storage+providers explicitly so
+                # the inner sync can't accidentally reach back through
+                # self.* mid-iteration.
+                result = await self._sync_provider_with_snapshot(
+                    provider_id, _storage, _providers,
+                )
                 results[provider_info['name']] = result
             except Exception as e:
                 logger.error(f"Error syncing provider {provider_id}: {e}")
@@ -147,13 +165,35 @@ class EmailSyncManager:
         Returns:
             Dictionary with sync results
         """
-        if provider_id not in self.providers:
+        # Snapshot at entry — see sync_all_providers docstring for the
+        # rationale (audit 2026-05-05 cross-cutting F4).
+        return await self._sync_provider_with_snapshot(
+            provider_id, self.storage, self.providers,
+        )
+
+    async def _sync_provider_with_snapshot(
+        self,
+        provider_id: int,
+        _storage: Any,
+        _providers: Dict[int, Any],
+    ) -> Dict[str, Any]:
+        """
+        Internal: sync a single provider against an explicitly-passed
+        storage+providers snapshot.
+
+        The body below uses the local snapshots `_storage` and
+        `_providers` rather than reaching back through `self.*` so
+        company-context mutations on the singleton during a long-running
+        sync (IMAP fetch, AI extraction) cannot redirect storage writes
+        to the wrong company.
+        """
+        if provider_id not in _providers:
             return {'success': False, 'error': 'Provider not registered'}
 
-        provider = self.providers[provider_id]
+        provider = _providers[provider_id]
 
         # Start sync log
-        log_id = self.storage.start_sync_log(provider_id)
+        log_id = _storage.start_sync_log(provider_id)
 
         try:
             # Ensure authenticated
@@ -162,32 +202,32 @@ class EmailSyncManager:
                     raise Exception("Authentication failed")
 
             # Get monitored folders
-            folders = self.storage.get_folders(provider_id, monitored_only=True)
+            folders = _storage.get_folders(provider_id, monitored_only=True)
             if not folders:
                 # If no folders configured, try to set up INBOX
                 try:
                     all_folders = await provider.list_folders()
                     for folder in all_folders:
                         monitored = folder.name.upper() == 'INBOX'
-                        self.storage.add_folder(
+                        _storage.add_folder(
                             provider_id,
                             folder.folder_id,
                             folder.name,
                             monitored=monitored
                         )
-                    folders = self.storage.get_folders(provider_id, monitored_only=True)
+                    folders = _storage.get_folders(provider_id, monitored_only=True)
                 except Exception as e:
                     logger.warning(f"Could not list folders, using INBOX directly: {e}")
 
                 # If still no folders, add INBOX directly
                 if not folders:
-                    self.storage.add_folder(
+                    _storage.add_folder(
                         provider_id,
                         'INBOX',
                         'INBOX',
                         monitored=True
                     )
-                    folders = self.storage.get_folders(provider_id, monitored_only=True)
+                    folders = _storage.get_folders(provider_id, monitored_only=True)
 
             total_synced = 0
 
@@ -214,7 +254,7 @@ class EmailSyncManager:
 
                 for email in emails:
                     # Store email — is_new is False for duplicates already in the DB
-                    email_id, is_new = self.storage.store_email(
+                    email_id, is_new = _storage.store_email(
                         provider_id,
                         folder['id'],
                         email
@@ -230,7 +270,7 @@ class EmailSyncManager:
                                     from_address=email.from_address,
                                     body=email.body_text or email.body_preview
                                 )
-                                self.storage.update_email_category(
+                                _storage.update_email_category(
                                     email_id,
                                     category_result['category'],
                                     category_result['confidence'],
@@ -244,7 +284,7 @@ class EmailSyncManager:
                             try:
                                 customer = self.linker.find_customer_by_email(email.from_address)
                                 if customer:
-                                    self.storage.link_email_to_customer(
+                                    _storage.link_email_to_customer(
                                         email_id,
                                         customer['sn_account'],
                                         linked_by='auto'
@@ -255,10 +295,10 @@ class EmailSyncManager:
                     total_synced += 1
 
                 # Update folder sync time
-                self.storage.update_folder_sync(folder['id'])
+                _storage.update_folder_sync(folder['id'])
 
             # Complete sync log
-            self.storage.complete_sync_log(log_id, 'success', total_synced)
+            _storage.complete_sync_log(log_id, 'success', total_synced)
 
             logger.info(f"Sync completed for provider {provider_id}: {total_synced} emails")
             return {
@@ -269,7 +309,7 @@ class EmailSyncManager:
 
         except Exception as e:
             logger.error(f"Sync failed for provider {provider_id}: {e}")
-            self.storage.complete_sync_log(log_id, 'failed', error=str(e))
+            _storage.complete_sync_log(log_id, 'failed', error=str(e))
             return {'success': False, 'error': str(e)}
 
     def get_sync_status(self) -> Dict[str, Any]:

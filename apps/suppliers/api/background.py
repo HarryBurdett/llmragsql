@@ -344,17 +344,42 @@ async def _process_single_email(email_id: int, storage, providers):
     except Exception as exc:
         logger.warning(f"Could not verify sender for supplier {supplier_code}: {exc}")
 
-    # If not verified via Opera contacts, check approved senders table
+    # If not verified via Opera contacts, check approved senders table.
+    # IMPORTANT: only count senders where verified=1 — having a row in
+    # supplier_approved_emails is NOT sufficient on its own. The
+    # `verified` flag is set when an admin has confirmed the sender's
+    # legitimacy out-of-band; pre-verified rows (added but not yet
+    # confirmed) must NOT be treated as trusted. Earlier code accepted
+    # any approved-sender row regardless of verified flag — fraud
+    # surface. Audit 2026-05-05 Suppliers F10.
     if not sender_verified:
         try:
             import sqlite3 as _sq_sender
             conn_s = _sq_sender.connect(str(db.db_path))
             c_s = conn_s.cursor()
-            c_s.execute(
-                "SELECT email_address FROM supplier_approved_emails WHERE supplier_code = ?",
-                (supplier_code,)
-            )
-            approved_rows = c_s.fetchall()
+            # Schema may have either 'verified' or fall back to no
+            # column at all (older DBs). Try the strict query first;
+            # if it errors on missing column, fall back permissively
+            # so existing data doesn't break — but log a WARNING so
+            # the admin notices the schema is out-of-date.
+            try:
+                c_s.execute(
+                    "SELECT email_address FROM supplier_approved_emails "
+                    "WHERE supplier_code = ? AND verified = 1",
+                    (supplier_code,),
+                )
+                approved_rows = c_s.fetchall()
+            except Exception:
+                logger.warning(
+                    'supplier_approved_emails has no verified column — '
+                    'falling back to permissive lookup. Run schema migration.'
+                )
+                c_s.execute(
+                    "SELECT email_address FROM supplier_approved_emails "
+                    "WHERE supplier_code = ?",
+                    (supplier_code,),
+                )
+                approved_rows = c_s.fetchall()
             conn_s.close()
             for row in approved_rows:
                 approved_email = (row[0] or '').strip().lower()
