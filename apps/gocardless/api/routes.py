@@ -622,6 +622,24 @@ async def import_gocardless_batch(
         if not payments:
             return {"success": False, "error": "No payments provided"}
 
+        # Idempotency gate: refuse to re-post the same payout. Without
+        # this, double-clicks / retries would post the same money twice.
+        # Audit 2026-05-05 GoCardless F2.
+        if payout_id and email_storage and email_storage.is_gocardless_payout_imported(payout_id):
+            logger.warning(
+                'GC import refused — payout %s already imported (idempotency gate)',
+                payout_id,
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"Payout {payout_id} has already been imported. Refusing to "
+                    "post the same payout twice. If you genuinely need to re-post, "
+                    "reverse the original first."
+                ),
+                "duplicate_payout": True,
+            }
+
         # Validate each payment has required fields
         validated_payments = []
         for idx, p in enumerate(payments):
@@ -3534,9 +3552,38 @@ async def opera3_import_gocardless_batch(
         from datetime import datetime
         import json
 
+        # Validate the data_path is reachable. data_path comes from the
+        # client; per audit GoCardless F8 we validate it's a real
+        # directory before any read/write operation. Production
+        # deployments should additionally restrict this via per-company
+        # config so the path is server-resolved, not client-supplied.
+        from pathlib import Path
+        if not Path(data_path).is_dir():
+            return {
+                "success": False,
+                "error": f"Opera 3 data path not found or not a directory: {data_path}",
+            }
+
         # Validate payments
         if not payments:
             return {"success": False, "error": "No payments provided"}
+
+        # Idempotency gate: refuse to re-post the same payout. Audit
+        # 2026-05-05 GoCardless F2.
+        if payout_id and email_storage and email_storage.is_gocardless_payout_imported(payout_id):
+            logger.warning(
+                'GC O3 import refused — payout %s already imported',
+                payout_id,
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"Payout {payout_id} has already been imported. Refusing to "
+                    "post the same payout twice. If you genuinely need to re-post, "
+                    "reverse the original first."
+                ),
+                "duplicate_payout": True,
+            }
 
         # Validate each payment
         validated_payments = []
@@ -3550,8 +3597,47 @@ async def opera3_import_gocardless_batch(
                 "customer_name": p.get('customer_name', ''),
                 "opera_customer_name": p.get('opera_customer_name', ''),
                 "amount": float(p['amount']),
-                "description": p.get('description', '')[:35]
+                "description": p.get('description', '')[:35],
+                "gc_payment_id": p.get('gc_payment_id', ''),
+                "mandate_id": p.get('mandate_id', ''),
             })
+
+        # Mandate verification: refuse if any payment's mandate_id is
+        # linked to a different opera_account than what the import is
+        # posting to. Parity with SE main /api/gocardless/import.
+        # Audit 2026-05-05 GoCardless F3.
+        try:
+            payments_db = get_payments_db()
+            all_mandates = payments_db.list_mandates()
+            mandate_to_account = {}
+            for m in all_mandates:
+                mid = (m.get('mandate_id') or '').strip()
+                acct = (m.get('opera_account') or '').strip()
+                if mid and acct and acct != '__UNLINKED__':
+                    mandate_to_account[mid] = acct
+            for idx, vp in enumerate(validated_payments):
+                posting_account = vp['customer_account'].strip()
+                mandate_id = (vp.get('mandate_id') or '').strip()
+                if mandate_id and mandate_id in mandate_to_account:
+                    expected_account = mandate_to_account[mandate_id]
+                    if expected_account != posting_account:
+                        logger.error(
+                            'GC O3 import BLOCKED payment %d: mandate %s linked to %s, '
+                            'but posting to %s', idx + 1, mandate_id,
+                            expected_account, posting_account,
+                        )
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Payment {idx+1}: mandate {mandate_id} belongs to "
+                                f"account {expected_account}, but is being posted to "
+                                f"{posting_account}. Please correct the customer match "
+                                "before importing."
+                            ),
+                        }
+        except Exception as mandate_exc:
+            # Mandate verification is best-effort; log but don't block.
+            logger.warning('GC O3 mandate verification failed: %s', mandate_exc)
 
         # Parse date
         try:
