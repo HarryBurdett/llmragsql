@@ -27,6 +27,10 @@ from typing import Optional, Dict, List
 from fastapi import APIRouter, HTTPException, Query, Body, Request
 from pydantic import BaseModel
 
+# friendly_db_error moved to api/error_friendly.py to avoid circular
+# import (api.main imports this routes module on startup).
+from api.error_friendly import friendly_db_error
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -99,7 +103,7 @@ async def list_supplier_config(active_only: bool = False):
         return {"success": True, "suppliers": suppliers}
     except Exception as e:
         logger.error(f"Error listing supplier config: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-config/{account}")
@@ -123,7 +127,7 @@ async def get_supplier_config(account: str):
         raise
     except Exception as e:
         logger.error(f"Error getting supplier config for {account}: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.put("/api/supplier-config/{account}")
@@ -158,10 +162,10 @@ async def update_supplier_flags(account: str, request: Request):
     except HTTPException:
         raise
     except ValueError as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
     except Exception as e:
         logger.error(f"Error updating supplier flags for {account}: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-config/sync")
@@ -184,7 +188,7 @@ async def sync_supplier_config():
         return {"success": True, "new": result['new'], "synced": result['synced']}
     except Exception as e:
         logger.error(f"Error syncing supplier config from Opera: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ============================================================
@@ -453,7 +457,7 @@ async def get_supplier_statement_dashboard():
 
     except Exception as e:
         logger.error(f"Error loading supplier statement dashboard: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-statements")
@@ -517,7 +521,7 @@ async def list_supplier_statements(status: Optional[str] = None):
 
     except Exception as e:
         logger.error(f"Error listing supplier statements: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-statements/reconciliations")
@@ -551,7 +555,7 @@ async def list_supplier_reconciliations():
 
     except Exception as e:
         logger.error(f"Error listing reconciliations: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-statements/history")
@@ -608,7 +612,7 @@ async def list_supplier_statement_history(days: int = 90):
 
     except Exception as e:
         logger.error(f"Error listing statement history: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-queries")
@@ -717,7 +721,7 @@ async def list_supplier_queries(status: Optional[str] = None):
 
     except Exception as e:
         logger.error(f"Error listing supplier queries: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-queries/{query_id}/resolve")
@@ -753,7 +757,7 @@ async def resolve_supplier_query(query_id: int):
         raise
     except Exception as e:
         logger.error(f"Error resolving query: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-queries/auto-resolve")
@@ -872,7 +876,7 @@ async def auto_resolve_supplier_queries():
 
     except Exception as e:
         logger.error(f"Error auto-resolving queries: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-queries/{query_id}/send-reminder")
@@ -1136,7 +1140,7 @@ async def send_query_reminder(query_id: int):
         raise
     except Exception as e:
         logger.error(f"Error sending query reminder: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-queries/overdue")
@@ -1221,7 +1225,7 @@ async def get_overdue_supplier_queries(days_overdue: Optional[int] = None):
 
     except Exception as e:
         logger.error(f"Error getting overdue queries: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-statements/{statement_id}/send-updated-status")
@@ -1360,7 +1364,7 @@ async def send_updated_statement_status(statement_id: int):
         raise
     except Exception as e:
         logger.error(f"Error sending updated status: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-communications")
@@ -1415,7 +1419,7 @@ async def list_supplier_communications(supplier_code: Optional[str] = None, days
 
     except Exception as e:
         logger.error(f"Error listing communications: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-communications/{account}")
@@ -1465,7 +1469,7 @@ async def get_supplier_communications(account: str):
 
     except Exception as e:
         logger.error(f"Error getting communications for {account}: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ============================================================
@@ -1515,7 +1519,7 @@ async def list_security_alerts():
 
     except Exception as e:
         logger.error(f"Error listing security alerts: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-security/alerts/{alert_id}/verify")
@@ -1551,7 +1555,7 @@ async def verify_security_alert(alert_id: int, verified_by: str = "System"):
         raise
     except Exception as e:
         logger.error(f"Error verifying alert: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-security/audit")
@@ -1599,7 +1603,7 @@ async def list_security_audit_log(days: int = 90):
 
     except Exception as e:
         logger.error(f"Error listing audit log: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-security/scan-changes")
@@ -1787,7 +1791,7 @@ async def scan_supplier_changes():
 
     except Exception as e:
         logger.error(f"Error scanning supplier changes: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-security/email-flags")
@@ -1867,7 +1871,7 @@ async def get_flagged_emails():
 
     except Exception as e:
         logger.error(f"Error checking email flags: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 def _check_bank_detail_keywords(text: str) -> bool:
@@ -1945,7 +1949,7 @@ async def list_approved_senders(supplier_code: Optional[str] = None):
 
     except Exception as e:
         logger.error(f"Error listing approved senders: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-security/approved-senders")
@@ -1983,7 +1987,7 @@ async def add_approved_sender(
 
     except Exception as e:
         logger.error(f"Error adding approved sender: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.delete("/api/supplier-security/approved-senders/{sender_id}")
@@ -2015,7 +2019,7 @@ async def remove_approved_sender(sender_id: int):
         raise
     except Exception as e:
         logger.error(f"Error removing approved sender: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ============================================================
@@ -2065,7 +2069,7 @@ async def get_supplier_settings():
 
     except Exception as e:
         logger.error(f"Error getting settings: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-settings")
@@ -2133,7 +2137,7 @@ async def update_supplier_settings(settings: Dict[str, str] = Body(...)):
 
     except Exception as e:
         logger.error(f"Error updating settings: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ============================================================
@@ -2225,7 +2229,7 @@ async def list_supplier_directory(search: Optional[str] = None):
 
     except Exception as e:
         logger.error(f"Error listing supplier directory: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-statements/{statement_id}/preview-response")
@@ -2300,7 +2304,7 @@ async def preview_supplier_statement_response(statement_id: int):
         raise
     except Exception as e:
         logger.error(f"Error generating preview for statement {statement_id}: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-statements/{statement_id}/approve")
@@ -2452,7 +2456,7 @@ async def approve_supplier_statement(statement_id: int, request: ApproveWithBody
         raise
     except Exception as e:
         logger.error(f"Error approving statement: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-statements/{statement_id}/acknowledge")
@@ -2616,7 +2620,7 @@ async def acknowledge_supplier_statement(statement_id: int):
         raise
     except Exception as e:
         logger.error(f"Error acknowledging statement: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.put("/api/supplier-statements/{statement_id}/edit-response")
@@ -2667,7 +2671,7 @@ async def edit_statement_response(statement_id: int, body: EditResponseRequest):
         raise
     except Exception as e:
         logger.error(f"Error editing statement response: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-statements/queue/bulk-approve")
@@ -2792,7 +2796,7 @@ async def bulk_approve_statements(body: BulkApproveRequest):
 
         except Exception as e:
             logger.error(f"Error bulk-approving statement {stmt_id}: {e}", exc_info=True)
-            failed.append({"id": stmt_id, "error": str(e)})
+            failed.append({"id": stmt_id, "error": friendly_db_error(e)})
 
     return {
         "success": True,
@@ -3497,7 +3501,7 @@ async def process_supplier_statement_email(email_id: int):
 
     except Exception as e:
         logger.error(f"Error processing supplier statement email {email_id}: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-statements/queue")
@@ -3537,7 +3541,7 @@ async def get_supplier_statement_queue():
 
     except Exception as e:
         logger.error(f"Error fetching statement queue: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-statements/{statement_id}")
@@ -3633,7 +3637,7 @@ async def get_supplier_statement_detail(statement_id: int):
         raise
     except Exception as e:
         logger.error(f"Error getting statement detail: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-statements/{statement_id}/lines")
@@ -3732,7 +3736,7 @@ async def get_supplier_statement_lines(statement_id: int):
         raise
     except Exception as e:
         logger.error(f"Error getting statement lines: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier-statements/{statement_id}/pdf")
@@ -3900,7 +3904,7 @@ async def process_supplier_statement(statement_id: int):
         raise
     except Exception as e:
         logger.error(f"Error processing statement: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ============================================================
@@ -4028,7 +4032,7 @@ async def extract_supplier_statement_from_email(email_id: int, attachment_id: Op
         raise
     except Exception as e:
         logger.error(f"Error extracting supplier statement: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-statements/extract-from-file")
@@ -4066,7 +4070,7 @@ async def extract_supplier_statement_from_file(file_path: str):
 
     except Exception as e:
         logger.error(f"Error extracting supplier statement from file: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-statements/extract-from-text")
@@ -4104,7 +4108,7 @@ async def extract_supplier_statement_from_text(
 
     except Exception as e:
         logger.error(f"Error extracting supplier statement from text: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/supplier-statements/reconcile/{email_id}")
@@ -4255,7 +4259,7 @@ async def reconcile_supplier_statement(email_id: int, attachment_id: Optional[st
         raise
     except Exception as e:
         logger.error(f"Error reconciling supplier statement: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ============================================================
@@ -4370,7 +4374,7 @@ async def creditors_dashboard():
 
     except Exception as e:
         logger.error(f"Creditors dashboard query failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/creditors/report")
@@ -4422,7 +4426,7 @@ async def creditors_report():
 
     except Exception as e:
         logger.error(f"Creditors report query failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/creditors/supplier/{account}")
@@ -4470,7 +4474,7 @@ async def get_supplier_details(account: str):
         raise
     except Exception as e:
         logger.error(f"Supplier details query failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/creditors/supplier/{account}/transactions")
@@ -4536,7 +4540,7 @@ async def get_supplier_transactions(account: str, include_paid: bool = False):
 
     except Exception as e:
         logger.error(f"Supplier transactions query failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/creditors/supplier/{account}/statement")
@@ -4632,7 +4636,7 @@ async def get_supplier_statement(account: str, from_date: str = None, to_date: s
         raise
     except Exception as e:
         logger.error(f"Supplier statement query failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/creditors/search")
@@ -4684,7 +4688,7 @@ async def search_suppliers(query: str, limit: int = Query(20, ge=1, le=1000)):
 
     except Exception as e:
         logger.error(f"Supplier search failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ============================================================
@@ -4712,7 +4716,7 @@ async def get_first_supplier_account():
             return {"success": True, "account": result[0]['account']}
         return {"success": False, "error": "No suppliers with balance found"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/supplier/account/{account}")
@@ -4896,7 +4900,7 @@ async def get_supplier_account_view(
         raise
     except Exception as e:
         logger.error(f"Supplier account view failed: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ============================================================

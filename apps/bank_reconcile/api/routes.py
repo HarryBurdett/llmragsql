@@ -62,7 +62,13 @@ email_sync_manager = None
 config = None
 current_company = None
 customer_linker = None
-friendly_db_error = None
+# friendly_db_error: import directly from the standalone module to
+# avoid the api.main → routes circular dependency. _sync_from_main()
+# may overwrite this with the api.main module-level reference at
+# runtime (which is the same function — re-exported from api.main),
+# but the direct import guarantees a usable callable even before
+# _sync_from_main() runs (e.g. during pytest collection).
+from api.error_friendly import friendly_db_error
 _bank_lock_key = None
 _load_company_settings = None
 _save_company_settings = None
@@ -263,7 +269,7 @@ async def get_bank_accounts():
         }
     except Exception as e:
         logger.error(f"Failed to get bank accounts: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -653,7 +659,7 @@ async def reconcile_bank(bank_code: str):
 
     except Exception as e:
         logger.error(f"Bank reconciliation failed for {bank_code}: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -761,7 +767,7 @@ async def get_bank_reconciliation_status(
         }
     except Exception as e:
         logger.error(f"Failed to get reconciliation status for {bank_code}: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -792,7 +798,7 @@ async def get_unreconciled_entries(bank_code: str, include_incomplete: bool = Qu
         }
     except Exception as e:
         logger.error(f"Failed to get unreconciled entries for {bank_code}: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -840,7 +846,7 @@ async def complete_batch(bank_code: str, entry_number: str):
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -915,7 +921,7 @@ async def mark_entries_reconciled(bank_code: str, request: ReconcileEntriesReque
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -1070,7 +1076,7 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -1108,7 +1114,7 @@ async def ignore_bank_transaction(
         }
     except Exception as e:
         logger.error(f"Failed to ignore transaction: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -1134,7 +1140,7 @@ async def get_ignored_transactions(
         }
     except Exception as e:
         logger.error(f"Failed to get ignored transactions: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -1153,7 +1159,7 @@ async def unignore_transaction(record_id: int):
             return {"success": False, "error": "Record not found"}
     except Exception as e:
         logger.error(f"Failed to unignore transaction: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -1177,7 +1183,7 @@ async def unignore_transaction_by_match(
             return {"success": False, "error": "No matching ignored transaction found"}
     except Exception as e:
         logger.error(f"Failed to unignore transaction: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/reconcile/bank/{bank_code}/orphan-tmpstat")
@@ -1565,7 +1571,7 @@ async def process_bank_statement(
 
     except Exception as e:
         logger.error(f"Failed to process statement: {e}", exc_info=True)
-        return {"success": True, "error": str(e), "extracted_transactions": 0,
+        return {"success": True, "error": friendly_db_error(e), "extracted_transactions": 0,
                 "matches": [], "unmatched_statement": [], "unmatched_opera": [],
                 "statement_info": {}, "opera_status": {}, "bank_code": bank_code,
                 "bank_validation": {}, "_exception": str(e)}
@@ -1642,7 +1648,7 @@ async def refresh_statement_matches(
 
     except Exception as e:
         logger.error(f"Error refreshing matches: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/reconcile/process-statement-unified")
@@ -1746,7 +1752,7 @@ async def process_statement_unified(
         logger.error(f"Failed to process unified statement: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -1855,7 +1861,7 @@ async def import_from_statement(
         logger.error(f"Failed to process import from statement for {bank_code}: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -1961,7 +1967,7 @@ async def confirm_statement_matches(
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2026,7 +2032,7 @@ async def archive_import_file(
 
     except Exception as e:
         logger.error(f"Failed to archive file {file_path}: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2052,7 +2058,7 @@ async def get_archive_history(import_type: Optional[str] = None, limit: int = 50
 
     except Exception as e:
         logger.error(f"Failed to get archive history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2106,7 +2112,7 @@ async def get_pending_files(import_type: str):
 
     except Exception as e:
         logger.error(f"Failed to get pending files: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2133,7 +2139,7 @@ async def mark_statement_reconciled(
         }
     except Exception as e:
         logger.error(f"Failed to mark statement as reconciled: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2254,7 +2260,7 @@ async def get_imported_statements_for_reconciliation(
         }
     except Exception as e:
         logger.error(f"Failed to get imported statements: {e}")
-        return {"success": False, "error": str(e), "statements": []}
+        return {"success": False, "error": friendly_db_error(e), "statements": []}
 
 
 
@@ -2286,7 +2292,7 @@ async def detect_file_format(filepath: str = Query(..., description="Path to ban
         }
     except Exception as e:
         logger.error(f"Format detection error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2412,7 +2418,7 @@ async def detect_bank_from_file(
         logger.error(f"Bank detection error: {e}")
         return {
             "success": False,
-            "error": str(e)
+            "error": friendly_db_error(e)
         }
 
 
@@ -2469,7 +2475,7 @@ async def raw_preview_bank_file(
     except Exception as e:
         return {
             "success": False,
-            "error": str(e)
+            "error": friendly_db_error(e)
         }
 
 
@@ -2762,7 +2768,7 @@ async def preview_bank_import_multiformat(
 
     except Exception as e:
         logger.error(f"Multi-format preview error: {e}")
-        return {"success": False, "error": str(e), "transactions": []}
+        return {"success": False, "error": friendly_db_error(e), "transactions": []}
 
 
 
@@ -2818,7 +2824,7 @@ async def record_correction(
 
     except Exception as e:
         logger.error(f"Error recording correction: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2878,7 +2884,7 @@ async def check_duplicates(
         return {"success": False, "error": "Duplicate detection module not available"}
     except Exception as e:
         logger.error(f"Error checking duplicates: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2926,7 +2932,7 @@ async def override_duplicate(
 
     except Exception as e:
         logger.error(f"Error recording duplicate override: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -2963,7 +2969,7 @@ async def get_cashbook_types(category: str = Query(None, description="Filter by 
         return {"success": True, "types": types}
     except Exception as e:
         logger.error(f"Error fetching cashbook types: {e}")
-        return {"success": False, "error": str(e), "types": []}
+        return {"success": False, "error": friendly_db_error(e), "types": []}
 
 
 
@@ -3057,7 +3063,7 @@ async def update_match_config(
 
     except Exception as e:
         logger.error(f"Error updating match config: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -3113,7 +3119,7 @@ async def list_csv_files(directory: str):
 
     except Exception as e:
         logger.error(f"Error listing CSV files: {e}")
-        return {"success": False, "files": [], "error": str(e)}
+        return {"success": False, "files": [], "error": friendly_db_error(e)}
 
 
 
@@ -3214,7 +3220,7 @@ async def list_pdf_files(
 
     except Exception as e:
         logger.error(f"Error listing PDF files: {e}")
-        return {"success": False, "files": [], "error": str(e)}
+        return {"success": False, "files": [], "error": friendly_db_error(e)}
 
 
 
@@ -3250,7 +3256,7 @@ async def save_bank_import_draft(request: Request):
 
     except Exception as e:
         logger.error(f"Error saving bank import draft: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -3294,7 +3300,7 @@ async def load_bank_import_draft(
 
     except Exception as e:
         logger.error(f"Error loading bank import draft: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -3326,7 +3332,7 @@ async def delete_bank_import_draft(
 
     except Exception as e:
         logger.error(f"Error deleting bank import draft: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/bank-import/persist-decisions")
@@ -3488,7 +3494,7 @@ async def persist_bank_import_decisions(request: Request):
 
     except Exception as e:
         logger.error(f"persist-decisions failed: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -3540,7 +3546,7 @@ async def get_pdf_content(
         }
     except Exception as e:
         logger.error(f"Error reading PDF file: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -3958,7 +3964,7 @@ async def preview_bank_import_from_pdf(
 
     except Exception as e:
         logger.error(f"Error previewing PDF: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -4404,7 +4410,7 @@ async def import_bank_statement_from_pdf(
                         error_msg = '; '.join(result.errors) if result.errors else 'Import failed'
                         errors.append({"row": txn.row_number, "error": error_msg})
                 except Exception as e:
-                    errors.append({"row": txn.row_number, "error": str(e)})
+                    errors.append({"row": txn.row_number, "error": friendly_db_error(e)})
 
         # Calculate totals
         receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
@@ -4694,7 +4700,7 @@ async def import_bank_statement_from_pdf(
     except Exception as e:
         release_import_lock(_bank_lock_key(bank_code))
         logger.error(f"Error importing PDF: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -4734,7 +4740,7 @@ async def validate_csv_bank_match(
 
     except Exception as e:
         logger.error(f"Error validating CSV: {e}")
-        return {"success": False, "error": str(e), "valid": False}
+        return {"success": False, "error": friendly_db_error(e), "valid": False}
 
 
 
@@ -4778,7 +4784,7 @@ async def get_customers_for_dropdown():
 
     except Exception as e:
         logger.error(f"Error getting customers: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -4822,7 +4828,7 @@ async def get_suppliers_for_dropdown():
 
     except Exception as e:
         logger.error(f"Error getting suppliers: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -5197,7 +5203,7 @@ async def import_with_manual_overrides(
                         error_msg = '; '.join(result.errors) if result.errors else 'Import failed'
                         errors.append({"row": txn.row_number, "error": error_msg})
                 except Exception as e:
-                    errors.append({"row": txn.row_number, "error": str(e)})
+                    errors.append({"row": txn.row_number, "error": friendly_db_error(e)})
 
         # Calculate totals by action type
         receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
@@ -5329,7 +5335,7 @@ async def import_with_manual_overrides(
 
     except Exception as e:
         logger.error(f"Import with overrides error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
     finally:
         try:
             release_import_lock(_bank_lock_key(bank_code))
@@ -5439,7 +5445,7 @@ async def update_repeat_entry_date(
 
     except Exception as e:
         logger.error(f"Error updating repeat entry date: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -5515,7 +5521,7 @@ async def list_repeat_entries(
 
     except Exception as e:
         logger.error(f"Error listing repeat entries: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -5555,7 +5561,7 @@ async def save_bank_import_folder_settings(request: Request):
         return {"success": False, "error": "Failed to save settings"}
     except Exception as e:
         logger.error(f"Error saving bank import folder settings: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -5787,7 +5793,7 @@ async def scan_folder_for_bank_statements(
 
     except Exception as e:
         logger.error(f"Error scanning folder for bank statements: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -5949,7 +5955,7 @@ async def fetch_email_statements_to_folder(
 
     except Exception as e:
         logger.error(f"Error fetching email statements to folder: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -6017,7 +6023,7 @@ async def archive_folder_statement(request: Request):
 
     except Exception as e:
         logger.error(f"Error archiving statement: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -6647,7 +6653,7 @@ async def scan_emails_for_bank_statements(
 
     except Exception as e:
         logger.error(f"Error scanning emails for bank statements: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -8123,7 +8129,7 @@ async def scan_all_banks_for_statements(
 
     except Exception as e:
         logger.error(f"Error scanning all banks for statements: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -8232,7 +8238,7 @@ async def archive_bank_statement(
 
     except Exception as e:
         logger.error(f"Error archiving statement: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -8246,7 +8252,7 @@ async def get_archived_statements():
         return {"success": True, "statements": results, "count": len(results)}
     except Exception as e:
         logger.error(f"Error fetching archived statements: {e}")
-        return {"success": False, "error": str(e), "statements": [], "count": 0}
+        return {"success": False, "error": friendly_db_error(e), "statements": [], "count": 0}
 
 
 
@@ -8369,7 +8375,7 @@ async def restore_archived_statement(request: Request):
 
     except Exception as e:
         logger.error(f"Error restoring archived statement: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/bank-import/archived-statement-pdf/{record_id}")
@@ -8452,7 +8458,7 @@ async def delete_archived_statement(request: Request):
 
     except Exception as e:
         logger.error(f"Error deleting archived statement: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -8744,7 +8750,7 @@ async def manage_bank_statements(request: Request):
 
     except Exception as e:
         logger.error(f"Error managing statements: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -8835,7 +8841,7 @@ async def raw_preview_email_attachment(
 
     except Exception as e:
         logger.error(f"Error reading email attachment: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -9417,7 +9423,7 @@ async def preview_bank_import_from_email(
 
     except Exception as e:
         logger.error(f"Error previewing bank import from email: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -9972,7 +9978,7 @@ async def import_bank_statement_from_email(
                         error_msg = '; '.join(result.errors) if result.errors else 'Import failed'
                         errors.append({"row": txn.row_number, "error": error_msg})
                 except Exception as e:
-                    errors.append({"row": txn.row_number, "error": str(e)})
+                    errors.append({"row": txn.row_number, "error": friendly_db_error(e)})
 
         # Calculate totals by action type
         receipts_imported = sum(1 for t in imported if t['action'] == 'sales_receipt')
@@ -10227,7 +10233,7 @@ async def import_bank_statement_from_email(
     except Exception as e:
         release_import_lock(_bank_lock_key(bank_code))
         logger.error(f"Error importing bank statement from email: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -10263,7 +10269,7 @@ async def get_bank_statement_import_history(
         }
     except Exception as e:
         logger.error(f"Error getting import history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -10364,7 +10370,7 @@ async def get_statement_review(import_id: int):
         }
     except Exception as e:
         logger.error(f"Error getting statement review for import {import_id}: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -10397,7 +10403,7 @@ async def delete_bank_statement_import_record(record_id: int):
             }
     except Exception as e:
         logger.error(f"Error deleting import record: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -10431,7 +10437,7 @@ async def clear_bank_statement_import_history(
         }
     except Exception as e:
         logger.error(f"Error clearing import history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -10458,7 +10464,7 @@ async def get_bank_statement_email_import_history_legacy(
         }
     except Exception as e:
         logger.error(f"Error getting email import history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -10676,7 +10682,7 @@ async def match_statement_to_cashbook(
 
     except Exception as e:
         logger.error(f"Error matching statement: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -11027,7 +11033,7 @@ async def complete_reconciliation(
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -11111,7 +11117,7 @@ async def get_statement_transactions(import_id: int):
 
     except Exception as e:
         logger.error(f"Error getting statement transactions: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -11148,7 +11154,7 @@ async def get_reconciliation_status(
 
     except Exception as e:
         logger.error(f"Error getting reconciliation status: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -11186,7 +11192,7 @@ async def get_unreconciled_entries(
 
     except Exception as e:
         logger.error(f"Error getting unreconciled entries: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -11452,7 +11458,7 @@ async def auto_match_statement_lines(request: Request):
         logger.error(f"Error auto-matching statement lines: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -11567,7 +11573,7 @@ async def suggest_account_for_transaction(
 
     except Exception as e:
         logger.error(f"Error suggesting account: {e}")
-        return {"success": False, "error": str(e), "suggestions": []}
+        return {"success": False, "error": friendly_db_error(e), "suggestions": []}
 
 
 
@@ -11715,7 +11721,7 @@ async def create_cashbook_entry(request: Request):
         logger.error(f"Error creating cashbook entry: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -11744,7 +11750,7 @@ async def get_bank_accounts():
 
     except Exception as e:
         logger.error(f"Error getting bank accounts: {e}")
-        return {"success": False, "error": str(e), "accounts": []}
+        return {"success": False, "error": friendly_db_error(e), "accounts": []}
 
 
 
@@ -11822,7 +11828,7 @@ async def create_bank_transfer(
         logger.error(f"Error creating bank transfer: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -11897,7 +11903,7 @@ async def opera3_bank_reconciliation_status(
 
     except Exception as e:
         logger.error(f"Opera 3 bank reconciliation status failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -12128,7 +12134,7 @@ async def opera3_check_recurring_entries(
 
     except Exception as e:
         logger.error(f"Error checking Opera 3 recurring entries: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -12172,7 +12178,7 @@ async def opera3_post_recurring_entries(request: Request):
         try:
             importer = get_opera3_writer(data_path)
         except Opera3AgentRequired as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": friendly_db_error(e)}
         results = []
         posted_count = 0
         failed_count = 0
@@ -12229,7 +12235,7 @@ async def opera3_post_recurring_entries(request: Request):
 
     except Exception as e:
         logger.error(f"Error posting Opera 3 recurring entries: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -12817,7 +12823,7 @@ async def opera3_scan_emails_for_bank_statements(
 
     except Exception as e:
         logger.error(f"Opera 3: Error scanning emails for bank statements: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -13084,7 +13090,7 @@ async def opera3_preview_bank_import_from_email(
         logger.error(f"Opera 3 preview-from-email error: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -13364,7 +13370,7 @@ async def opera3_preview_bank_import_from_pdf(
         logger.error(f"Opera 3 preview-from-pdf error: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -13820,7 +13826,7 @@ async def opera3_import_bank_statement_from_pdf(
         logger.error(f"Opera 3 import-from-pdf error: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -13982,7 +13988,7 @@ async def opera3_preview_bank_import(
         return {"success": False, "error": f"File not found: {e}"}
     except Exception as e:
         logger.error(f"Opera 3 bank import preview error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14016,7 +14022,7 @@ async def opera3_get_bank_statement_import_history(
         }
     except Exception as e:
         logger.error(f"Error getting Opera 3 import history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14047,7 +14053,7 @@ async def opera3_delete_bank_statement_import_record(record_id: int):
             }
     except Exception as e:
         logger.error(f"Error deleting import record: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14087,7 +14093,7 @@ async def opera3_clear_bank_statement_import_history(
         }
     except Exception as e:
         logger.error(f"Error clearing Opera 3 import history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14294,7 +14300,7 @@ async def opera3_auto_match_statement_lines(request: Request):
         logger.error(f"Error auto-matching Opera 3 statement lines: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14339,7 +14345,7 @@ async def opera3_create_cashbook_entry(request: Request):
         try:
             foxpro_import = get_opera3_writer(data_path)
         except Opera3AgentRequired as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": friendly_db_error(e)}
 
         # Parse date
         if isinstance(transaction_date, str):
@@ -14402,7 +14408,7 @@ async def opera3_create_cashbook_entry(request: Request):
         logger.error(f"Error creating Opera 3 cashbook entry: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14640,7 +14646,7 @@ async def opera3_process_statement(
         logger.error(f"Opera 3 statement processing failed: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14730,7 +14736,7 @@ async def opera3_process_statement_unified(
         logger.error(f"Opera 3 unified statement processing failed: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14771,7 +14777,7 @@ async def opera3_get_reconcile_banks(
         }
     except Exception as e:
         logger.error(f"Opera 3 get reconcile banks failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14908,7 +14914,7 @@ async def opera3_reconcile_bank(
 
     except Exception as e:
         logger.error(f"Opera 3 bank reconciliation failed for {bank_code}: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -14974,7 +14980,7 @@ async def opera3_get_unreconciled_entries(
         }
     except Exception as e:
         logger.error(f"Opera 3 get unreconciled entries failed for {bank_code}: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15007,7 +15013,7 @@ async def opera3_mark_entries_reconciled(
             foxpro_import = get_opera3_writer(data_path)
         except Opera3AgentRequired as e:
             release_import_lock(_bank_lock_key(bank_code))
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": friendly_db_error(e)}
 
         stmt_date = None
         rec_date = None
@@ -15043,7 +15049,7 @@ async def opera3_mark_entries_reconciled(
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15080,7 +15086,7 @@ async def opera3_unreconcile_entries(
             foxpro_import = get_opera3_writer(data_path)
         except Opera3AgentRequired as e:
             release_import_lock(_bank_lock_key(bank_code))
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": friendly_db_error(e)}
 
         from sql_rag.opera3_foxpro import Opera3Reader
         reader = Opera3Reader(data_path)
@@ -15238,7 +15244,7 @@ async def opera3_unreconcile_entries(
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15275,7 +15281,7 @@ async def opera3_ignore_bank_transaction(
         }
     except Exception as e:
         logger.error(f"Opera 3 failed to ignore transaction: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15303,7 +15309,7 @@ async def opera3_get_ignored_transactions(
         }
     except Exception as e:
         logger.error(f"Opera 3 failed to get ignored transactions: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15324,7 +15330,7 @@ async def opera3_unignore_transaction(record_id: int):
             return {"success": False, "error": "Record not found"}
     except Exception as e:
         logger.error(f"Opera 3 failed to unignore transaction: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15349,7 +15355,7 @@ async def opera3_unignore_transaction_by_match(
             return {"success": False, "error": "No matching ignored transaction found"}
     except Exception as e:
         logger.error(f"Opera 3 failed to unignore transaction: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15443,7 +15449,7 @@ async def opera3_import_from_statement(
         logger.error(f"Opera 3 import from statement failed for {bank_code}: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15477,7 +15483,7 @@ async def opera3_confirm_statement_matches(
             foxpro_import = get_opera3_writer(data_path)
         except Opera3AgentRequired as e:
             release_import_lock(_bank_lock_key(bank_code))
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": friendly_db_error(e)}
 
         stmt_date = datetime.strptime(statement_date, '%Y-%m-%d')
 
@@ -15536,7 +15542,7 @@ async def opera3_confirm_statement_matches(
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15628,7 +15634,7 @@ async def opera3_complete_batch(
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15873,7 +15879,7 @@ async def opera3_match_statement_to_cashbook(
 
     except Exception as e:
         logger.error(f"Opera 3 match statement failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -15917,7 +15923,7 @@ async def opera3_complete_reconciliation(
             foxpro_import = get_opera3_writer(data_path)
         except Opera3AgentRequired as e:
             release_import_lock(_bank_lock_key(bank_code))
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": friendly_db_error(e)}
 
         stmt_date = datetime.strptime(statement_date, '%Y-%m-%d').date()
 
@@ -16046,7 +16052,7 @@ async def opera3_complete_reconciliation(
             release_import_lock(_bank_lock_key(bank_code))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -16098,7 +16104,7 @@ async def opera3_get_statement_transactions(import_id: int):
 
     except Exception as e:
         logger.error(f"Opera 3 get statement transactions failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -16130,7 +16136,7 @@ async def opera3_get_bank_reconciliation_status(
 
     except Exception as e:
         logger.error(f"Opera 3 bank reconciliation status failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 
@@ -16200,7 +16206,7 @@ async def opera3_get_cashbook_bank_accounts(
 
     except Exception as e:
         logger.error(f"Opera 3 get cashbook bank accounts failed: {e}")
-        return {"success": False, "error": str(e), "accounts": []}
+        return {"success": False, "error": friendly_db_error(e), "accounts": []}
 
 
 
@@ -16243,7 +16249,7 @@ async def opera3_create_bank_transfer(
         try:
             foxpro_import = get_opera3_writer(data_path)
         except Opera3AgentRequired as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": friendly_db_error(e)}
 
         result = foxpro_import.import_bank_transfer(
             source_bank=source_bank,
@@ -16292,7 +16298,7 @@ async def opera3_create_bank_transfer(
         logger.error(f"Opera 3 create bank transfer failed: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -16420,7 +16426,7 @@ async def delete_deferred_items(
         return {"success": True, "deleted": deleted}
     except Exception as e:
         logger.error(f"delete deferred-items failed for {bank_code}: {e}")
-        return {"success": False, "error": str(e), "deleted": deleted}
+        return {"success": False, "error": friendly_db_error(e), "deleted": deleted}
 
 
 @router.get("/api/reconcile/bank/{bank_code}/deferred-items")
@@ -16454,4 +16460,4 @@ async def get_deferred_items(
         return {"success": True, "items": items, "count": len(items)}
     except Exception as e:
         logger.error(f"deferred-items lookup failed for bank={bank_code}: {e}")
-        return {"success": False, "error": str(e), "items": [], "count": 0}
+        return {"success": False, "error": friendly_db_error(e), "items": [], "count": 0}

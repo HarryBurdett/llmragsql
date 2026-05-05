@@ -118,7 +118,7 @@ async def ocr_gocardless_image(file: UploadFile = File(...)):
         return {"success": False, "error": "OCR not available - pytesseract not installed"}
     except Exception as e:
         logger.error(f"OCR error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/ocr-path")
@@ -150,7 +150,7 @@ async def ocr_gocardless_image_path(file_path: str = Body(..., embed=True)):
         return {"success": False, "error": "OCR not available - pytesseract not installed"}
     except Exception as e:
         logger.error(f"OCR error: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/test-data")
@@ -230,7 +230,7 @@ async def parse_gocardless_content(
 
     except Exception as e:
         logger.error(f"Error parsing GoCardless content: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector) -> Dict[str, Any]:
@@ -532,7 +532,7 @@ async def match_gocardless_customers(
 
     except Exception as e:
         logger.error(f"Error matching GoCardless customers: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/validate-date")
@@ -575,7 +575,7 @@ async def validate_gocardless_date(
 
     except Exception as e:
         logger.error(f"Error validating posting date: {e}")
-        return {"success": False, "valid": False, "error": str(e)}
+        return {"success": False, "valid": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/import")
@@ -918,7 +918,7 @@ async def get_gocardless_batch_types():
 
     except Exception as e:
         logger.error(f"Error getting batch types: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 def _load_gocardless_settings() -> dict:
@@ -1145,7 +1145,7 @@ async def initiate_gocardless_partner_signup(request: Request):
             }
     except Exception as e:
         logger.error(f"Failed to initiate partner signup: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/partner/callback")
@@ -1265,7 +1265,7 @@ async def get_gocardless_partner_signup_status():
         return {"success": True, "signup": safe_signup}
     except Exception as e:
         logger.error(f"Failed to get partner signup status: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/partner/admin-auth")
@@ -1314,7 +1314,7 @@ async def set_merchant_app_url(request: Request):
         payments_db.update_partner_signup(signup_id, merchant_app_url=app_url)
         return {"success": True}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/partner/activate-merchant")
@@ -1389,7 +1389,7 @@ async def activate_gocardless_merchant(request: Request):
         }
     except Exception as e:
         logger.error(f"Failed to activate merchant: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.put("/api/gocardless/deploy-token")
@@ -1448,7 +1448,7 @@ async def list_gocardless_partner_merchants(status: str = None):
         return {"success": True, "merchants": safe_signups}
     except Exception as e:
         logger.error(f"Failed to list partner merchants: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/settings")
@@ -1667,7 +1667,7 @@ async def update_subscription_tags(request: Request):
 
     except Exception as e:
         logger.error(f"Error updating subscription tags: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/nominal-accounts")
@@ -1705,7 +1705,7 @@ async def get_nominal_accounts():
         return {"success": True, "accounts": accounts}
     except Exception as e:
         logger.error(f"Error fetching nominal accounts: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/vat-codes")
@@ -1804,7 +1804,7 @@ async def get_vat_codes(
         return {"success": True, "codes": codes, "as_of_date": ref_date.isoformat()}
     except Exception as e:
         logger.error(f"Error fetching VAT codes: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/import-config")
@@ -1854,7 +1854,7 @@ async def get_nominal_payment_types():
         return {"success": True, "types": types}
     except Exception as e:
         logger.error(f"Error fetching payment types: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/test-api")
@@ -1875,7 +1875,7 @@ async def test_gocardless_api():
         return result
     except Exception as e:
         logger.error(f"GoCardless API test failed: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/api-payouts")
@@ -2239,7 +2239,7 @@ async def get_gocardless_api_payouts(
 
     except Exception as e:
         logger.error(f"Error fetching GoCardless API payouts: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/import-history")
@@ -2346,7 +2346,7 @@ async def get_gocardless_import_history(
         }
     except Exception as e:
         logger.error(f"Error fetching GoCardless import history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/receipt-search")
@@ -2628,7 +2628,7 @@ async def revalidate_gocardless_batches(
 
     except Exception as e:
         logger.error(f"Error revalidating batches: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/bank-accounts")
@@ -2654,7 +2654,7 @@ async def get_bank_accounts():
         return {"success": True, "accounts": accounts}
     except Exception as e:
         logger.error(f"Error fetching bank accounts: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/scan-emails")
@@ -3056,7 +3056,7 @@ async def scan_gocardless_emails(
 
     except Exception as e:
         logger.error(f"Error scanning GoCardless emails: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.delete("/api/gocardless/import-history")
@@ -3085,7 +3085,7 @@ async def clear_gocardless_import_history(
         }
     except Exception as e:
         logger.error(f"Error clearing GoCardless import history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.delete("/api/gocardless/import-history/{record_id}")
@@ -3110,7 +3110,7 @@ async def delete_gocardless_import_record(record_id: int):
             return {"success": False, "error": "Record not found"}
     except Exception as e:
         logger.error(f"Error deleting GoCardless import record: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/skip-payout")
@@ -3189,7 +3189,7 @@ async def skip_gocardless_payout(
         }
     except Exception as e:
         logger.error(f"Error skipping GoCardless payout: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/import-from-email")
@@ -3426,7 +3426,7 @@ async def import_gocardless_from_email(
             release_import_lock(_bank_lock_key(posting_bank))
         except Exception:
             pass
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/archive-email")
@@ -3500,7 +3500,7 @@ async def archive_gocardless_email(
 
     except Exception as e:
         logger.error(f"Error archiving GoCardless email: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/import")
@@ -3607,7 +3607,7 @@ async def opera3_import_gocardless_batch(
         try:
             importer = get_opera3_writer(data_path)
         except Opera3AgentRequired as e:
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": friendly_db_error(e)}
         result = importer.import_gocardless_batch(
             bank_account=posting_bank,
             payments=validated_payments,
@@ -3672,7 +3672,7 @@ async def opera3_import_gocardless_batch(
 
     except Exception as e:
         logger.error(f"Error importing GoCardless batch to Opera 3: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/import-history")
@@ -3773,7 +3773,7 @@ async def opera3_get_gocardless_import_history(
         }
     except Exception as e:
         logger.error(f"Error fetching Opera 3 GoCardless import history: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/receipt-search")
@@ -3912,7 +3912,7 @@ async def opera3_get_gocardless_batch_types(
         }
     except Exception as e:
         logger.error(f"Error getting Opera 3 batch types: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/nominal-accounts")
@@ -3944,7 +3944,7 @@ async def opera3_get_nominal_accounts(
         return {"success": True, "accounts": accounts}
     except Exception as e:
         logger.error(f"Error fetching Opera 3 nominal accounts: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/vat-codes")
@@ -4025,7 +4025,7 @@ async def opera3_get_vat_codes(
         return {"success": True, "codes": codes, "as_of_date": ref_date.isoformat()}
     except Exception as e:
         logger.error(f"Error fetching Opera 3 VAT codes: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/import-config")
@@ -4075,7 +4075,7 @@ async def opera3_get_payment_types(
         return {"success": True, "types": types}
     except Exception as e:
         logger.error(f"Error fetching Opera 3 payment types: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/bank-accounts")
@@ -4101,7 +4101,7 @@ async def opera3_get_bank_accounts(
         return {"success": True, "accounts": accounts}
     except Exception as e:
         logger.error(f"Error fetching Opera 3 bank accounts: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/match-customers")
@@ -4269,7 +4269,7 @@ async def opera3_match_gocardless_customers(
         }
     except Exception as e:
         logger.error(f"Error matching Opera 3 customers: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/eligible-customers")
@@ -4331,7 +4331,7 @@ async def opera3_get_eligible_customers(
         }
     except Exception as e:
         logger.error(f"Error getting Opera 3 GC eligible customers: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/mandates/suggest-match")
@@ -4579,7 +4579,7 @@ async def opera3_sync_gocardless_mandates(
         }
     except Exception as e:
         logger.error(f"Error syncing Opera 3 mandates: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/mandates/link")
@@ -4700,7 +4700,7 @@ async def opera3_link_gocardless_mandate(
         }
     except Exception as e:
         logger.error(f"Error linking Opera 3 mandate: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/collectable-invoices")
@@ -4827,7 +4827,7 @@ async def opera3_get_collectable_invoices(
         }
     except Exception as e:
         logger.error(f"Error getting Opera 3 collectable invoices: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/due-invoices")
@@ -5083,7 +5083,7 @@ async def opera3_get_due_invoices(
         }
     except Exception as e:
         logger.error(f"Error getting Opera 3 due invoices: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/request-payment")
@@ -5217,7 +5217,7 @@ async def opera3_request_gocardless_payment(
         }
     except Exception as e:
         logger.error(f"Error requesting Opera 3 payment: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/payment-requests/bulk")
@@ -5249,7 +5249,7 @@ async def opera3_request_bulk_payments(
             else:
                 fail_count += 1
         except Exception as e:
-            results.append({"opera_account": req.get("opera_account"), "success": False, "error": str(e)})
+            results.append({"opera_account": req.get("opera_account"), "success": False, "error": friendly_db_error(e)})
             fail_count += 1
 
     return {
@@ -5415,7 +5415,7 @@ async def opera3_get_repeat_documents(
         }
     except Exception as e:
         logger.error(f"Error getting Opera 3 repeat documents: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/subscriptions")
@@ -5506,7 +5506,7 @@ async def opera3_list_subscriptions(
         }
     except Exception as e:
         logger.error(f"Error listing Opera 3 subscriptions: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/subscriptions")
@@ -5615,7 +5615,7 @@ async def opera3_create_subscription(
         return {"success": True, "subscription": sub_record, "gc_response": gc_sub}
     except Exception as e:
         logger.error(f"Error creating Opera 3 subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/subscriptions/{subscription_id}/sync-from-opera")
@@ -5680,7 +5680,7 @@ async def opera3_sync_subscription_from_opera(
         }
     except Exception as e:
         logger.error(f"Error syncing Opera 3 subscription from Opera: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/scan-emails")
@@ -5868,7 +5868,7 @@ async def opera3_scan_gocardless_emails(
         }
     except Exception as e:
         logger.error(f"Error scanning Opera 3 GoCardless emails: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/import-from-email")
@@ -5988,7 +5988,7 @@ async def opera3_import_gocardless_from_email(
                 importer = get_opera3_writer(data_path)
             except Opera3AgentRequired as e:
                 release_import_lock(lock_key)
-                return {"success": False, "error": str(e)}
+                return {"success": False, "error": friendly_db_error(e)}
             result = importer.import_gocardless_batch(
                 bank_account=posting_bank,
                 payments=validated_payments,
@@ -6073,7 +6073,7 @@ async def opera3_import_gocardless_from_email(
 
     except Exception as e:
         logger.error(f"Error importing Opera 3 GoCardless from email: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/payment-requests/stats")
@@ -6085,7 +6085,7 @@ async def get_gocardless_payment_stats():
         return {"success": True, **stats}
     except Exception as e:
         logger.error(f"Error getting payment stats: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/unposted-payments")
@@ -6230,7 +6230,7 @@ async def list_gocardless_mandates(
         }
     except Exception as e:
         logger.error(f"Error listing mandates: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/mandates/unlinked")
@@ -6252,7 +6252,7 @@ async def list_unlinked_gocardless_mandates():
         }
     except Exception as e:
         logger.error(f"Error listing unlinked mandates: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/mandates/sync")
@@ -6459,7 +6459,7 @@ async def sync_gocardless_mandates():
         }
     except Exception as e:
         logger.error(f"Error syncing mandates: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/mandates/link")
@@ -6597,7 +6597,7 @@ async def link_gocardless_mandate(
         }
     except Exception as e:
         logger.error(f"Error linking mandate: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/mandates/{mandate_id}/cancel")
@@ -6635,7 +6635,7 @@ async def cancel_gocardless_mandate(mandate_id: str):
         }
     except Exception as e:
         logger.error(f"Error cancelling mandate: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.delete("/api/gocardless/mandates/{mandate_id}")
@@ -6654,7 +6654,7 @@ async def unlink_gocardless_mandate(mandate_id: str):
         return {"success": False, "error": "Mandate not found"}
     except Exception as e:
         logger.error(f"Error unlinking mandate: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/mandates/setup")
@@ -6856,7 +6856,7 @@ async def create_mandate_setup(request: Request):
 
     except Exception as e:
         logger.error(f"Error creating mandate setup: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/mandates/pending-setups")
@@ -6872,7 +6872,7 @@ async def list_pending_mandate_setups():
         }
     except Exception as e:
         logger.error(f"Error listing mandate setups: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/mandates/check-setups")
@@ -6991,7 +6991,7 @@ async def check_mandate_setups():
 
     except Exception as e:
         logger.error(f"Error checking mandate setups: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/customer-email/{account}")
@@ -7022,7 +7022,7 @@ async def get_customer_email_for_mandate(account: str):
         }
     except Exception as e:
         logger.error(f"Error getting customer email: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/mandates/cancel-setup/{setup_id}")
@@ -7049,7 +7049,7 @@ async def cancel_mandate_setup(setup_id: int):
         }
     except Exception as e:
         logger.error(f"Error cancelling mandate setup: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/mandates/setup")
@@ -7174,7 +7174,7 @@ async def opera3_check_mandate_setups():
 
     except Exception as e:
         logger.error(f"Error checking mandate setups: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/opera3/gocardless/customer-email/{account}")
@@ -7197,7 +7197,7 @@ async def opera3_get_customer_email_for_mandate(account: str):
         }
     except Exception as e:
         logger.error(f"Error getting Opera 3 customer email: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/opera3/gocardless/mandates/cancel-setup/{setup_id}")
@@ -7446,7 +7446,7 @@ async def get_gocardless_eligible_customers():
 
     except Exception as e:
         logger.error(f"Error getting GC eligible customers: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/mandates/suggest-match")
@@ -7699,7 +7699,7 @@ async def get_collectable_invoices(
         }
     except Exception as e:
         logger.error(f"Error getting collectable invoices: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/due-invoices")
@@ -8019,7 +8019,7 @@ async def get_gocardless_due_invoices(
 
     except Exception as e:
         logger.error(f"Error getting due invoices: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/payment-requests")
@@ -8051,7 +8051,7 @@ async def list_payment_requests(
         }
     except Exception as e:
         logger.error(f"Error listing payment requests: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/request-payment")
@@ -8240,7 +8240,7 @@ async def request_gocardless_payment(
         }
     except Exception as e:
         logger.error(f"Error requesting payment: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/payment-requests/bulk")
@@ -8279,7 +8279,7 @@ async def request_bulk_payments(request: Request):
             results.append({
                 "opera_account": req.get("opera_account"),
                 "success": False,
-                "error": str(e)
+                "error": friendly_db_error(e)
             })
             fail_count += 1
 
@@ -8311,7 +8311,7 @@ async def get_payment_request(request_id: int):
         return {"success": True, "payment_request": request}
     except Exception as e:
         logger.error(f"Error getting payment request: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/payment-requests/{request_id}/cancel")
@@ -8358,7 +8358,7 @@ async def cancel_payment_request(request_id: int):
         }
     except Exception as e:
         logger.error(f"Error cancelling payment request: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/payment-requests/sync")
@@ -8421,7 +8421,7 @@ async def sync_payment_statuses():
         }
     except Exception as e:
         logger.error(f"Error syncing payment statuses: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/repeat-documents")
@@ -8590,7 +8590,7 @@ async def get_gocardless_repeat_documents(
         }
     except Exception as e:
         logger.error(f"Error getting repeat documents: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/subscriptions/link")
@@ -8637,7 +8637,7 @@ async def link_subscription_to_document(request: Request):
         }
     except Exception as e:
         logger.error(f"Error linking subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/subscriptions/unlink")
@@ -8679,7 +8679,7 @@ async def unlink_subscription_from_document(request: Request):
         }
     except Exception as e:
         logger.error(f"Error unlinking subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/subscriptions")
@@ -8799,7 +8799,7 @@ async def list_gocardless_subscriptions(
         }
     except Exception as e:
         logger.error(f"Error listing subscriptions: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/subscriptions")
@@ -8959,7 +8959,7 @@ async def create_gocardless_subscription(request: Request):
         }
     except Exception as e:
         logger.error(f"Error creating subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.get("/api/gocardless/subscriptions/{subscription_id}")
@@ -8974,7 +8974,7 @@ async def get_gocardless_subscription(subscription_id: str):
         return {"success": True, "subscription": sub}
     except Exception as e:
         logger.error(f"Error getting subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/subscriptions/{subscription_id}/sync-from-opera")
@@ -9050,7 +9050,7 @@ async def sync_subscription_from_opera(subscription_id: str):
         }
     except Exception as e:
         logger.error(f"Error syncing subscription from Opera: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.put("/api/gocardless/subscriptions/{subscription_id}")
@@ -9096,7 +9096,7 @@ async def update_gocardless_subscription(subscription_id: str, request: Request)
         }
     except Exception as e:
         logger.error(f"Error updating subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/subscriptions/{subscription_id}/pause")
@@ -9123,7 +9123,7 @@ async def pause_gocardless_subscription(subscription_id: str):
         }
     except Exception as e:
         logger.error(f"Error pausing subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/subscriptions/{subscription_id}/resume")
@@ -9150,7 +9150,7 @@ async def resume_gocardless_subscription(subscription_id: str):
         }
     except Exception as e:
         logger.error(f"Error resuming subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/subscriptions/{subscription_id}/cancel")
@@ -9177,7 +9177,7 @@ async def cancel_gocardless_subscription(subscription_id: str):
         }
     except Exception as e:
         logger.error(f"Error cancelling subscription: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
 @router.post("/api/gocardless/subscriptions/sync")
@@ -9305,6 +9305,6 @@ async def sync_gocardless_subscriptions():
         }
     except Exception as e:
         logger.error(f"Error syncing subscriptions: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": friendly_db_error(e)}
 
 
