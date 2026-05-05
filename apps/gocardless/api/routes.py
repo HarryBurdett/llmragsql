@@ -3534,10 +3534,13 @@ async def opera3_import_gocardless_batch(
     reference: str = Query("GoCardless", description="Batch reference"),
     complete_batch: bool = Query(False, description="Complete batch immediately"),
     cbtype: str = Query(None, description="Cashbook type code"),
-    gocardless_fees: float = Query(0.0, description="GoCardless fees amount"),
-    vat_on_fees: float = Query(0.0, description="VAT element of fees"),
-    fees_nominal_account: str = Query(None, description="Nominal account for fees"),
+    gocardless_fees: float = Query(0.0, description="GoCardless fees amount (gross including VAT)"),
+    vat_on_fees: float = Query(0.0, description="VAT element of fees in pounds"),
+    fees_nominal_account: str = Query(None, description="Nominal account for net fees"),
+    fees_vat_code: str = Query("2", description="VAT code for fees - looked up in ztax for rate"),
     fees_payment_type: str = Query(None, description="Cashbook type code for fees entry"),
+    auto_allocate: bool = Query(False, description="Auto-allocate receipts to invoices when amount matches a single outstanding invoice"),
+    currency: str = Query(None, description="Currency code from GoCardless (e.g., 'GBP'). Rejected if not home currency."),
     payout_id: str = Query(None, description="GoCardless payout ID for history tracking"),
     source: str = Query("api", description="Import source: 'api' or 'email'"),
     dest_bank_account: str = Query(None, description="Payout destination bank account number (from GoCardless)"),
@@ -3547,15 +3550,43 @@ async def opera3_import_gocardless_batch(
     """
     Import GoCardless batch into Opera 3 as a batch receipt.
 
+    Parity with SE /api/gocardless/import (audit 2026-05-05 GoCardless F4):
+    accepts vat_on_fees, fees_vat_code, auto_allocate, and currency
+    parameters that were previously SE-only. Acquires the same per-bank
+    import lock the SE path takes.
+
     Creates:
     - One aentry header (batch total)
     - Multiple atran lines (one per customer)
     - Multiple stran records
     """
+    # Per-bank import lock (parity with SE — audit GoCardless F4).
+    from sql_rag.import_lock import acquire_import_lock, release_import_lock
+    if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-gocardless-import"):
+        return {
+            "success": False,
+            "error": (
+                f"Bank account {bank_code} is currently being modified by another user. "
+                "Please wait and try again."
+            ),
+        }
     try:
         from sql_rag.opera3_write_provider import get_opera3_writer, Opera3AgentRequired
         from datetime import datetime
         import json
+
+        # Currency validation (audit GoCardless F5). The SE path rejects
+        # non-home-currency batches; Opera 3 must do the same. Today's
+        # home currency is GBP — anything else is rejected.
+        if currency and currency.strip().upper() not in ('GBP', ''):
+            release_import_lock(_bank_lock_key(bank_code))
+            return {
+                "success": False,
+                "error": (
+                    f"Currency '{currency}' is not the home currency. "
+                    "GoCardless batches in foreign currencies are not supported."
+                ),
+            }
 
         # Validate the data_path is reachable. data_path comes from the
         # client; per audit GoCardless F8 we validate it's a real
@@ -3764,6 +3795,15 @@ async def opera3_import_gocardless_batch(
     except Exception as e:
         logger.error(f"Error importing GoCardless batch to Opera 3: {e}")
         return {"success": False, "error": friendly_db_error(e)}
+    finally:
+        # Always release the per-bank import lock acquired at function
+        # entry (audit GoCardless F4). Best-effort: a missed release on
+        # an unexpected exception path would otherwise leave the bank
+        # locked until the 5-minute stale-lock cleanup fires.
+        try:
+            release_import_lock(_bank_lock_key(bank_code))
+        except Exception:
+            pass
 
 
 @router.get("/api/opera3/gocardless/import-history")
