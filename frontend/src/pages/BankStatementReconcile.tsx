@@ -420,6 +420,15 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
     closingBalanceMismatch?: { expected: number; actual: number } | null;
   } | null>(null);
 
+  // Reverse-rec modal state (audit 2026-05-05 stages-3-5 F10).
+  // Operator surfaces a way to undo a rec batch they just made.
+  // Calls the existing /api/reconcile/bank/{bank_code}/unreconcile
+  // endpoint with the entry numbers from the just-completed rec.
+  const [reverseModalOpen, setReverseModalOpen] = useState(false);
+  const [reverseInProgress, setReverseInProgress] = useState(false);
+  const [reverseError, setReverseError] = useState<string | null>(null);
+  const [recentlyReconciledEntries, setRecentlyReconciledEntries] = useState<string[]>([]);
+
   // Partial update success indicator — shows confirmation without clearing the view
   const [lastPartialUpdateInfo, setLastPartialUpdateInfo] = useState<{
     timestamp: string;
@@ -2131,6 +2140,12 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
             isPartial: false,
             closingBalanceMismatch: hasClosingMismatch ? { expected: expectedClosing, actual: newRecBal! } : null,
           });
+          // Cache the entry numbers we just reconciled so the
+          // Reverse button on the success banner has them available
+          // (audit 2026-05-05 stages-3-5 F10).
+          setRecentlyReconciledEntries(
+            selectedEntriesToReconcile.map(e => e.entry_number)
+          );
           // Reset matching state but keep completion info visible
           setMatchingResult(null);
           setValidationResult(null);
@@ -3043,7 +3058,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                   Complete the remaining items in Opera Cashbook &gt; Reconcile.
                 </p>
               )}
-              <div className="mt-3">
+              <div className="mt-3 flex gap-2">
                 <button
                   onClick={() => {
                     setReconcileCompleteInfo(null);
@@ -3051,6 +3066,7 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                     setClosingBalance('');
                     setImportedStatementData(null as any);
                     setActiveImportId(null);
+                    setRecentlyReconciledEntries([]);
                     if (onReconcileComplete) {
                       onReconcileComplete();
                     }
@@ -3061,7 +3077,90 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                 >
                   Back to Statements
                 </button>
+                {recentlyReconciledEntries.length > 0 && (
+                  <button
+                    onClick={() => { setReverseError(null); setReverseModalOpen(true); }}
+                    className="px-4 py-2 text-sm rounded border border-gray-400 text-gray-700 hover:bg-gray-50"
+                    title="Undo this reconciliation — clears the rec stamp from the just-reconciled entries and reverts nbank to the prior batch's state. Postings are NOT reversed."
+                  >
+                    Reverse this rec
+                  </button>
+                )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reverse-rec confirmation modal — audit 2026-05-05 stages-3-5 F10 */}
+      {reverseModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 p-5">
+            <h3 className="font-semibold text-gray-900 text-lg">Reverse this reconciliation?</h3>
+            <p className="text-sm text-gray-700 mt-3">
+              This will:
+            </p>
+            <ul className="text-sm text-gray-700 list-disc ml-6 mt-1 space-y-1">
+              <li>Clear the rec stamp ({reconcileCompleteInfo?.entriesReconciled} {reconcileCompleteInfo?.entriesReconciled === 1 ? 'entry' : 'entries'}) so they show as unreconciled in Opera again.</li>
+              <li>Revert <code className="text-xs bg-gray-100 px-1 rounded">nbank</code> rec balance, last-statement number / date, and partial-rec carry-forward to the prior batch's state.</li>
+              <li>NOT reverse the underlying postings — bank, nominal, ledger entries stay in Opera. Only the rec status is undone.</li>
+            </ul>
+            <p className="text-sm text-gray-700 mt-3">
+              You should only do this if the rec was wrong. Continue?
+            </p>
+            {reverseError && (
+              <div className="mt-3 p-2 text-sm bg-red-50 border border-red-200 text-red-800 rounded">
+                {reverseError}
+              </div>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => { setReverseModalOpen(false); setReverseError(null); }}
+                disabled={reverseInProgress}
+                className="px-4 py-2 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setReverseInProgress(true);
+                  setReverseError(null);
+                  try {
+                    const resp = await authFetch(
+                      `/api/reconcile/bank/${selectedBank}/unreconcile`,
+                      {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(recentlyReconciledEntries),
+                      },
+                    );
+                    const data = await resp.json();
+                    if (!resp.ok || data?.success === false) {
+                      setReverseError(data?.error || `Reversal failed (${resp.status})`);
+                      return;
+                    }
+                    setReverseModalOpen(false);
+                    setReconcileCompleteInfo(null);
+                    setRecentlyReconciledEntries([]);
+                    setOpeningBalance('');
+                    setClosingBalance('');
+                    setImportedStatementData(null as any);
+                    setActiveImportId(null);
+                    queryClient.invalidateQueries({ queryKey: ['bankRecStatus', selectedBank] });
+                    queryClient.invalidateQueries({ queryKey: ['unreconciledEntries', selectedBank] });
+                    queryClient.invalidateQueries({ queryKey: ['statementFiles'] });
+                    if (onReconcileComplete) onReconcileComplete();
+                  } catch (e: any) {
+                    setReverseError(String(e));
+                  } finally {
+                    setReverseInProgress(false);
+                  }
+                }}
+                disabled={reverseInProgress}
+                className="px-4 py-2 text-sm bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50"
+              >
+                {reverseInProgress ? 'Reversing…' : 'Reverse rec'}
+              </button>
             </div>
           </div>
         </div>
