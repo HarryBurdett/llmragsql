@@ -3776,22 +3776,12 @@ async def preview_bank_import_from_pdf(
         except Exception:
             pass
 
-        # Convert StatementTransaction to BankTransaction objects
+        # F9 wedge: shared BankTransaction creation.
         logger.info(f"preview-from-pdf: Converting {len(stmt_transactions)} StatementTransactions to BankTransactions")
-        transactions = []
-        for i, st in enumerate(stmt_transactions, start=1):
-            # StatementTransaction.amount: positive = money in, negative = money out
-            bt = BankTransaction(
-                row_number=i,
-                date=st.date,
-                amount=st.amount,
-                subcategory=st.transaction_type or '',
-                memo=st.description or '',
-                name=st.description or '',
-                reference=st.reference or '',
-                fit_id=''
-            )
-            transactions.append(bt)
+        from apps.bank_reconcile.logic.import_orchestration import (
+            convert_to_bank_transactions as _convert_txns,
+        )
+        transactions = _convert_txns(stmt_transactions)
 
         # Now match transactions using BankStatementImport
         importer = BankStatementImport(bank_code=bank_code, sql_connector=sql_connector)
@@ -4902,48 +4892,13 @@ async def import_with_manual_overrides(
         transactions, detected_format = importer.parse_file(filepath)
         importer.process_transactions(transactions)
 
-        # Apply date overrides first (to fix period violations)
-        date_override_map = {d['row']: d['date'] for d in date_overrides}
-        for txn in transactions:
-            if txn.row_number in date_override_map:
-                new_date_str = date_override_map[txn.row_number]
-                txn.original_date = txn.date  # Preserve original
-                txn.date = datetime.strptime(new_date_str, '%Y-%m-%d').date()
-
-        # Apply manual overrides (supports unmatched, skipped, and refund modifications)
-        override_map = {o['row']: o for o in overrides}
-        for txn in transactions:
-            if txn.row_number in override_map:
-                override = override_map[txn.row_number]
-                # Only apply account override if provided
-                if override.get('account'):
-                    txn.manual_account = override.get('account')
-                    txn.manual_ledger_type = override.get('ledger_type')
-
-                # Apply cashbook type override
-                if override.get('cbtype'):
-                    txn.cbtype = override.get('cbtype')
-
-                # Use explicit transaction_type if provided, otherwise infer from ledger type
-                transaction_type = override.get('transaction_type')
-                if transaction_type and transaction_type in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer', 'defer'):
-                    txn.action = transaction_type
-                    # Store bank transfer details on the transaction
-                    if transaction_type == 'bank_transfer':
-                        txn.bank_transfer_details = override.get('bank_transfer_details', {})
-                elif override.get('ledger_type') == 'C':
-                    txn.action = 'sales_receipt'
-                elif override.get('ledger_type') == 'S':
-                    txn.action = 'purchase_payment'
-                elif override.get('ledger_type') == 'N':
-                    txn.action = 'nominal_payment' if txn.amount < 0 else 'nominal_receipt'
-                # Apply project/department/VAT codes for nominal entries
-                if override.get('project_code'):
-                    txn.project_code = override['project_code']
-                if override.get('department_code'):
-                    txn.department_code = override['department_code']
-                if override.get('vat_code'):
-                    txn.vat_code = override['vat_code']
+        # F9 wedge: shared date + manual override application.
+        from apps.bank_reconcile.logic.import_orchestration import (
+            apply_date_overrides as _apply_dates,
+            apply_manual_overrides as _apply_overrides,
+        )
+        _apply_dates(transactions, date_overrides)
+        _apply_overrides(transactions, overrides)
 
         # --- Audit and count deferred rows ---
         # Deferred rows are not posted to Opera (they fall outside the import
@@ -4969,46 +4924,24 @@ async def import_with_manual_overrides(
         except Exception as audit_err:
             logger.warning("Deferred-transaction audit failed: %s", audit_err)
 
-        # Validate periods for all selected transactions before importing
-        # Use ledger-specific validation (SL for receipts/refunds to customers, PL for payments/refunds from suppliers)
+        # F9 wedge: shared period validation + repeat-entry detection.
         from sql_rag.opera_config import (
             validate_posting_period,
             get_ledger_type_for_transaction,
-            get_current_period_info
+            get_current_period_info,
         )
-
+        from apps.bank_reconcile.logic.import_orchestration import (
+            validate_transaction_periods as _validate_periods,
+            find_unprocessed_repeat_entries as _find_repeats,
+        )
         period_info = get_current_period_info(sql_connector)
-        period_violations = []
-
-        for txn in transactions:
-            # Only check transactions that will be imported
-            if selected_rows is not None and txn.row_number not in selected_rows:
-                continue
-            if txn.action not in ('sales_receipt', 'purchase_payment', 'sales_refund', 'purchase_refund', 'nominal_payment', 'nominal_receipt', 'bank_transfer'):
-                continue
-            if txn.is_duplicate:
-                continue
-
-            # Get the appropriate ledger type for this transaction
-            ledger_type = get_ledger_type_for_transaction(txn.action)
-
-            # Use ledger-specific period validation
-            period_result = validate_posting_period(sql_connector, txn.date, ledger_type)
-
-            if not period_result.is_valid:
-                ledger_names = {'SL': 'Sales Ledger', 'PL': 'Purchase Ledger', 'NL': 'Nominal Ledger'}
-                period_violations.append({
-                    "row": txn.row_number,
-                    "date": txn.date.isoformat(),
-                    "name": txn.name,
-                    "amount": txn.amount,
-                    "action": txn.action,
-                    "ledger_type": ledger_type,
-                    "ledger_name": ledger_names.get(ledger_type, ledger_type),
-                    "error": period_result.error_message,
-                    "year": period_result.year,
-                    "period": period_result.period
-                })
+        period_violations = _validate_periods(
+            transactions=transactions,
+            selected_rows=selected_rows,
+            sql_connector=sql_connector,
+            get_ledger_type_for_transaction=get_ledger_type_for_transaction,
+            validate_posting_period=validate_posting_period,
+        )
 
         # Block import if any period violations exist
         if period_violations:
@@ -5026,19 +4959,7 @@ async def import_with_manual_overrides(
             }
 
         # Block import if there are unprocessed repeat entries in OPEN periods
-        # Period-blocked repeat entries are silently skipped (they can't be posted anyway)
-        # User must run Opera's Repeat Entries routine for open-period entries first
-        unprocessed_repeat_entries = []
-        for txn in transactions:
-            if txn.action == 'repeat_entry' and getattr(txn, 'period_valid', True):
-                unprocessed_repeat_entries.append({
-                    "row": txn.row_number,
-                    "name": txn.name,
-                    "amount": txn.amount,
-                    "date": txn.date.isoformat(),
-                    "entry_ref": getattr(txn, 'repeat_entry_ref', None),
-                    "entry_desc": getattr(txn, 'repeat_entry_desc', None)
-                })
+        unprocessed_repeat_entries = _find_repeats(transactions)
 
         if unprocessed_repeat_entries:
             return {
@@ -8896,22 +8817,11 @@ async def preview_bank_import_from_email(
                 reconciler = StatementReconciler(sql_connector, config=config)
                 statement_info, stmt_transactions = reconciler.extract_transactions_from_pdf(tmp_path)
 
-                # Convert StatementTransaction to BankTransaction format
-                transactions = []
-                for i, st in enumerate(stmt_transactions, start=1):
-                    # StatementTransaction.amount: positive = money in, negative = money out
-                    txn = BankTransaction(
-                        row_number=i,
-                        date=st.date,
-                        amount=st.amount,
-                        subcategory=st.transaction_type or '',
-                        memo=st.description or '',
-                        name=st.description or '',
-                        reference=st.reference or '',
-                        fit_id=''
-                    )
-                    transactions.append(txn)
-
+                # F9 wedge: shared BankTransaction creation.
+                from apps.bank_reconcile.logic.import_orchestration import (
+                    convert_to_bank_transactions as _convert_txns,
+                )
+                transactions = _convert_txns(stmt_transactions)
                 detected_format = "PDF (AI Extraction)"
 
                 # Validate/detect bank from statement
