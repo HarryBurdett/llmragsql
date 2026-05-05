@@ -10894,17 +10894,27 @@ async def complete_reconciliation(
         ]
         if entry_numbers:
             quoted = ','.join(f"'{e.replace(chr(39), chr(39)+chr(39))}'" for e in entry_numbers)
+            # Use atran.at_pstdate (the canonical post date) joined to
+            # aentry, NOT aentry.ae_lstdate (last-modified date — gets
+            # bumped by any Opera operation, even ones unrelated to
+            # posting). Audit 2026-05-05 stages-3-5 F12: matcher and
+            # duplicate-check both use at_pstdate, so using ae_lstdate
+            # here was an inconsistent gate that could pass entries the
+            # matcher rejected and reject entries the matcher accepted.
             df = sql_connector.execute_query(f"""
-                SELECT ae_entry, ae_lstdate
-                FROM aentry WITH (NOLOCK)
-                WHERE ae_acnt = '{bank_code}'
-                AND RTRIM(ae_entry) IN ({quoted})
+                SELECT a.ae_entry, MIN(t.at_pstdate) AS pstdate
+                FROM aentry a WITH (NOLOCK)
+                JOIN atran t WITH (NOLOCK)
+                  ON a.ae_acnt = t.at_acnt AND a.ae_entry = t.at_entry
+                WHERE a.ae_acnt = '{bank_code}'
+                  AND RTRIM(a.ae_entry) IN ({quoted})
+                GROUP BY a.ae_entry
             """)
             date_by_entry = {}
             if df is not None and not df.empty:
                 for _, r in df.iterrows():
                     ent = str(r.get('ae_entry', '')).strip()
-                    d = _to_date(r.get('ae_lstdate'))
+                    d = _to_date(r.get('pstdate'))
                     date_by_entry[ent] = d
 
             out_of_period = []

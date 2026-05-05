@@ -2679,8 +2679,20 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                           {line.entry_number || ''}
                         </td>
                         <td
-                          className="px-3 py-2 text-center cursor-pointer select-none"
+                          className={`px-3 py-2 text-center select-none ${
+                            line.entry_number ? 'cursor-pointer' : 'cursor-not-allowed'
+                          }`}
                           onClick={() => {
+                            // No Opera entry → no toggle. Clicking ✓ on a
+                            // row that never matched would set an override
+                            // the completion payload silently discards
+                            // (audit 2026-05-05 stages-3-5 F8). Operators
+                            // would see "matched" in the UI but the line
+                            // would stay open in Opera and reappear on the
+                            // next scan.
+                            if (!line.entry_number) {
+                              return;
+                            }
                             setManualMatchOverrides(prev => {
                               const next = new Map(prev);
                               const currentlyMatched = next.has(line.statement_line)
@@ -2696,12 +2708,18 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
                               return next;
                             });
                           }}
-                          title={isException ? 'Click to mark as matched' : `Click to unmatch${line.entry_number ? ` (${line.entry_number})` : ''}`}
+                          title={
+                            line.entry_number
+                              ? (isException
+                                ? `Click to mark as matched (${line.entry_number})`
+                                : `Click to unmatch (${line.entry_number})`)
+                              : 'No Opera entry — post the line via the Unmatched section first'
+                          }
                         >
                           {isException ? (
-                            <span className={`text-red-600 hover:text-green-600 ${isManual ? 'ring-1 ring-red-300 rounded px-1' : ''}`}>&#x2717;</span>
+                            <span className={`text-red-600 ${line.entry_number ? 'hover:text-green-600' : 'opacity-50'} ${isManual ? 'ring-1 ring-red-300 rounded px-1' : ''}`}>&#x2717;</span>
                           ) : (
-                            <span className={`text-green-600 hover:text-red-600 ${isManual ? 'ring-1 ring-blue-300 rounded px-1' : ''}`}>&#x2713;</span>
+                            <span className={`text-green-600 ${line.entry_number ? 'hover:text-red-600' : 'opacity-50'} ${isManual ? 'ring-1 ring-blue-300 rounded px-1' : ''}`}>&#x2713;</span>
                           )}
                         </td>
                       </tr>
