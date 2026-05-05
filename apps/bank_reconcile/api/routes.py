@@ -4648,7 +4648,27 @@ async def import_bank_statement_from_pdf(
                             if latest_date is None:
                                 latest_date = datetime.now().date()
 
-                            statement_number = int(latest_date.strftime('%y%m%d'))
+                            # Statement number from nbank.nk_lststno + 1 — Opera's canonical
+                            # next-statement counter. Falls back to a date-derived value only
+                            # if the nbank lookup fails. Earlier code derived from date only
+                            # (yymmdd), which both clashed with Opera's existing nk_lststno
+                            # range AND inflated subsequent rec batches' numbers. Audit
+                            # 2026-05-05 stages-3-5 F4.
+                            statement_number = None
+                            try:
+                                if sql_connector is not None:
+                                    _nbsn_df = sql_connector.execute_query(
+                                        "SELECT nk_lststno FROM nbank WITH (NOLOCK) "
+                                        f"WHERE RTRIM(nk_acnt) = '{bank_code}'"
+                                    )
+                                    if _nbsn_df is not None and len(_nbsn_df) > 0:
+                                        _last = _nbsn_df.iloc[0]['nk_lststno']
+                                        if _last is not None:
+                                            statement_number = int(_last) + 1
+                            except Exception as _nbsn_err:
+                                logger.warning('Could not read nk_lststno for %s: %s — falling back to date-derived', bank_code, _nbsn_err)
+                            if statement_number is None:
+                                statement_number = int(latest_date.strftime('%y%m%d'))
 
                             opera_import = OperaSQLImport(sql_connector)
                             recon_result = opera_import.mark_entries_reconciled(
@@ -5270,7 +5290,27 @@ async def import_with_manual_overrides(
                         latest_date = datetime.now().date()
 
                     # Statement number as YYMMDD (e.g., 260209 for 2026-02-09)
-                    statement_number = int(latest_date.strftime('%y%m%d'))
+                    # Statement number from nbank.nk_lststno + 1 — Opera's canonical
+                    # next-statement counter. Falls back to a date-derived value only
+                    # if the nbank lookup fails. Earlier code derived from date only
+                    # (yymmdd), which both clashed with Opera's existing nk_lststno
+                    # range AND inflated subsequent rec batches' numbers. Audit
+                    # 2026-05-05 stages-3-5 F4.
+                    statement_number = None
+                    try:
+                        if sql_connector is not None:
+                            _nbsn_df = sql_connector.execute_query(
+                                "SELECT nk_lststno FROM nbank WITH (NOLOCK) "
+                                f"WHERE RTRIM(nk_acnt) = '{bank_code}'"
+                            )
+                            if _nbsn_df is not None and len(_nbsn_df) > 0:
+                                _last = _nbsn_df.iloc[0]['nk_lststno']
+                                if _last is not None:
+                                    statement_number = int(_last) + 1
+                    except Exception as _nbsn_err:
+                        logger.warning('Could not read nk_lststno for %s: %s — falling back to date-derived', bank_code, _nbsn_err)
+                    if statement_number is None:
+                        statement_number = int(latest_date.strftime('%y%m%d'))
 
                     opera_import = OperaSQLImport(sql_connector)
                     recon_result = opera_import.mark_entries_reconciled(
@@ -6696,18 +6736,38 @@ async def scan_all_banks_for_statements(
                     email_sync_manager.storage = email_storage
                     logger.info("Updated email_sync_manager.storage to match current company")
 
-                # Check if we synced recently — skip if within last 5 minutes
+                # Check if we synced recently — skip if within last 5 minutes.
+                # Earlier code mixed tz-aware and tz-naive datetimes in the
+                # subtraction (TypeError) and silently swallowed it via
+                # `except Exception: pass`, defeating the cooldown entirely.
+                # Audit 2026-05-05 stages-1-2 F11. Now: normalise BOTH sides
+                # to UTC-naive before comparing.
+                from datetime import timezone as _tz
                 sync_status = email_sync_manager.get_sync_status()
                 recent_sync = False
                 for prov in sync_status.get('providers', []):
                     last_sync = prov.get('last_sync')
-                    if last_sync:
-                        try:
-                            last_dt = datetime.fromisoformat(last_sync.replace('Z', '+00:00')) if isinstance(last_sync, str) else last_sync
-                            if (datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.utcnow()) - last_dt.replace(tzinfo=None) < timedelta(minutes=5):
-                                recent_sync = True
-                        except Exception:
-                            pass
+                    if not last_sync:
+                        continue
+                    try:
+                        if isinstance(last_sync, str):
+                            last_dt = datetime.fromisoformat(last_sync.replace('Z', '+00:00'))
+                        else:
+                            last_dt = last_sync
+                        # Normalise to UTC-naive.
+                        if last_dt.tzinfo is not None:
+                            last_dt_naive = last_dt.astimezone(_tz.utc).replace(tzinfo=None)
+                        else:
+                            last_dt_naive = last_dt
+                        if datetime.utcnow() - last_dt_naive < timedelta(minutes=5):
+                            recent_sync = True
+                    except Exception as cooldown_err:
+                        # Surface the parse failure so silent swallow doesn't
+                        # mask another regression of this kind.
+                        logger.warning(
+                            'sync-cooldown parse failed (last_sync=%r): %s',
+                            last_sync, cooldown_err,
+                        )
 
                 if recent_sync:
                     sync_result = {'skipped': True, 'reason': 'synced_recently'}
@@ -10160,7 +10220,27 @@ async def import_bank_statement_from_email(
                     if latest_date is None:
                         latest_date = datetime.now().date()
 
-                    statement_number = int(latest_date.strftime('%y%m%d'))
+                    # Statement number from nbank.nk_lststno + 1 — Opera's canonical
+                    # next-statement counter. Falls back to a date-derived value only
+                    # if the nbank lookup fails. Earlier code derived from date only
+                    # (yymmdd), which both clashed with Opera's existing nk_lststno
+                    # range AND inflated subsequent rec batches' numbers. Audit
+                    # 2026-05-05 stages-3-5 F4.
+                    statement_number = None
+                    try:
+                        if sql_connector is not None:
+                            _nbsn_df = sql_connector.execute_query(
+                                "SELECT nk_lststno FROM nbank WITH (NOLOCK) "
+                                f"WHERE RTRIM(nk_acnt) = '{bank_code}'"
+                            )
+                            if _nbsn_df is not None and len(_nbsn_df) > 0:
+                                _last = _nbsn_df.iloc[0]['nk_lststno']
+                                if _last is not None:
+                                    statement_number = int(_last) + 1
+                    except Exception as _nbsn_err:
+                        logger.warning('Could not read nk_lststno for %s: %s — falling back to date-derived', bank_code, _nbsn_err)
+                    if statement_number is None:
+                        statement_number = int(latest_date.strftime('%y%m%d'))
 
                     opera_import = OperaSQLImport(sql_connector)
                     recon_result = opera_import.mark_entries_reconciled(
@@ -13648,7 +13728,27 @@ async def opera3_import_bank_statement_from_pdf(
                     if latest_date is None:
                         latest_date = datetime.now().date()
 
-                    statement_number = int(latest_date.strftime('%y%m%d'))
+                    # Statement number from nbank.nk_lststno + 1 — Opera's canonical
+                    # next-statement counter. Falls back to a date-derived value only
+                    # if the nbank lookup fails. Earlier code derived from date only
+                    # (yymmdd), which both clashed with Opera's existing nk_lststno
+                    # range AND inflated subsequent rec batches' numbers. Audit
+                    # 2026-05-05 stages-3-5 F4.
+                    statement_number = None
+                    try:
+                        if sql_connector is not None:
+                            _nbsn_df = sql_connector.execute_query(
+                                "SELECT nk_lststno FROM nbank WITH (NOLOCK) "
+                                f"WHERE RTRIM(nk_acnt) = '{bank_code}'"
+                            )
+                            if _nbsn_df is not None and len(_nbsn_df) > 0:
+                                _last = _nbsn_df.iloc[0]['nk_lststno']
+                                if _last is not None:
+                                    statement_number = int(_last) + 1
+                    except Exception as _nbsn_err:
+                        logger.warning('Could not read nk_lststno for %s: %s — falling back to date-derived', bank_code, _nbsn_err)
+                    if statement_number is None:
+                        statement_number = int(latest_date.strftime('%y%m%d'))
 
                     # Use Opera 3 writer (agent or direct)
                     foxpro_import = get_opera3_writer(data_path)

@@ -2985,10 +2985,15 @@ class OperaSQLImport:
 
                 # NOTE: No salloc created at posting time — allocation happens separately.
 
-                # 6. Update sname balance - INCREASE (refund adds to what they owe)
+                # 6. Update sname balance - INCREASE (refund adds to what they owe).
+                # Also increment sn_nextpay for parity with import_sales_receipt
+                # (audit 2026-05-05 stages-3-5 F13). Earlier code skipped the
+                # counter on refunds, leaving the customer's next-payment
+                # numbering out of step with how Opera natively tracks refunds.
                 sname_update_sql = f"""
                     UPDATE sname WITH (ROWLOCK)
                     SET sn_currbal = sn_currbal + {amount_pounds},
+                        sn_nextpay = sn_nextpay + 1,
                         datemodified = '{now_str}'
                     WHERE RTRIM(sn_account) = '{customer_account}'
                 """
@@ -5066,10 +5071,13 @@ class OperaSQLImport:
 
                 # NOTE: No palloc created at posting time — allocation happens separately.
 
-                # 6. Update pname balance - INCREASE (refund increases what they owe us back)
+                # 6. Update pname balance - INCREASE (refund increases what
+                # they owe us back). Also increment pn_nextpay for parity with
+                # import_purchase_payment (audit 2026-05-05 stages-3-5 F13).
                 pname_update_sql = f"""
                     UPDATE pname WITH (ROWLOCK)
                     SET pn_currbal = pn_currbal + {amount_pounds},
+                        pn_nextpay = pn_nextpay + 1,
                         datemodified = '{now_str}'
                     WHERE RTRIM(pn_account) = '{supplier_account}'
                 """
