@@ -306,7 +306,7 @@ async def reconcile_bank(bank_code: str):
         bank_sql = f"""
             SELECT nk_acnt, RTRIM(nk_desc) AS description, nk_sort, nk_number
             FROM nbank WITH (NOLOCK)
-            WHERE nk_acnt = '{bank_code}'
+            WHERE RTRIM(nk_acnt) = '{bank_code}'
         """
         bank_result = sql_connector.execute_query(bank_sql)
         if hasattr(bank_result, 'to_dict'):
@@ -379,7 +379,7 @@ async def reconcile_bank(bank_code: str):
         # Get the running balance from nbank - stored in PENCE
         # This represents the CURRENT closing balance
         nbank_bal_sql = f"""
-            SELECT nk_curbal FROM nbank WITH (NOLOCK) WHERE nk_acnt = '{bank_code}'
+            SELECT nk_curbal FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_acnt) = '{bank_code}'
         """
         nbank_result = sql_connector.execute_query(nbank_bal_sql)
         if hasattr(nbank_result, 'to_dict'):
@@ -1041,7 +1041,7 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
                             nk_recstdt  = NULL,
                             nk_recstln  = {prior_statln},
                             datemodified = '{now_str}'
-                        WHERE nk_acnt = '{bank_code}'
+                        WHERE RTRIM(nk_acnt) = '{bank_code}'
                     """
                 else:
                     # All rec batches reversed — fresh-bank state.
@@ -1058,7 +1058,7 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
                             nk_recstdt  = NULL,
                             nk_recstln  = 0,
                             datemodified = '{now_str}'
-                        WHERE nk_acnt = '{bank_code}'
+                        WHERE RTRIM(nk_acnt) = '{bank_code}'
                     """
                 conn.execute(text(nbank_update))
 
@@ -1926,7 +1926,7 @@ async def confirm_statement_matches(
         from sqlalchemy import text as _sa_text
         with sql_connector.engine.connect() as _peek:
             row = _peek.execute(_sa_text(
-                "SELECT ISNULL(nk_lststno, 0) AS lststno FROM nbank WITH (NOLOCK) WHERE nk_acnt = :b"
+                "SELECT ISNULL(nk_lststno, 0) AS lststno FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_acnt) = :b"
             ), {"b": bank_code}).fetchone()
         if not row:
             return {"success": False, "error": f"Bank account {bank_code} not found in nbank"}
@@ -3624,7 +3624,7 @@ async def preview_bank_import_from_pdf(
                 RTRIM(ISNULL(nk_number, '')) as account_number,
                 nk_recbal / 100.0 as reconciled_balance
             FROM nbank WITH (NOLOCK)
-            WHERE nk_acnt = '{bank_code}'
+            WHERE RTRIM(nk_acnt) = '{bank_code}'
         """)
 
         if bank_df.empty:
@@ -6165,7 +6165,7 @@ async def scan_emails_for_bank_statements(
                            RTRIM(nk_sort) as sort_code,
                            RTRIM(nk_number) as account_number
                     FROM nbank WITH (NOLOCK)
-                    WHERE nk_acnt = :bank_code
+                    WHERE RTRIM(nk_acnt) = :bank_code
                 """
                 result = sql_connector.execute_query(bank_query, {'bank_code': bank_code})
                 # Result is a DataFrame
@@ -6444,8 +6444,16 @@ async def scan_emails_for_bank_statements(
                                                                 imported_by='AUTO_SKIP_SCAN'
                                                             )
                                                             already_processed_count += 1
-                                                        except:
-                                                            pass
+                                                        except Exception as _rec_err:
+                                                            # Audit 2026-05-05 stages-1-2 F15: don't
+                                                            # silently swallow — without the audit row
+                                                            # the next scan re-evaluates this statement
+                                                            # and the user sees it bounce back into the
+                                                            # list every cycle.
+                                                            logger.warning(
+                                                                'record_bank_statement_import failed for %s: %s',
+                                                                att.get('filename'), _rec_err,
+                                                            )
                                         else:
                                             # Cache miss — run full extraction to get balances
                                             logger.info(f"Scan cache MISS for {att['filename']} — running full extraction")
@@ -9639,7 +9647,7 @@ async def import_bank_statement_from_email(
                     stmt_acct = (statement_info.account_number or '').replace('-', '').replace(' ', '').strip()
                     # Get Opera bank details
                     bank_df = sql_connector.execute_query(
-                        "SELECT RTRIM(nk_sort) as sort_code, RTRIM(nk_number) as account_number FROM nbank WITH (NOLOCK) WHERE nk_acnt = :bank_code",
+                        "SELECT RTRIM(nk_sort) as sort_code, RTRIM(nk_number) as account_number FROM nbank WITH (NOLOCK) WHERE RTRIM(nk_acnt) = :bank_code",
                         {'bank_code': bank_code}
                     )
                     if bank_df is not None and not bank_df.empty:
