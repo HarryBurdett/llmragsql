@@ -1060,9 +1060,21 @@ class BankStatementMatcherOpera3:
         return transactions
 
     def _is_already_posted(self, txn: BankTransaction, bank_code: str = "") -> Tuple[bool, str]:
-        """Opera 3 mirror of bank_import._is_already_posted — delegates
-        to the same check_for_duplicate function, just with a FoxPro
-        DataSource instead of SQL.
+        """Opera 3 mirror of bank_import._is_already_posted.
+
+        Mirrors the SE flow:
+          1. If action is unset/'skip' the type-aware check can't run; fall
+             through to the type-blind fallback (catches transactions
+             present in Opera that the matcher couldn't classify).
+          2. Type-aware check_for_duplicate via Opera3DataSource.
+          3. If type-aware finds nothing, also run the type-blind fallback
+             as a safety net — catches the HISCOX-style scenario where a
+             direct debit's name suggests action=purchase_payment
+             (at_type=5) but Opera holds it as at_type=1 (nominal payment
+             to the supplier's NL account).
+
+        Spec: docs/superpowers/specs/2026-05-04-bank-rec-open-items-filter-design.md
+        Parity restored 2026-05-05 per cross-cutting audit F1.
         """
         from sql_rag.duplicate_check import (
             check_for_duplicate,
@@ -1070,14 +1082,16 @@ class BankStatementMatcherOpera3:
         )
         from sql_rag.duplicate_check_o3 import Opera3DataSource
 
+        effective_bank = bank_code or self.bank_code
+
         if not txn.action or txn.action in ('skip',):
-            return False, ""
+            return self._is_already_posted_typeblind(txn, effective_bank)
 
         ds = Opera3DataSource(self.reader)
         try:
             result = check_for_duplicate(
                 data_source=ds,
-                bank_code=bank_code or self.bank_code,
+                bank_code=effective_bank,
                 transaction_date=txn.date,
                 signed_amount_pounds=float(txn.amount),
                 action=txn.action,
@@ -1093,7 +1107,117 @@ class BankStatementMatcherOpera3:
             return True, result.reason
         if result.kind is DuplicateMatchKind.LEDGER_ALLOCATION_TARGET:
             return False, f"allocation target: {result.reason}"
-        return False, ""
+
+        # Type-aware found no match — fall through to type-blind fallback.
+        return self._is_already_posted_typeblind(txn, effective_bank)
+
+    def _is_already_posted_typeblind(
+        self,
+        txn: BankTransaction,
+        bank_code: str,
+        date_tolerance_days: int = 7,
+    ) -> Tuple[bool, str]:
+        """Type-blind fallback for `_is_already_posted` on Opera 3.
+
+        Scans atran for any row on this bank with the same signed amount
+        within ±date_tolerance_days, joined to aentry and filtered through
+        the open-items rule (ae_reclnum=0 AND ae_remove=0). Sign-aware
+        (a -£32.66 statement line will NOT match a +£32.66 atran row).
+
+        Read-only; never writes Opera. Mirrors the SE
+        `bank_import._is_already_posted_typeblind` semantics.
+
+        Returns (True, reason) and sets txn.is_duplicate=True if a match
+        is found, so the UI categorises the row as "already in Opera"
+        instead of "unmatched / needs posting".
+        """
+        from datetime import timedelta as _td
+        from sql_rag.opera_open_items import is_open_for_rec
+
+        # Signed amount in pence — at_value carries the sign.
+        try:
+            amount_pence = int(round(float(txn.amount) * 100))
+        except (TypeError, ValueError):
+            return False, ""
+        if amount_pence == 0:
+            return False, ""
+
+        date_from = txn.date - _td(days=date_tolerance_days)
+        date_to = txn.date + _td(days=date_tolerance_days)
+
+        try:
+            # Build a lookup of open-for-rec aentry keys so we can quickly
+            # filter atran rows. Same shape used by Opera3DataSource for
+            # find_aentry_by_signed_value.
+            open_keys = set()
+            for row in self.reader.read_table('aentry'):
+                acnt = row.get('ae_acnt')
+                entry = row.get('ae_entry')
+                if acnt is None or entry is None:
+                    continue
+                if not is_open_for_rec({
+                    'ae_reclnum': row.get('ae_reclnum'),
+                    'ae_remove': row.get('ae_remove'),
+                }):
+                    continue
+                open_keys.add((str(acnt).strip(), str(entry).strip()))
+
+            best = None  # (abs_date_diff, atran_row)
+            for row in self.reader.read_table('atran'):
+                acnt = row.get('at_acnt')
+                if acnt is None or str(acnt).strip() != bank_code:
+                    continue
+                entry = row.get('at_entry')
+                entry_str = str(entry).strip() if entry is not None else ''
+                if (str(acnt).strip(), entry_str) not in open_keys:
+                    continue
+                value = row.get('at_value')
+                if value is None:
+                    continue
+                try:
+                    if int(round(float(value))) != amount_pence:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                pstdate = row.get('at_pstdate')
+                # Normalise to a date for comparison.
+                if hasattr(pstdate, 'date'):
+                    try:
+                        pstdate = pstdate.date()
+                    except Exception:
+                        pass
+                if pstdate is None or not (date_from <= pstdate <= date_to):
+                    continue
+                diff = abs((pstdate - txn.date).days)
+                if best is None or diff < best[0]:
+                    best = (diff, row, pstdate)
+
+            if best is None:
+                return False, ""
+
+            _, atran_row, posted_date = best
+            entry_number = str(atran_row.get('at_entry') or '').strip()
+            at_type = atran_row.get('at_type')
+            try:
+                at_type_int = int(at_type) if at_type is not None else None
+            except (TypeError, ValueError):
+                at_type_int = at_type
+
+            if not entry_number:
+                return False, ""
+
+            txn.is_duplicate = True
+            reason = (
+                f"Already in Opera as {entry_number} "
+                f"(at_type={at_type_int}, posted {str(posted_date)[:10]}) "
+                f"— type-blind match"
+            )
+            return True, reason
+        except Exception as exc:
+            logger.warning(
+                "_is_already_posted_typeblind (Opera 3): scan error: %s", exc,
+            )
+            return False, ""
 
     def process_transactions(self, transactions: List[BankTransaction],
                             check_duplicates: bool = True,

@@ -605,6 +605,30 @@ Every site that fetches Opera atran/aentry candidates for bank-rec MUST apply th
 
 ---
 
+## Type-Blind Already-Posted Fallback (CRITICAL)
+
+The matcher's first line of defence against double-posting is `check_for_duplicate` (sql_rag/duplicate_check.py) — type-aware, sign-aware, fast. It needs `txn.action` to pick the at_type filter; without an action it cannot run.
+
+**Fallback rule:** when (a) `txn.action` is unset or `'skip'`, OR (b) the type-aware check returns `NONE`, run a type-blind atran scan. Match on:
+- same bank account (`at_acnt = bank_code`)
+- same **signed** amount in pence (`at_value = amount × 100`, sign-aware)
+- posted within ±7 days of the statement line
+- aentry header passes the open-items rule (`ae_reclnum = 0 AND ae_remove = 0`)
+
+If a match is found, mark the row as duplicate (`is_duplicate=True`) so the UI categorises it as "already in Opera" rather than "unmatched / needs posting".
+
+**Why both branches are needed:**
+- Branch (a) — unclassified rows: standing orders / direct debits whose statement description doesn't fuzzy-match a customer or supplier. Without the fallback they show as "needs posting" even though Opera already holds them.
+- Branch (b) — wrong-type classification: a direct debit's name suggests `action=purchase_payment` (at_type=5) so the type-aware check filters atran by at_type=5, but Opera actually holds the entry as at_type=1 (nominal payment to the supplier's NL account). The entry IS in Opera; the classifier just chose a different posting type. Without the fallback the operator double-posts. Real example: Cloudsis BB005 April 2026 statement, HISCOX direct debit P100000754.
+
+**Implementation:** `sql_rag/bank_import._is_already_posted_typeblind` (SE, SQL `WITH (NOLOCK)`) and `sql_rag/bank_import_opera3._is_already_posted_typeblind` (Opera 3, FoxPro DBF scan). Both must remain in sync — finance-critical parity.
+
+**Reads only:** never writes Opera.
+
+Cross-reference: central KB `business-rules/duplicate-check.md` "Type-blind fallback" section.
+
+---
+
 ## Bank Rec Self-Heal Rule (CRITICAL)
 
 The local `bank_statement_imports.is_reconciled` flag is the app's view of whether a statement has been reconciled. When the operator runs a partial rec via the app and finishes it in Opera Cashbook > Reconcile, Opera updates `nbank.nk_recbal`, `nk_lststdt`, `nk_lststno` and `aentry.ae_reclnum`, but does **not** touch our local store. Without intervention the local flag stays at 0 forever and the statement re-appears on every scan as "Awaiting Reconcile".
