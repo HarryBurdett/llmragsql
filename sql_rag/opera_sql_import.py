@@ -7827,10 +7827,16 @@ class OperaSQLImport:
                 try:
                     conn.execute(text(get_lock_timeout_sql()))
 
-                    # 1. Get current nbank state
+                    # 1. Get current nbank state.
+                    # UPDLOCK + ROWLOCK rather than NOLOCK because we
+                    # are about to UPDATE this row in the same transaction
+                    # (Stage B writes nk_recbal etc.). NOLOCK was a dirty
+                    # read — two concurrent recs could both read the same
+                    # nk_lstrecl and assign the same rec_batch_number.
+                    # Audit 2026-05-05 cross-cutting F7.
                     nbank_result = conn.execute(text(f"""
                         SELECT nk_lstrecl, nk_recbal, nk_curbal, nk_lststno
-                        FROM nbank WITH (NOLOCK)
+                        FROM nbank WITH (UPDLOCK, ROWLOCK)
                         WHERE nk_acnt = '{bank_account}'
                     """))
                     nbank_row = nbank_result.fetchone()
@@ -7857,13 +7863,19 @@ class OperaSQLImport:
                         )
                     rec_batch_number = current_rec_line
 
-                    # 2. Get the entries to reconcile and validate they exist
+                    # 2. Get the entries to reconcile and validate they exist.
+                    # UPDLOCK + ROWLOCK because we will UPDATE these aentry
+                    # rows in the same transaction (Stage A writes
+                    # ae_reclnum, ae_recdate, ae_recbal, etc.). NOLOCK
+                    # was a dirty read that allowed two concurrent recs to
+                    # both pass the "ae_reclnum=0" check on the same entry
+                    # and double-stamp it. Audit 2026-05-05 cross-cutting F7.
                     entry_numbers = [e['entry_number'] for e in entries]
                     entry_list = "', '".join(entry_numbers)
 
                     validate_result = conn.execute(text(f"""
                         SELECT ae_entry, ae_value, ae_reclnum
-                        FROM aentry WITH (NOLOCK)
+                        FROM aentry WITH (UPDLOCK, ROWLOCK)
                         WHERE ae_acnt = '{bank_account}'
                           AND ae_entry IN ('{entry_list}')
                     """))
