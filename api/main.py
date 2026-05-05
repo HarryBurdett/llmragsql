@@ -93,6 +93,7 @@ from apps.dashboards.api.routes import router as dashboards_router
 # GoCardless routes (extracted from main.py)
 from apps.gocardless.api.routes import router as gocardless_router
 from apps.bank_reconcile.api.routes import router as bank_reconcile_router
+from apps.bank_reconcile.api.routes_opera3_mirrors import router as bank_reconcile_o3_mirrors_router
 from apps.transaction_snapshot.api.routes import router as transaction_snapshot_router
 from apps.transaction_monitor.api.routes import router as transaction_monitor_router
 from apps.sop.api.routes import router as sop_router
@@ -982,6 +983,7 @@ app.include_router(dashboards_router)
 # Include GoCardless API router
 app.include_router(gocardless_router)
 app.include_router(bank_reconcile_router)
+app.include_router(bank_reconcile_o3_mirrors_router)
 app.include_router(transaction_snapshot_router)
 app.include_router(transaction_monitor_router)
 app.include_router(sop_router)
