@@ -2272,17 +2272,10 @@ async def reconcile_vat():
     Enhanced for quarterly VAT tracking with uncommitted transactions from zvtran.
     Shows output VAT (sales), input VAT (purchases), and net liability for current quarter.
 
-    Audit cross-cutting F9: this handler is 661 lines. The natural
-    seams (in execution order) are:
-      1. Quarter detection (most recent zvtran date → fiscal quarter)
-      2. Output VAT fetch (from zvtran with nv_vattype='S')
-      3. Input VAT fetch (from zvtran with nv_vattype='P')
-      4. NL VAT account fetch (na_acnt LIKE '%VAT%')
-      5. Per-account ntran movement
-      6. Variance computation + reporting
-    Refactor deferred — share helper extraction with reconcile_creditors
-    and reconcile_debtors as the next iteration of the F9 wedge (the
-    NL-side phase is the common shape across all three handlers).
+    Audit cross-cutting F9: VAT-codes-with-rates fetch, the four
+    repeated VAT-by-code aggregations (zvtran uncommitted output/input,
+    nvat committed output/input), and the per-account NL movement
+    summary are extracted into apps.balance_check.logic.vat_reconcile.
     """
     from api.main import sql_connector
     if not sql_connector:
@@ -2357,77 +2350,15 @@ async def reconcile_vat():
                 quarter_info = get_vat_quarter_dates(reference_date)
                 reconciliation["quarter_info"] = quarter_info
 
-        # Get VAT codes from ztax with date-based rate calculation
-        ztax_sql = """
-            SELECT tx_code, tx_desc, tx_rate1, tx_rate1dy, tx_rate2, tx_rate2dy, tx_trantyp, tx_nominal
-            FROM ztax WITH (NOLOCK)
-            WHERE tx_ctrytyp = 'H'
-            ORDER BY tx_trantyp, tx_code
-        """
-        ztax_result = sql_connector.execute_query(ztax_sql)
-        if hasattr(ztax_result, 'to_dict'):
-            ztax_result = ztax_result.to_dict('records')
-
-        vat_codes = []
-        output_nominal_accounts = set()
-        input_nominal_accounts = set()
+        # F9 wedge: VAT codes + applicable rate
+        from apps.balance_check.logic.vat_reconcile import (
+            fetch_vat_codes_with_rates as _fetch_vat_codes,
+        )
         ref_date = datetime.now().date()
-
-        for row in ztax_result or []:
-            code = row['tx_code'].strip() if row['tx_code'] else ''
-            nominal = row['tx_nominal'].strip() if row['tx_nominal'] else ''
-            vat_type = row['tx_trantyp'].strip() if row['tx_trantyp'] else ''
-
-            # Calculate applicable rate based on today's date
-            rate1 = float(row['tx_rate1'] or 0)
-            rate2 = float(row['tx_rate2'] or 0)
-            date1 = row.get('tx_rate1dy')
-            date2 = row.get('tx_rate2dy')
-
-            # Convert dates if needed, handle NaT/None/NaN
-            try:
-                if date1 is not None and date1 == date1:  # NaT/NaN check (NaN != NaN)
-                    if hasattr(date1, 'date'):
-                        date1 = date1.date()
-                else:
-                    date1 = None
-            except (TypeError, ValueError):
-                date1 = None
-
-            try:
-                if date2 is not None and date2 == date2:  # NaT/NaN check
-                    if hasattr(date2, 'date'):
-                        date2 = date2.date()
-                else:
-                    date2 = None
-            except (TypeError, ValueError):
-                date2 = None
-
-            # Determine applicable rate (most recent effective date <= today)
-            applicable_rate = rate1
-            if date1 and date2:
-                if date2 <= ref_date and date1 <= ref_date:
-                    applicable_rate = rate2 if date2 > date1 else rate1
-                elif date2 <= ref_date:
-                    applicable_rate = rate2
-                elif date1 <= ref_date:
-                    applicable_rate = rate1
-            elif date2 and date2 <= ref_date:
-                applicable_rate = rate2
-
-            vat_codes.append({
-                "code": code,
-                "description": row['tx_desc'].strip() if row['tx_desc'] else '',
-                "rate": applicable_rate,
-                "type": vat_type,  # 'S' = Sales/Output, 'P' = Purchase/Input
-                "nominal_account": nominal
-            })
-            if nominal:
-                if vat_type == 'S':
-                    output_nominal_accounts.add(nominal)
-                elif vat_type == 'P':
-                    input_nominal_accounts.add(nominal)
-
+        vat_result = _fetch_vat_codes(sql_connector, ref_date)
+        vat_codes = vat_result.vat_codes
+        output_nominal_accounts = vat_result.output_nominal_accounts
+        input_nominal_accounts = vat_result.input_nominal_accounts
         reconciliation["vat_codes"] = vat_codes
 
         quarter_start = quarter_info['quarter_start']
@@ -2437,67 +2368,23 @@ async def reconcile_vat():
         # CURRENT QUARTER - Uncommitted VAT (zvtran)
         # ==========================================
 
-        # Get uncommitted Output VAT from zvtran (va_done = 0, va_vattype = 'S')
-        uncommitted_output_sql = f"""
-            SELECT
-                va_anvat AS vat_code,
-                COUNT(*) AS transaction_count,
-                SUM(va_vatval) AS vat_amount,
-                SUM(va_trvalue) AS net_amount
-            FROM zvtran WITH (NOLOCK)
-            WHERE va_vattype = 'S'
-              AND va_done = 0
-              AND va_taxdate >= '{quarter_start}'
-              AND va_taxdate <= '{quarter_end}'
-            GROUP BY va_anvat
-            ORDER BY va_anvat
-        """
-        uncommitted_output_result = sql_connector.execute_query(uncommitted_output_sql)
-        if hasattr(uncommitted_output_result, 'to_dict'):
-            uncommitted_output_result = uncommitted_output_result.to_dict('records')
+        # F9 wedge: uncommitted VAT aggregations (zvtran)
+        from apps.balance_check.logic.vat_reconcile import (
+            fetch_zvtran_aggregate as _fetch_zvtran,
+        )
+        unc_out = _fetch_zvtran(
+            sql_connector, vattype='S',
+            quarter_start=quarter_start, quarter_end=quarter_end,
+        )
+        uncommitted_output_total = unc_out.total_vat
+        uncommitted_output_by_code = unc_out.by_code
 
-        uncommitted_output_total = 0
-        uncommitted_output_by_code = []
-        for row in uncommitted_output_result or []:
-            vat_amount = float(row['vat_amount'] or 0)
-            uncommitted_output_total += vat_amount
-            uncommitted_output_by_code.append({
-                "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
-                "transaction_count": int(row['transaction_count'] or 0),
-                "vat_amount": round(vat_amount, 2),
-                "net_amount": round(float(row['net_amount'] or 0), 2)
-            })
-
-        # Get uncommitted Input VAT from zvtran (va_done = 0, va_vattype = 'P')
-        uncommitted_input_sql = f"""
-            SELECT
-                va_anvat AS vat_code,
-                COUNT(*) AS transaction_count,
-                SUM(va_vatval) AS vat_amount,
-                SUM(va_trvalue) AS net_amount
-            FROM zvtran WITH (NOLOCK)
-            WHERE va_vattype = 'P'
-              AND va_done = 0
-              AND va_taxdate >= '{quarter_start}'
-              AND va_taxdate <= '{quarter_end}'
-            GROUP BY va_anvat
-            ORDER BY va_anvat
-        """
-        uncommitted_input_result = sql_connector.execute_query(uncommitted_input_sql)
-        if hasattr(uncommitted_input_result, 'to_dict'):
-            uncommitted_input_result = uncommitted_input_result.to_dict('records')
-
-        uncommitted_input_total = 0
-        uncommitted_input_by_code = []
-        for row in uncommitted_input_result or []:
-            vat_amount = float(row['vat_amount'] or 0)
-            uncommitted_input_total += vat_amount
-            uncommitted_input_by_code.append({
-                "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
-                "transaction_count": int(row['transaction_count'] or 0),
-                "vat_amount": round(vat_amount, 2),
-                "net_amount": round(float(row['net_amount'] or 0), 2)
-            })
+        unc_in = _fetch_zvtran(
+            sql_connector, vattype='P',
+            quarter_start=quarter_start, quarter_end=quarter_end,
+        )
+        uncommitted_input_total = unc_in.total_vat
+        uncommitted_input_by_code = unc_in.by_code
 
         uncommitted_net = uncommitted_output_total - uncommitted_input_total
 
@@ -2522,62 +2409,19 @@ async def reconcile_vat():
         # CURRENT QUARTER - NL Movements
         # ==========================================
 
-        # Get quarter nominal ledger movements for VAT accounts
-        all_vat_nominals = output_nominal_accounts.union(input_nominal_accounts)
-        quarter_nl_movements = []
-        quarter_nl_output_total = 0
-        quarter_nl_input_total = 0
-
-        for acnt in all_vat_nominals:
-            ntran_quarter_sql = f"""
-                SELECT
-                    SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
-                    SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
-                    SUM(nt_value) AS net,
-                    COUNT(*) AS transaction_count
-                FROM ntran WITH (NOLOCK)
-                WHERE nt_acnt = '{acnt}'
-                  AND nt_entr >= '{quarter_start}'
-                  AND nt_entr <= '{quarter_end}'
-            """
-            ntran_quarter_result = sql_connector.execute_query(ntran_quarter_sql)
-            if hasattr(ntran_quarter_result, 'to_dict'):
-                ntran_quarter_result = ntran_quarter_result.to_dict('records')
-
-            if ntran_quarter_result and ntran_quarter_result[0]:
-                row = ntran_quarter_result[0]
-                debits = float(row['debits'] or 0)
-                credits = float(row['credits'] or 0)
-                net = float(row['net'] or 0)
-                txn_count = int(row['transaction_count'] or 0)
-
-                is_output = acnt in output_nominal_accounts
-                is_input = acnt in input_nominal_accounts
-
-                # Get account description
-                nacnt_sql = f"SELECT RTRIM(na_desc) AS description FROM nacnt WITH (NOLOCK) WHERE na_acnt = '{acnt}'"
-                nacnt_result = sql_connector.execute_query(nacnt_sql)
-                if hasattr(nacnt_result, 'to_dict'):
-                    nacnt_result = nacnt_result.to_dict('records')
-                description = nacnt_result[0]['description'] if nacnt_result else ''
-
-                if txn_count > 0:
-                    quarter_nl_movements.append({
-                        "account": acnt,
-                        "description": description,
-                        "type": "Output" if is_output else ("Input" if is_input else "Mixed"),
-                        "debits": round(debits, 2),
-                        "credits": round(credits, 2),
-                        "net": round(net, 2),
-                        "transaction_count": txn_count
-                    })
-
-                    # For Output VAT, credits increase liability
-                    if is_output:
-                        quarter_nl_output_total += credits
-                    # For Input VAT, debits represent reclaimable VAT
-                    if is_input:
-                        quarter_nl_input_total += debits
+        # F9 wedge: per-account NL movement summary
+        from apps.balance_check.logic.vat_reconcile import (
+            fetch_nl_vat_movements as _fetch_nl_movements,
+        )
+        nl_result = _fetch_nl_movements(
+            sql_connector,
+            output_nominal_accounts=output_nominal_accounts,
+            input_nominal_accounts=input_nominal_accounts,
+            period_start=quarter_start, period_end=quarter_end,
+        )
+        quarter_nl_movements = nl_result.accounts
+        quarter_nl_output_total = nl_result.output_total
+        quarter_nl_input_total = nl_result.input_total
 
         reconciliation["current_quarter"]["nominal_movements"] = {
             "source": "ntran (Nominal Ledger)",
@@ -2594,33 +2438,16 @@ async def reconcile_vat():
         # CURRENT QUARTER - nvat transactions
         # ==========================================
 
-        # Get quarter Output VAT from nvat
-        quarter_output_sql = f"""
-            SELECT
-                nv_vatcode AS vat_code,
-                COUNT(*) AS transaction_count,
-                SUM(nv_vatval) AS vat_amount
-            FROM nvat WITH (NOLOCK)
-            WHERE nv_vattype = 'S'
-              AND nv_date >= '{quarter_start}'
-              AND nv_date <= '{quarter_end}'
-            GROUP BY nv_vatcode
-            ORDER BY nv_vatcode
-        """
-        quarter_output_result = sql_connector.execute_query(quarter_output_sql)
-        if hasattr(quarter_output_result, 'to_dict'):
-            quarter_output_result = quarter_output_result.to_dict('records')
-
-        quarter_output_total = 0
-        quarter_output_by_code = []
-        for row in quarter_output_result or []:
-            vat_amount = float(row['vat_amount'] or 0)
-            quarter_output_total += vat_amount
-            quarter_output_by_code.append({
-                "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
-                "transaction_count": int(row['transaction_count'] or 0),
-                "vat_amount": round(vat_amount, 2)
-            })
+        # F9 wedge: committed Output VAT (nvat)
+        from apps.balance_check.logic.vat_reconcile import (
+            fetch_nvat_aggregate as _fetch_nvat,
+        )
+        q_out = _fetch_nvat(
+            sql_connector, vattype='S',
+            period_start=quarter_start, period_end=quarter_end,
+        )
+        quarter_output_total = q_out.total_vat
+        quarter_output_by_code = q_out.by_code
 
         reconciliation["current_quarter"]["output_vat"] = {
             "source": "nvat (VAT Transactions - Sales/Output)",
@@ -2629,33 +2456,13 @@ async def reconcile_vat():
             "quarter": quarter_info['current_quarter']
         }
 
-        # Get quarter Input VAT from nvat
-        quarter_input_sql = f"""
-            SELECT
-                nv_vatcode AS vat_code,
-                COUNT(*) AS transaction_count,
-                SUM(nv_vatval) AS vat_amount
-            FROM nvat WITH (NOLOCK)
-            WHERE nv_vattype = 'P'
-              AND nv_date >= '{quarter_start}'
-              AND nv_date <= '{quarter_end}'
-            GROUP BY nv_vatcode
-            ORDER BY nv_vatcode
-        """
-        quarter_input_result = sql_connector.execute_query(quarter_input_sql)
-        if hasattr(quarter_input_result, 'to_dict'):
-            quarter_input_result = quarter_input_result.to_dict('records')
-
-        quarter_input_total = 0
-        quarter_input_by_code = []
-        for row in quarter_input_result or []:
-            vat_amount = float(row['vat_amount'] or 0)
-            quarter_input_total += vat_amount
-            quarter_input_by_code.append({
-                "vat_code": row['vat_code'].strip() if row['vat_code'] else '',
-                "transaction_count": int(row['transaction_count'] or 0),
-                "vat_amount": round(vat_amount, 2)
-            })
+        # F9 wedge: committed Input VAT (nvat)
+        q_in = _fetch_nvat(
+            sql_connector, vattype='P',
+            period_start=quarter_start, period_end=quarter_end,
+        )
+        quarter_input_total = q_in.total_vat
+        quarter_input_by_code = q_in.by_code
 
         reconciliation["current_quarter"]["input_vat"] = {
             "source": "nvat (VAT Transactions - Purchase/Input)",
