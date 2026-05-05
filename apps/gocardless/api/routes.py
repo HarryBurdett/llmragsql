@@ -308,9 +308,14 @@ def _match_gocardless_payments_helper(payments: List[Dict[str, Any]], connector)
     # Also build a customer name lookup from Opera for displaying matched names
     customers = {}
     try:
+        # Dormant filter: sn_dormant=0 (per CLAUDE.md "Dormant accounts
+        # excluded — cannot post to dormant accounts"). Audit 2026-05-05
+        # GoCardless F9. Also retain the sn_stop=0 (account-not-stopped)
+        # filter that was already there.
         customers_df = connector.execute_query("""
             SELECT sn_account, sn_name FROM sname WITH (NOLOCK)
-            WHERE sn_stop = 0 OR sn_stop IS NULL
+            WHERE (sn_stop = 0 OR sn_stop IS NULL)
+              AND (sn_dormant = 0 OR sn_dormant IS NULL)
         """)
         if customers_df is not None:
             customers = {

@@ -22,6 +22,17 @@ router = APIRouter()
 
 class VerifyBankRequest(BaseModel):
     verified_by: str
+    # Verification evidence — required so the audit trail records HOW
+    # the verifier checked the bank details (phone-call to a known
+    # supplier number, in-person, etc.). Without these the verify-bank
+    # endpoint was a flag-flip with zero evidence — fraud surface.
+    # Audit 2026-05-05 Suppliers F23.
+    method: str  # 'phone_call', 'in_person', 'documented_letter', etc.
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    sort_code: Optional[str] = None
+    account_number: Optional[str] = None
+    notes: Optional[str] = None
 
 
 # ============================================================
@@ -221,12 +232,57 @@ async def verify_bank(account: str, request: VerifyBankRequest):
     """
     Mark supplier bank details as verified.
 
+    Verification requires an evidence record — method, contact name,
+    optional sort/account confirmation, and notes — recorded in the
+    security_audit_log so the action is reviewable later. Without this
+    the endpoint was a flag-flip with zero evidence (audit 2026-05-05
+    Suppliers F23).
+
     Creates an onboarding record if one does not already exist,
-    then sets bank_verified=1 with the verifier name and timestamp.
+    then sets bank_verified=1 with the verifier name, timestamp,
+    method, and notes; writes a security_audit_log entry.
     """
     try:
         from sql_rag.supplier_statement_db import get_supplier_statement_db
         db = get_supplier_statement_db()
+
+        # Validate the verification method — must be one of the known
+        # methods. Free-text 'other' is allowed but must be accompanied
+        # by notes explaining HOW.
+        method = (request.method or '').strip().lower()
+        valid_methods = {
+            'phone_call', 'in_person', 'documented_letter',
+            'video_call', 'secure_portal', 'other',
+        }
+        if method not in valid_methods:
+            return {
+                "success": False,
+                "error": (
+                    f"verify-bank requires a method from {sorted(valid_methods)}; "
+                    f"got '{request.method}'."
+                ),
+            }
+        if method == 'other' and not (request.notes and request.notes.strip()):
+            return {
+                "success": False,
+                "error": (
+                    "Method 'other' requires notes explaining HOW the bank "
+                    "details were verified. This is the audit trail."
+                ),
+            }
+        # Phone-call verification requires the contact details.
+        if method == 'phone_call' and not (
+            (request.contact_name and request.contact_name.strip())
+            and (request.contact_phone and request.contact_phone.strip())
+        ):
+            return {
+                "success": False,
+                "error": (
+                    "Phone-call verification requires both contact_name and "
+                    "contact_phone fields so the audit trail records WHO was "
+                    "called and on WHAT number."
+                ),
+            }
 
         # Create onboarding record if it doesn't exist
         existing = db.get_onboarding_status(account)
@@ -234,12 +290,54 @@ async def verify_bank(account: str, request: VerifyBankRequest):
             db.create_onboarding(account)
 
         now = datetime.now().isoformat()
+
+        # Build a single notes string that captures all evidence so
+        # the bank_verified flag is paired with concrete reasoning.
+        evidence_parts = [f"method={method}"]
+        if request.contact_name:
+            evidence_parts.append(f"contact_name={request.contact_name.strip()}")
+        if request.contact_phone:
+            evidence_parts.append(f"contact_phone={request.contact_phone.strip()}")
+        if request.sort_code:
+            evidence_parts.append(f"sort_code={request.sort_code.strip()}")
+        if request.account_number:
+            # Mask all but the last 4 digits of the account number in the
+            # audit trail — full number lives in Opera, not in our log.
+            an = request.account_number.strip()
+            evidence_parts.append(f"account_no=***{an[-4:]}" if len(an) >= 4 else "account_no=***")
+        if request.notes:
+            evidence_parts.append(f"notes={request.notes.strip()}")
+        evidence_str = '; '.join(evidence_parts)
+
         db.update_onboarding(
             account,
             bank_verified=1,
             bank_verified_by=request.verified_by,
-            bank_verified_at=now
+            bank_verified_at=now,
+            # Store the evidence string in the existing notes column.
+            # Pre-pending the verifier and timestamp so the audit trail
+            # is self-contained even if the row is later edited.
+            notes=f"[verified {now} by {request.verified_by}] {evidence_str}",
         )
+
+        # Audit log: record the verification act for review. Best-effort
+        # — the existing security_audit_log infrastructure may not have
+        # a 'bank_verification' event type registered yet; if not, we
+        # still have the evidence in supplier_onboarding.notes.
+        try:
+            log_fn = getattr(db, 'log_security_event', None)
+            if callable(log_fn):
+                log_fn(
+                    event_type='bank_verification',
+                    supplier_code=account,
+                    actor=request.verified_by,
+                    details=evidence_str,
+                    timestamp=now,
+                )
+        except Exception as audit_exc:
+            logger.warning(
+                'Bank-verify audit log write failed for %s: %s', account, audit_exc,
+            )
 
         # Return updated status
         updated = db.get_onboarding_status(account)
