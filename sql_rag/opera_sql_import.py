@@ -7854,13 +7854,27 @@ class OperaSQLImport:
                     # next batch (>=1), but for fresh banks or post-reversal
                     # state it may be 0 — refuse rather than corrupt.
                     if current_rec_line < 1:
-                        raise ValueError(
-                            f"Bank {bank_account} nk_lstrecl is {current_rec_line} — "
-                            f"too low to start a reconciliation batch (ae_reclnum=0 "
-                            f"is the unreconciled sentinel). Run "
-                            f"scripts/reset_bank_rec_sequence.py to set nk_lstrecl "
-                            f"and nk_reclnum to the correct next batch number."
+                        # Auto-recover: if no batches have ever been
+                        # reconciled (or the bank was reset post-reversal),
+                        # bump both counters to 1 in the same transaction.
+                        # ae_reclnum=0 is the unreconciled sentinel, so we
+                        # must NOT use 0 as the batch number. Earlier code
+                        # raised and pointed at scripts/reset_bank_rec_sequence
+                        # — ops-team-only escalation. Audit 2026-05-05
+                        # stages-3-5 F15.
+                        logger.info(
+                            'Bank %s nk_lstrecl is %d — auto-bumping to 1 for fresh-bank rec',
+                            bank_account, current_rec_line,
                         )
+                        conn.execute(text(f"""
+                            UPDATE nbank WITH (ROWLOCK)
+                            SET nk_lstrecl = 1,
+                                nk_reclnum = 1,
+                                datemodified = '{now_str}'
+                            WHERE nk_acnt = '{bank_account}'
+                              AND nk_lstrecl < 1
+                        """))
+                        current_rec_line = 1
                     rec_batch_number = current_rec_line
 
                     # 2. Get the entries to reconcile and validate they exist.

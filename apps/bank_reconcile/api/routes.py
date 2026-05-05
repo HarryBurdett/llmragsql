@@ -11114,7 +11114,18 @@ async def complete_reconciliation(
             except Exception as db_err:
                 logger.warning(f"Could not update reconciliation status in DB: {db_err}")
 
-        # If a partial reconciliation was promoted to full, reflect that in the response
+        # If a partial reconciliation was promoted to full, reflect that
+        # in the response.
+        # NOTE (audit 2026-05-05 stages-3-5 F17): for a partial rec,
+        # new_reconciled_balance returns the UNCHANGED nk_recbal (because
+        # partial doesn't update it). So this branch only fires when the
+        # bank was already at the closing balance BEFORE this partial —
+        # i.e. partial-rec'd zero new entries against a bank already at
+        # closing. Rare but real (e.g. operator reconciles a one-line
+        # statement whose closing matches the bank's current rec balance
+        # — the partial rec produced no actual change). Left in place
+        # as a defensive promotion path; removing it would silently
+        # mark such recs as partial when they should be full.
         effective_partial = partial
         if result.success:
             new_rec_bal_check = getattr(result, 'new_reconciled_balance', None)
