@@ -880,6 +880,15 @@ async def mark_entries_reconciled(bank_code: str, request: ReconcileEntriesReque
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
+    # SQL-injection guard at the route boundary (audit cross-cutting F5).
+    from sql_rag.sql_input_validator import validate_bank_code, validate_entry_number
+    bank_code = validate_bank_code(bank_code)
+    if request.entries:
+        for entry in request.entries:
+            ent = entry.get('entry_number') if isinstance(entry, dict) else getattr(entry, 'entry_number', None)
+            if ent:
+                validate_entry_number(ent)
+
     # Acquire bank-level lock
     from sql_rag.import_lock import acquire_import_lock, release_import_lock
     if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="mark-reconciled"):
@@ -937,10 +946,23 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
     """
     Unreconcile previously reconciled entries (reverse reconciliation).
 
+    Per audit cross-cutting F5: validate bank_code at the route boundary
+    so a malicious payload like \"BC010'; DROP TABLE atran--\" can never
+    reach any f-string SQL builder downstream. Same approach is applied
+    to every Opera-touching route handler that takes bank_code from
+    URL/query.
+
     Request body: ["P100008036", "PR00000534"]
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
+
+    # SQL-injection guard at the route boundary.
+    from sql_rag.sql_input_validator import validate_bank_code, validate_entry_number
+    bank_code = validate_bank_code(bank_code)
+    # Validate every entry number too — they get f-string-interpolated
+    # into the IN (...) clause downstream.
+    entry_numbers = [validate_entry_number(e) for e in (entry_numbers or [])]
 
     # Acquire bank-level lock
     from sql_rag.import_lock import acquire_import_lock, release_import_lock
@@ -10834,8 +10856,20 @@ async def complete_reconciliation(
     if not request_body:
         return {"success": False, "error": "Request body required"}
 
+    # SQL-injection guard at the route boundary (audit cross-cutting F5).
+    from sql_rag.sql_input_validator import (
+        validate_bank_code, validate_entry_number,
+    )
+    bank_code = validate_bank_code(bank_code)
+
     matched_entries = request_body.get('matched_entries', [])
     statement_transactions = request_body.get('statement_transactions', [])
+
+    # Validate every entry number in the matched_entries payload.
+    for me in matched_entries or []:
+        ent = me.get('entry_number') if isinstance(me, dict) else None
+        if ent:
+            validate_entry_number(ent)
 
     # Load statement transactions from DB if import_id provided and not in request body
     if not statement_transactions and import_id and email_storage:
@@ -16064,6 +16098,20 @@ async def opera3_complete_reconciliation(
 
     if not request_body:
         return {"success": False, "error": "Request body required"}
+
+    # SQL-injection guard (audit cross-cutting F5). Even though Opera 3
+    # writes go through the agent, the local SQLite UPDATE blocks
+    # below interpolate values into f-string SQL, so the guard
+    # applies here too.
+    from sql_rag.sql_input_validator import (
+        validate_bank_code, validate_entry_number,
+    )
+    bank_code = validate_bank_code(bank_code)
+    matched_entries_for_validation = (request_body or {}).get('matched_entries', [])
+    for me in matched_entries_for_validation or []:
+        ent = me.get('entry_number') if isinstance(me, dict) else None
+        if ent:
+            validate_entry_number(ent)
 
     matched_entries = request_body.get('matched_entries', [])
     if not matched_entries:

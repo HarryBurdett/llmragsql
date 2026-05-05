@@ -623,6 +623,19 @@ async def import_gocardless_batch(
         from sql_rag.opera_sql_import import OperaSQLImport
         from datetime import datetime
 
+        # SQL-injection guard at the route boundary (audit
+        # cross-cutting F5). bank_code, cbtype, fees_nominal_account
+        # all flow into f-string SQL downstream — validate at the
+        # boundary so a malicious payload never reaches the builder.
+        from sql_rag.sql_input_validator import (
+            validate_bank_code, validate_account_code, validate_cbtype,
+        )
+        bank_code = validate_bank_code(bank_code)
+        if cbtype:
+            cbtype = validate_cbtype(cbtype)
+        if fees_nominal_account:
+            fees_nominal_account = validate_account_code(fees_nominal_account)
+
         # Validate payments
         if not payments:
             return {"success": False, "error": "No payments provided"}
@@ -3560,6 +3573,16 @@ async def opera3_import_gocardless_batch(
     - Multiple atran lines (one per customer)
     - Multiple stran records
     """
+    # SQL-injection guard at the route boundary (audit cross-cutting F5).
+    from sql_rag.sql_input_validator import (
+        validate_bank_code, validate_account_code, validate_cbtype,
+    )
+    bank_code = validate_bank_code(bank_code)
+    if cbtype:
+        cbtype = validate_cbtype(cbtype)
+    if fees_nominal_account:
+        fees_nominal_account = validate_account_code(fees_nominal_account)
+
     # Per-bank import lock (parity with SE — audit GoCardless F4).
     from sql_rag.import_lock import acquire_import_lock, release_import_lock
     if not acquire_import_lock(_bank_lock_key(bank_code), locked_by="api", endpoint="opera3-gocardless-import"):
