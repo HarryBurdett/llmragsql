@@ -1979,23 +1979,26 @@ async def confirm_statement_matches(
 
 
 @router.get("/api/reconcile/bank/{bank_code}/scan-emails")
-async def scan_emails_for_statements(bank_code: str, email_address: Optional[str] = None):
+async def scan_emails_for_statements_legacy(bank_code: str, email_address: Optional[str] = None):
     """
-    Scan email inbox for bank statement attachments.
+    DEPRECATED — redirects to /api/bank-import/scan-emails.
 
-    Args:
-        bank_code: The bank account code
-        email_address: Optional email address to scan (defaults to configured inbox)
-
-    Returns:
-        List of emails with bank statement attachments
+    Earlier this returned a placeholder. Audit 2026-05-05 stages-1-2
+    F19 / cross-cutting F11 — frontend still binds to this path on
+    older builds, so we preserve the URL but redirect to the real
+    scan-emails endpoint.
     """
-    # TODO: Implement email scanning using existing email infrastructure
-    # For now, return a placeholder
     return {
-        "success": True,
-        "message": "Email scanning not yet implemented - use file upload",
-        "statements_found": []
+        "success": False,
+        "deprecated": True,
+        "redirect_to": "/api/bank-import/scan-emails",
+        "message": (
+            "This endpoint is deprecated — use "
+            "/api/bank-import/scan-emails instead. The legacy URL "
+            "preserved an empty placeholder; that's been removed to "
+            "stop callers silently receiving zero results."
+        ),
+        "statements_found": [],
     }
 
 
@@ -15672,15 +15675,22 @@ async def opera3_confirm_statement_matches(
 
 
 @router.get("/api/opera3/reconcile/bank/{bank_code}/scan-emails")
-async def opera3_scan_emails_for_statements(bank_code: str, email_address: Optional[str] = None):
+async def opera3_scan_emails_for_statements_legacy(bank_code: str, email_address: Optional[str] = None):
     """
-    Scan email inbox for bank statement attachments (Opera 3).
-    Mirrors /api/reconcile/bank/{bank_code}/scan-emails.
+    DEPRECATED — redirects to /api/opera3/bank-import/scan-emails.
+
+    Mirrors the SE legacy stub redirector. Audit 2026-05-05
+    stages-1-2 F19 / cross-cutting F11.
     """
     return {
-        "success": True,
-        "message": "Email scanning not yet implemented - use file upload",
-        "statements_found": []
+        "success": False,
+        "deprecated": True,
+        "redirect_to": "/api/opera3/bank-import/scan-emails",
+        "message": (
+            "This endpoint is deprecated — use "
+            "/api/opera3/bank-import/scan-emails instead."
+        ),
+        "statements_found": [],
     }
 
 

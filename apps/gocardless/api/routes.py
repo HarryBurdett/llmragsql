@@ -5116,7 +5116,10 @@ async def opera3_get_due_invoices(
             cust = customer_info.get(account, {})
             email = cust.get('email')
             customer_name = cust.get('name', '')
-            customer_ref = _o3_get_str(r, 'st_cusref')
+            # Canonical Opera 3 column is st_custref (10 chars). Writes
+            # to st_cusref (9 chars) elsewhere were inconsistent typos —
+            # standardised 2026-05-05 per stages-3-5 F5.
+            customer_ref = _o3_get_str(r, 'st_custref') or _o3_get_str(r, 'st_cusref')
             is_subscription = invoice_ref in sub_invoice_refs
             source_doc = sub_account_docs.get(account) if is_subscription else None
 
