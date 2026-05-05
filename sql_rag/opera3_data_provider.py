@@ -1538,7 +1538,9 @@ class Opera3DataProvider(OperaDataProvider):
             reconciled_balance = float(bank_info.get('nk_recbal', 0) or 0) / 100.0
             current_balance = float(bank_info.get('nk_curbal', 0) or 0) / 100.0
             last_stmt_no = int(bank_info.get('nk_lststno', 0) or 0)
-            last_rec_line = int(bank_info.get('nk_lstrcln', 0) or 0)
+            # Column is nk_lstrecl (not nk_lstrcln — known typo, fixed
+            # 2026-05-05 per opera3-column-audit findings).
+            last_rec_line = int(bank_info.get('nk_lstrecl', 0) or 0)
 
             # Check for reconciliation in progress (ae_tmpstat populated in aentry)
             aentry_data = self.foxpro.read_table('aentry')
@@ -1555,14 +1557,16 @@ class Opera3DataProvider(OperaDataProvider):
             else:
                 message = None
 
-            # Calculate unreconciled items
+            # Calculate unreconciled items.
+            # Open-items rule: ae_reclnum=0 AND ae_remove=0. Without ae_remove=0
+            # correction-pair-matched entries inflate the unreconciled total.
+            # See sql_rag/opera_open_items.py.
+            from sql_rag.opera_open_items import is_open_for_rec
             unreconciled_count = 0
             unreconciled_total = 0.0
             for entry in aentry_data:
                 if entry.get('ae_acnt', '').strip() == bank_code.strip():
-                    # Check if not reconciled (ae_reclnum = 0 or null)
-                    rec_line = entry.get('ae_reclnum', 0) or 0
-                    if rec_line == 0:
+                    if is_open_for_rec(entry):
                         unreconciled_count += 1
                         # ae_value is in pence
                         unreconciled_total += float(entry.get('ae_value', 0) or 0) / 100.0

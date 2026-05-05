@@ -751,13 +751,17 @@ class BankStatementMatcherOpera3:
             banks = self.reader.read_table("nbank")
             self._other_banks = []
             for b in banks:
-                code = (b.get('nb_acnt') or b.get('nk_acnt', '')).strip()
+                code = (b.get('nk_acnt') or b.get('NK_ACNT') or '').strip()
                 if code and code != exclude_bank:
+                    # Real Opera 3 nbank columns: nk_sort, nk_number, nk_desc.
+                    # The earlier nb_* keys were typos (nb_* belongs to nbudg,
+                    # not nbank) that always resolved to None. Fixed
+                    # 2026-05-05 per opera3-column-audit findings.
                     self._other_banks.append({
                         'code': code,
-                        'sort_code': (b.get('nb_sort') or b.get('nk_sort', '')).strip().replace(' ', '').replace('-', ''),
-                        'account_number': (b.get('nb_number') or b.get('nk_number', '')).strip().replace(' ', '').replace('-', ''),
-                        'name': (b.get('nb_name') or b.get('nk_name', '')).strip(),
+                        'sort_code': (b.get('nk_sort') or b.get('NK_SORT') or '').strip().replace(' ', '').replace('-', ''),
+                        'account_number': (b.get('nk_number') or b.get('NK_NUMBER') or '').strip().replace(' ', '').replace('-', ''),
+                        'name': (b.get('nk_desc') or b.get('nk_bkname') or '').strip(),
                     })
             return self._other_banks
         except Exception as e:
@@ -1472,7 +1476,7 @@ class BankStatementMatcherOpera3:
         try:
             bank_records = self.reader.read_table("nbank")
             for record in bank_records:
-                code = record.get('nb_acnt', '').strip()
+                code = (record.get('nk_acnt') or record.get('NK_ACNT') or '').strip()
                 if code.upper() == bank_code.upper():
                     return True
             return False

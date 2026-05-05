@@ -854,10 +854,15 @@ and balances. You MUST:
             logger.error(f"Failed to read aentry table: {e}")
             return []
 
+        # Open-items rule: ae_reclnum=0 AND ae_remove=0.
+        # See sql_rag/opera_open_items.py and business-rules/bank-rec-open-items.md.
+        # Without ae_remove=0, correction-pair-matched entries leak in.
+        from sql_rag.opera_open_items import is_open_for_rec
+
         entries = []
         for row in all_entries:
-            # Filter for unreconciled and completed entries
-            if row.get('ae_reclnum', 0) != 0:
+            # Filter via the open-items SSOT (ae_reclnum=0 AND ae_remove=0).
+            if not is_open_for_rec(row):
                 continue
             if row.get('ae_complet', 0) != 1:
                 continue
@@ -916,6 +921,14 @@ and balances. You MUST:
         for row in all_entries:
             # Only completed entries
             if row.get('ae_complet', 0) != 1:
+                continue
+
+            # Open-items rule: exclude correction-pair-matched entries
+            # (ae_remove=True). ae_reclnum is intentionally NOT filtered here
+            # — this method also returns reconciled entries for
+            # diagnostic/display purposes.
+            ae_remove = row.get('ae_remove')
+            if ae_remove in (True, 1, 'T', 't'):
                 continue
 
             # Apply date filters

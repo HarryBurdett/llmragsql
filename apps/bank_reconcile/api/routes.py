@@ -12204,7 +12204,7 @@ async def opera3_scan_emails_for_bank_statements(
                 reader = Opera3Reader(data_path)
                 nbank_records = reader.read_table("nbank")
                 for record in nbank_records:
-                    nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', ''))).strip().upper()
+                    nb_acnt = str(record.get('nk_acnt', record.get('NK_ACNT', ''))).strip().upper()
                     if nb_acnt == bank_code.upper():
                         # nk_recbal is in pence, convert to pounds
                         nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
@@ -12832,7 +12832,7 @@ async def opera3_preview_bank_import_from_email(
         try:
             nbank_records = reader.read_table("nbank")
             for record in nbank_records:
-                nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', ''))).strip().upper()
+                nb_acnt = str(record.get('nk_acnt', record.get('NK_ACNT', ''))).strip().upper()
                 if nb_acnt == bank_code.upper():
                     nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
                     reconciled_balance = nk_recbal / 100.0
@@ -13059,7 +13059,7 @@ async def opera3_preview_bank_import_from_pdf(
         try:
             nbank_records = reader.read_table("nbank")
             for record in nbank_records:
-                nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', record.get('nk_acnt', '')))).strip().upper()
+                nb_acnt = str(record.get('nk_acnt', record.get('NK_ACNT', record.get('nb_acnt', '')))).strip().upper()
                 if nb_acnt == bank_code.upper():
                     nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
                     reconciled_balance = nk_recbal / 100.0
@@ -13087,7 +13087,7 @@ async def opera3_preview_bank_import_from_pdf(
                         for rec in nbank_records:
                             rec_sort = str(rec.get('NK_SORT', rec.get('nk_sort', ''))).strip().replace('-', '').replace(' ', '')
                             rec_acct = str(rec.get('NK_NUMBER', rec.get('nk_number', ''))).strip().replace('-', '').replace(' ', '')
-                            rec_code = str(rec.get('NB_ACNT', rec.get('nb_acnt', rec.get('nk_acnt', '')))).strip()
+                            rec_code = str(rec.get('nk_acnt', rec.get('NK_ACNT', rec.get('nb_acnt', '')))).strip()
                             if rec_sort == stmt_sort and rec_acct == stmt_acct:
                                 correct_bank_code = rec_code
                                 break
@@ -14454,7 +14454,7 @@ async def opera3_process_statement(
         try:
             nbank_records = reader.read_table("nbank")
             for record in nbank_records:
-                nb_acnt = str(record.get('NB_ACNT', record.get('nb_acnt', record.get('nk_acnt', '')))).strip().upper()
+                nb_acnt = str(record.get('nk_acnt', record.get('NK_ACNT', record.get('nb_acnt', '')))).strip().upper()
                 if nb_acnt == bank_code.upper():
                     nk_recbal = float(record.get('NK_RECBAL', record.get('nk_recbal', 0)) or 0)
                     rec_bal = nk_recbal / 100.0
@@ -14858,6 +14858,7 @@ async def opera3_get_unreconciled_entries(
     """
     try:
         from sql_rag.opera3_foxpro import Opera3Reader
+        from sql_rag.opera_open_items import is_open_for_rec
         from pathlib import Path
 
         if not Path(data_path).exists():
@@ -14871,9 +14872,10 @@ async def opera3_get_unreconciled_entries(
             if (row.get('ae_acnt') or '').strip().upper() != bank_code.upper():
                 continue
 
-            rec_num = int(row.get('ae_reclnum', 0) or 0)
-            if rec_num > 0:
-                continue  # Already reconciled
+            # Open-items rule: ae_reclnum=0 AND ae_remove=0 — see
+            # business-rules/bank-rec-open-items.md.
+            if not is_open_for_rec(row):
+                continue
 
             complet = int(row.get('ae_complet', 0) or 0)
             if not include_incomplete and complet == 0:
@@ -15044,11 +15046,16 @@ async def opera3_unreconcile_entries(
         finally:
             table.close()
 
-        # Recalculate reconciled balance and update nbank
+        # Recalculate reconciled balance and update nbank.
+        # Open-items rule: exclude ae_remove=True entries — correction-pair-
+        # matched entries are settled and don't contribute to rec balance.
         aentry_records = reader.read_table('aentry')
         new_rec_total_pence = 0.0
         for row in aentry_records:
             if (row.get('ae_acnt') or '').strip().upper() == bank_code.upper():
+                ae_remove = row.get('ae_remove')
+                if ae_remove in (True, 1, 'T', 't'):
+                    continue
                 if int(row.get('ae_reclnum', 0) or 0) > 0:
                     new_rec_total_pence += float(row.get('ae_value', 0) or 0)
 
@@ -15568,7 +15575,13 @@ async def opera3_match_statement_to_cashbook(
                 return {"success": False, "error": "Request body must include statement_transactions (or provide import_id)"}
             statement_transactions = request_body['statement_transactions']
 
-        # Read Opera 3 unreconciled entries
+        # Read Opera 3 unreconciled entries.
+        # Open-items rule: ae_reclnum=0 AND ae_remove=0 — see
+        # sql_rag/opera_open_items.py and business-rules/bank-rec-open-items.md.
+        # Without ae_remove=0 a correction-pair-matched entry can falsely
+        # match a new statement line (the £198 P Flannery scenario).
+        from sql_rag.opera_open_items import is_open_for_rec
+
         reader = Opera3Reader(data_path)
         aentry_records = reader.read_table('aentry')
 
@@ -15576,7 +15589,7 @@ async def opera3_match_statement_to_cashbook(
         for row in aentry_records:
             if (row.get('ae_acnt') or '').strip().upper() != bank_code.upper():
                 continue
-            if int(row.get('ae_reclnum', 0) or 0) > 0:
+            if not is_open_for_rec(row):
                 continue
             if int(row.get('ae_complet', 0) or 0) == 0:
                 continue
@@ -15978,8 +15991,12 @@ async def opera3_get_cashbook_bank_accounts(
 
         accounts = []
         for row in nbank_records:
-            # Exclude foreign currency banks (nk_forgn) and petty cash if needed
-            is_foreign = (row.get('nk_forgn', 0) or 0) == 1
+            # Exclude foreign currency banks. Real Opera 3 nbank column is
+            # nk_fcurr (currency code; non-empty = foreign). Earlier
+            # 'nk_forgn' was a typo that always resolved to 0 → no foreign
+            # banks ever excluded. Fixed 2026-05-05 per opera3-column-audit.
+            fcurr = (row.get('nk_fcurr') or '').strip()
+            is_foreign = bool(fcurr)
             if is_foreign:
                 continue
 

@@ -533,11 +533,16 @@ class StatementReconciler:
                 'error': f"Bank account '{bank_acnt}' not found in Opera"
             }
 
-        # Query actual unreconciled entries to derive current balance
+        # Query actual unreconciled entries to derive current balance.
+        # Open-items rule: ae_reclnum=0 AND ae_remove=0 — don't include
+        # correction-pair-matched entries in the unreconciled total.
+        # See sql_rag/opera_open_items.py.
         unrec_query = f"""
             SELECT ISNULL(SUM(ae_value), 0) / 100.0 as total
             FROM aentry WITH (NOLOCK)
-            WHERE ae_acnt = '{bank_acnt}' AND (ae_reclnum = 0 OR ae_reclnum IS NULL)
+            WHERE ae_acnt = '{bank_acnt}'
+              AND (ae_reclnum = 0 OR ae_reclnum IS NULL)
+              AND ae_remove = 0
         """
         unrec_df = self.sql_connector.execute_query(unrec_query)
         unreconciled_total = float(unrec_df.iloc[0]['total']) if unrec_df is not None and len(unrec_df) > 0 else 0.0
@@ -1194,6 +1199,11 @@ A typical business bank statement has 20-100+ transactions.
         if date_to:
             date_filter += f" AND ae_lstdate <= '{date_to.strftime('%Y-%m-%d')}'"
 
+        # Open-items rule: ae_reclnum=0 AND ae_remove=0.
+        # See sql_rag/opera_open_items.py and business-rules/bank-rec-open-items.md.
+        # Without ae_remove=0, correction-pair-matched entries leak in and falsely
+        # match unrelated statement lines (the £198 P Flannery scenario).
+        from sql_rag.opera_open_items import OPEN_FOR_REC_SQL
         query = f"""
             SELECT
                 ae_entry,
@@ -1206,7 +1216,7 @@ A typical business bank statement has 20-100+ transactions.
                 ae_statln
             FROM aentry WITH (NOLOCK)
             WHERE ae_acnt = '{bank_acnt}'
-              AND ae_reclnum = 0
+              AND {OPEN_FOR_REC_SQL}
               AND ae_complet = 1
               {date_filter}
             ORDER BY ae_lstdate, ae_entry
@@ -1421,6 +1431,10 @@ A typical business bank statement has 20-100+ transactions.
         if date_to:
             date_filter += f" AND ae_lstdate <= '{date_to.strftime('%Y-%m-%d')}'"
 
+        # Open-items rule: ae_remove=0 (don't include correction-pair-matched
+        # entries). ae_reclnum is intentionally not filtered here — this method
+        # also returns reconciled entries (for diagnostic / display purposes).
+        # See sql_rag/opera_open_items.py.
         query = f"""
             SELECT
                 ae_entry,
@@ -1435,6 +1449,7 @@ A typical business bank statement has 20-100+ transactions.
             FROM aentry WITH (NOLOCK)
             WHERE ae_acnt = '{bank_acnt}'
               AND ae_complet = 1
+              AND ae_remove = 0
               {date_filter}
             ORDER BY ae_lstdate, ae_entry
         """
