@@ -424,6 +424,17 @@ class EmailStorage:
             except Exception as e:
                 logger.warning(f"file_path column migration: {e}")
 
+            # Migration: Add statement_number column for bank-rec self-heal.
+            # See docs/superpowers/specs/2026-05-05-bank-rec-self-heal-design.md
+            try:
+                cursor.execute("PRAGMA table_info(bank_statement_imports)")
+                imp_columns = {c[1] for c in cursor.fetchall()}
+                if 'statement_number' not in imp_columns:
+                    logger.info("Adding statement_number column to bank_statement_imports")
+                    cursor.execute("ALTER TABLE bank_statement_imports ADD COLUMN statement_number INTEGER")
+            except Exception as e:
+                logger.warning(f"statement_number column migration: {e}")
+
             # Migration: Update CHECK constraint on target_system to allow 'archived', 'deleted', 'retained'
             # SQLite doesn't support ALTER CONSTRAINT, so we must rebuild the table
             try:

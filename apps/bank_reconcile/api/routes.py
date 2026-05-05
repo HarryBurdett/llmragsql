@@ -6069,6 +6069,35 @@ async def scan_emails_for_bank_statements(
                 "already_processed_count": 0
             }
 
+        # Bank-rec self-heal: detect statements that have been completed in
+        # Opera Cashbook > Reconcile (after a partial rec via this app)
+        # and update is_reconciled before the "already-processed" filter
+        # runs. Read-only against Opera; updates only local SQLite.
+        # Spec: docs/superpowers/specs/2026-05-05-bank-rec-self-heal-design.md
+        try:
+            from sql_rag.bank_rec_heal import heal_bank_statement_imports
+            from sql_rag.duplicate_check_se import OperaSEDataSource
+            from sql_rag.company_data import get_current_db_path
+
+            company_db = get_current_db_path('email_data.db')
+            if company_db and sql_connector:
+                heal_result = heal_bank_statement_imports(
+                    bank_code=bank_code,
+                    company_db_path=company_db,
+                    opera_data_source=OperaSEDataSource(sql_connector),
+                )
+                if heal_result.healed_count > 0:
+                    logger.info(
+                        'scan-emails SE: bank=%s healed %d row(s) — completed in Opera',
+                        bank_code, heal_result.healed_count,
+                    )
+        except Exception as heal_exc:
+            # The heal must never break the scan — log and continue.
+            logger.warning(
+                'scan-emails SE: heal failed for bank=%s (%s); continuing',
+                bank_code, heal_exc,
+            )
+
         # Calculate date range
         from_date = datetime.utcnow() - timedelta(days=days_back)
 
@@ -10788,15 +10817,24 @@ async def complete_reconciliation(
                 )
 
                 if partial and not statement_actually_complete:
-                    # Genuinely partial: update reconciled_count but keep is_reconciled=0
+                    # Genuinely partial: update reconciled_count but keep is_reconciled=0.
+                    # Persist statement_number so the bank-rec self-heal can use
+                    # it later when Opera completes the rec.
+                    # Spec: docs/superpowers/specs/2026-05-05-bank-rec-self-heal-design.md
                     with email_storage._get_connection() as conn:
                         cursor = conn.cursor()
                         cursor.execute("""
                             UPDATE bank_statement_imports
                             SET reconciled_count = ?,
-                                reconciled_date = ?
+                                reconciled_date = ?,
+                                statement_number = ?
                             WHERE id = ?
-                        """, (result.records_imported, datetime.now().isoformat(), import_id))
+                        """, (
+                            result.records_imported,
+                            datetime.now().isoformat(),
+                            int(statement_number),
+                            import_id,
+                        ))
                     logger.info(f"Partial reconciliation: import_id={import_id}, {result.records_imported} entries reconciled (statement stays in-progress)")
                 else:
                     # Statement is complete — either explicit full reconcile or
@@ -10814,9 +10852,15 @@ async def complete_reconciliation(
                             UPDATE bank_statement_imports
                             SET is_reconciled = 1,
                                 reconciled_date = ?,
-                                reconciled_count = ?
+                                reconciled_count = ?,
+                                statement_number = ?
                             WHERE id = ?
-                        """, (datetime.now().isoformat(), result.records_imported, import_id))
+                        """, (
+                            datetime.now().isoformat(),
+                            result.records_imported,
+                            int(statement_number),
+                            import_id,
+                        ))
                     logger.info(f"Full reconciliation: import_id={import_id}, {result.records_imported} entries reconciled")
 
                     # Auto-archive the source statement after full reconciliation
@@ -12169,6 +12213,36 @@ async def opera3_scan_emails_for_bank_statements(
                         break
             except Exception as e:
                 logger.warning(f"Could not get Opera 3 reconciled balance: {e}")
+
+        # Bank-rec self-heal — Opera 3 mirror of the SE handler.
+        # Detects statements completed in Opera Cashbook > Reconcile and
+        # updates is_reconciled before the "already-processed" filter runs.
+        # Read-only against Opera; updates only local SQLite.
+        # Spec: docs/superpowers/specs/2026-05-05-bank-rec-self-heal-design.md
+        try:
+            from sql_rag.bank_rec_heal import heal_bank_statement_imports
+            from sql_rag.duplicate_check_o3 import Opera3DataSource
+            from sql_rag.company_data import get_current_db_path
+            from sql_rag.opera3_foxpro import Opera3Reader
+
+            company_db = get_current_db_path('email_data.db')
+            if company_db and data_path:
+                heal_reader = Opera3Reader(data_path)
+                heal_result = heal_bank_statement_imports(
+                    bank_code=bank_code,
+                    company_db_path=company_db,
+                    opera_data_source=Opera3DataSource(heal_reader),
+                )
+                if heal_result.healed_count > 0:
+                    logger.info(
+                        'scan-emails O3: bank=%s healed %d row(s) — completed in Opera',
+                        bank_code, heal_result.healed_count,
+                    )
+        except Exception as heal_exc:
+            logger.warning(
+                'scan-emails O3: heal failed for bank=%s (%s); continuing',
+                bank_code, heal_exc,
+            )
 
         # Calculate date range
         from_date = datetime.utcnow() - timedelta(days=days_back)
@@ -15730,9 +15804,33 @@ async def opera3_complete_reconciliation(
                             UPDATE bank_statement_imports
                             SET is_reconciled = 1,
                                 reconciled_date = ?,
-                                reconciled_count = ?
+                                reconciled_count = ?,
+                                statement_number = ?
                             WHERE id = ?
-                        """, (datetime.now().isoformat(), result.records_imported, import_id))
+                        """, (
+                            datetime.now().isoformat(),
+                            result.records_imported,
+                            int(statement_number),
+                            import_id,
+                        ))
+                else:
+                    # Partial: persist statement_number so the bank-rec
+                    # self-heal can use it later when Opera completes the rec.
+                    # Spec: docs/superpowers/specs/2026-05-05-bank-rec-self-heal-design.md
+                    with email_storage._get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            UPDATE bank_statement_imports
+                            SET reconciled_count = ?,
+                                reconciled_date = ?,
+                                statement_number = ?
+                            WHERE id = ?
+                        """, (
+                            result.records_imported,
+                            datetime.now().isoformat(),
+                            int(statement_number),
+                            import_id,
+                        ))
             except Exception as db_err:
                 logger.warning(f"Could not update reconciliation status in DB: {db_err}")
 

@@ -87,6 +87,8 @@ After import, the reconciliation view shows:
 
 ### Stage 5: Complete
 
+**Statements completed in Opera drop off automatically.** If you finish a partial reconciliation in Opera Cashbook > Reconcile (rather than via this app), the next time you click Scan the statement is removed from the in-progress list automatically. The app detects Opera's reconciled state and updates its own status accordingly — read-only, no Opera changes are made. You don't need to do anything manual to clear the statement from the list.
+
 When the difference reaches **zero**, all statement lines are accounted for. The system writes both halves of the reconciliation in a single transaction:
 
 **Per cashbook entry (Stage A):**
@@ -221,4 +223,4 @@ If an import fails partway through (e.g. network error, database lock):
 
 ---
 
-*Last updated: 2026-05-04 — Stage 4 click-to-toggle Match status documented*
+*Last updated: 2026-05-05 — Stage 5 self-heal of statements completed in Opera*

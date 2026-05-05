@@ -153,3 +153,67 @@ class Opera3DataSource:
                 'pt_trtype': tr_type,
             })
         return out
+
+    def read_nbank(self, bank_code: str):
+        """Read the four nbank fields the bank-rec self-heal rule needs.
+
+        Returns NbankSnapshot or None if the bank does not exist in
+        nbank.dbf. The DBF stores nk_recbal in pence; we convert to
+        pounds. nk_acnt is space-padded in FoxPro CHAR fields — strip
+        before comparing.
+
+        Spec: docs/superpowers/specs/2026-05-05-bank-rec-self-heal-design.md
+        """
+        from sql_rag.bank_rec_heal import NbankSnapshot
+
+        for row in self._reader.read_table('nbank'):
+            acnt = _row_get(row, 'nk_acnt')
+            if acnt is None or str(acnt).strip() != bank_code:
+                continue
+            recbal_pence = _row_get(row, 'nk_recbal')
+            lststdt = _normalise_date(_row_get(row, 'nk_lststdt'))
+            lststno = _row_get(row, 'nk_lststno')
+            return NbankSnapshot(
+                bank_code=bank_code,
+                recbal_pounds=(
+                    float(recbal_pence) / 100.0
+                    if recbal_pence is not None
+                    else None
+                ),
+                lststdt=lststdt,
+                lststno=int(lststno) if lststno is not None else None,
+            )
+        return None
+
+    def count_reconciled_aentry(
+        self,
+        bank_code: str,
+        statement_number: int,
+    ) -> int:
+        """Count aentry rows reconciled in the given statement number for this bank.
+
+        DBF scan; nk_acnt is space-padded so strip before comparing.
+        """
+        n = 0
+        for row in self._reader.read_table('aentry'):
+            acnt = _row_get(row, 'ae_acnt')
+            if acnt is None or str(acnt).strip() != bank_code:
+                continue
+            frstat = _row_get(row, 'ae_frstat')
+            if frstat is None:
+                continue
+            try:
+                if int(frstat) != int(statement_number):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            reclnum = _row_get(row, 'ae_reclnum')
+            if reclnum is None:
+                continue
+            try:
+                if int(reclnum) <= 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            n += 1
+        return n

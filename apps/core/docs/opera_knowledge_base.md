@@ -605,6 +605,46 @@ Every site that fetches Opera atran/aentry candidates for bank-rec MUST apply th
 
 ---
 
+## Bank Rec Self-Heal Rule (CRITICAL)
+
+The local `bank_statement_imports.is_reconciled` flag is the app's view of whether a statement has been reconciled. When the operator runs a partial rec via the app and finishes it in Opera Cashbook > Reconcile, Opera updates `nbank.nk_recbal`, `nk_lststdt`, `nk_lststno` and `aentry.ae_reclnum`, but does **not** touch our local store. Without intervention the local flag stays at 0 forever and the statement re-appears on every scan as "Awaiting Reconcile".
+
+The scan-emails endpoint runs a **read-only self-heal** that detects this and updates the local flag.
+
+### The Rule
+
+A `bank_statement_imports` row with `is_reconciled = 0` heals to `is_reconciled = 1` when ALL of:
+
+1. `nbank.nk_recbal / 100.0 ≈ closing_balance` within £0.01.
+2. `nbank.nk_lststdt >= period_end`.
+3. `nbank.nk_lststno >= statement_number` (skipped for legacy rows where `statement_number IS NULL`).
+
+The use of `>=` rather than equality on checks 2 and 3 is intentional: if subsequent statements have been reconciled too, those checks still pass — correctly — for the older statement (Opera's sequential rec gating guarantees a later statement can't be reconciled without earlier ones).
+
+### Module
+
+`sql_rag/bank_rec_heal.py` exports:
+- `NbankSnapshot` — immutable view of the four nbank fields the rule needs.
+- `HealResult` — output carrier (`healed_count`, `audit_lines`).
+- `is_row_healable(row, snapshot) -> (bool, audit_proof)` — pure rule evaluator.
+- `heal_bank_statement_imports(bank_code, company_db_path, opera_data_source) -> HealResult` — orchestrator.
+
+### Properties
+
+- **Read-only against Opera.** SE reads use `WITH (NOLOCK)`; Opera 3 reads DBFs.
+- **Per-company isolated.** Each company queries its own Opera DB and its own local SQLite via `get_current_db_path('email_data.db')`.
+- **Idempotent.** Running the heal twice produces the same outcome.
+- **Auditable.** Every flip from 0→1 logged at INFO with the proof string showing which checks passed.
+- **SE + Opera 3 parity.** Same rule, different read mechanism. `OperaSEDataSource` and `Opera3DataSource` both expose `read_nbank()` and `count_reconciled_aentry()`.
+
+### Schema column
+
+`bank_statement_imports.statement_number INTEGER` is populated at `complete_reconciliation` time (both SE and Opera 3 routes, both partial and full branches). Legacy rows imported before this change have `statement_number IS NULL` and fall back to the two-check rule (1+2 only) — the date check disambiguates real-world cases.
+
+Cross-reference: `business-rules/bank-rec-self-heal.md` in the central KB.
+
+---
+
 ## Opera 3 (FoxPro Version)
 
 Opera 3 is the older version of Pegasus Opera that uses Visual FoxPro DBF files instead of SQL Server.

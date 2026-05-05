@@ -107,3 +107,64 @@ class OperaSEDataSource:
              'pt_trtype': row.get('pt_trtype')}
             for _, row in df.iterrows()
         ]
+
+    def read_nbank(self, bank_code: str):
+        """Read the four nbank fields the bank-rec self-heal rule needs.
+
+        Returns NbankSnapshot or None if the bank does not exist in
+        nbank. WITH (NOLOCK) per business-rules/locking-protocol.md.
+        Pence → pounds conversion is done in SQL (nk_recbal / 100.0).
+
+        Spec: docs/superpowers/specs/2026-05-05-bank-rec-self-heal-design.md
+        """
+        from sql_rag.bank_rec_heal import NbankSnapshot
+
+        query = f"""
+            SELECT nk_recbal / 100.0 AS recbal_pounds,
+                   nk_lststdt        AS lststdt,
+                   nk_lststno        AS lststno
+            FROM nbank WITH (NOLOCK)
+            WHERE RTRIM(nk_acnt) = '{bank_code}'
+        """
+        df = self._sql.execute_query(query)
+        if df is None or df.empty:
+            return None
+        row = df.iloc[0]
+        recbal = row.get('recbal_pounds')
+        lststdt = row.get('lststdt')
+        lststno = row.get('lststno')
+        if lststdt is not None and hasattr(lststdt, 'date'):
+            try:
+                lststdt = lststdt.date()
+            except Exception:
+                pass
+        return NbankSnapshot(
+            bank_code=bank_code,
+            recbal_pounds=float(recbal) if recbal is not None else None,
+            lststdt=lststdt,
+            lststno=int(lststno) if lststno is not None else None,
+        )
+
+    def count_reconciled_aentry(
+        self,
+        bank_code: str,
+        statement_number: int,
+    ) -> int:
+        """Count aentry rows reconciled in the given statement number for this bank.
+
+        Used by the bank-rec self-heal to populate reconciled_count when
+        flipping is_reconciled=0 → 1 for rows that have a stored
+        statement_number. WITH (NOLOCK) per locking protocol.
+        """
+        query = f"""
+            SELECT COUNT(*) AS cnt
+            FROM aentry WITH (NOLOCK)
+            WHERE RTRIM(ae_acnt) = '{bank_code}'
+              AND ae_frstat = {int(statement_number)}
+              AND ae_reclnum > 0
+        """
+        df = self._sql.execute_query(query)
+        if df is None or df.empty:
+            return 0
+        cnt = df.iloc[0].get('cnt', 0)
+        return int(cnt) if cnt is not None else 0
