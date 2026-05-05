@@ -167,12 +167,17 @@ def _auto_clean_resolved_defers(bank_code: str) -> int:
             try:
                 amount_pence = int(round(float(item.get('amount') or 0.0) * 100))
                 # Bank-and-amount match within the open nominal year.
+                # SIGN-AWARE: matching ABS-on-ABS would auto-clean a deferred
+                # receipt against an unrelated payment of the same magnitude
+                # (audit 2026-05-05 stages-1-2 F14). Match the signed at_value
+                # directly so a +£100 deferred receipt only resolves against
+                # a +£100 atran row.
                 # No upper-bound on date — late posting must still resolve.
                 query = (
                     "SELECT TOP 1 at_unique FROM atran WITH (NOLOCK) "
                     f"WHERE at_acnt = '{bank_code}' "
                     f"AND at_pstdate >= '{date_from}' "
-                    f"AND ABS(ABS(at_value) - {abs(amount_pence)}) < 1"
+                    f"AND ABS(at_value - {amount_pence}) < 1"
                 )
                 df = sql_connector.execute_query(query)
                 if df is not None and len(df) > 0:

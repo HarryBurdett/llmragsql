@@ -1024,13 +1024,22 @@ class BankStatementImport:
             amount_pence_abs = abs(int(txn.amount * 100))
 
             # Build search terms from transaction name, reference, and memo
-            # Clean up for SQL LIKE matching
+            # Clean up for SQL LIKE matching.
+            # Escape SQL apostrophes AND LIKE wildcards. Without escaping
+            # %, _ and [, a payee containing '%PURE' or 'A_B' would
+            # produce unintended LIKE matches against arhead descriptions.
+            # Audit 2026-05-05 stages-1-2 F9.
+            def _escape_like(s: str) -> str:
+                return (
+                    s.replace("'", "''")
+                     .replace('[', '[[]')
+                     .replace('%', '[%]')
+                     .replace('_', '[_]')
+                )
             search_terms = []
             for text in [txn.name, txn.reference, txn.memo]:
                 if text and len(text.strip()) >= 3:
-                    # Clean and escape for SQL
-                    clean = text.strip().replace("'", "''").upper()
-                    # Extract key words (at least 3 chars)
+                    clean = _escape_like(text.strip().upper())
                     words = [w for w in clean.split() if len(w) >= 3]
                     search_terms.extend(words[:3])  # Limit to first 3 words
 
@@ -1220,19 +1229,37 @@ class BankStatementImport:
     def _check_bank_transfer(self, txn: BankTransaction) -> bool:
         """Check if transaction is a transfer to/from another Opera bank account.
 
-        Searches memo, name, and reference for sort codes or account numbers
-        matching other Opera bank accounts.
+        Searches memo, name, and reference for account-number AND/OR
+        sort-code matches against other Opera bank accounts.
+
+        Match strategy (audit 2026-05-05 stages-1-2 F7):
+          1. Account-number match (>=6 digits) is highly specific —
+             accept on its own with 1.0 confidence.
+          2. Sort-code-only match (6 digits) is risky because invoice
+             numbers / customer references can coincidentally embed a
+             6-digit subsequence (real example: INV202609001234 matches
+             sort 262090). Only accept a sort-code match when:
+               (a) an account number for the same bank also appears, OR
+               (b) the unnormalised text contains the literal sort-code
+                   pattern with dashes (e.g. '20-96-89') — banks
+                   universally print sort codes that way, so a dashed
+                   match is overwhelmingly more reliable than a digit-
+                   substring match against random refs.
 
         Returns True if matched as bank transfer, False otherwise.
         """
         if not self._other_banks:
             return False
 
-        # Build search text from all available fields, normalized (no dashes/spaces)
+        # Normalised (digits only) search text — used for account-number
+        # matches and the (a) fallback test for sort-code matches.
         search_text = f"{txn.memo} {txn.name} {txn.reference}".replace('-', '').replace(' ', '')
+        # Original (unnormalised) text — used for the dashed-sort-code
+        # heuristic in (b).
+        raw_text = f"{txn.memo} {txn.name} {txn.reference}"
 
         for bank in self._other_banks:
-            # Check account number first (more specific, less likely to false-positive)
+            # 1. Account-number match — most specific.
             if bank['account_number'] and len(bank['account_number']) >= 6:
                 if bank['account_number'] in search_text:
                     txn.action = 'bank_transfer'
@@ -1244,16 +1271,25 @@ class BankStatementImport:
                     logger.info(f"Auto-detected bank transfer: account number {bank['account_number']} -> {bank['code']} ({bank['description']})")
                     return True
 
-            # Check sort code (6 digits)
+            # 2. Sort-code match — only with extra evidence to avoid
+            # false-positives on customer reference numbers.
             if bank['sort_code'] and len(bank['sort_code']) >= 6:
-                if bank['sort_code'] in search_text:
+                sort = bank['sort_code']
+                # (b) literal dashed form '12-34-56' — bank-printed
+                # convention, vanishingly unlikely in a random ref.
+                dashed = f"{sort[0:2]}-{sort[2:4]}-{sort[4:6]}"
+                spaced = f"{sort[0:2]} {sort[2:4]} {sort[4:6]}"
+                if (
+                    sort in search_text
+                    and (dashed in raw_text or spaced in raw_text)
+                ):
                     txn.action = 'bank_transfer'
                     txn.matched_account = bank['code']
                     txn.matched_name = bank['description']
                     txn.match_score = 0.9
-                    txn.match_source = 'bank_sort_code'
+                    txn.match_source = 'bank_sort_code_formatted'
                     txn.bank_transfer_details = {'dest_bank': bank['code']}
-                    logger.info(f"Auto-detected bank transfer: sort code {bank['sort_code']} -> {bank['code']} ({bank['description']})")
+                    logger.info(f"Auto-detected bank transfer: dashed sort code {dashed} -> {bank['code']} ({bank['description']})")
                     return True
 
         return False
@@ -1353,6 +1389,9 @@ class BankStatementImport:
                     txn.matched_name = supp_result.name
                     txn.match_score = supp_result.score
                     txn.action = 'purchase_payment'
+                # Set match_type so downstream UI renderers don't see None
+                # in ambiguous branches (audit 2026-05-05 stages-1-2 F8).
+                txn.match_type = 'customer' if (txn.action or '').startswith('sales') else 'supplier'
                 txn.match_source = 'fuzzy_ambiguous'
                 txn.skip_reason = f'Review: matches both customer ({cust_result.name}) and supplier ({supp_result.name})'
                 return
@@ -1370,6 +1409,9 @@ class BankStatementImport:
                     txn.matched_name = cust_result.name
                     txn.match_score = cust_result.score
                     txn.action = 'sales_receipt'
+                    # Audit 2026-05-05 stages-1-2 F8: set match_type so the
+                    # UI renderer doesn't see None on ambiguous reviews.
+                    txn.match_type = 'customer'
                     txn.match_source = 'fuzzy_review'
                     txn.skip_reason = f'Review: supplier score ({supp_result.score:.2f}) higher than customer ({cust_result.score:.2f})'
                     return
@@ -1390,6 +1432,8 @@ class BankStatementImport:
                     txn.matched_name = supp_result.name
                     txn.match_score = supp_result.score
                     txn.action = 'purchase_payment'
+                    # Audit 2026-05-05 stages-1-2 F8: set match_type for UI.
+                    txn.match_type = 'supplier'
                     txn.match_source = 'fuzzy_review'
                     txn.skip_reason = f'Review: customer score ({cust_result.score:.2f}) higher than supplier ({supp_result.score:.2f})'
                     return
@@ -1463,16 +1507,20 @@ class BankStatementImport:
         )
         from sql_rag.duplicate_check_se import OperaSEDataSource
 
-        if not txn.action or txn.action in ('skip',):
+        if not txn.action or txn.action in ('skip', 'defer'):
             # Type-blind fallback: when the customer/supplier matcher couldn't
-            # classify this transaction (action is None), the type-aware
-            # check_for_duplicate below CAN'T run — it requires action to
-            # pick the at_type filter. But before commit 856d5ad the function
-            # had its own type-blind atran lookup that would still catch
-            # "this signed amount on this bank on this date already exists in
-            # Opera" regardless of which posting type it was. Without that
-            # fallback, scan results show transactions as 'unmatched/needs
-            # posting' even though Opera already has them.
+            # classify this transaction (action is None / 'skip' / 'defer'),
+            # the type-aware check_for_duplicate below CAN'T run — it
+            # requires action to pick the at_type filter. The type-blind
+            # atran lookup catches "this signed amount on this bank on this
+            # date already exists in Opera" regardless of posting type.
+            # Without that fallback, scan results show transactions as
+            # 'unmatched/needs posting' even though Opera already has them.
+            #
+            # 'defer' was originally omitted from this set (audit
+            # 2026-05-05 stages-1-2 F10) — a deferred row that's actually
+            # already posted would otherwise be re-deferred and inflate
+            # the deferred_count.
             #
             # Restore the type-blind fallback here. Match by:
             #   - same bank account (at_acnt = bank_code)
