@@ -65,6 +65,55 @@ def _get_db_path() -> Path:
     return get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
 
 
+def _check_supplier_communication_allowed(supplier_code: str) -> tuple:
+    """Return (allowed, reason) for whether we may send any outbound email
+    to this supplier RIGHT NOW.
+
+    Honours the per-supplier `never_communicate` flag (a hard block —
+    used for suppliers in dispute, in administration, or who have
+    explicitly asked not to be contacted) regardless of which path is
+    triggering the send. The `auto_respond` flag is checked separately
+    by callers that distinguish auto vs operator-initiated sends.
+
+    Earlier code only enforced these flags on the auto-pipeline path;
+    operator-driven paths (Approve, Acknowledge, Bulk-Approve,
+    Send-Reminder, Send-Remittance, Updated-Status) bypassed the
+    policy entirely. Audit 2026-05-05 Suppliers F3.
+
+    Returns:
+        (True, "")    — communication permitted.
+        (False, reason) — refuse with a clear, operator-facing reason.
+    """
+    if not supplier_code:
+        # No supplier scope (e.g. internal alerts) — let the caller decide.
+        return True, ""
+    try:
+        from api.main import sql_connector
+        from sql_rag.supplier_config import SupplierConfigManager
+        db_path = _get_db_path()
+        if not db_path or not Path(str(db_path)).exists():
+            return True, ""
+        mgr = SupplierConfigManager(str(db_path), sql_connector)
+        cfg = mgr.get_config(supplier_code) or {}
+        if cfg.get('never_communicate'):
+            return False, (
+                f"Supplier {supplier_code} has 'never_communicate' set — "
+                "all outbound email is blocked. Clear the flag in supplier "
+                "settings before sending."
+            )
+    except Exception as exc:
+        # Don't block on lookup failure — log + permit. The audit trail
+        # still records every send, so a stuck flag-store isn't a fraud
+        # vector. (Failing closed here would freeze every approve action
+        # if the supplier_statements.db became briefly unavailable.)
+        logger.warning(
+            'Communication-allowed check failed for %s: %s — permitting send.',
+            supplier_code, exc,
+        )
+        return True, ""
+    return True, ""
+
+
 # ============================================================
 # Request/Response Models
 # ============================================================
@@ -1073,6 +1122,13 @@ async def send_query_reminder(query_id: int):
                 f"{sign_off}"
             )
 
+        # Policy gate: never_communicate flag blocks all outbound supplier email
+        # regardless of which workflow path triggered the send. Audit
+        # 2026-05-05 Suppliers F3 — operator-driven paths bypassed this.
+        _allowed, _gate_reason = _check_supplier_communication_allowed(supplier_code)
+        if not _allowed:
+            conn.close()
+            return {"success": False, "error": _gate_reason, "policy_blocked": True}
         # Send email
         email_sent = False
         email_error = None
@@ -2381,6 +2437,14 @@ async def approve_supplier_statement(statement_id: int, request: ApproveWithBody
                 _get_db_approve(), supplier_name, stmt.get('statement_date'), has_queries
             )
 
+        # Policy gate: never_communicate blocks outbound supplier email
+        # regardless of which workflow path triggered the send.
+        # Audit 2026-05-05 Suppliers F3.
+        _allowed, _gate_reason = _check_supplier_communication_allowed(supplier_code)
+        if not _allowed:
+            conn.close()
+            return {"success": False, "error": _gate_reason, "policy_blocked": True}
+
         # Send the response email with original statement PDF attached
         email_sent = False
         email_error = None
@@ -2553,6 +2617,13 @@ async def acknowledge_supplier_statement(statement_id: int):
 
         email_subject = f"Statement Received - {supplier_name} - {statement_date}"
 
+        # Policy gate: never_communicate flag blocks all outbound supplier email
+        # regardless of which workflow path triggered the send. Audit
+        # 2026-05-05 Suppliers F3 — operator-driven paths bypassed this.
+        _allowed, _gate_reason = _check_supplier_communication_allowed(supplier_code)
+        if not _allowed:
+            conn.close()
+            return {"success": False, "error": _gate_reason, "policy_blocked": True}
         # Send acknowledgment email
         email_sent = False
         email_error = None
@@ -2744,6 +2815,25 @@ async def bulk_approve_statements(body: BulkApproveRequest):
                 _get_db_bulk(), supplier_name, stmt.get('statement_date'), has_queries_bulk
             )
 
+            # Policy gate: never_communicate blocks outbound supplier
+            # email — applied per-statement inside the bulk loop so a
+            # blocked supplier doesn't poison the whole batch.
+            # Audit 2026-05-05 Suppliers F3.
+            _bulk_allowed, _bulk_reason = _check_supplier_communication_allowed(supplier_code)
+            if not _bulk_allowed:
+                logger.info(
+                    'Bulk-approve skipping supplier %s: %s',
+                    supplier_code, _bulk_reason,
+                )
+                results.append({
+                    "statement_id": stmt['id'],
+                    "supplier_code": supplier_code,
+                    "approved": False,
+                    "policy_blocked": True,
+                    "reason": _bulk_reason,
+                })
+                continue
+
             # Send the response email
             email_sent = False
             if recipient_email:
@@ -2815,9 +2905,13 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
 
     Priority:
     0. Test mode override — if test_mode_email is set, ALL emails go there
-    1. Accounting system contacts — first contact with an email for this supplier
-    2. supplier_contacts_ext with is_statement_contact = 1 (local override)
-    3. sender_email from the statement record (fallback)
+    1. Per-supplier `statements_contact_position` (e.g. "AR Manager") —
+       look for a contact in either source whose position/role matches.
+       Audit 2026-05-05 Suppliers F11 — this flag was previously stored
+       per supplier but never read at email-send time.
+    2. Accounting system contacts — first contact with an email for this supplier
+    3. supplier_contacts_ext with is_statement_contact = 1 (local override)
+    4. sender_email from the statement record (fallback)
     """
     # 0. Test mode — redirect all emails to test address
     try:
@@ -2832,7 +2926,52 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     except Exception:
         pass
 
-    # 1. Check accounting system contacts via data provider
+    # 1. statements_contact_position override.
+    # Read the per-supplier position string ("AR Manager", "Accounts",
+    # etc.) and prefer a contact whose `position` / role matches.
+    target_position = None
+    try:
+        from api.main import sql_connector as _sql
+        from sql_rag.supplier_config import SupplierConfigManager
+        db_path = _get_db_path()
+        if db_path and Path(str(db_path)).exists():
+            mgr = SupplierConfigManager(str(db_path), _sql)
+            cfg = mgr.get_config(supplier_code) or {}
+            pos = (cfg.get('statements_contact_position') or '').strip()
+            if pos:
+                target_position = pos
+    except Exception:
+        target_position = None
+
+    if target_position:
+        # Try local contacts first — supplier_contacts_ext has a
+        # `position` column populated from zcontacts.zc_position.
+        try:
+            cursor.execute("""
+                SELECT email FROM supplier_contacts_ext
+                WHERE supplier_code = ?
+                  AND email IS NOT NULL AND email != ''
+                  AND position IS NOT NULL
+                  AND LOWER(position) LIKE LOWER(?)
+                LIMIT 1
+            """, (supplier_code, f"%{target_position}%"))
+            row = cursor.fetchone()
+            if row and row['email']:
+                return row['email']
+        except Exception:
+            pass
+        # Then try accounting-system contacts.
+        try:
+            from sql_rag.supplier_data_provider import get_supplier_data_provider
+            provider = get_supplier_data_provider()
+            for contact in (provider.list_supplier_contacts(supplier_code) or []):
+                pos = (getattr(contact, 'position', '') or '').lower()
+                if target_position.lower() in pos and contact.email:
+                    return contact.email
+        except Exception:
+            pass
+
+    # 2. Check accounting system contacts via data provider
     try:
         from sql_rag.supplier_data_provider import get_supplier_data_provider
         provider = get_supplier_data_provider()
@@ -2842,7 +2981,7 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     except Exception:
         pass
 
-    # 2. Check local contacts
+    # 3. Check local contacts
     try:
         cursor.execute("""
             SELECT email FROM supplier_contacts_ext
@@ -2855,7 +2994,7 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     except Exception:
         pass
 
-    # 3. Fallback to sender
+    # 4. Fallback to sender
     return fallback_sender_email
 
 
