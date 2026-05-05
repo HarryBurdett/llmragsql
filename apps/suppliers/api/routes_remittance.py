@@ -456,6 +456,35 @@ async def send_remittance(account: str, body: SendRemittanceRequest):
     try:
         payment_ref = body.payment_ref.strip()
 
+        # Idempotency: refuse to re-send a remittance for the same
+        # (supplier, payment_ref) pair. The helper exists; without this
+        # call, double-clicks / retries silently spam the supplier.
+        # Audit 2026-05-05 Suppliers F9.
+        if _check_remittance_already_sent(account, payment_ref):
+            return {
+                "success": False,
+                "error": (
+                    f"A remittance has already been sent for {account} / "
+                    f"{payment_ref}. Refusing to send the same remittance "
+                    "twice."
+                ),
+                "duplicate_send": True,
+            }
+
+        # Policy gate: never_communicate flag blocks all outbound
+        # supplier email. Audit 2026-05-05 Suppliers F3.
+        try:
+            from apps.suppliers.api.routes import _check_supplier_communication_allowed
+            _allowed, _reason = _check_supplier_communication_allowed(account)
+            if not _allowed:
+                return {
+                    "success": False,
+                    "error": _reason,
+                    "policy_blocked": True,
+                }
+        except Exception:
+            pass
+
         # Resolve recipient email
         send_to = body.send_to.strip() if body.send_to else None
         if not send_to:

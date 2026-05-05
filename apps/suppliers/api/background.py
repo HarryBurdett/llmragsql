@@ -526,7 +526,28 @@ async def _process_single_email(email_id: int, storage, providers):
     send_queries = str(db.get_config('send_query_response', 'true')).lower() in ('true', '1', 'yes')
     auto_send = str(db.get_config('auto_respond_if_reconciled', 'true')).lower() in ('true', '1', 'yes')
 
+    # Approval-threshold gate: when the variance exceeds
+    # require_approval_above (default £1000), force the statement into
+    # 'reconciled' (held for review) regardless of auto-respond settings.
+    # Without this the config was dead — operators trusted a £-threshold
+    # that never actually fired. Audit 2026-05-05 Suppliers F4.
+    try:
+        approval_threshold = float(db.get_config('require_approval_above', '1000') or 0)
+    except (TypeError, ValueError):
+        approval_threshold = 1000.0
+    requires_manual_approval = (
+        approval_threshold > 0 and abs(recon_result.difference) > approval_threshold
+    )
+
     if never_communicate:
+        db.update_statement_status(statement_id, 'reconciled')
+    elif requires_manual_approval:
+        # Above the threshold — never auto-send. Hold for manual review.
+        logger.info(
+            'Statement %s held for manual review: variance £%.2f exceeds '
+            'require_approval_above=£%.2f',
+            statement_id, abs(recon_result.difference), approval_threshold,
+        )
         db.update_statement_status(statement_id, 'reconciled')
     elif balances_agree and send_agreed and auto_send:
         if send_ack:
