@@ -1675,33 +1675,70 @@ async def scan_supplier_changes():
     Returns:
         {success, changes_detected: count, alerts_sent: count}
     """
-    from api.main import sql_connector
+    from api.main import sql_connector, config as app_config
     from sql_rag.supplier_statement_db import get_supplier_statement_db
-
-    if not sql_connector:
-        raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
     try:
         db = get_supplier_statement_db()
 
-        # Get all suppliers with sensitive fields from Opera
-        suppliers_df = sql_connector.execute_query("""
-            SELECT
-                RTRIM(pn_account) AS account,
-                RTRIM(pn_name) AS name,
-                RTRIM(ISNULL(pn_bankac, '')) AS pn_bankac,
-                RTRIM(ISNULL(pn_banksor, '')) AS pn_banksor,
-                RTRIM(ISNULL(pn_email, '')) AS pn_email
-            FROM pname WITH (NOLOCK)
-        """)
+        # Detect platform — Opera 3 (FoxPro) vs Opera SE (SQL Server).
+        # Audit 2026-05-05 Suppliers F5/F6: this scan was SE-only.
+        opera_version = ''
+        try:
+            opera_version = (
+                app_config.get('opera', 'version', fallback='') or ''
+            ).strip().lower() if app_config else ''
+        except Exception:
+            opera_version = ''
 
-        if suppliers_df is None or len(suppliers_df) == 0:
-            return {"success": True, "changes_detected": 0, "alerts_sent": 0}
-
-        if hasattr(suppliers_df, 'to_dict'):
-            suppliers = suppliers_df.to_dict('records')
+        suppliers: list = []
+        if opera_version == 'opera3':
+            # Opera 3 path: read pname.dbf via Opera3Reader.
+            try:
+                from sql_rag.opera3_foxpro import Opera3Reader
+                o3_path = (
+                    app_config.get('opera3', 'base_path', fallback='')
+                    if app_config else ''
+                )
+                if not o3_path:
+                    o3_path = r'C:\Apps\O3 Server VFP'
+                reader = Opera3Reader(o3_path)
+                for row in reader.read_table('pname'):
+                    suppliers.append({
+                        'account': str(row.get('pn_account') or '').strip(),
+                        'name': str(row.get('pn_name') or '').strip(),
+                        'pn_bankac': str(row.get('pn_bankac') or '').strip(),
+                        'pn_banksor': str(row.get('pn_banksor') or '').strip(),
+                        'pn_email': str(row.get('pn_email') or '').strip(),
+                    })
+            except Exception as o3_err:
+                logger.warning('Opera 3 supplier scan failed: %s', o3_err)
+                return {
+                    "success": False,
+                    "error": f"Opera 3 pname read failed: {o3_err}",
+                }
         else:
-            suppliers = suppliers_df or []
+            # Opera SE path.
+            if not sql_connector:
+                raise HTTPException(status_code=503, detail="SQL connector not initialized")
+            suppliers_df = sql_connector.execute_query("""
+                SELECT
+                    RTRIM(pn_account) AS account,
+                    RTRIM(pn_name) AS name,
+                    RTRIM(ISNULL(pn_bankac, '')) AS pn_bankac,
+                    RTRIM(ISNULL(pn_banksor, '')) AS pn_banksor,
+                    RTRIM(ISNULL(pn_email, '')) AS pn_email
+                FROM pname WITH (NOLOCK)
+            """)
+            if suppliers_df is None or len(suppliers_df) == 0:
+                return {"success": True, "changes_detected": 0, "alerts_sent": 0}
+            if hasattr(suppliers_df, 'to_dict'):
+                suppliers = suppliers_df.to_dict('records')
+            else:
+                suppliers = suppliers_df or []
+
+        if not suppliers:
+            return {"success": True, "changes_detected": 0, "alerts_sent": 0}
 
         # Get last known values from the change audit table
         db_path = _get_db_path()
