@@ -7666,7 +7666,11 @@ async def list_statement_files(bank_folder: Optional[str] = None):
     from pathlib import Path
     from datetime import datetime
 
-    base_path = Path("/Users/maccb/Downloads/bank-statements")
+    # Resolve via per-company setting (preferred), env override, or
+    # ~/Downloads fallback. Earlier code hardcoded /Users/maccb — broken
+    # on every non-developer machine. Audit 2026-05-05 cross-cutting F8.
+    from sql_rag.file_archive import _resolve_downloads_base
+    base_path = _resolve_downloads_base() / "bank-statements"
     bank_folders = ["barclays", "hsbc", "lloyds", "natwest"]
 
     if bank_folder:

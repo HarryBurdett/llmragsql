@@ -294,7 +294,7 @@ async def reconcile_bank(bank_code: str):
         # Get bank account details
         bank_sql = f"""
             SELECT nk_acnt, RTRIM(nk_desc) AS description, nk_sort, nk_number
-            FROM nbank
+            FROM nbank WITH (NOLOCK)
             WHERE nk_acnt = '{bank_code}'
         """
         bank_result = sql_connector.execute_query(bank_sql)
@@ -313,7 +313,7 @@ async def reconcile_bank(bank_code: str):
         }
 
         # ========== NOMINAL LEDGER SETUP (get current year first) ==========
-        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
+        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran WITH (NOLOCK)"
         cy_result = sql_connector.execute_query(current_year_sql)
         if hasattr(cy_result, 'to_dict'):
             cy_result = cy_result.to_dict('records')
@@ -329,7 +329,7 @@ async def reconcile_bank(bank_code: str):
                 SUM(CASE WHEN at_value > 0 THEN at_value ELSE 0 END) AS receipts_pence,
                 SUM(CASE WHEN at_value < 0 THEN ABS(at_value) ELSE 0 END) AS payments_pence,
                 SUM(at_value) AS net_pence
-            FROM atran
+            FROM atran WITH (NOLOCK)
             WHERE at_acnt = '{bank_code}'
               AND YEAR(at_pstdate) = {current_year}
         """
@@ -354,7 +354,7 @@ async def reconcile_bank(bank_code: str):
                 COUNT(DISTINCT at_entry) AS entry_count,
                 COUNT(*) AS transaction_count,
                 SUM(at_value) AS net_pence
-            FROM atran
+            FROM atran WITH (NOLOCK)
             WHERE at_acnt = '{bank_code}'
         """
         cb_all_result = sql_connector.execute_query(cb_all_sql)
@@ -378,7 +378,7 @@ async def reconcile_bank(bank_code: str):
 
         # ========== NOMINAL LEDGER ==========
         # Get the nominal ledger balance for this bank account
-        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran"
+        current_year_sql = "SELECT MAX(nt_year) AS current_year FROM ntran WITH (NOLOCK)"
         cy_result = sql_connector.execute_query(current_year_sql)
         if hasattr(cy_result, 'to_dict'):
             cy_result = cy_result.to_dict('records')
@@ -387,7 +387,7 @@ async def reconcile_bank(bank_code: str):
         # Get account details from nacnt
         nacnt_sql = f"""
             SELECT na_acnt, RTRIM(na_desc) AS description, na_ytddr, na_ytdcr, na_prydr, na_prycr
-            FROM nacnt
+            FROM nacnt WITH (NOLOCK)
             WHERE na_acnt = '{bank_code}'
         """
         nacnt_result = sql_connector.execute_query(nacnt_sql)
@@ -408,7 +408,7 @@ async def reconcile_bank(bank_code: str):
                     SUM(CASE WHEN nt_value > 0 THEN nt_value ELSE 0 END) AS debits,
                     SUM(CASE WHEN nt_value < 0 THEN ABS(nt_value) ELSE 0 END) AS credits,
                     SUM(nt_value) AS net
-                FROM ntran
+                FROM ntran WITH (NOLOCK)
                 WHERE nt_acnt = '{bank_code}' AND nt_year = {current_year}
             """
             ntran_result = sql_connector.execute_query(ntran_sql)
@@ -469,7 +469,7 @@ async def reconcile_bank(bank_code: str):
                 ax_tref AS reference,
                 ax_comment AS comment,
                 ax_done AS status
-            FROM anoml
+            FROM anoml WITH (NOLOCK)
             WHERE ax_nacnt = '{bank_code}' AND (ax_done <> 'Y' OR ax_done IS NULL)
             ORDER BY ax_date DESC
         """
@@ -486,7 +486,7 @@ async def reconcile_bank(bank_code: str):
                 CASE WHEN ax_done = 'Y' THEN 'Posted' ELSE 'Pending' END AS status,
                 COUNT(*) AS count,
                 SUM(ax_value) AS total
-            FROM anoml
+            FROM anoml WITH (NOLOCK)
             WHERE ax_nacnt = '{bank_code}'
             GROUP BY CASE WHEN ax_done = 'Y' THEN 'Posted' ELSE 'Pending' END
         """

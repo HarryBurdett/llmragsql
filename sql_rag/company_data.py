@@ -263,6 +263,47 @@ def get_current_db_path(db_name: str) -> Optional[Path]:
     return get_company_db_path(_current_company_id, db_name)
 
 
+def get_company_from_email(default: Optional[str] = None) -> Optional[str]:
+    """
+    Resolve the per-company outbound email address.
+
+    Reads in this order:
+      1. The company's `config.ini` `[email] from_address` setting.
+      2. The company's `core_settings.json` `from_email` field (if present).
+      3. The provided default (e.g. for non-multi-tenant fallbacks).
+
+    Earlier code hardcoded 'intsys@wimbledoncloud.net' at multiple
+    sites — broken for any non-intsys customer. Audit 2026-05-05
+    Suppliers F13 / cross-cutting hardcoding rule.
+    """
+    # Try config.ini
+    try:
+        import configparser
+        config_path = Path(__file__).parent.parent / 'config.ini'
+        if config_path.exists():
+            cfg = configparser.ConfigParser()
+            cfg.read(str(config_path))
+            if cfg.has_option('email', 'from_address'):
+                value = cfg.get('email', 'from_address').strip()
+                if value:
+                    return value
+    except Exception:
+        pass
+    # Try per-company core_settings.json
+    try:
+        if _current_company_id is not None:
+            settings_path = get_company_data_dir(_current_company_id) / 'core_settings.json'
+            if settings_path.exists():
+                import json as _json
+                data = _json.loads(settings_path.read_text())
+                value = (data or {}).get('from_email') or (data or {}).get('from_address')
+                if value and isinstance(value, str) and value.strip():
+                    return value.strip()
+    except Exception:
+        pass
+    return default
+
+
 def _get_root_db_owner() -> Optional[str]:
     """
     Determine which company originally owned the root-level databases.

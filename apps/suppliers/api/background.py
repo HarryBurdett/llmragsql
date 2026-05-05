@@ -615,7 +615,11 @@ def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_a
         smtp_port = int(app_config.get('email', 'smtp_port', fallback='587')) if app_config else 587
         smtp_user = app_config.get('email', 'smtp_username', fallback='') if app_config else ''
         smtp_pass = app_config.get('email', 'smtp_password', fallback='') if app_config else ''
-        from_email = app_config.get('email', 'from_address', fallback='intsys@wimbledoncloud.net') if app_config else ''
+        from sql_rag.company_data import get_company_from_email
+        from_email = (
+            app_config.get('email', 'from_address', fallback=None)
+            if app_config else None
+        ) or get_company_from_email(default='intsys@wimbledoncloud.net') or ''
 
         if not smtp_server or not smtp_user:
             logger.debug("SMTP not configured, skipping acknowledgement")

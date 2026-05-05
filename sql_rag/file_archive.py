@@ -15,8 +15,39 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Base paths
-DOWNLOADS_BASE = Path("/Users/maccb/Downloads")
+
+def _resolve_downloads_base() -> Path:
+    """Resolve the per-company downloads base path.
+
+    Order of precedence:
+      1. Per-company `bank_statements_base_folder` setting (canonical
+         location for production deployments).
+      2. Environment override `SQL_RAG_DOWNLOADS_BASE`.
+      3. ~/Downloads (cross-platform fallback for dev).
+
+    Earlier code hardcoded /Users/maccb/Downloads — broken on every
+    non-developer machine, fixed 2026-05-05 per cross-cutting audit F8.
+    """
+    # Per-company settings (preferred for prod).
+    try:
+        from sql_rag.company_data import _load_company_settings  # type: ignore
+        settings = _load_company_settings() or {}
+        configured = settings.get('bank_statements_base_folder')
+        if configured:
+            return Path(configured)
+    except Exception:
+        pass
+    env = os.environ.get('SQL_RAG_DOWNLOADS_BASE')
+    if env:
+        return Path(env)
+    return Path.home() / 'Downloads'
+
+
+# Base paths — resolved on first import. Routes that need the per-company
+# value MUST call _resolve_downloads_base() at request time rather than
+# relying on this module-level value, since the active company can change
+# between requests under multi-tenancy.
+DOWNLOADS_BASE = _resolve_downloads_base()
 ARCHIVE_LOG_FILE = DOWNLOADS_BASE / "archive_log.json"
 
 # Import type configurations

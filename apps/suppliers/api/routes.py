@@ -57,7 +57,7 @@ def _run_migrations(db_path: Path):
 
 def _get_db_path() -> Path:
     """Get the supplier statements database path for the current company."""
-    from sql_rag.company_data import get_current_db_path
+    from sql_rag.company_data import get_current_db_path, get_company_from_email
     return get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
 
 
@@ -1081,7 +1081,7 @@ async def send_query_reminder(query_id: int):
                         "to": recipient_email,
                         "subject": email_subject,
                         "body": email_body,
-                        "from_email": "intsys@wimbledoncloud.net"
+                        "from_email": get_company_from_email(default="intsys@wimbledoncloud.net")
                     },
                     timeout=30.0
                 )
@@ -1766,7 +1766,7 @@ async def scan_supplier_changes():
                                         "to": recipient,
                                         "subject": f"SECURITY ALERT: {len(bank_change_suppliers)} Supplier Bank Detail Change(s)",
                                         "body": alert_body,
-                                        "from_email": "intsys@wimbledoncloud.net"
+                                        "from_email": get_company_from_email(default="intsys@wimbledoncloud.net")
                                     },
                                     timeout=30.0
                                 )
@@ -2387,7 +2387,7 @@ async def approve_supplier_statement(statement_id: int, request: ApproveWithBody
                     "to": recipient_email,
                     "subject": email_subject,
                     "body": response_text,
-                    "from_email": "intsys@wimbledoncloud.net"
+                    "from_email": get_company_from_email(default="intsys@wimbledoncloud.net")
                 }
                 # Attach the original statement PDF if available
                 pdf_path = stmt.get('pdf_path')
@@ -2561,7 +2561,7 @@ async def acknowledge_supplier_statement(statement_id: int):
                         "to": recipient_email,
                         "subject": email_subject,
                         "body": ack_body,
-                        "from_email": "intsys@wimbledoncloud.net"
+                        "from_email": get_company_from_email(default="intsys@wimbledoncloud.net")
                     },
                     timeout=30.0
                 )
@@ -2752,7 +2752,7 @@ async def bulk_approve_statements(body: BulkApproveRequest):
                                 "to": recipient_email,
                                 "subject": email_subject,
                                 "body": response_text,
-                                "from_email": "intsys@wimbledoncloud.net"
+                                "from_email": get_company_from_email(default="intsys@wimbledoncloud.net")
                             },
                             timeout=30.0
                         )
@@ -3452,7 +3452,7 @@ async def process_supplier_statement_email(email_id: int):
 
                         msg = MIMEMultipart('alternative')
                         msg['Subject'] = ack_subject
-                        msg['From'] = 'intsys@wimbledoncloud.net'
+                        msg['From'] = get_company_from_email(default='intsys@wimbledoncloud.net')
                         msg['To'] = contact_email
                         msg.attach(MIMEText(ack_body, 'html'))
 
