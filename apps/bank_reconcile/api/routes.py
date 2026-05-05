@@ -7566,33 +7566,17 @@ async def scan_all_banks_for_statements(
                 key=lambda s: (s.get('period_start') or '9999', s.get('opening_balance') or 0))
 
         # --- Step 5: Sort and finalize each bank's statements ---
-        # First: fill in missing opening balances from cache for any statement
-        # that was matched by folder name but not extracted
+        # F9 wedge: shared chain-ordering helpers in
+        # apps/bank_reconcile/logic/scan_chain_ordering.py.
+        from apps.bank_reconcile.logic.scan_chain_ordering import (
+            fill_missing_balances_from_cache,
+            sort_statements_by_chain,
+            filter_fully_reconciled_statements,
+        )
+
+        # First: fill in missing opening balances from cache
         for code, bank in all_banks.items():
-            for stmt in bank.get('statements', []):
-                if stmt.get('opening_balance') is None and stmt.get('file_path'):
-                    try:
-                        from sql_rag.pdf_extraction_cache import get_extraction_cache
-                        import hashlib
-                        fp = Path(stmt['file_path'])
-                        if fp.exists():
-                            content = fp.read_bytes()
-                            ph = hashlib.sha256(content).hexdigest()
-                            cache = get_extraction_cache()
-                            cached = cache.get(ph)
-                            if cached:
-                                ci, _ = cached
-                                if ci.get('opening_balance') is not None:
-                                    stmt['opening_balance'] = float(ci['opening_balance']) if ci['opening_balance'] else None
-                                if ci.get('closing_balance') is not None:
-                                    stmt['closing_balance'] = float(ci['closing_balance']) if ci['closing_balance'] else None
-                                if ci.get('period_start'):
-                                    stmt['period_start'] = ci['period_start']
-                                if ci.get('period_end'):
-                                    stmt['period_end'] = ci['period_end']
-                                logger.info(f"Step 5: filled missing data from cache for {stmt.get('filename')} — open={stmt.get('opening_balance')}")
-                    except Exception as e:
-                        logger.debug(f"Step 5: cache lookup failed for {stmt.get('filename')}: {e}")
+            fill_missing_balances_from_cache(bank.get('statements', []))
 
         banks_with_statements = {}
         total_statements = 0
@@ -7603,94 +7587,11 @@ async def scan_all_banks_for_statements(
             if not stmts:
                 continue
 
-            # Sort statements in sequential import order by chaining
-            # opening/closing balances starting from reconciled balance
             rec_bal = bank.get('reconciled_balance')
-            if rec_bal is not None and len(stmts) > 1:
-                ordered = []
-                remaining = list(stmts)
-                current_bal = rec_bal
-                while remaining:
-                    # Find statement whose opening balance matches current_bal
-                    best_idx = None
-                    for i, s in enumerate(remaining):
-                        opening = s.get('opening_balance')
-                        if opening is not None and abs(opening - current_bal) <= 0.01:
-                            best_idx = i
-                            break
-                    if best_idx is not None:
-                        picked = remaining.pop(best_idx)
-                        ordered.append(picked)
-                        closing = picked.get('closing_balance')
-                        current_bal = closing if closing is not None else current_bal
-                    else:
-                        # No exact match — append remaining sorted by opening balance
-                        remaining.sort(key=lambda s: (s.get('opening_balance') or float('inf')))
-                        ordered.extend(remaining)
-                        break
-                stmts = ordered
-            else:
-                stmts.sort(key=lambda s: (0 if s.get('opening_balance') is not None else 1, s.get('opening_balance') or 0, s.get('sort_key', (9999,))))
-
-            # Filter out statements that are already fully reconciled per
-            # check_period_reconciled — the single source of truth that
-            # combines historical-boundary match + period-aware aentry
-            # check. See sql_rag/period_reconciliation.py.
-            if rec_bal is not None and len(stmts) > 0:
-                from sql_rag.period_reconciliation import (
-                    check_period_reconciled,
-                    PeriodReconciliationStatus,
-                )
-                from sql_rag.period_reconciliation_se import OperaSEDataSource
-                from datetime import date as _date_type, datetime as _dt
-
-                ds = OperaSEDataSource(sql_connector) if sql_connector else None
-
-                def _to_date(v):
-                    if v is None:
-                        return None
-                    if isinstance(v, _date_type) and not isinstance(v, _dt):
-                        return v
-                    if isinstance(v, _dt):
-                        return v.date()
-                    if isinstance(v, str):
-                        try:
-                            return _dt.fromisoformat(v.replace('Z', '+00:00')).date()
-                        except ValueError:
-                            try:
-                                return _date_type.fromisoformat(v[:10])
-                            except ValueError:
-                                return None
-                    return None
-
-                chained = []
-                unchained = []
-                for s in stmts:
-                    if ds is None or rec_bal is None:
-                        unchained.append(s)
-                        continue
-                    result = check_period_reconciled(
-                        data_source=ds,
-                        bank_code=code,
-                        period_start=_to_date(s.get('period_start')),
-                        period_end=_to_date(s.get('period_end')),
-                        statement_closing=s.get('closing_balance'),
-                        current_rec_bal=rec_bal,
-                    )
-                    if result.status is PeriodReconciliationStatus.FULLY_RECONCILED:
-                        chained.append(s)  # done — will be filtered out below
-                        logger.info(
-                            f"Step 5 chain: filtering {s.get('filename','?')} — "
-                            f"{result.reason}"
-                        )
-                    else:
-                        unchained.append(s)
-
-                # `chained` is the set we hide; `unchained` we keep
-                stmts = unchained
-                logger.info(
-                    f"Step 5 chain: {code} chained={len(chained)} unchained={len(unchained)}"
-                )
+            stmts = sort_statements_by_chain(stmts, rec_bal)
+            stmts = filter_fully_reconciled_statements(
+                stmts, sql_connector, code, rec_bal,
+            )
 
             bank['statements'] = stmts
             logger.info(f"Step 5 final: {code} = {len(stmts)} statements")

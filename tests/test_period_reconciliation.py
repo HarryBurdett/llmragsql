@@ -415,24 +415,34 @@ def test_unknown_when_current_rec_bal_is_none():
 
 
 def test_step_5_chain_filter_uses_function():
-    """The Step 5 chain filter must also delegate the
-    'is this period reconciled?' question to the function.
+    """The Step 5 chain filter must delegate the 'is this period
+    reconciled?' question to check_period_reconciled.
+
+    Audit cross-cutting F9: post-refactor the Step 5 chain filter
+    lives in apps/bank_reconcile/logic/scan_chain_ordering.py
+    (filter_fully_reconciled_statements). Total call sites across
+    the routes file + that helper module must be ≥ 3.
     """
     from pathlib import Path
-    routes_path = Path(__file__).resolve().parent.parent / "apps" / "bank_reconcile" / "api" / "routes.py"
+    repo = Path(__file__).resolve().parent.parent
+    routes_path = repo / "apps" / "bank_reconcile" / "api" / "routes.py"
+    helper_path = repo / "apps" / "bank_reconcile" / "logic" / "scan_chain_ordering.py"
     src = routes_path.read_text(encoding='utf-8')
+    helper_src = helper_path.read_text(encoding='utf-8') if helper_path.exists() else ""
 
-    # After this task, ≥3 call sites total
-    n = src.count("check_period_reconciled(")
+    n = src.count("check_period_reconciled(") + helper_src.count("check_period_reconciled(")
     assert n >= 3, (
-        f"Expected ≥3 call sites of check_period_reconciled; found {n}. "
-        "Step 5 chain filter must also delegate."
+        f"Expected ≥3 call sites of check_period_reconciled across "
+        f"routes.py + scan_chain_ordering.py; found {n}. The Step 5 "
+        f"chain filter must delegate to check_period_reconciled."
     )
 
-    # The chain section's inline historical-recbals query must be gone
-    chain_start = src.find("# Pre-compute historical batch boundary balances for this bank")
+    # The Step 5 chain section in routes.py must NOT inline its own
+    # historical-recbals query — it must delegate (either inline to
+    # check_period_reconciled or to the F9 helper).
+    chain_start = src.find("Step 5 chain")
     if chain_start == -1:
-        chain_start = src.find("Step 5 chain")
+        chain_start = src.find("# --- Step 5: Sort and finalize")
     assert chain_start != -1, "Step 5 chain section must be findable"
 
     chain_end = src.find("bank['statements'] = stmts", chain_start)
@@ -440,6 +450,7 @@ def test_step_5_chain_filter_uses_function():
         chain_end = chain_start + 5000
     section = src[chain_start:chain_end]
     assert "SELECT DISTINCT ae_recbal" not in section, (
-        "Step 5 chain section should no longer issue its own historical-"
-        "recbals query — delegate to check_period_reconciled"
+        "Step 5 chain section should not inline a historical-recbals "
+        "query — delegate to check_period_reconciled (via the F9 "
+        "filter_fully_reconciled_statements helper)."
     )
