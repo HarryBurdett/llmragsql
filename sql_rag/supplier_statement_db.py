@@ -144,6 +144,19 @@ class SupplierStatementDB:
             cursor.execute("SELECT status FROM statement_lines LIMIT 1")
         except sqlite3.OperationalError:
             cursor.execute("ALTER TABLE statement_lines ADD COLUMN status TEXT")
+        # Migration: add reminder tracking columns
+        try:
+            cursor.execute("SELECT reminder_count FROM statement_lines LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE statement_lines ADD COLUMN reminder_count INTEGER DEFAULT 0")
+        try:
+            cursor.execute("SELECT last_reminder_at FROM statement_lines LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE statement_lines ADD COLUMN last_reminder_at DATETIME")
+        try:
+            cursor.execute("SELECT escalated_at FROM statement_lines LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE statement_lines ADD COLUMN escalated_at DATETIME")
 
         # Approved sender emails per supplier
         cursor.execute("""
@@ -876,10 +889,28 @@ class SupplierStatementDB:
         return result_id
 
     def delete_contact(self, contact_id: int):
-        """Delete a contact extension."""
+        """Delete a contact extension by local SQLite row id."""
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM supplier_contacts_ext WHERE id = ?", (contact_id,))
+        conn.commit()
+        conn.close()
+
+    def delete_contact_by_zcontact_id(self, zcontact_id: str):
+        """Delete a contact extension keyed on the Opera zcontacts.zc_id
+        rather than the local SQLite row id.
+
+        Used by the Opera 3 contact-delete endpoint after the Write
+        Agent has removed the row from zcontacts. zcontact_id is the
+        Opera-side identifier (string for safety with Opera 3 ID
+        formats, even though SE stores it as INTEGER).
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM supplier_contacts_ext WHERE zcontact_id = ?",
+            (str(zcontact_id),),
+        )
         conn.commit()
         conn.close()
 

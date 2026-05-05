@@ -86,13 +86,17 @@ class GoCardlessClient:
     LIVE_URL = "https://api.gocardless.com"
     API_VERSION = "2015-07-06"
 
-    def __init__(self, access_token: str, sandbox: bool = False):
+    def __init__(self, access_token: str, sandbox: bool = True):
         """
-        Initialize GoCardless client
+        Initialize GoCardless client.
 
         Args:
             access_token: GoCardless API access token
-            sandbox: Use sandbox environment (default: False for live)
+            sandbox: Use sandbox environment (default: True — live calls
+                must be opted in explicitly per MEMORY.md "GoCardless: DO
+                NOT make live API requests"). Audit 2026-05-05 GoCardless
+                F6 found the previous default of False risked accidental
+                live calls in test/dev environments.
         """
         self.access_token = access_token
         self.base_url = self.SANDBOX_URL if sandbox else self.LIVE_URL
@@ -866,7 +870,10 @@ class GoCardlessPartnerClient:
     SANDBOX_API_URL = "https://api-sandbox.gocardless.com"
     LIVE_API_URL = "https://api.gocardless.com"
 
-    def __init__(self, client_id: str, client_secret: str, sandbox: bool = False):
+    def __init__(self, client_id: str, client_secret: str, sandbox: bool = True):
+        # sandbox default is True per MEMORY.md "GoCardless: DO NOT make
+        # live API requests". Live mode must be opted in by callers
+        # passing sandbox=False explicitly. Audit 2026-05-05 GoCardless F6.
         self.client_id = client_id
         self.client_secret = client_secret
         self.sandbox = sandbox

@@ -528,10 +528,9 @@ async def opera3_aged_creditors_summary(
         summary = _empty_buckets()
 
         for rec in ptran_records:
-            trtype = _o3_get_str(rec, "pt_trtype")
-            if balance == 0:
-                continue
-
+            # Read balance FIRST (the original code referenced `balance`
+            # before assigning it — NameError on every row, audit
+            # 2026-05-05 Suppliers F7).
             balance = _o3_get_num(rec, "pt_trbal")
             if balance == 0:
                 continue
@@ -623,10 +622,9 @@ async def opera3_aged_creditors_trend(
         # Filter to relevant records
         filtered_records: List[Dict[str, Any]] = []
         for rec in ptran_records:
-            trtype = _o3_get_str(rec, "pt_trtype")
-            if balance == 0:
-                continue
-
+            # Read balance FIRST (the original code referenced `balance`
+            # before assigning it — NameError on every row, audit
+            # 2026-05-05 Suppliers F7).
             balance = _o3_get_num(rec, "pt_trbal")
             if balance == 0:
                 continue
@@ -728,10 +726,9 @@ async def opera3_aged_creditors_detail(
             if rec_account != account.upper():
                 continue
 
-            trtype = _o3_get_str(rec, "pt_trtype")
-            if balance == 0:
-                continue
-
+            # Read balance FIRST (the original code referenced `balance`
+            # before assigning it — NameError on every row, audit
+            # 2026-05-05 Suppliers F7).
             balance = _o3_get_num(rec, "pt_trbal")
             if balance == 0:
                 continue

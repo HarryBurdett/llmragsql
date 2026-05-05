@@ -4002,8 +4002,11 @@ class Opera3FoxProImport:
                             'at_job': '        ',
                         })
 
-                    tables_updated.add('aentry')
-                    tables_updated.add('atran')
+                    # NOTE: do NOT call tables_updated.add('aentry')/add('atran') here.
+                    # That call site pre-dated the tables_updated initialisation at
+                    # line ~4104 and would NameError on every fees-bearing batch
+                    # (audit 2026-05-05 GoCardless F1). 'aentry' and 'atran' are
+                    # already in the seed list at line 4104; nothing to add.
                     logger.debug(f"Created separate aentry/atran for GoCardless fees: {fees_entry_number}")
 
                     # Update nbank balance (GoCardless fees decrease bank) - ALWAYS when atran created
