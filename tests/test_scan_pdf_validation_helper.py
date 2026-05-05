@@ -372,15 +372,15 @@ def test_chain_match_takes_priority_over_below_reconciled():
 # ====================================================================
 
 
-def test_attachment_updates_cached_omits_extraction_status():
-    """Cache hit must NOT add extraction_status to the dict (preserves
-    asymmetry the SE scan-emails handler had pre-refactor)."""
+def test_attachment_updates_cached_includes_extraction_status():
+    """Cache hit sets extraction_status='cached' for UI consistency
+    across all four scan endpoints (post-F9 harmonisation)."""
     info = StatementInfoData(
         opening_balance=100.0, closing_balance=200.0,
         period_start='2026-04-01', extraction_status='cached',
     )
     upd = _info_to_attachment_updates(info)
-    assert 'extraction_status' not in upd
+    assert upd['extraction_status'] == 'cached'
     assert upd['period_start'] == '2026-04-01'
     assert upd['opening_balance'] == 100.0
     assert upd['closing_balance'] == 200.0

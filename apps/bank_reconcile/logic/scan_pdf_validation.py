@@ -382,7 +382,11 @@ def _info_to_attachment_updates(info: StatementInfoData) -> Dict[str, Any]:
     }
     if info.opening_balance is not None:
         updates['opening_balance'] = info.opening_balance
-    if info.extraction_status in ('extracted', 'pending_extraction', 'failed'):
+    # Always include extraction_status so downstream UIs can render a
+    # consistent cell across all four scan endpoints. Pre-F9, three of
+    # the four handlers omitted it on cache hit and one (scan-all-banks)
+    # set 'cached'; the harmonised helper aligns on the latter.
+    if info.extraction_status:
         updates['extraction_status'] = info.extraction_status
     if info.extraction_failure_reason is not None:
         updates['extraction_failure_reason'] = info.extraction_failure_reason

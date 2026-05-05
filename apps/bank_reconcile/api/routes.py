@@ -5775,55 +5775,29 @@ async def scan_folder_for_bank_statements(
                 try:
                     with open(str(file_path), 'rb') as f:
                         content_bytes = f.read()
-                    pdf_hash = scan_cache.hash_pdf(content_bytes)
-                    cached = scan_cache.get(pdf_hash)
 
-                    info_data = None
-                    if cached:
-                        info_data, _ = cached
-                        logger.info(f"Scan cache HIT for {filename}")
-                    elif not extract_on_miss:
-                        # Audit F8 opt-in: caller asked for non-blocking
-                        # scan. Mark pending_extraction; do NOT call
-                        # Gemini.
-                        logger.info(f"Scan cache MISS for {filename} — extract_on_miss=False, deferring extraction")
-                        stmt_entry['extraction_status'] = 'pending_extraction'
-                        stmt_entry['status'] = 'pending_extraction'
-                    else:
-                        # Cache miss — run lightweight extraction to get balances/bank info
-                        # This uses Gemini but only asks for header info, not transactions
-                        logger.info(f"Scan cache MISS for {filename} — running full extraction")
-                        try:
-                            from sql_rag.statement_reconcile import StatementReconciler
-                            reconciler = StatementReconciler(
-                                sql_connector,
-                                gemini_api_key=_load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
-                            )
-                            stmt_info_result, _ = reconciler.extract_transactions_from_pdf(str(file_path))
-                            info_data = {
-                                'opening_balance': stmt_info_result.opening_balance,
-                                'closing_balance': stmt_info_result.closing_balance,
-                                'period_start': stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None,
-                                'period_end': stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None,
-                                'bank_name': stmt_info_result.bank_name,
-                                'account_number': stmt_info_result.account_number,
-                                'sort_code': stmt_info_result.sort_code,
-                            }
-                        except Exception as ex:
-                            logger.warning(f"Full extraction failed for {filename}: {ex}")
+                    # F9 wedge: shared cache-lookup-or-extract helper.
+                    from apps.bank_reconcile.logic.scan_pdf_validation import (
+                        get_statement_info, _info_to_attachment_updates,
+                    )
+                    info = get_statement_info(
+                        content_bytes=content_bytes,
+                        filename=filename,
+                        cache=scan_cache,
+                        sql_connector=sql_connector,
+                        company_settings=_load_company_settings(),
+                        config=config,
+                        extract_on_miss=extract_on_miss,
+                    )
+                    # Apply field updates (period/bank/sort/balances/status)
+                    for _k, _v in _info_to_attachment_updates(info).items():
+                        stmt_entry[_k] = _v
 
-                    if info_data:
-                        stmt_entry['opening_balance'] = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
-                        stmt_entry['closing_balance'] = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
-                        stmt_entry['period_start'] = info_data.get('period_start')
-                        stmt_entry['period_end'] = info_data.get('period_end')
-                        stmt_entry['bank_name'] = info_data.get('bank_name')
-                        stmt_entry['account_number'] = info_data.get('account_number')
-                        stmt_entry['sort_code'] = info_data.get('sort_code')
-
+                    have_info = info.extraction_status in ('cached', 'extracted')
+                    if have_info:
                         # Verify this PDF matches the selected bank
-                        stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
-                        stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                        stmt_sort = (info.sort_code or '').replace('-', '').replace(' ', '').strip()
+                        stmt_acct = (info.account_number or '').replace('-', '').replace(' ', '').strip()
 
                         if opera_sort_code and opera_account_number:
                             if stmt_sort and stmt_acct:
@@ -7218,107 +7192,58 @@ async def scan_all_banks_for_statements(
 
                                 if dl_result:
                                     content_bytes, _, _ = dl_result
-                                    pdf_hash = scan_cache.hash_pdf(content_bytes)
-                                    cached = scan_cache.get(pdf_hash)
 
-                                    if cached:
-                                        info_data, _ = cached
-                                        logger.info(f"Scan-all: cache HIT for {filename}")
-                                        opening = float(info_data.get('opening_balance')) if info_data.get('opening_balance') is not None else None
-                                        closing = float(info_data.get('closing_balance')) if info_data.get('closing_balance') is not None else None
-                                        stmt_entry['opening_balance'] = opening
-                                        stmt_entry['closing_balance'] = closing
-                                        stmt_entry['period_start'] = info_data.get('period_start')
-                                        stmt_entry['period_end'] = info_data.get('period_end')
-                                        stmt_entry['bank_name'] = info_data.get('bank_name')
-                                        stmt_entry['account_number'] = info_data.get('account_number')
-                                        stmt_entry['sort_code'] = info_data.get('sort_code')
+                                    # F9 wedge: use shared get_statement_info helper.
+                                    # scan-all-banks orchestration differs from
+                                    # SE/O3 scan-emails — this handler scans
+                                    # ACROSS banks, so the chain check is
+                                    # per-matched-bank and there's no
+                                    # opening_below_reconciled phase.
+                                    from apps.bank_reconcile.logic.scan_pdf_validation import (
+                                        get_statement_info, _info_to_attachment_updates,
+                                        check_chain_complete,
+                                    )
+                                    info = get_statement_info(
+                                        content_bytes=content_bytes,
+                                        filename=filename,
+                                        cache=scan_cache,
+                                        sql_connector=sql_connector,
+                                        company_settings=_load_company_settings(),
+                                        config=config,
+                                        extract_on_miss=extract_on_miss,
+                                    )
+                                    # Apply field updates
+                                    for _k, _v in _info_to_attachment_updates(info).items():
+                                        stmt_entry[_k] = _v
+                                    pdf_extracted = info.extraction_status in ('cached', 'extracted')
 
-                                        stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
-                                        stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
+                                    # Update matched_bank_code from extracted sort/account
+                                    if info.sort_code or info.account_number:
+                                        stmt_sort = (info.sort_code or '').replace('-', '').replace(' ', '').strip()
+                                        stmt_acct = (info.account_number or '').replace('-', '').replace(' ', '').strip()
                                         if stmt_sort and stmt_acct:
                                             matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct)) or matched_bank_code
 
-                                        if matched_bank_code:
-                                            # Chain check: if closing balance matches a reconciled opening,
-                                            # this statement has already been processed (a later reconciled
-                                            # statement adopted this one's closing as its own opening).
-                                            bank_rec_opens = reconciled_opening_balances.get(matched_bank_code, set())
-                                            chain_complete = closing is not None and round(closing, 2) in bank_rec_opens
-                                            if chain_complete:
-                                                stmt_entry['category'] = 'already_processed'
-                                                stmt_entry['status'] = 'already_processed'
-                                                logger.info(f"Scan-all: filtered {filename} — chain complete (closing £{closing:,.2f} matches reconciled opening)")
-                                            elif stmt_entry.get('status') != 'imported':
-                                                # Preserve upstream 'imported' (imported-but-not-reconciled);
-                                                # only mark fresh 'pending' rows as 'ready'.
-                                                stmt_entry['status'] = 'ready'
-
-                                        pdf_extracted = True
-                                        stmt_entry['extraction_status'] = 'cached'
-                                    elif not extract_on_miss:
-                                        # Audit F8 opt-in: non-blocking scan.
-                                        logger.info(f"Scan-all: cache MISS for {filename} — extract_on_miss=False, deferring extraction")
-                                        stmt_entry['extraction_status'] = 'pending_extraction'
-                                        stmt_entry['status'] = 'pending_extraction'
-                                    else:
-                                        # Cache miss — full AI extraction for balances and transactions
-                                        logger.info(f"Scan-all: cache MISS for {filename} — running full extraction")
-                                        try:
-                                            import tempfile
-                                            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                                                tmp.write(content_bytes)
-                                                tmp_path = tmp.name
-                                            try:
-                                                from sql_rag.statement_reconcile import StatementReconciler
-                                                reconciler = StatementReconciler(sql_connector, config=config)
-                                                stmt_info_result, _ = reconciler.extract_transactions_from_pdf(tmp_path)
-                                                opening = stmt_info_result.opening_balance
-                                                closing = stmt_info_result.closing_balance
-                                                stmt_entry['opening_balance'] = opening
-                                                stmt_entry['closing_balance'] = closing
-                                                stmt_entry['period_start'] = stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None
-                                                stmt_entry['period_end'] = stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None
-                                                stmt_entry['bank_name'] = stmt_info_result.bank_name
-                                                stmt_entry['account_number'] = stmt_info_result.account_number
-                                                stmt_entry['sort_code'] = stmt_info_result.sort_code
-
-                                                stmt_sort = (stmt_info_result.sort_code or '').replace('-', '').replace(' ', '').strip()
-                                                stmt_acct = (stmt_info_result.account_number or '').replace('-', '').replace(' ', '').strip()
-                                                if stmt_sort and stmt_acct:
-                                                    matched_bank_code = bank_lookup.get((stmt_sort, stmt_acct)) or matched_bank_code
-
-                                                pdf_extracted = True
-                                                stmt_entry['extraction_status'] = 'extracted'
-                                                logger.info(f"Scan-all: extracted {filename} — open={opening} close={closing}")
-                                            finally:
-                                                import os as _os2
-                                                try:
-                                                    _os2.unlink(tmp_path)
-                                                except Exception:
-                                                    pass
-                                        except RateLimitExhaustedError as ext_err:
-                                            logger.warning(
-                                                f"Scan-all: rate-limit exhausted extracting {filename}: {ext_err}"
-                                            )
-                                            stmt_entry['extraction_status'] = 'pending_extraction'
-                                            stmt_entry['extraction_failure_reason'] = 'rate_limit'
-                                            stmt_entry['status'] = 'pending_extraction'
-                                        except ExtractionFailedError as ext_err:
-                                            logger.warning(
-                                                f"Scan-all: extraction error for {filename}: {ext_err}"
-                                            )
-                                            stmt_entry['extraction_status'] = 'failed'
-                                            stmt_entry['extraction_failure_reason'] = 'extraction_error'
-                                            stmt_entry['status'] = 'pending_extraction'
-                                        except Exception as ext_err:
-                                            # Defensive: any other unexpected error
-                                            logger.warning(
-                                                f"Scan-all: unexpected extraction failure for {filename}: {ext_err}"
-                                            )
-                                            stmt_entry['extraction_status'] = 'failed'
-                                            stmt_entry['extraction_failure_reason'] = 'extraction_error'
-                                            stmt_entry['status'] = 'pending_extraction'
+                                    # Chain check: only fires for cache/extracted
+                                    # outcomes (skip pending/failed). Per-bank
+                                    # reconciled openings.
+                                    if pdf_extracted and matched_bank_code:
+                                        bank_rec_opens = reconciled_opening_balances.get(matched_bank_code, set())
+                                        chain = check_chain_complete(
+                                            opening_balance=info.opening_balance,
+                                            closing_balance=info.closing_balance,
+                                            effective_reconciled_balance=None,  # no below-reconciled check
+                                            fallback_reconciled_balance=None,
+                                            bank_rec_openings=bank_rec_opens,
+                                            filename=filename,
+                                        )
+                                        if chain.chain_complete:
+                                            stmt_entry['category'] = 'already_processed'
+                                            stmt_entry['status'] = 'already_processed'
+                                        elif stmt_entry.get('status') != 'imported':
+                                            # Preserve upstream 'imported' (imported-but-not-reconciled);
+                                            # only mark fresh 'pending' rows as 'ready'.
+                                            stmt_entry['status'] = 'ready'
                       except Exception as dl_err:
                         logger.warning(f"Scan-all: could not download {filename}: {dl_err}")
 
