@@ -271,13 +271,30 @@ def _ensure_company_context(company_id: str) -> None:
             except Exception:
                 pass
 
-        # 9. Bank-rec integrity check on the new company. Read-only with NOLOCK;
-        # logs WARNING per offending bank if any. Defensive: never blocks the
-        # context switch even if the DB is unreachable.
+        # 9. Bank-rec integrity check on the new company. Read-only;
+        # logs WARNING per offending bank if any. Defensive: never blocks
+        # the context switch even if the DB is unreachable. Routes to
+        # the Opera SE or Opera 3 implementation based on the active
+        # platform (audit 2026-05-05 cross-cutting F10 — Opera 3 mirror
+        # was missing).
         try:
-            from sql_rag.bank_rec_integrity import log_bank_rec_integrity
-            if company_id in _company_sql_connectors:
-                log_bank_rec_integrity(_company_sql_connectors[company_id], company_id=company_id)
+            opera_version = ''
+            try:
+                opera_version = (config.get('opera', 'version', fallback='') or '').strip().lower()
+            except Exception:
+                opera_version = ''
+            if opera_version == 'opera3':
+                from sql_rag.bank_rec_integrity_o3 import log_bank_rec_integrity_opera3
+                from sql_rag.opera3_foxpro import Opera3Reader
+                try:
+                    o3_path = config.get('opera3', 'base_path', fallback='') or r'C:\Apps\O3 Server VFP'
+                except Exception:
+                    o3_path = r'C:\Apps\O3 Server VFP'
+                log_bank_rec_integrity_opera3(Opera3Reader(o3_path), company_id=company_id)
+            else:
+                from sql_rag.bank_rec_integrity import log_bank_rec_integrity
+                if company_id in _company_sql_connectors:
+                    log_bank_rec_integrity(_company_sql_connectors[company_id], company_id=company_id)
         except Exception as _bri_err:
             logger.warning(f"Bank-rec integrity check skipped for {company_id}: {_bri_err}")
 
