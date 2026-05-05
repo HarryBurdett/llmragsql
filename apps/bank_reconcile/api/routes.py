@@ -4012,6 +4012,14 @@ async def import_bank_statement_from_pdf(
     """
     Import bank statement from PDF file.
     Uses the same import logic as import-from-email.
+
+    Audit cross-cutting F9: this handler is 757 lines. The natural
+    seams (PDF read, AI extraction, dedup, override merge, posting,
+    auto-allocate, auto-reconcile, audit-row write) parallel
+    import_bank_statement_from_email — refactor is deferred
+    pending shared seam extraction with full regression coverage,
+    per the user's safety constraint on the tested SE bank-rec
+    routine.
     """
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection")
@@ -6784,6 +6792,22 @@ async def scan_all_banks_for_statements(
 
     Groups results by bank, validates each statement against its bank's reconciled balance,
     and returns a dashboard-ready response. Also scans PDF files from local folders.
+
+    Audit cross-cutting F9: this handler is 1501 lines — the largest
+    in the codebase. The natural seams (in execution order) are:
+      1. Email sync trigger (with cooldown)
+      2. Bank discovery + lookup table build
+      3. Email scan + dedup
+      4. Folder scan + dedup
+      5. Per-statement validation: cache hit vs miss vs opt-in defer
+      6. Per-statement bank match (sort/account)
+      7. Per-statement chain check (already-processed)
+      8. Result assembly (group by bank, sort by chain order)
+    Refactor deferred — this is the single most-tested entry point in
+    the bank-rec routine and seam extraction must be done with full
+    regression coverage (multiple banks × multiple email accounts ×
+    folder + email mix). The F8 wedge above is a contained step in
+    that direction.
 
     Audit cross-cutting F8: when extract_on_miss=False, the cache-miss
     block does NOT call Gemini inline. Pending statements are returned
@@ -9586,6 +9610,21 @@ async def import_bank_statement_from_email(
     """
     Import bank statement from email attachment.
     Same request body format as import-with-overrides.
+
+    Audit cross-cutting F9: this handler is 826 lines.
+    The natural seams (in execution order) are:
+      1. PDF download from email + cache lookup
+      2. AI extraction (StatementReconciler.extract_transactions_from_pdf)
+      3. Already-posted dedup check (per row)
+      4. Override merge + selected_rows filter
+      5. Per-row Opera posting via OperaSQLImport
+      6. Optional auto-allocate phase
+      7. Optional auto-reconcile phase
+      8. bank_statement_imports audit row write
+    This refactor is deferred — the SE bank-rec routine is the user's
+    most-tested production path and any seam extraction must be done
+    with full regression coverage (multi-bank multi-statement test
+    fixtures, not in scope for the F9 wedge).
 
     Request body format:
     {

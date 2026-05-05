@@ -46,8 +46,22 @@ async def reconcile_creditors():
     """
     Reconcile Purchase Ledger (ptran) to Creditors Control Account (Nominal Ledger).
     Compares outstanding balances in ptran with the control account in nacnt/ntran.
+
+    Audit cross-cutting F9 (huge handler refactor): the sub-ledger
+    fetch phases (outstanding totals, breakdown by type, master
+    totals, master-vs-txn variance, transfer-file pending list,
+    transfer-file summary) are extracted into pure helpers in
+    apps.balance_check.logic.sub_ledger_reconcile so they can be
+    shared with reconcile_debtors. The control-account / NL
+    comparison phase still lives inline below — that's the next
+    natural seam.
     """
     from api.main import sql_connector
+    from apps.balance_check.logic.sub_ledger_reconcile import (
+        CREDITORS, fetch_outstanding, fetch_breakdown_by_type,
+        fetch_master_totals, fetch_master_txn_variance,
+        fetch_transfer_file_pending, fetch_transfer_file_summary,
+    )
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -67,165 +81,27 @@ async def reconcile_creditors():
             "control_account_used": creditors_control
         }
 
-        # ========== PURCHASE LEDGER (ptran) ==========
-        # Get outstanding transactions from purchase ledger
-        # Only include transactions for suppliers that still exist in pname (exclude deleted suppliers)
-        pl_outstanding_sql = """
-            SELECT
-                COUNT(*) AS transaction_count,
-                SUM(pt_trbal) AS total_outstanding
-            FROM ptran WITH (NOLOCK)
-            WHERE pt_trbal <> 0
-              AND RTRIM(pt_account) IN (SELECT RTRIM(pn_account) FROM pname WITH (NOLOCK))
-        """
-        pl_result = sql_connector.execute_query(pl_outstanding_sql)
-        if hasattr(pl_result, 'to_dict'):
-            pl_result = pl_result.to_dict('records')
-
-        pl_total = float(pl_result[0]['total_outstanding'] or 0) if pl_result else 0
-        pl_count = int(pl_result[0]['transaction_count'] or 0) if pl_result else 0
-
-        # Get breakdown by transaction type (only active suppliers)
-        pl_breakdown_sql = """
-            SELECT
-                pt_trtype AS type,
-                COUNT(*) AS count,
-                SUM(pt_trbal) AS total
-            FROM ptran WITH (NOLOCK)
-            WHERE pt_trbal <> 0
-              AND RTRIM(pt_account) IN (SELECT RTRIM(pn_account) FROM pname WITH (NOLOCK))
-            GROUP BY pt_trtype
-            ORDER BY pt_trtype
-        """
-        pl_breakdown = sql_connector.execute_query(pl_breakdown_sql)
-        if hasattr(pl_breakdown, 'to_dict'):
-            pl_breakdown = pl_breakdown.to_dict('records')
+        # ========== PURCHASE LEDGER (ptran) — phases extracted to helpers ==========
+        outstanding = fetch_outstanding(sql_connector, CREDITORS)
+        pl_total = outstanding['total_outstanding']
+        pl_count = outstanding['transaction_count']
 
         type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'P': 'Payments', 'B': 'Brought Forward'}
-        pl_by_type = []
-        for row in pl_breakdown or []:
-            pl_by_type.append({
-                "type": row['type'].strip() if row['type'] else 'Unknown',
-                "description": type_names.get(row['type'].strip(), row['type'].strip()) if row['type'] else 'Unknown',
-                "count": int(row['count'] or 0),
-                "total": round(float(row['total'] or 0), 2)
-            })
+        pl_by_type = fetch_breakdown_by_type(sql_connector, CREDITORS, type_names)
 
-        # Verify against supplier master (pname)
-        pname_sql = """
-            SELECT
-                COUNT(*) AS supplier_count,
-                SUM(pn_currbal) AS total_balance
-            FROM pname WITH (NOLOCK)
-            WHERE pn_currbal <> 0
-        """
-        pname_result = sql_connector.execute_query(pname_sql)
-        if hasattr(pname_result, 'to_dict'):
-            pname_result = pname_result.to_dict('records')
+        master = fetch_master_totals(sql_connector, CREDITORS)
+        pname_total = master['total_balance']
+        pname_count = master['count']
 
-        pname_total = float(pname_result[0]['total_balance'] or 0) if pname_result else 0
-        pname_count = int(pname_result[0]['supplier_count'] or 0) if pname_result else 0
+        supplier_balance_issues = fetch_master_txn_variance(sql_connector, CREDITORS)
 
-        # Detailed verification: Find suppliers where pn_currbal doesn't match SUM(pt_trbal)
-        balance_mismatch_sql = """
-            SELECT
-                p.pn_account AS account,
-                RTRIM(p.pn_name) AS name,
-                p.pn_currbal AS master_balance,
-                COALESCE(t.txn_balance, 0) AS transaction_balance,
-                p.pn_currbal - COALESCE(t.txn_balance, 0) AS variance
-            FROM pname p WITH (NOLOCK)
-            LEFT JOIN (
-                SELECT pt_account, SUM(pt_trbal) AS txn_balance
-                FROM ptran WITH (NOLOCK)
-                GROUP BY pt_account
-            ) t ON RTRIM(p.pn_account) = RTRIM(t.pt_account)
-            WHERE ABS(p.pn_currbal - COALESCE(t.txn_balance, 0)) >= 0.01
-            ORDER BY ABS(p.pn_currbal - COALESCE(t.txn_balance, 0)) DESC
-        """
-        try:
-            balance_mismatches = sql_connector.execute_query(balance_mismatch_sql)
-            if hasattr(balance_mismatches, 'to_dict'):
-                balance_mismatches = balance_mismatches.to_dict('records')
-        except Exception:
-            balance_mismatches = []
-
-        supplier_balance_issues = []
-        for row in balance_mismatches or []:
-            supplier_balance_issues.append({
-                "account": row['account'].strip() if row['account'] else '',
-                "name": row['name'] or '',
-                "master_balance": round(float(row['master_balance'] or 0), 2),
-                "transaction_balance": round(float(row['transaction_balance'] or 0), 2),
-                "variance": round(float(row['variance'] or 0), 2)
-            })
-
-        # ========== TRANSFER FILE (pnoml) ==========
-        # Check for transactions sitting in the transfer file waiting to post to NL
-        # px_done = 'Y' means posted, anything else means pending
-        pnoml_pending_sql = """
-            SELECT
-                px_nacnt AS nominal_account,
-                px_type AS type,
-                px_date AS date,
-                px_value AS value,
-                px_tref AS reference,
-                px_comment AS comment,
-                px_done AS status
-            FROM pnoml WITH (NOLOCK)
-            WHERE px_done <> 'Y' OR px_done IS NULL
-            ORDER BY px_date DESC
-        """
-        try:
-            pnoml_pending = sql_connector.execute_query(pnoml_pending_sql)
-            if hasattr(pnoml_pending, 'to_dict'):
-                pnoml_pending = pnoml_pending.to_dict('records')
-        except Exception:
-            pnoml_pending = []
-
-        # Count posted vs pending in transfer file
-        pnoml_summary_sql = """
-            SELECT
-                CASE WHEN px_done = 'Y' THEN 'Posted' ELSE 'Pending' END AS status,
-                COUNT(*) AS count,
-                SUM(px_value) AS total
-            FROM pnoml WITH (NOLOCK)
-            GROUP BY CASE WHEN px_done = 'Y' THEN 'Posted' ELSE 'Pending' END
-        """
-        try:
-            pnoml_summary = sql_connector.execute_query(pnoml_summary_sql)
-            if hasattr(pnoml_summary, 'to_dict'):
-                pnoml_summary = pnoml_summary.to_dict('records')
-        except Exception:
-            pnoml_summary = []
-
-        posted_count = 0
-        posted_total = 0
-        pending_count = 0
-        pending_total = 0
-        for row in pnoml_summary or []:
-            if row['status'] == 'Posted':
-                posted_count = int(row['count'] or 0)
-                posted_total = float(row['total'] or 0)
-            else:
-                pending_count = int(row['count'] or 0)
-                pending_total = float(row['total'] or 0)
-
-        # Build pending transactions list from transfer file
-        pending_transactions = []
-        for row in pnoml_pending or []:
-            tr_date = row['date']
-            if hasattr(tr_date, 'strftime'):
-                tr_date = tr_date.strftime('%Y-%m-%d')
-            value = float(row['value'] or 0)
-            pending_transactions.append({
-                "nominal_account": row['nominal_account'].strip() if row['nominal_account'] else '',
-                "type": row['type'].strip() if row['type'] else '',
-                "date": str(tr_date) if tr_date else '',
-                "value": round(value, 2),
-                "reference": row['reference'].strip() if row['reference'] else '',
-                "comment": row['comment'].strip() if row['comment'] else ''
-            })
+        # ========== TRANSFER FILE (pnoml) — phases extracted to helpers ==========
+        pending_transactions = fetch_transfer_file_pending(sql_connector, CREDITORS)
+        transfer_summary = fetch_transfer_file_summary(sql_connector, CREDITORS)
+        posted_count = transfer_summary['posted']['count']
+        posted_total = transfer_summary['posted']['total']
+        pending_count = transfer_summary['pending']['count']
+        pending_total = transfer_summary['pending']['total']
 
         reconciliation["purchase_ledger"] = {
             "source": "ptran (Purchase Ledger Transactions)",
@@ -885,8 +761,17 @@ async def reconcile_debtors():
     """
     Reconcile Sales Ledger (stran) to Debtors Control Account (Nominal Ledger).
     Compares outstanding balances in stran with the control account in nacnt/ntran.
+
+    Audit cross-cutting F9 (huge handler refactor): the sub-ledger
+    fetch phases share helpers with reconcile_creditors — see
+    apps.balance_check.logic.sub_ledger_reconcile.
     """
     from api.main import sql_connector
+    from apps.balance_check.logic.sub_ledger_reconcile import (
+        DEBTORS, fetch_outstanding, fetch_breakdown_by_type,
+        fetch_master_totals, fetch_master_txn_variance,
+        fetch_transfer_file_pending, fetch_transfer_file_summary,
+    )
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -906,166 +791,27 @@ async def reconcile_debtors():
             "control_account_used": debtors_control
         }
 
-        # ========== SALES LEDGER (stran) ==========
-        # Exclude orphan stran rows (account no longer in sname). Mirrors the
-        # equivalent filter on the Creditors check so both ledgers compare on
-        # the same population.
-        sl_outstanding_sql = """
-            SELECT
-                COUNT(*) AS transaction_count,
-                SUM(st_trbal) AS total_outstanding
-            FROM stran WITH (NOLOCK)
-            WHERE st_trbal <> 0
-              AND RTRIM(st_account) IN (SELECT RTRIM(sn_account) FROM sname WITH (NOLOCK))
-        """
-        sl_result = sql_connector.execute_query(sl_outstanding_sql)
-        if hasattr(sl_result, 'to_dict'):
-            sl_result = sl_result.to_dict('records')
-
-        sl_total = float(sl_result[0]['total_outstanding'] or 0) if sl_result else 0
-        sl_count = int(sl_result[0]['transaction_count'] or 0) if sl_result else 0
-
-        # Breakdown by type — same orphan filter.
-        sl_breakdown_sql = """
-            SELECT
-                st_trtype AS type,
-                COUNT(*) AS count,
-                SUM(st_trbal) AS total
-            FROM stran WITH (NOLOCK)
-            WHERE st_trbal <> 0
-              AND RTRIM(st_account) IN (SELECT RTRIM(sn_account) FROM sname WITH (NOLOCK))
-            GROUP BY st_trtype
-            ORDER BY st_trtype
-        """
-        sl_breakdown = sql_connector.execute_query(sl_breakdown_sql)
-        if hasattr(sl_breakdown, 'to_dict'):
-            sl_breakdown = sl_breakdown.to_dict('records')
+        # ========== SALES LEDGER (stran) — phases extracted to helpers ==========
+        outstanding = fetch_outstanding(sql_connector, DEBTORS)
+        sl_total = outstanding['total_outstanding']
+        sl_count = outstanding['transaction_count']
 
         type_names = {'I': 'Invoices', 'C': 'Credit Notes', 'R': 'Receipts', 'B': 'Brought Forward'}
-        sl_by_type = []
-        for row in sl_breakdown or []:
-            sl_by_type.append({
-                "type": row['type'].strip() if row['type'] else 'Unknown',
-                "description": type_names.get(row['type'].strip(), row['type'].strip()) if row['type'] else 'Unknown',
-                "count": int(row['count'] or 0),
-                "total": round(float(row['total'] or 0), 2)
-            })
+        sl_by_type = fetch_breakdown_by_type(sql_connector, DEBTORS, type_names)
 
-        # Verify against customer master (sname)
-        sname_sql = """
-            SELECT
-                COUNT(*) AS customer_count,
-                SUM(sn_currbal) AS total_balance
-            FROM sname WITH (NOLOCK)
-            WHERE sn_currbal <> 0
-        """
-        sname_result = sql_connector.execute_query(sname_sql)
-        if hasattr(sname_result, 'to_dict'):
-            sname_result = sname_result.to_dict('records')
+        master = fetch_master_totals(sql_connector, DEBTORS)
+        sname_total = master['total_balance']
+        sname_count = master['count']
 
-        sname_total = float(sname_result[0]['total_balance'] or 0) if sname_result else 0
-        sname_count = int(sname_result[0]['customer_count'] or 0) if sname_result else 0
+        customer_balance_issues = fetch_master_txn_variance(sql_connector, DEBTORS)
 
-        # Detailed verification: Find customers where sn_currbal doesn't match SUM(st_trbal)
-        cust_balance_mismatch_sql = """
-            SELECT
-                s.sn_account AS account,
-                RTRIM(s.sn_name) AS name,
-                s.sn_currbal AS master_balance,
-                COALESCE(t.txn_balance, 0) AS transaction_balance,
-                s.sn_currbal - COALESCE(t.txn_balance, 0) AS variance
-            FROM sname s WITH (NOLOCK)
-            LEFT JOIN (
-                SELECT st_account, SUM(st_trbal) AS txn_balance
-                FROM stran WITH (NOLOCK)
-                GROUP BY st_account
-            ) t ON RTRIM(s.sn_account) = RTRIM(t.st_account)
-            WHERE ABS(s.sn_currbal - COALESCE(t.txn_balance, 0)) >= 0.01
-            ORDER BY ABS(s.sn_currbal - COALESCE(t.txn_balance, 0)) DESC
-        """
-        try:
-            cust_balance_mismatches = sql_connector.execute_query(cust_balance_mismatch_sql)
-            if hasattr(cust_balance_mismatches, 'to_dict'):
-                cust_balance_mismatches = cust_balance_mismatches.to_dict('records')
-        except Exception:
-            cust_balance_mismatches = []
-
-        customer_balance_issues = []
-        for row in cust_balance_mismatches or []:
-            customer_balance_issues.append({
-                "account": row['account'].strip() if row['account'] else '',
-                "name": row['name'] or '',
-                "master_balance": round(float(row['master_balance'] or 0), 2),
-                "transaction_balance": round(float(row['transaction_balance'] or 0), 2),
-                "variance": round(float(row['variance'] or 0), 2)
-            })
-
-        # ========== TRANSFER FILE (snoml) ==========
-        # Check for transactions sitting in the transfer file waiting to post to NL
-        # sx_done = 'Y' means posted, anything else means pending
-        snoml_pending_sql = """
-            SELECT
-                sx_nacnt AS nominal_account,
-                sx_type AS type,
-                sx_date AS date,
-                sx_value AS value,
-                sx_tref AS reference,
-                sx_comment AS comment,
-                sx_done AS status
-            FROM snoml WITH (NOLOCK)
-            WHERE sx_done <> 'Y' OR sx_done IS NULL
-            ORDER BY sx_date DESC
-        """
-        try:
-            snoml_pending = sql_connector.execute_query(snoml_pending_sql)
-            if hasattr(snoml_pending, 'to_dict'):
-                snoml_pending = snoml_pending.to_dict('records')
-        except Exception:
-            snoml_pending = []
-
-        # Count posted vs pending in transfer file
-        snoml_summary_sql = """
-            SELECT
-                CASE WHEN sx_done = 'Y' THEN 'Posted' ELSE 'Pending' END AS status,
-                COUNT(*) AS count,
-                SUM(sx_value) AS total
-            FROM snoml WITH (NOLOCK)
-            GROUP BY CASE WHEN sx_done = 'Y' THEN 'Posted' ELSE 'Pending' END
-        """
-        try:
-            snoml_summary = sql_connector.execute_query(snoml_summary_sql)
-            if hasattr(snoml_summary, 'to_dict'):
-                snoml_summary = snoml_summary.to_dict('records')
-        except Exception:
-            snoml_summary = []
-
-        sl_posted_count = 0
-        sl_posted_total = 0
-        sl_pending_count = 0
-        sl_pending_total = 0
-        for row in snoml_summary or []:
-            if row['status'] == 'Posted':
-                sl_posted_count = int(row['count'] or 0)
-                sl_posted_total = float(row['total'] or 0)
-            else:
-                sl_pending_count = int(row['count'] or 0)
-                sl_pending_total = float(row['total'] or 0)
-
-        # Build pending transactions list from transfer file
-        sl_pending_transactions = []
-        for row in snoml_pending or []:
-            tr_date = row['date']
-            if hasattr(tr_date, 'strftime'):
-                tr_date = tr_date.strftime('%Y-%m-%d')
-            value = float(row['value'] or 0)
-            sl_pending_transactions.append({
-                "nominal_account": row['nominal_account'].strip() if row['nominal_account'] else '',
-                "type": row['type'].strip() if row['type'] else '',
-                "date": str(tr_date) if tr_date else '',
-                "value": round(value, 2),
-                "reference": row['reference'].strip() if row['reference'] else '',
-                "comment": row['comment'].strip() if row['comment'] else ''
-            })
+        # ========== TRANSFER FILE (snoml) — phases extracted to helpers ==========
+        sl_pending_transactions = fetch_transfer_file_pending(sql_connector, DEBTORS)
+        transfer_summary = fetch_transfer_file_summary(sql_connector, DEBTORS)
+        sl_posted_count = transfer_summary['posted']['count']
+        sl_posted_total = transfer_summary['posted']['total']
+        sl_pending_count = transfer_summary['pending']['count']
+        sl_pending_total = transfer_summary['pending']['total']
 
         reconciliation["sales_ledger"] = {
             "source": "stran (Sales Ledger Transactions)",
@@ -2525,6 +2271,18 @@ async def reconcile_vat():
     Reconcile VAT accounts - compare VAT liability in nominal ledger to VAT transactions.
     Enhanced for quarterly VAT tracking with uncommitted transactions from zvtran.
     Shows output VAT (sales), input VAT (purchases), and net liability for current quarter.
+
+    Audit cross-cutting F9: this handler is 661 lines. The natural
+    seams (in execution order) are:
+      1. Quarter detection (most recent zvtran date → fiscal quarter)
+      2. Output VAT fetch (from zvtran with nv_vattype='S')
+      3. Input VAT fetch (from zvtran with nv_vattype='P')
+      4. NL VAT account fetch (na_acnt LIKE '%VAT%')
+      5. Per-account ntran movement
+      6. Variance computation + reporting
+    Refactor deferred — share helper extraction with reconcile_creditors
+    and reconcile_debtors as the next iteration of the F9 wedge (the
+    NL-side phase is the common shape across all three handlers).
     """
     from api.main import sql_connector
     if not sql_connector:
