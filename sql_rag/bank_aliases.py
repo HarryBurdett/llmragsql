@@ -113,6 +113,36 @@ class BankAliasManager:
                 CREATE INDEX IF NOT EXISTS idx_bank_aliases_lookup
                 ON bank_import_aliases(ledger_type, bank_name, active)
             """)
+            # Migration: add bank_code column for per-bank alias scoping.
+            # Audit 2026-05-05 stages-1-2 F16. The unique constraint
+            # (bank_name, ledger_type) was global, so a name like "AMAZON"
+            # learned on the personal-card bank applied to every other
+            # bank too. Adding bank_code enables per-bank scoping while
+            # preserving backwards compatibility: legacy rows have
+            # bank_code='' (matches any bank); new rows save with the
+            # specific bank_code. The lookup tries bank-specific first
+            # then falls back to the global (legacy) row.
+            try:
+                cur = conn.execute("PRAGMA table_info(bank_import_aliases)")
+                cols = {row[1] for row in cur.fetchall()}
+                if 'bank_code' not in cols:
+                    conn.execute(
+                        "ALTER TABLE bank_import_aliases ADD COLUMN bank_code TEXT DEFAULT ''"
+                    )
+                    # Drop the old global unique index (if it exists as a
+                    # named index) and add a per-bank one.
+                    conn.execute("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS uniq_alias_per_bank
+                        ON bank_import_aliases(bank_name, ledger_type, bank_code)
+                    """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_bank_aliases_lookup_scoped
+                        ON bank_import_aliases(ledger_type, bank_name, bank_code, active)
+                    """)
+                    conn.commit()
+                    logger.info("Migrated bank_import_aliases: added bank_code column for per-bank scoping")
+            except Exception as _migr_err:
+                logger.warning(f"bank_code migration warning: {_migr_err}")
 
             # Additional tables for enhanced features
             # Match configuration per user/installation
@@ -238,13 +268,24 @@ class BankAliasManager:
         self._cache_loaded = False
         self._alias_cache = {}
 
-    def lookup_alias(self, bank_name: str, ledger_type: str) -> Optional[str]:
+    def lookup_alias(
+        self,
+        bank_name: str,
+        ledger_type: str,
+        bank_code: Optional[str] = None,
+    ) -> Optional[str]:
         """
         Look up an alias for a bank statement name.
 
         Args:
             bank_name: Name from bank statement
             ledger_type: 'S' for supplier, 'C' for customer
+            bank_code: Bank account code (e.g. 'BC010'). When provided,
+                a bank-scoped alias is preferred; falls back to the
+                global (legacy) alias if no bank-scoped row exists.
+                When None or empty, falls back to legacy behaviour
+                (any matching name regardless of bank). Audit
+                2026-05-05 stages-1-2 F16.
 
         Returns:
             Account code if alias exists, None otherwise
@@ -252,23 +293,52 @@ class BankAliasManager:
         if not bank_name or not ledger_type:
             return None
 
-        self._load_cache()
-
-        bank_name_upper = bank_name.strip().upper()
         ledger_type = ledger_type.strip().upper()
+        bank_name_clean = bank_name.strip()
+        bank_name_upper = bank_name_clean.upper()
+        bank_code_clean = (bank_code or '').strip()
 
+        # If bank_code is supplied, query the DB directly so we can
+        # prefer bank-scoped over global. This bypasses the legacy
+        # global cache (kept for backwards compatibility).
+        if bank_code_clean:
+            try:
+                conn = self._get_conn()
+                row = conn.execute(
+                    """
+                    SELECT account_code FROM bank_import_aliases
+                    WHERE UPPER(bank_name) = ?
+                      AND ledger_type = ?
+                      AND active = 1
+                      AND (bank_code = ? OR COALESCE(bank_code, '') = '')
+                    ORDER BY CASE WHEN bank_code = ? THEN 0 ELSE 1 END
+                    LIMIT 1
+                    """,
+                    (bank_name_upper, ledger_type, bank_code_clean, bank_code_clean),
+                ).fetchone()
+                if row:
+                    try:
+                        self._record_usage_async(bank_name_clean, ledger_type)
+                    except Exception:
+                        pass
+                    return row[0] if isinstance(row, tuple) else row['account_code']
+                return None
+            except Exception as exc:
+                logger.warning(f"bank-scoped alias lookup failed: {exc}")
+                # Fall through to legacy cache lookup so existing
+                # behaviour is preserved on any error.
+
+        # Legacy unscoped lookup — preserved for backwards compatibility
+        # and for callers that don't know the bank_code.
+        self._load_cache()
         if ledger_type not in self._alias_cache:
             return None
-
         account_code = self._alias_cache[ledger_type].get(bank_name_upper)
-
         if account_code:
-            # Record usage asynchronously (don't block lookup)
             try:
-                self._record_usage_async(bank_name, ledger_type)
+                self._record_usage_async(bank_name_clean, ledger_type)
             except Exception:
-                pass  # Don't fail lookup if usage recording fails
-
+                pass
         return account_code
 
     def _record_usage_async(self, bank_name: str, ledger_type: str) -> None:
@@ -317,7 +387,8 @@ class BankAliasManager:
     def save_alias(self, bank_name: str, ledger_type: str,
                    account_code: str, match_score: float,
                    account_name: Optional[str] = None,
-                   created_by: str = 'BANK_IMPORT') -> bool:
+                   created_by: str = 'BANK_IMPORT',
+                   bank_code: Optional[str] = None) -> bool:
         """
         Save a new alias after successful match.
 
@@ -330,6 +401,10 @@ class BankAliasManager:
             match_score: Score when alias was created (0-1)
             account_name: Optional cached account name
             created_by: User/system that created the alias
+            bank_code: Bank account code for per-bank scoping (audit
+                2026-05-05 stages-1-2 F16). Defaults to '' which
+                preserves the legacy global-scope behaviour for callers
+                that don't yet pass this argument.
 
         Returns:
             True if alias was saved, False otherwise
@@ -340,6 +415,7 @@ class BankAliasManager:
         bank_name = bank_name.strip()
         ledger_type = ledger_type.strip().upper()
         account_code = account_code.strip()
+        bank_code_clean = (bank_code or '').strip()
 
         if ledger_type not in ('S', 'C'):
             logger.error(f"Invalid ledger type: {ledger_type}")
@@ -348,35 +424,65 @@ class BankAliasManager:
         try:
             conn = self._get_conn()
 
-            # SQLite upsert using INSERT OR REPLACE
-            conn.execute("""
-                INSERT INTO bank_import_aliases
-                    (bank_name, ledger_type, account_code, account_name, match_score,
-                     created_by, last_used, use_count, active)
-                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 1, 1)
-                ON CONFLICT(bank_name, ledger_type) DO UPDATE SET
-                    account_code = excluded.account_code,
-                    account_name = excluded.account_name,
-                    match_score = excluded.match_score,
-                    last_used = datetime('now'),
-                    use_count = use_count + 1,
-                    active = 1
-            """, (
-                bank_name,
-                ledger_type,
-                account_code,
-                account_name[:35] if account_name else None,
-                round(match_score * 100, 2),  # Store as percentage
-                created_by
-            ))
+            # When a bank_code is supplied, scope the upsert to that
+            # bank using the new (bank_name, ledger_type, bank_code)
+            # unique index. When bank_code is empty, use the legacy
+            # (bank_name, ledger_type) constraint so existing call
+            # sites continue to work.
+            if bank_code_clean:
+                conn.execute("""
+                    INSERT INTO bank_import_aliases
+                        (bank_name, ledger_type, account_code, account_name,
+                         match_score, created_by, last_used, use_count, active,
+                         bank_code)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 1, 1, ?)
+                    ON CONFLICT(bank_name, ledger_type, bank_code) DO UPDATE SET
+                        account_code = excluded.account_code,
+                        account_name = excluded.account_name,
+                        match_score = excluded.match_score,
+                        last_used = datetime('now'),
+                        use_count = use_count + 1,
+                        active = 1
+                """, (
+                    bank_name, ledger_type, account_code,
+                    account_name[:35] if account_name else None,
+                    round(match_score * 100, 2),
+                    created_by,
+                    bank_code_clean,
+                ))
+            else:
+                conn.execute("""
+                    INSERT INTO bank_import_aliases
+                        (bank_name, ledger_type, account_code, account_name, match_score,
+                         created_by, last_used, use_count, active)
+                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 1, 1)
+                    ON CONFLICT(bank_name, ledger_type) DO UPDATE SET
+                        account_code = excluded.account_code,
+                        account_name = excluded.account_name,
+                        match_score = excluded.match_score,
+                        last_used = datetime('now'),
+                        use_count = use_count + 1,
+                        active = 1
+                """, (
+                    bank_name,
+                    ledger_type,
+                    account_code,
+                    account_name[:35] if account_name else None,
+                    round(match_score * 100, 2),
+                    created_by,
+                ))
             conn.commit()
 
-            # Update cache
+            # Update cache (legacy global cache only — bank-scoped
+            # rows are read direct from DB on lookup).
             self._load_cache()
             if ledger_type in self._alias_cache:
                 self._alias_cache[ledger_type][bank_name.upper()] = account_code
 
-            logger.info(f"Saved alias: '{bank_name}' -> {account_code} ({ledger_type})")
+            logger.info(
+                f"Saved alias: '{bank_name}' -> {account_code} ({ledger_type})"
+                f"{' [bank=' + bank_code_clean + ']' if bank_code_clean else ''}"
+            )
             return True
 
         except Exception as e:

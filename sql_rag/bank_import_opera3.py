@@ -881,11 +881,13 @@ class BankStatementMatcherOpera3:
         # Extract clean payee name from AI extraction descriptions
         clean_name = extract_payee_name_full(txn.name)
 
-        # Step 1: Check alias table first (fast path) — try both full and clean name
+        # Step 1: Check alias table first (fast path) — try both full and clean name.
+        # Pass bank_code so per-bank aliases are preferred (audit
+        # 2026-05-05 stages-1-2 F16). Falls back to global aliases.
         if self.alias_manager:
-            alias_account = self.alias_manager.lookup_alias(txn.name, expected_type)
+            alias_account = self.alias_manager.lookup_alias(txn.name, expected_type, bank_code=self.bank_code)
             if not alias_account and clean_name != txn.name:
-                alias_account = self.alias_manager.lookup_alias(clean_name, expected_type)
+                alias_account = self.alias_manager.lookup_alias(clean_name, expected_type, bank_code=self.bank_code)
             if alias_account:
                 if expected_type == 'C' and alias_account in self.matcher.customers:
                     candidate = self.matcher.customers[alias_account]
@@ -982,7 +984,8 @@ class BankStatementMatcherOpera3:
                         ledger_type='C',
                         account_code=cust_result.account,
                         match_score=cust_result.score,
-                        account_name=cust_result.name
+                        account_name=cust_result.name,
+                        bank_code=self.bank_code,
                     )
             else:
                 txn.action = 'skip'
@@ -1004,7 +1007,8 @@ class BankStatementMatcherOpera3:
                         ledger_type='S',
                         account_code=supp_result.account,
                         match_score=supp_result.score,
-                        account_name=supp_result.name
+                        account_name=supp_result.name,
+                        bank_code=self.bank_code,
                     )
             else:
                 txn.action = 'skip'

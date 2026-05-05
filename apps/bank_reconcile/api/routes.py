@@ -4631,18 +4631,25 @@ async def import_bank_statement_from_pdf(
                     errors = result.get('errors', [])
 
                     if len(imported) > 0 and len(errors) == 0:
-                        # Collect entries with valid entry_numbers
+                        # Collect entries with valid entry_numbers.
+                        # statement_line uses the ORIGINAL PDF row position
+                        # × 10 (Opera convention: 10/20/30/...), so unmatched/
+                        # skipped lines preserve gaps. Earlier code used a
+                        # sequential counter (10, 20, 30, ...) which
+                        # collapsed gaps and didn't match what Opera's
+                        # reconcile screen expects. Audit 2026-05-05
+                        # stages-3-5 F6.
                         entries_to_reconcile = []
-                        statement_line = 10
-
                         for txn in imported:
                             entry_num = txn.get('entry_number')
                             if entry_num:
+                                # Fall back to a 1-based positional default
+                                # if 'row' isn't on the dict.
+                                row_pos = txn.get('row') or (len(entries_to_reconcile) + 1)
                                 entries_to_reconcile.append({
                                     'entry_number': entry_num,
-                                    'statement_line': statement_line
+                                    'statement_line': int(row_pos) * 10,
                                 })
-                                statement_line += 10
 
                         if len(entries_to_reconcile) == len(imported):
                             # All entries have entry_numbers - proceed
@@ -5270,18 +5277,20 @@ async def import_with_manual_overrides(
             try:
                 from sql_rag.opera_sql_import import OperaSQLImport
 
-                # Collect entries with valid entry_numbers
+                # Collect entries with valid entry_numbers.
+                # statement_line uses the ORIGINAL PDF row position * 10
+                # so unmatched/skipped lines preserve gaps. Earlier code
+                # used a sequential counter that collapsed gaps. Audit
+                # 2026-05-05 stages-3-5 F6.
                 entries_to_reconcile = []
-                statement_line = 10  # Start at 10, increment by 10
-
                 for txn in imported:
                     entry_num = txn.get('entry_number')
                     if entry_num:
+                        row_pos = txn.get('row') or (len(entries_to_reconcile) + 1)
                         entries_to_reconcile.append({
                             'entry_number': entry_num,
-                            'statement_line': statement_line
+                            'statement_line': int(row_pos) * 10,
                         })
-                        statement_line += 10
 
                 if len(entries_to_reconcile) == len(imported):
                     # All entries have entry_numbers - proceed with reconciliation
@@ -10211,18 +10220,20 @@ async def import_bank_statement_from_email(
             try:
                 from sql_rag.opera_sql_import import OperaSQLImport
 
-                # Collect entries with valid entry_numbers
+                # Collect entries with valid entry_numbers.
+                # statement_line uses the ORIGINAL PDF row position * 10
+                # so unmatched/skipped lines preserve gaps. Earlier code
+                # used a sequential counter that collapsed gaps. Audit
+                # 2026-05-05 stages-3-5 F6.
                 entries_to_reconcile = []
-                statement_line = 10
-
                 for txn in imported:
                     entry_num = txn.get('entry_number')
                     if entry_num:
+                        row_pos = txn.get('row') or (len(entries_to_reconcile) + 1)
                         entries_to_reconcile.append({
                             'entry_number': entry_num,
-                            'statement_line': statement_line
+                            'statement_line': int(row_pos) * 10,
                         })
-                        statement_line += 10
 
                 if len(entries_to_reconcile) == len(imported):
                     # All entries have entry_numbers - proceed
@@ -13740,18 +13751,20 @@ async def opera3_import_bank_statement_from_pdf(
             try:
                 from sql_rag.opera3_write_provider import get_opera3_writer
 
-                # Collect entries with valid entry_numbers
+                # Collect entries with valid entry_numbers.
+                # statement_line uses the ORIGINAL PDF row position * 10
+                # so unmatched/skipped lines preserve gaps. Earlier code
+                # used a sequential counter that collapsed gaps. Audit
+                # 2026-05-05 stages-3-5 F6.
                 entries_to_reconcile = []
-                statement_line = 10
-
                 for txn in imported:
                     entry_num = txn.get('entry_number')
                     if entry_num:
+                        row_pos = txn.get('row') or (len(entries_to_reconcile) + 1)
                         entries_to_reconcile.append({
                             'entry_number': entry_num,
-                            'statement_line': statement_line
+                            'statement_line': int(row_pos) * 10,
                         })
-                        statement_line += 10
 
                 if len(entries_to_reconcile) == len(imported):
                     # All entries have entry_numbers - proceed

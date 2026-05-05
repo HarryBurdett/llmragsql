@@ -15,6 +15,47 @@ from typing import Dict, Any
 logger = logging.getLogger(__name__)
 
 
+async def periodic_bank_detail_scan(storage, providers):
+    """Post-sync callback: scan suppliers' bank details for changes.
+
+    Audit 2026-05-05 Suppliers F6: previously manual-button-only,
+    fraud-prevention feature was effectively off in normal operation.
+    Now runs once per email-sync cycle (5 minutes by default) against
+    the active company.
+
+    Read-only against Opera (pname); writes only to the local
+    supplier_change_audit table and fires security alerts via the
+    existing infrastructure when bank details actually changed.
+
+    Defensive: any exception is swallowed with a WARNING log so a
+    failed scan doesn't break the broader sync cycle.
+    """
+    try:
+        # Re-use the same scan endpoint logic — the function is
+        # company-context-bound via _ensure_company_context running
+        # earlier in the request, so it picks up the active company.
+        import httpx
+        async with httpx.AsyncClient(base_url='http://127.0.0.1:8000') as client:
+            resp = await client.post(
+                '/api/supplier-security/scan-changes', timeout=60.0,
+            )
+            if resp.status_code == 200:
+                body = resp.json()
+                changes = body.get('changes_detected', 0)
+                alerts = body.get('alerts_sent', 0)
+                if changes or alerts:
+                    logger.info(
+                        'Periodic bank-detail scan: %d changes detected, %d alerts sent',
+                        changes, alerts,
+                    )
+            else:
+                logger.warning(
+                    'Periodic bank-detail scan returned %d', resp.status_code,
+                )
+    except Exception as exc:
+        logger.warning('Periodic bank-detail scan failed: %s', exc)
+
+
 async def auto_process_supplier_statements(storage, providers):
     """
     Post-sync callback: find new emails with PDF attachments and

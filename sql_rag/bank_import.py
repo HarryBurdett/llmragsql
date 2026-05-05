@@ -1327,11 +1327,14 @@ class BankStatementImport:
         clean_name = extract_payee_name_full(txn.name)
         logger.debug(f"MATCH_DEBUG: name='{txn.name}', clean='{clean_name}', amount={txn.amount}, is_receipt={txn.is_receipt}")
 
-        # Step 1: Check alias table first (fast path) — try both full and clean name
+        # Step 1: Check alias table first (fast path) — try both full and clean name.
+        # Pass bank_code so per-bank aliases are preferred over global ones
+        # (audit 2026-05-05 stages-1-2 F16). Falls back to global aliases
+        # automatically when no bank-scoped row exists.
         if self.alias_manager:
-            alias_account = self.alias_manager.lookup_alias(txn.name, expected_type)
+            alias_account = self.alias_manager.lookup_alias(txn.name, expected_type, bank_code=self.bank_code)
             if not alias_account and clean_name != txn.name:
-                alias_account = self.alias_manager.lookup_alias(clean_name, expected_type)
+                alias_account = self.alias_manager.lookup_alias(clean_name, expected_type, bank_code=self.bank_code)
             logger.debug(f"MATCH_DEBUG: alias lookup -> {alias_account}")
             if alias_account:
                 # Found alias - use it directly
@@ -1448,14 +1451,16 @@ class BankStatementImport:
                 txn.match_score = cust_result.score
                 txn.action = 'sales_receipt'
 
-                # Step 3: Save alias if score is high enough
+                # Step 3: Save alias if score is high enough — bank-scoped
+                # (audit 2026-05-05 stages-1-2 F16).
                 if self.alias_manager and cust_result.score >= self.learn_threshold:
                     self.alias_manager.save_alias(
                         bank_name=txn.name,
                         ledger_type='C',
                         account_code=cust_result.account,
                         match_score=cust_result.score,
-                        account_name=cust_result.name
+                        account_name=cust_result.name,
+                        bank_code=self.bank_code,
                     )
             else:
                 txn.action = 'skip'
@@ -1472,14 +1477,15 @@ class BankStatementImport:
                 txn.match_score = supp_result.score
                 txn.action = 'purchase_payment'
 
-                # Step 3: Save alias if score is high enough
+                # Step 3: Save alias if score is high enough — bank-scoped.
                 if self.alias_manager and supp_result.score >= self.learn_threshold:
                     self.alias_manager.save_alias(
                         bank_name=txn.name,
                         ledger_type='S',
                         account_code=supp_result.account,
                         match_score=supp_result.score,
-                        account_name=supp_result.name
+                        account_name=supp_result.name,
+                        bank_code=self.bank_code,
                     )
             else:
                 txn.action = 'skip'

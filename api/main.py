@@ -716,8 +716,19 @@ async def lifespan(app: FastAPI):
         try:
             from apps.suppliers.api.background import auto_process_supplier_statements
             email_sync_manager.add_post_sync_callback(auto_process_supplier_statements)
+            # Periodic supplier bank-detail change scan (audit 2026-05-05
+            # Suppliers F6 — was manual-button-only, fraud-prevention
+            # feature was effectively off in normal operation). Wired into
+            # the same 5-minute post-sync hook that triggers
+            # auto_process_supplier_statements; runs once per sync cycle
+            # against the active company. Read-only against Opera; writes
+            # only to the local supplier_change_audit table and fires
+            # security alerts via existing infrastructure when bank
+            # details actually changed.
+            from apps.suppliers.api.background import periodic_bank_detail_scan
+            email_sync_manager.add_post_sync_callback(periodic_bank_detail_scan)
             await email_sync_manager.start_periodic_sync(interval_minutes=5)
-            logger.info("Background email sync started (5 min interval) with supplier auto-processing")
+            logger.info("Background email sync started (5 min interval) with supplier auto-processing + bank-detail scan")
         except Exception as e:
             logger.warning(f"Could not start background email sync: {e}")
 
