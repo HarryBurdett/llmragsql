@@ -5650,12 +5650,20 @@ async def save_bank_import_folder_settings(request: Request):
 async def scan_folder_for_bank_statements(
     bank_code: str = Query(..., description="Opera bank account code"),
     validate_balances: bool = Query(True, description="Validate statement balances against Opera"),
+    extract_on_miss: bool = Query(True, description="If False, skip inline AI extraction on cache miss (faster scan; statements marked pending_extraction)"),
 ):
     """
     Scan the configured input folder for bank statement PDFs.
 
     Returns statements in sequential import order, same format as scan-emails.
     PDFs are validated against Opera's reconciled balance using the extraction cache.
+
+    Audit cross-cutting F8: when extract_on_miss=False, the cache-miss
+    block does NOT run inline AI extraction (Gemini blocks the scan
+    response otherwise). The statement is marked pending_extraction and
+    can be extracted later by the user (clicking the row) or by a
+    background job. Default True preserves the existing SE behaviour
+    that the bank-rec routine has been thoroughly tested against.
     """
     try:
         from datetime import datetime
@@ -5766,6 +5774,13 @@ async def scan_folder_for_bank_statements(
                     if cached:
                         info_data, _ = cached
                         logger.info(f"Scan cache HIT for {filename}")
+                    elif not extract_on_miss:
+                        # Audit F8 opt-in: caller asked for non-blocking
+                        # scan. Mark pending_extraction; do NOT call
+                        # Gemini.
+                        logger.info(f"Scan cache MISS for {filename} — extract_on_miss=False, deferring extraction")
+                        stmt_entry['extraction_status'] = 'pending_extraction'
+                        stmt_entry['status'] = 'pending_extraction'
                     else:
                         # Cache miss — run lightweight extraction to get balances/bank info
                         # This uses Gemini but only asks for header info, not transactions
@@ -6164,7 +6179,8 @@ async def scan_emails_for_bank_statements(
     bank_code: str = Query(..., description="Opera bank account code"),
     days_back: int = Query(30, description="Number of days to search back"),
     include_processed: bool = Query(False, description="Include already-processed emails"),
-    validate_balances: bool = Query(True, description="Validate statement balances against Opera (slower but filters invalid)")
+    validate_balances: bool = Query(True, description="Validate statement balances against Opera (slower but filters invalid)"),
+    extract_on_miss: bool = Query(True, description="If False, skip inline AI extraction on cache miss (faster scan; statements marked pending_extraction)"),
 ):
     """
     Scan inbox for emails with bank statement attachments.
@@ -6177,6 +6193,11 @@ async def scan_emails_for_bank_statements(
 
     If validate_balances=True (default), PDFs are parsed to check opening balance
     against Opera's reconciled balance, filtering out already-processed statements.
+
+    Audit cross-cutting F8: when extract_on_miss=False, the cache-miss
+    block does NOT run inline AI extraction. Statements are returned
+    with status='pending_extraction' so the UI can extract on demand.
+    Default True preserves the existing tested SE behaviour.
     """
     if not email_storage:
         raise HTTPException(status_code=503, detail="Email storage not initialized")
@@ -6488,6 +6509,11 @@ async def scan_emails_for_bank_statements(
                                                                 'record_bank_statement_import failed for %s: %s',
                                                                 att.get('filename'), _rec_err,
                                                             )
+                                        elif not extract_on_miss:
+                                            # Audit F8 opt-in: non-blocking scan.
+                                            logger.info(f"Scan cache MISS for {att['filename']} — extract_on_miss=False, deferring extraction")
+                                            att['extraction_status'] = 'pending_extraction'
+                                            att['status'] = 'pending_extraction'
                                         else:
                                             # Cache miss — run full extraction to get balances
                                             logger.info(f"Scan cache MISS for {att['filename']} — running full extraction")
@@ -6750,13 +6776,19 @@ async def scan_emails_for_bank_statements(
 async def scan_all_banks_for_statements(
     days_back: int = Query(30, description="Number of days to search back"),
     include_processed: bool = Query(False, description="Include already-processed emails"),
-    validate_balances: bool = Query(True, description="Validate statement balances against Opera")
+    validate_balances: bool = Query(True, description="Validate statement balances against Opera"),
+    extract_on_miss: bool = Query(True, description="If False, skip inline AI extraction on cache miss (faster scan; statements marked pending_extraction)"),
 ):
     """
     Scan inbox for bank statement attachments across ALL Opera bank accounts.
 
     Groups results by bank, validates each statement against its bank's reconciled balance,
     and returns a dashboard-ready response. Also scans PDF files from local folders.
+
+    Audit cross-cutting F8: when extract_on_miss=False, the cache-miss
+    block does NOT call Gemini inline. Pending statements are returned
+    with status='pending_extraction' for the UI to extract on demand.
+    Default True preserves the existing tested SE behaviour.
 
     Returns:
         banks: dict keyed by bank_code with statements list per bank
@@ -7283,6 +7315,11 @@ async def scan_all_banks_for_statements(
 
                                         pdf_extracted = True
                                         stmt_entry['extraction_status'] = 'cached'
+                                    elif not extract_on_miss:
+                                        # Audit F8 opt-in: non-blocking scan.
+                                        logger.info(f"Scan-all: cache MISS for {filename} — extract_on_miss=False, deferring extraction")
+                                        stmt_entry['extraction_status'] = 'pending_extraction'
+                                        stmt_entry['status'] = 'pending_extraction'
                                     else:
                                         # Cache miss — full AI extraction for balances and transactions
                                         logger.info(f"Scan-all: cache MISS for {filename} — running full extraction")
@@ -12409,7 +12446,8 @@ async def opera3_scan_emails_for_bank_statements(
     data_path: str = Query(..., description="Path to Opera 3 company data folder"),
     days_back: int = Query(30, description="Number of days to search back"),
     include_processed: bool = Query(False, description="Include already-processed emails"),
-    validate_balances: bool = Query(True, description="Validate statement balances against Opera (slower but filters invalid)")
+    validate_balances: bool = Query(True, description="Validate statement balances against Opera (slower but filters invalid)"),
+    extract_on_miss: bool = Query(True, description="If False, skip inline AI extraction on cache miss (faster scan; statements marked pending_extraction)"),
 ):
     """
     Scan inbox for emails with bank statement attachments (Opera 3 version).
@@ -12423,6 +12461,10 @@ async def opera3_scan_emails_for_bank_statements(
     If validate_balances=True (default), PDFs are parsed to check opening balance
     against Opera 3's reconciled balance, filtering out already-processed statements.
     Invalid statements are automatically archived.
+
+    Audit cross-cutting F8: when extract_on_miss=False, the cache-miss
+    block does NOT call Gemini inline (parity with the SE handler).
+    Default True preserves the existing tested behaviour.
     """
     if not email_storage:
         raise HTTPException(status_code=503, detail="Email storage not initialized")
@@ -12719,6 +12761,11 @@ async def opera3_scan_emails_for_bank_statements(
                                                             logger.warning(f"Opera 3: Could not auto-archive invalid statement email: {archive_err}")
                                                     except:
                                                         pass
+                                        elif not extract_on_miss:
+                                            # Audit F8 opt-in: non-blocking scan.
+                                            logger.info(f"Opera 3 scan cache MISS for {att['filename']} — extract_on_miss=False, deferring extraction")
+                                            att['extraction_status'] = 'pending_extraction'
+                                            att['status'] = 'pending_extraction'
                                         else:
                                             # Cache miss — run full extraction to get balances
                                             logger.info(f"Opera 3 scan cache MISS for {att['filename']} — running full extraction")
