@@ -2542,9 +2542,25 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
   const renderMatchingResults = () => {
     if (!matchingResult || !matchingResult.success) return null;
 
+    // Selected count must match the predicate used by the completion
+    // payload (BankStatementReconcile.tsx:1966-1982): a row is in the
+    // batch iff it's in selected*Matches AND not toggled off via
+    // manualMatchOverrides. Plus any unmatched statement line the
+    // operator manually toggled ✓ counts too. Without this the
+    // confirmation dialog showed "5 entries" while only 3 actually
+    // posted (audit finding stages-3-5 F7).
     const selectedCount =
-      (matchingResult.auto_matched?.filter(m => selectedAutoMatches.has(m.entry_number)).length || 0) +
-      (matchingResult.suggested_matched?.filter(m => selectedSuggestedMatches.has(m.entry_number)).length || 0);
+      (matchingResult.auto_matched?.filter(m =>
+        selectedAutoMatches.has(m.entry_number)
+        && manualMatchOverrides.get(m.statement_line) !== false
+      ).length || 0) +
+      (matchingResult.suggested_matched?.filter(m =>
+        selectedSuggestedMatches.has(m.entry_number)
+        && manualMatchOverrides.get(m.statement_line) !== false
+      ).length || 0) +
+      (matchingResult.unmatched_statement?.filter(u =>
+        manualMatchOverrides.get(u.statement_line) === true
+      ).length || 0);
 
     const allMatched = matchingResult.summary != null && matchingResult.summary.unmatched_statement_count === 0;
     const stmtNo = parseInt(statementNumber) || (statusQuery.data?.last_stmt_no || 0) + 1;

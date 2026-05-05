@@ -942,11 +942,14 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         entry_list = "', '".join(entry_numbers)
 
-        # Reset reconciliation fields
+        # Stage A reset: reset every per-aentry rec field (ae_reclnum,
+        # ae_recdate, ae_recbal, ae_statln, ae_frstat, ae_tostat, ae_tmpstat).
+        # Earlier versions left ae_recbal stale, polluting audit reports.
         update_sql = f"""
             UPDATE aentry WITH (ROWLOCK)
             SET ae_reclnum = 0,
                 ae_recdate = NULL,
+                ae_recbal = 0,
                 ae_statln = 0,
                 ae_frstat = 0,
                 ae_tostat = 0,
@@ -964,23 +967,88 @@ async def unreconcile_entries(bank_code: str, entry_numbers: List[str]):
                 result = conn.execute(text(update_sql))
                 rows_affected = result.rowcount
 
-                # Recalculate nbank reconciled balance
+                # Recalculate nbank reconciled balance.
+                # Open-items rule: exclude ae_remove=True entries.
                 recalc_sql = f"""
                     SELECT COALESCE(SUM(ae_value), 0) as reconciled_total
                     FROM aentry WITH (NOLOCK)
                     WHERE ae_acnt = '{bank_code}'
                       AND ae_reclnum > 0
+                      AND ae_remove = 0
                 """
                 recalc_result = conn.execute(text(recalc_sql))
                 new_rec_total = float(recalc_result.fetchone()[0] or 0)
 
-                # Update nbank
-                nbank_update = f"""
-                    UPDATE nbank WITH (ROWLOCK)
-                    SET nk_recbal = {int(new_rec_total)},
-                        datemodified = '{now_str}'
-                    WHERE nk_acnt = '{bank_code}'
+                # Determine the prior batch's stamped state — fields we need
+                # to revert to. Walk back to MAX(ae_frstat) over remaining
+                # reconciled entries on this bank. If none remain (all
+                # batches reversed) reset every field to 0/NULL.
+                prior_state_sql = f"""
+                    SELECT TOP 1
+                        ae_frstat       AS lststno,
+                        ae_recdate      AS lstrecdate,
+                        ae_reclnum      AS reclnum,
+                        ae_statln       AS statln,
+                        ae_recbal       AS recbal
+                    FROM aentry WITH (NOLOCK)
+                    WHERE ae_acnt = '{bank_code}'
+                      AND ae_reclnum > 0
+                      AND ae_remove = 0
+                    ORDER BY ae_frstat DESC, ae_recdate DESC, ae_statln DESC
                 """
+                prior = conn.execute(text(prior_state_sql)).fetchone()
+
+                # Stage B reset: every nbank rec field, not just nk_recbal.
+                # Earlier versions left nk_lststno / nk_lststdt / nk_lstrecl /
+                # nk_reclnum / nk_recldte / nk_recstfr / nk_recstto /
+                # nk_recstdt / nk_recstln / nk_reccfwd pointing at the
+                # reverted statement, which would falsely satisfy the
+                # bank-rec self-heal three-fact rule on the next scan.
+                if prior is not None:
+                    prior_lststno = int(prior[0] or 0)
+                    prior_recdate = prior[1]
+                    prior_reclnum = int(prior[2] or 0)
+                    prior_statln = int(prior[3] or 0)
+                    prior_recdate_sql = (
+                        f"'{prior_recdate.isoformat()}'"
+                        if hasattr(prior_recdate, 'isoformat')
+                        else (
+                            "NULL" if prior_recdate is None
+                            else f"'{str(prior_recdate)[:19]}'"
+                        )
+                    )
+                    nbank_update = f"""
+                        UPDATE nbank WITH (ROWLOCK)
+                        SET nk_recbal   = {int(new_rec_total)},
+                            nk_reccfwd  = 0,
+                            nk_lststno  = {prior_lststno},
+                            nk_lstrecl  = {prior_reclnum + 1},
+                            nk_reclnum  = {prior_reclnum + 1},
+                            nk_recldte  = {prior_recdate_sql},
+                            nk_recstfr  = 0,
+                            nk_recstto  = 0,
+                            nk_recstdt  = NULL,
+                            nk_recstln  = {prior_statln},
+                            datemodified = '{now_str}'
+                        WHERE nk_acnt = '{bank_code}'
+                    """
+                else:
+                    # All rec batches reversed — fresh-bank state.
+                    nbank_update = f"""
+                        UPDATE nbank WITH (ROWLOCK)
+                        SET nk_recbal   = 0,
+                            nk_reccfwd  = 0,
+                            nk_lststno  = 0,
+                            nk_lstrecl  = 1,
+                            nk_reclnum  = 1,
+                            nk_recldte  = NULL,
+                            nk_recstfr  = 0,
+                            nk_recstto  = 0,
+                            nk_recstdt  = NULL,
+                            nk_recstln  = 0,
+                            datemodified = '{now_str}'
+                        WHERE nk_acnt = '{bank_code}'
+                    """
                 conn.execute(text(nbank_update))
 
                 trans.commit()
@@ -15036,8 +15104,22 @@ async def opera3_unreconcile_entries(
                 if ae_acnt == bank_code.upper() and ae_entry in entry_set:
                     rec_num = int(record.ae_reclnum if hasattr(record, 'ae_reclnum') else 0) or 0
                     if rec_num > 0:
+                        # Stage A reset: every per-aentry rec field including
+                        # ae_recdate and ae_recbal. Earlier versions left
+                        # both stale, polluting audit reports and risking
+                        # the self-heal three-fact rule mis-firing.
                         with record as r:
                             r.ae_reclnum = 0
+                            try:
+                                r.ae_recdate = None
+                            except Exception:
+                                # Some FoxPro DBFs reject None for date
+                                # fields; fall back to 0 / empty date.
+                                pass
+                            try:
+                                r.ae_recbal = 0
+                            except Exception:
+                                pass
                             r.ae_statln = 0
                             r.ae_frstat = 0
                             r.ae_tostat = 0
@@ -15059,10 +15141,50 @@ async def opera3_unreconcile_entries(
                 if int(row.get('ae_reclnum', 0) or 0) > 0:
                     new_rec_total_pence += float(row.get('ae_value', 0) or 0)
 
+        # Determine the prior batch's stamped state by reading remaining
+        # reconciled aentry rows (after the reversal). Used to populate the
+        # Stage B reset values on nbank — without this, only nk_recbal is
+        # reset and nk_lststno / nk_lststdt / nk_lstrecl etc. stay stale,
+        # which would falsely satisfy the bank-rec self-heal three-fact
+        # rule on the next scan.
+        prior_lststno = 0
+        prior_recdate = None
+        prior_reclnum = 0
+        prior_statln = 0
+        for row in reader.read_table('aentry'):
+            if (row.get('ae_acnt') or '').strip().upper() != bank_code.upper():
+                continue
+            if (row.get('ae_remove') in (True, 1, 'T', 't')):
+                continue
+            try:
+                rcn = int(row.get('ae_reclnum', 0) or 0)
+            except (TypeError, ValueError):
+                rcn = 0
+            if rcn <= 0:
+                continue
+            try:
+                fstno = int(row.get('ae_frstat', 0) or 0)
+            except (TypeError, ValueError):
+                fstno = 0
+            try:
+                stln = int(row.get('ae_statln', 0) or 0)
+            except (TypeError, ValueError):
+                stln = 0
+            rd = row.get('ae_recdate')
+            if (
+                fstno > prior_lststno
+                or (fstno == prior_lststno and stln > prior_statln)
+            ):
+                prior_lststno = fstno
+                prior_reclnum = rcn
+                prior_statln = stln
+                prior_recdate = rd
+
         nbank_path = Path(data_path) / 'nbank.dbf'
         if not nbank_path.exists():
             nbank_path = Path(data_path) / 'NBANK.DBF'
 
+        # Stage B reset on nbank: every rec-tracking field, not just nk_recbal.
         nbank_table = dbf.Table(str(nbank_path))
         nbank_table.open(dbf.READ_WRITE)
         try:
@@ -15071,6 +15193,33 @@ async def opera3_unreconcile_entries(
                 if nk_acnt == bank_code.upper():
                     with record as r:
                         r.nk_recbal = int(new_rec_total_pence)
+                        try:
+                            r.nk_reccfwd = 0
+                        except Exception:
+                            pass
+                        try:
+                            r.nk_lststno = prior_lststno
+                        except Exception:
+                            pass
+                        try:
+                            r.nk_lstrecl = (prior_reclnum + 1) if prior_reclnum else 1
+                        except Exception:
+                            pass
+                        try:
+                            r.nk_reclnum = (prior_reclnum + 1) if prior_reclnum else 1
+                        except Exception:
+                            pass
+                        try:
+                            r.nk_recldte = prior_recdate
+                        except Exception:
+                            pass
+                        try:
+                            r.nk_recstfr = 0
+                            r.nk_recstto = 0
+                            r.nk_recstdt = None
+                            r.nk_recstln = prior_statln
+                        except Exception:
+                            pass
                     break
         finally:
             nbank_table.close()
@@ -15805,7 +15954,28 @@ async def opera3_complete_reconciliation(
 
                 email_storage.mark_transactions_reconciled(import_id)
 
-                if not partial:
+                # Smart promotion (parity with SE complete_reconciliation):
+                # detect partial recs that complete the statement (Opera's
+                # reconciled balance now matches the statement closing
+                # balance) and treat them as full so the local row is
+                # marked is_reconciled=1 immediately rather than waiting
+                # for the next scan's self-heal to flip it.
+                new_rec_bal = getattr(result, 'new_reconciled_balance', None)
+                statement_actually_complete = (
+                    not partial
+                    or (
+                        new_rec_bal is not None
+                        and abs(new_rec_bal - closing_balance) < 0.01
+                    )
+                )
+
+                if statement_actually_complete:
+                    if partial:
+                        logger.info(
+                            'Opera 3 partial reconciliation promoted to full: '
+                            'new_rec_bal=%.2f matches closing_balance=%.2f',
+                            new_rec_bal, closing_balance,
+                        )
                     email_storage.mark_statement_reconciled(
                         filename='',
                         reconciled_count=result.records_imported,
@@ -15827,9 +15997,9 @@ async def opera3_complete_reconciliation(
                             import_id,
                         ))
                 else:
-                    # Partial: persist statement_number so the bank-rec
-                    # self-heal can use it later when Opera completes the rec.
-                    # Spec: docs/superpowers/specs/2026-05-05-bank-rec-self-heal-design.md
+                    # Genuinely partial: persist statement_number so the
+                    # bank-rec self-heal can use it later when Opera
+                    # completes the rec.
                     with email_storage._get_connection() as conn:
                         cursor = conn.cursor()
                         cursor.execute("""
@@ -15847,15 +16017,27 @@ async def opera3_complete_reconciliation(
             except Exception as db_err:
                 logger.warning(f"Could not update reconciliation status in DB: {db_err}")
 
+        # Promote partial→full in the response payload too if the rec
+        # actually completed.
+        new_rec_bal_resp = getattr(result, 'new_reconciled_balance', None)
+        effective_partial = partial
+        if (
+            partial
+            and new_rec_bal_resp is not None
+            and abs(new_rec_bal_resp - closing_balance) < 0.01
+        ):
+            effective_partial = False
+
         release_import_lock(_bank_lock_key(bank_code))
         return {
             "success": result.success,
             "entries_reconciled": result.records_imported if result.success else 0,
             "messages": result.warnings if result.success else result.errors,
-            "partial": partial,
+            "partial": effective_partial,
             "statement_number": statement_number,
             "statement_date": statement_date,
-            "closing_balance": closing_balance
+            "closing_balance": closing_balance,
+            "new_reconciled_balance": new_rec_bal_resp
         }
 
     except Exception as e:
