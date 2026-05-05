@@ -142,3 +142,51 @@ def test_o3_count_reconciled_aentry_counts_matching_dbf_rows():
         ]
     })
     assert Opera3DataSource(reader).count_reconciled_aentry('BC010', 86940) == 2
+
+
+# ---------------------------------------------------------------------------
+# count_reconciled_aentry_in_period — date-range fallback for legacy rows
+# ---------------------------------------------------------------------------
+
+
+def test_se_count_reconciled_aentry_in_period_query_correct():
+    from sql_rag.duplicate_check_se import OperaSEDataSource
+
+    fake_sql = MagicMock()
+    fake_sql.execute_query.return_value = pd.DataFrame([{'cnt': 0}])
+    OperaSEDataSource(fake_sql).count_reconciled_aentry_in_period(
+        'BC010', date(2026, 4, 25), date(2026, 5, 1)
+    )
+    sql = fake_sql.execute_query.call_args[0][0]
+    assert 'WITH (NOLOCK)' in sql
+    assert 'ae_recdate BETWEEN' in sql
+    assert "'2026-04-25'" in sql
+    assert "'2026-05-01'" in sql
+    assert 'ae_reclnum > 0' in sql
+
+
+def test_o3_count_reconciled_aentry_in_period_counts_by_recdate():
+    from sql_rag.duplicate_check_o3 import Opera3DataSource
+
+    reader = _FakeReader({
+        'aentry': [
+            {'ae_acnt': 'BC010', 'ae_recdate': date(2026, 4, 28),
+             'ae_reclnum': 2682},
+            {'ae_acnt': 'BC010', 'ae_recdate': date(2026, 4, 30),
+             'ae_reclnum': 2682},
+            {'ae_acnt': 'BC010', 'ae_recdate': date(2026, 5, 1),
+             'ae_reclnum': 2682},
+            {'ae_acnt': 'BC010', 'ae_recdate': date(2026, 4, 24),  # before
+             'ae_reclnum': 2681},
+            {'ae_acnt': 'BC010', 'ae_recdate': date(2026, 5, 2),  # after
+             'ae_reclnum': 2682},
+            {'ae_acnt': 'BC010', 'ae_recdate': date(2026, 4, 28),
+             'ae_reclnum': 0},  # unreconciled
+            {'ae_acnt': 'OTHER', 'ae_recdate': date(2026, 4, 28),
+             'ae_reclnum': 2682},  # different bank
+        ]
+    })
+    n = Opera3DataSource(reader).count_reconciled_aentry_in_period(
+        'BC010', date(2026, 4, 25), date(2026, 5, 1)
+    )
+    assert n == 3

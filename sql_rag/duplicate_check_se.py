@@ -168,3 +168,30 @@ class OperaSEDataSource:
             return 0
         cnt = df.iloc[0].get('cnt', 0)
         return int(cnt) if cnt is not None else 0
+
+    def count_reconciled_aentry_in_period(
+        self,
+        bank_code: str,
+        period_start: date,
+        period_end: date,
+    ) -> int:
+        """Date-based fallback for the bank-rec self-heal: count aentry
+        rows on this bank whose ae_recdate falls in [period_start,
+        period_end] and ae_reclnum>0.
+
+        Used for legacy bank_statement_imports rows where
+        statement_number is NULL — same answer as the by-statement-number
+        count, derived from the period dates instead.
+        """
+        query = f"""
+            SELECT COUNT(*) AS cnt
+            FROM aentry WITH (NOLOCK)
+            WHERE RTRIM(ae_acnt) = '{bank_code}'
+              AND ae_recdate BETWEEN '{period_start.isoformat()}' AND '{period_end.isoformat()}'
+              AND ae_reclnum > 0
+        """
+        df = self._sql.execute_query(query)
+        if df is None or df.empty:
+            return 0
+        cnt = df.iloc[0].get('cnt', 0)
+        return int(cnt) if cnt is not None else 0

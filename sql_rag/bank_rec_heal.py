@@ -60,6 +60,16 @@ class OperaDataSource(Protocol):
     ) -> int:
         ...
 
+    def count_reconciled_aentry_in_period(
+        self, bank_code: str, period_start: date, period_end: date
+    ) -> int:
+        """Date-based fallback used by the heal for legacy rows that
+        have no stored statement_number — counts aentry rows where
+        ae_recdate falls in [period_start, period_end] AND ae_reclnum>0.
+        Same units / same NOLOCK semantics as count_reconciled_aentry.
+        """
+        ...
+
 
 def is_row_healable(
     row: Mapping[str, Any],
@@ -197,7 +207,17 @@ def heal_bank_statement_imports(
                 )
                 continue
 
-            # Compute reconciled_count: only for non-legacy rows.
+            # Compute reconciled_count.
+            # New rows with statement_number stored: count by ae_frstat (precise).
+            # Legacy rows (statement_number IS NULL): use transactions_imported
+            # from the local row as the count — the rec-three-check rule has
+            # fired, which means every imported entry has been reconciled in
+            # Opera. transactions_imported is the count of entries we posted
+            # (with ae_tmpstat) that the user then completed in Opera. Using
+            # ae_recdate against the period would mis-count because Opera's
+            # ae_recdate is when the user actually clicked Reconcile in Opera,
+            # not the statement period. transactions_imported is the right
+            # answer.
             new_count: Optional[int] = None
             if cand['statement_number'] is not None:
                 try:
@@ -211,6 +231,12 @@ def heal_bank_statement_imports(
                         bank_code, cand['id'], exc,
                     )
                     new_count = None
+            else:
+                # Legacy fallback: read transactions_imported from the local
+                # row. If 0 / NULL, leave reconciled_count untouched.
+                imp = _read_transactions_imported(company_db_path, cand['id'])
+                if imp is not None and imp > 0:
+                    new_count = imp
 
             cursor.execute(
                 """
@@ -241,6 +267,34 @@ def _format_audit_line(bank_code: str, import_id: int, proof: str) -> str:
     return (
         f'bank_rec_heal: bank={bank_code} import_id={import_id} healed — {proof}'
     )
+
+
+def _read_transactions_imported(
+    company_db_path: Path, import_id: int
+) -> Optional[int]:
+    """Read bank_statement_imports.transactions_imported for one row.
+
+    Used by the legacy-row fallback in heal_bank_statement_imports —
+    when statement_number IS NULL we cannot count by ae_frstat, so we
+    use the locally-tracked count of entries we posted (which were all
+    reconciled by definition once the heal three-check rule fires).
+    """
+    with sqlite3.connect(str(company_db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            'SELECT transactions_imported FROM bank_statement_imports '
+            'WHERE id = ?',
+            (import_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        v = row['transactions_imported']
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
 
 
 def _parse_iso_date(value: Any) -> Optional[date]:

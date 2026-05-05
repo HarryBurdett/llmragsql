@@ -237,7 +237,16 @@ def test_heal_three_facts_match_marks_done(tmp_path):
         assert row[1] == 20
 
 
-def test_heal_legacy_row_with_no_statement_number_uses_two_checks(tmp_path):
+def test_heal_legacy_row_with_no_statement_number_uses_transactions_imported(tmp_path):
+    """Legacy row (statement_number=NULL): heal still fires (2-check rule)
+    AND populates reconciled_count from the local transactions_imported
+    field. Counting by ae_frstat is not possible (no stored statement
+    number); using ae_recdate against the period gives wrong answers
+    because Opera's ae_recdate is when the user clicked Reconcile in
+    Opera, not the statement period. transactions_imported is the
+    correct measure: it's the count of entries we posted (with
+    ae_tmpstat), all of which got reconciled by the time the heal
+    fired."""
     from sql_rag.bank_rec_heal import (
         NbankSnapshot, heal_bank_statement_imports
     )
@@ -249,6 +258,48 @@ def test_heal_legacy_row_with_no_statement_number_uses_two_checks(tmp_path):
         'reconciled_count': 5,
         'statement_number': None,
     }])
+    # Set transactions_imported to 20 (canonical real-world scenario)
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute("UPDATE bank_statement_imports SET transactions_imported=20")
+        conn.commit()
+
+    ds = _make_data_source(NbankSnapshot(
+        bank_code='BC010',
+        recbal_pounds=115064.71,
+        lststdt=date(2026, 5, 1),
+        lststno=86940,
+    ))
+
+    result = heal_bank_statement_imports('BC010', db, ds)
+
+    assert result.healed_count == 1
+    # Neither Opera count method should be called for legacy rows.
+    ds.count_reconciled_aentry.assert_not_called()
+
+    with sqlite3.connect(str(db)) as conn:
+        row = conn.execute(
+            "SELECT is_reconciled, reconciled_count FROM bank_statement_imports"
+        ).fetchone()
+        assert row[0] == 1
+        assert row[1] == 20  # populated from transactions_imported
+
+
+def test_heal_legacy_row_with_zero_transactions_imported_preserves_count(tmp_path):
+    """If transactions_imported is 0 (no entries posted via this app),
+    we have no signal — leave reconciled_count untouched."""
+    from sql_rag.bank_rec_heal import (
+        NbankSnapshot, heal_bank_statement_imports
+    )
+
+    db = _make_email_db(tmp_path, [{
+        'closing_balance': 115064.71,
+        'period_end': '2026-05-01',
+        'is_reconciled': 0,
+        'reconciled_count': 5,
+        'statement_number': None,
+    }])
+    # transactions_imported stays 0 (default)
+
     ds = _make_data_source(NbankSnapshot(
         bank_code='BC010',
         recbal_pounds=115064.71,
@@ -266,7 +317,7 @@ def test_heal_legacy_row_with_no_statement_number_uses_two_checks(tmp_path):
             "SELECT is_reconciled, reconciled_count FROM bank_statement_imports"
         ).fetchone()
         assert row[0] == 1
-        assert row[1] == 5  # preserved, NOT overwritten
+        assert row[1] == 5  # preserved
 
 
 def test_heal_balance_mismatch_no_change(tmp_path):

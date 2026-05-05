@@ -217,3 +217,35 @@ class Opera3DataSource:
                 continue
             n += 1
         return n
+
+    def count_reconciled_aentry_in_period(
+        self,
+        bank_code: str,
+        period_start: date,
+        period_end: date,
+    ) -> int:
+        """Date-based fallback for the bank-rec self-heal: count aentry
+        rows on this bank whose ae_recdate falls in [period_start,
+        period_end] and ae_reclnum>0. Used for legacy
+        bank_statement_imports rows where statement_number is NULL.
+        """
+        n = 0
+        for row in self._reader.read_table('aentry'):
+            acnt = _row_get(row, 'ae_acnt')
+            if acnt is None or str(acnt).strip() != bank_code:
+                continue
+            reclnum = _row_get(row, 'ae_reclnum')
+            if reclnum is None:
+                continue
+            try:
+                if int(reclnum) <= 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            recdate = _normalise_date(_row_get(row, 'ae_recdate'))
+            if recdate is None:
+                continue
+            if not (period_start <= recdate <= period_end):
+                continue
+            n += 1
+        return n

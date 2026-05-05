@@ -40,16 +40,22 @@ def test_real_world_partial_rec_completed_in_opera_regression():
         EmailStorage(str(db_path))
 
         with sqlite3.connect(str(db_path)) as conn:
+            # Note: reconciled_count starts at 0 — the user did the rec
+            # in Opera, our app's complete_reconciliation never ran, so
+            # nothing populated reconciled_count. transactions_imported
+            # = 20 (we did post 20 entries with ae_tmpstat). The heal's
+            # legacy fallback picks up transactions_imported and writes
+            # it into reconciled_count.
             conn.execute("""
                 INSERT INTO bank_statement_imports
                     (id, bank_code, filename, opening_balance, closing_balance,
                      statement_date, period_end, is_reconciled,
-                     reconciled_count, statement_number)
+                     transactions_imported, reconciled_count, statement_number)
                 VALUES
                     (71, 'BANK01', 'Statement 01-MAY-26.pdf',
                      116726.07, 115064.71,
                      '2026-05-01', '2026-05-01',
-                     0, 20, NULL)
+                     0, 20, 0, NULL)
             """)
             conn.commit()
 
@@ -84,6 +90,8 @@ def test_real_world_partial_rec_completed_in_opera_regression():
                 "FROM bank_statement_imports WHERE id = 71"
             ).fetchone()
             assert row[0] == 1
+            # Legacy fallback: reconciled_count populated from
+            # transactions_imported (was 0, now 20).
             assert row[1] == 20
             assert row[2] is None
             assert row[3] == 'BANK01'
