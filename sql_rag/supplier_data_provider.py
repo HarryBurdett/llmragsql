@@ -139,8 +139,43 @@ class SupplierDataProvider(ABC):
 
 
 def get_supplier_data_provider() -> SupplierDataProvider:
-    """Get the appropriate data provider based on current config."""
+    """Get the appropriate data provider based on current config.
+
+    Routes to Opera SE or Opera 3 depending on the active company's
+    `[opera] version` setting in config.ini. Audit 2026-05-05
+    Suppliers F1 — Opera 3 was previously a TODO and the SE provider
+    was returned regardless, leaving the entire supplier reconciliation
+    pipeline unusable on Opera 3.
+    """
+    # Determine platform.
+    version = ''
+    try:
+        from api.main import config as app_config
+        if app_config is not None:
+            version = (app_config.get('opera', 'version', fallback='') or '').strip().lower()
+    except Exception:
+        version = ''
+
+    if version == 'opera3':
+        # Opera 3 path — wrap an Opera3Reader bound to the configured
+        # data path.
+        try:
+            from api.main import config as app_config
+            data_path = (
+                app_config.get('opera3', 'base_path', fallback='')
+                if app_config else ''
+            )
+        except Exception:
+            data_path = ''
+        if not data_path:
+            # Fallback to the legacy default; the read calls will surface
+            # a clear error if it doesn't exist.
+            data_path = r'C:\Apps\O3 Server VFP'
+        from sql_rag.opera3_foxpro import Opera3Reader
+        from sql_rag.supplier_data_opera3 import Opera3SupplierDataProvider
+        return Opera3SupplierDataProvider(Opera3Reader(data_path))
+
+    # Default: Opera SE.
     from api.main import sql_connector
-    # For now, always return Opera SE. Opera 3 implementation is TODO.
     from sql_rag.supplier_data_opera_se import OperaSESupplierDataProvider
     return OperaSESupplierDataProvider(sql_connector)
