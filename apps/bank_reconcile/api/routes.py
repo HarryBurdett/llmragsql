@@ -6388,8 +6388,10 @@ async def scan_emails_for_bank_statements(
                 validation_status = None
 
                 if validate_balances:
-                    from sql_rag.pdf_extraction_cache import PDFExtractionCache, get_extraction_cache
-                    from sql_rag.statement_reconcile import StatementInfo
+                    from sql_rag.pdf_extraction_cache import get_extraction_cache
+                    from apps.bank_reconcile.logic.scan_pdf_validation import (
+                        validate_pdf_for_scan,
+                    )
                     scan_cache = get_extraction_cache()
 
                     for att in statement_attachments:
@@ -6425,143 +6427,58 @@ async def scan_emails_for_bank_statements(
 
                                     if result:
                                         content_bytes, _, _ = result
-                                        pdf_hash = scan_cache.hash_pdf(content_bytes)
-                                        cached = scan_cache.get(pdf_hash)
 
-                                        if cached:
-                                            # Cache hit — use cached extraction for validation
-                                            info_data, _ = cached
-                                            logger.info(f"Scan cache HIT for {att['filename']} — validating from cache")
+                                        # F9 wedge: per-PDF validation pipeline
+                                        # (cache lookup → optional inline AI
+                                        # extraction → account match → chain
+                                        # check) is in
+                                        # apps.bank_reconcile.logic.scan_pdf_validation
+                                        verdict = validate_pdf_for_scan(
+                                            content_bytes=content_bytes,
+                                            filename=att['filename'],
+                                            cache=scan_cache,
+                                            sql_connector=sql_connector,
+                                            company_settings=_load_company_settings(),
+                                            config=config,
+                                            extract_on_miss=extract_on_miss,
+                                            opera_sort_code=opera_sort_code,
+                                            opera_account_number=opera_account_number,
+                                            effective_reconciled_balance=effective_reconciled_balance,
+                                            fallback_reconciled_balance=reconciled_balance,
+                                            bank_rec_openings=bank_rec_openings,
+                                        )
+                                        # Apply field updates to att dict
+                                        for _k, _v in verdict.info_updates.items():
+                                            att[_k] = _v
+                                        if verdict.statement_opening_balance is not None:
+                                            statement_opening_balance = verdict.statement_opening_balance
 
-                                            # Parse cached statement info
-                                            opening_bal_raw = info_data.get('opening_balance')
-                                            closing_bal_raw = info_data.get('closing_balance')
-
-                                            att['period_start'] = info_data.get('period_start')
-                                            att['period_end'] = info_data.get('period_end')
-                                            att['bank_name'] = info_data.get('bank_name')
-                                            att['account_number'] = info_data.get('account_number')
-                                            att['sort_code'] = info_data.get('sort_code')
-                                            att['closing_balance'] = float(closing_bal_raw) if closing_bal_raw is not None else None
-
-                                            # Check: Statement sort code/account number must match Opera bank
-                                            stmt_sort = (info_data.get('sort_code') or '').replace('-', '').replace(' ', '').strip()
-                                            stmt_acct = (info_data.get('account_number') or '').replace('-', '').replace(' ', '').strip()
-                                            opera_sort = (opera_sort_code or '').replace('-', '').replace(' ', '').strip()
-                                            opera_acct = (opera_account_number or '').replace('-', '').replace(' ', '').strip()
-
-                                            account_matches = False
-                                            if stmt_sort and stmt_acct and opera_sort and opera_acct:
-                                                account_matches = (stmt_sort == opera_sort and stmt_acct == opera_acct)
-                                                if not account_matches:
-                                                    logger.info(f"Statement account mismatch: statement={stmt_sort}/{stmt_acct}, opera={opera_sort}/{opera_acct}")
-                                                    is_valid_statement = False
-                                                    validation_status = 'wrong_account'
-                                                    skipped_reasons.append(f"Statement {att['filename']}: wrong bank account ({stmt_sort}/{stmt_acct} vs Opera {opera_sort}/{opera_acct})")
-                                            elif stmt_acct and opera_acct:
-                                                account_matches = (stmt_acct == opera_acct)
-                                                if not account_matches:
-                                                    logger.info(f"Statement account number mismatch: statement={stmt_acct}, opera={opera_acct}")
-                                                    is_valid_statement = False
-                                                    validation_status = 'wrong_account'
-                                                    skipped_reasons.append(f"Statement {att['filename']}: wrong account number ({stmt_acct} vs Opera {opera_acct})")
-                                            else:
-                                                account_matches = True
-
-                                            # Store opening balance if available
-                                            if opening_bal_raw is not None:
-                                                statement_opening_balance = float(opening_bal_raw)
-                                                att['opening_balance'] = statement_opening_balance
-
-                                                # Chain check: if this statement's closing matches a
-                                                # reconciled statement's opening, the chain moved past it
-                                                stmt_closing = float(closing_bal_raw) if closing_bal_raw is not None else None
-                                                chain_complete = stmt_closing is not None and round(stmt_closing, 2) in bank_rec_openings
-
-                                                # Balance validation — use effective reconciled balance
-                                                # (max of Opera nk_recbal and tracked reconciled closing balances)
-                                                eff_bal = effective_reconciled_balance if effective_reconciled_balance is not None else reconciled_balance
-                                                if account_matches and (chain_complete or (eff_bal is not None and statement_opening_balance < eff_bal - 0.01)):
-                                                    if chain_complete:
-                                                        is_valid_statement = False
-                                                        validation_status = 'already_processed'
-                                                        logger.info(f"Statement filtered out (chain): closing £{stmt_closing:,.2f} matches reconciled opening")
-                                                        skipped_reasons.append(f"Statement {att['filename']}: already processed (closing matches reconciled statement's opening)")
-                                                    else:
-                                                        is_valid_statement = False
-                                                        validation_status = 'already_processed'
-                                                        logger.info(f"Statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f}")
-                                                        skipped_reasons.append(f"Statement {att['filename']}: already processed (opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f})")
-
-                                                        try:
-                                                            email_storage.record_bank_statement_import(
-                                                                bank_code=bank_code,
-                                                                filename=att['filename'],
-                                                                transactions_imported=0,
-                                                                source='email',
-                                                                target_system='already_processed',
-                                                                email_id=email_id,
-                                                                attachment_id=att['attachment_id'],
-                                                                total_receipts=0,
-                                                                total_payments=0,
-                                                                imported_by='AUTO_SKIP_SCAN'
-                                                            )
-                                                            already_processed_count += 1
-                                                        except Exception as _rec_err:
-                                                            # Audit 2026-05-05 stages-1-2 F15: don't
-                                                            # silently swallow — without the audit row
-                                                            # the next scan re-evaluates this statement
-                                                            # and the user sees it bounce back into the
-                                                            # list every cycle.
-                                                            logger.warning(
-                                                                'record_bank_statement_import failed for %s: %s',
-                                                                att.get('filename'), _rec_err,
-                                                            )
-                                        elif not extract_on_miss:
-                                            # Audit F8 opt-in: non-blocking scan.
-                                            logger.info(f"Scan cache MISS for {att['filename']} — extract_on_miss=False, deferring extraction")
-                                            att['extraction_status'] = 'pending_extraction'
-                                            att['status'] = 'pending_extraction'
-                                        else:
-                                            # Cache miss — run full extraction to get balances
-                                            logger.info(f"Scan cache MISS for {att['filename']} — running full extraction")
-                                            try:
-                                                import tempfile
-                                                from sql_rag.statement_reconcile import StatementReconciler
-                                                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                                                    tmp.write(content_bytes)
-                                                    tmp_path = tmp.name
+                                        if not verdict.is_valid:
+                                            is_valid_statement = False
+                                            validation_status = verdict.validation_status
+                                            if verdict.skip_reason:
+                                                skipped_reasons.append(verdict.skip_reason)
+                                            if verdict.record_already_processed:
                                                 try:
-                                                    _api_key = _load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
-                                                    reconciler = StatementReconciler(sql_connector, gemini_api_key=_api_key)
-                                                    stmt_info_result, _ = reconciler.extract_transactions_from_pdf(tmp_path)
-                                                    att['period_start'] = stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None
-                                                    att['period_end'] = stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None
-                                                    att['bank_name'] = stmt_info_result.bank_name
-                                                    att['account_number'] = stmt_info_result.account_number
-                                                    att['sort_code'] = stmt_info_result.sort_code
-                                                    att['closing_balance'] = stmt_info_result.closing_balance
-                                                    if stmt_info_result.opening_balance is not None:
-                                                        statement_opening_balance = stmt_info_result.opening_balance
-                                                        att['opening_balance'] = statement_opening_balance
-                                                    att['extraction_status'] = 'extracted'
-                                                finally:
-                                                    os.unlink(tmp_path)
-                                            except RateLimitExhaustedError as ex:
-                                                logger.warning(f"Rate-limit exhausted for {att['filename']}: {ex}")
-                                                att['extraction_status'] = 'pending_extraction'
-                                                att['extraction_failure_reason'] = 'rate_limit'
-                                                att['status'] = 'pending_extraction'
-                                            except ExtractionFailedError as ex:
-                                                logger.warning(f"Extraction error for {att['filename']}: {ex}")
-                                                att['extraction_status'] = 'failed'
-                                                att['extraction_failure_reason'] = 'extraction_error'
-                                                att['status'] = 'pending_extraction'
-                                            except Exception as ex:
-                                                logger.warning(f"Full extraction failed for {att['filename']}: {ex}")
-                                                att['extraction_status'] = 'failed'
-                                                att['extraction_failure_reason'] = 'extraction_error'
-                                                att['status'] = 'pending_extraction'
+                                                    email_storage.record_bank_statement_import(
+                                                        bank_code=bank_code,
+                                                        filename=att['filename'],
+                                                        transactions_imported=0,
+                                                        source='email',
+                                                        target_system='already_processed',
+                                                        email_id=email_id,
+                                                        attachment_id=att['attachment_id'],
+                                                        total_receipts=0,
+                                                        total_payments=0,
+                                                        imported_by='AUTO_SKIP_SCAN'
+                                                    )
+                                                    already_processed_count += 1
+                                                except Exception as _rec_err:
+                                                    # Audit 2026-05-05 stages-1-2 F15.
+                                                    logger.warning(
+                                                        'record_bank_statement_import failed for %s: %s',
+                                                        att.get('filename'), _rec_err,
+                                                    )
                             except Exception as e:
                                 logger.warning(f"Could not validate PDF statement info: {e}")
                                 pass
@@ -12699,8 +12616,18 @@ async def opera3_scan_emails_for_bank_statements(
                 validation_status = None
 
                 if validate_balances and reconciled_balance is not None:
-                    # Cache-only validation — no Gemini calls during scan
-                    from sql_rag.pdf_extraction_cache import PDFExtractionCache, get_extraction_cache
+                    # F9 wedge: shared scan-PDF validation pipeline
+                    # (cache lookup → optional inline AI extraction →
+                    # chain check) is in
+                    # apps.bank_reconcile.logic.scan_pdf_validation.
+                    # Opera 3 mode: no account match (opera_sort/account
+                    # = None), sequential gating via
+                    # opening_unblocks_chain, audit row on both chain
+                    # branches.
+                    from sql_rag.pdf_extraction_cache import get_extraction_cache
+                    from apps.bank_reconcile.logic.scan_pdf_validation import (
+                        validate_pdf_for_scan,
+                    )
                     scan_cache = get_extraction_cache()
 
                     for att in statement_attachments:
@@ -12727,124 +12654,70 @@ async def opera3_scan_emails_for_bank_statements(
                                     download_result = await provider.download_attachment(message_id, att['attachment_id'], folder_id)
                                     if download_result:
                                         content_bytes, _, _ = download_result
-                                        pdf_hash = scan_cache.hash_pdf(content_bytes)
-                                        cached = scan_cache.get(pdf_hash)
 
-                                        if cached:
-                                            # Cache hit — use cached extraction for validation
-                                            info_data, _ = cached
-                                            logger.info(f"Opera 3 scan cache HIT for {att['filename']} — validating from cache")
+                                        verdict = validate_pdf_for_scan(
+                                            content_bytes=content_bytes,
+                                            filename=att['filename'],
+                                            cache=scan_cache,
+                                            sql_connector=sql_connector,
+                                            company_settings=_load_company_settings(),
+                                            config=config,
+                                            extract_on_miss=extract_on_miss,
+                                            # Opera 3 mode: no account match
+                                            opera_sort_code=None,
+                                            opera_account_number=None,
+                                            effective_reconciled_balance=effective_reconciled_balance,
+                                            fallback_reconciled_balance=reconciled_balance,
+                                            bank_rec_openings=bank_rec_openings,
+                                            opening_unblocks_chain=_opening_unblocks_chain,
+                                            audit_row_on_chain_match=True,
+                                        )
 
-                                            opening_bal_raw = info_data.get('opening_balance')
-                                            closing_bal_raw = info_data.get('closing_balance')
+                                        # Apply field updates
+                                        for _k, _v in verdict.info_updates.items():
+                                            att[_k] = _v
+                                        if verdict.statement_opening_balance is not None:
+                                            statement_opening_balance = verdict.statement_opening_balance
 
-                                            if opening_bal_raw is not None:
-                                                statement_opening_balance = float(opening_bal_raw)
-                                                att['opening_balance'] = statement_opening_balance
-                                                att['closing_balance'] = float(closing_bal_raw) if closing_bal_raw is not None else None
-
-                                                # Chain check + balance validation
-                                                # Sequential gating: only filter out if the statement's chain is
-                                                # truly reconciled. If its opening matches an imported-pending
-                                                # closing (prior statement imported but not yet reconciled), allow
-                                                # it through — the operator needs to be able to import it next.
-                                                stmt_closing = float(closing_bal_raw) if closing_bal_raw is not None else None
-                                                chain_complete = stmt_closing is not None and round(stmt_closing, 2) in bank_rec_openings
-                                                eff_bal = effective_reconciled_balance if effective_reconciled_balance is not None else reconciled_balance
-                                                # Determine if opening is unblocked by imported-pending prior
-                                                opening_is_unblocked = _opening_unblocks_chain(statement_opening_balance)
-                                                # Only filter out if chain is fully reconciled AND this statement's
-                                                # opening is NOT from an imported-pending prior
-                                                if chain_complete:
-                                                    is_valid_statement = False
-                                                    validation_status = 'already_processed'
-                                                    logger.info(f"Opera 3 statement filtered out (chain): closing £{stmt_closing:,.2f} matches reconciled opening")
-                                                    skipped_reasons.append(f"Statement {att['filename']}: already processed (chain complete, closing £{stmt_closing:,.2f})")
-                                                elif eff_bal is not None and statement_opening_balance < eff_bal - 0.01 and not opening_is_unblocked:
-                                                    is_valid_statement = False
-                                                    validation_status = 'already_processed'
-                                                    logger.info(f"Opera 3 statement filtered out: opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f}")
-                                                    skipped_reasons.append(f"Statement {att['filename']}: already processed (opening £{statement_opening_balance:,.2f} < reconciled £{eff_bal:,.2f})")
-
-                                                if not is_valid_statement:
-                                                    try:
-                                                        email_storage.record_bank_statement_import(
-                                                            bank_code=bank_code,
-                                                            filename=att['filename'],
-                                                            transactions_imported=0,
-                                                            source='email',
-                                                            target_system='opera3_already_processed',
-                                                            email_id=email_id,
-                                                            attachment_id=att['attachment_id'],
-                                                            total_receipts=0,
-                                                            total_payments=0,
-                                                            imported_by='OPERA3_AUTO_SKIP_SCAN'
-                                                        )
-                                                        already_processed_count += 1
-
-                                                        # Auto-archive the email for invalid statements
-                                                        try:
-                                                            archive_folder = "Archive/BankStatements/Invalid"
-                                                            if email_sync_manager and provider_id in email_sync_manager.providers:
-                                                                archive_provider = email_sync_manager.providers[provider_id]
-                                                                move_success = await archive_provider.move_email(
-                                                                    message_id,
-                                                                    folder_id,
-                                                                    archive_folder
-                                                                )
-                                                                if move_success:
-                                                                    logger.info(f"Opera 3: Auto-archived invalid statement email {email_id} to {archive_folder}")
-                                                                else:
-                                                                    logger.warning(f"Opera 3: Failed to auto-archive invalid statement email {email_id}")
-                                                        except Exception as archive_err:
-                                                            logger.warning(f"Opera 3: Could not auto-archive invalid statement email: {archive_err}")
-                                                    except:
-                                                        pass
-                                        elif not extract_on_miss:
-                                            # Audit F8 opt-in: non-blocking scan.
-                                            logger.info(f"Opera 3 scan cache MISS for {att['filename']} — extract_on_miss=False, deferring extraction")
-                                            att['extraction_status'] = 'pending_extraction'
-                                            att['status'] = 'pending_extraction'
-                                        else:
-                                            # Cache miss — run full extraction to get balances
-                                            logger.info(f"Opera 3 scan cache MISS for {att['filename']} — running full extraction")
-                                            try:
-                                                import tempfile
-                                                from sql_rag.statement_reconcile import StatementReconciler
-                                                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                                                    tmp.write(content_bytes)
-                                                    tmp_path = tmp.name
+                                        if not verdict.is_valid:
+                                            is_valid_statement = False
+                                            validation_status = verdict.validation_status
+                                            if verdict.skip_reason:
+                                                skipped_reasons.append(verdict.skip_reason)
+                                            if verdict.record_already_processed:
                                                 try:
-                                                    _api_key = _load_company_settings().get('gemini_api_key') or (config.get('gemini', 'api_key', fallback='') if config and config.has_section('gemini') else '')
-                                                    reconciler = StatementReconciler(sql_connector, gemini_api_key=_api_key)
-                                                    stmt_info_result, _ = reconciler.extract_transactions_from_pdf(tmp_path)
-                                                    att['period_start'] = stmt_info_result.period_start.strftime('%Y-%m-%d') if stmt_info_result.period_start else None
-                                                    att['period_end'] = stmt_info_result.period_end.strftime('%Y-%m-%d') if stmt_info_result.period_end else None
-                                                    att['bank_name'] = stmt_info_result.bank_name
-                                                    att['account_number'] = stmt_info_result.account_number
-                                                    att['sort_code'] = stmt_info_result.sort_code
-                                                    att['closing_balance'] = stmt_info_result.closing_balance
-                                                    if stmt_info_result.opening_balance is not None:
-                                                        statement_opening_balance = stmt_info_result.opening_balance
-                                                        att['opening_balance'] = statement_opening_balance
-                                                    att['extraction_status'] = 'extracted'
-                                                finally:
-                                                    os.unlink(tmp_path)
-                                            except RateLimitExhaustedError as ex:
-                                                logger.warning(f"Opera 3 rate-limit exhausted for {att['filename']}: {ex}")
-                                                att['extraction_status'] = 'pending_extraction'
-                                                att['extraction_failure_reason'] = 'rate_limit'
-                                                att['status'] = 'pending_extraction'
-                                            except ExtractionFailedError as ex:
-                                                logger.warning(f"Opera 3 extraction error for {att['filename']}: {ex}")
-                                                att['extraction_status'] = 'failed'
-                                                att['extraction_failure_reason'] = 'extraction_error'
-                                                att['status'] = 'pending_extraction'
-                                            except Exception as ex:
-                                                logger.warning(f"Opera 3 full extraction failed for {att['filename']}: {ex}")
-                                                att['extraction_status'] = 'failed'
-                                                att['extraction_failure_reason'] = 'extraction_error'
-                                                att['status'] = 'pending_extraction'
+                                                    email_storage.record_bank_statement_import(
+                                                        bank_code=bank_code,
+                                                        filename=att['filename'],
+                                                        transactions_imported=0,
+                                                        source='email',
+                                                        target_system='opera3_already_processed',
+                                                        email_id=email_id,
+                                                        attachment_id=att['attachment_id'],
+                                                        total_receipts=0,
+                                                        total_payments=0,
+                                                        imported_by='OPERA3_AUTO_SKIP_SCAN'
+                                                    )
+                                                    already_processed_count += 1
+
+                                                    # Auto-archive the email for invalid statements
+                                                    try:
+                                                        archive_folder = "Archive/BankStatements/Invalid"
+                                                        if email_sync_manager and provider_id in email_sync_manager.providers:
+                                                            archive_provider = email_sync_manager.providers[provider_id]
+                                                            move_success = await archive_provider.move_email(
+                                                                message_id,
+                                                                folder_id,
+                                                                archive_folder
+                                                            )
+                                                            if move_success:
+                                                                logger.info(f"Opera 3: Auto-archived invalid statement email {email_id} to {archive_folder}")
+                                                            else:
+                                                                logger.warning(f"Opera 3: Failed to auto-archive invalid statement email {email_id}")
+                                                    except Exception as archive_err:
+                                                        logger.warning(f"Opera 3: Could not auto-archive invalid statement email: {archive_err}")
+                                                except Exception:
+                                                    pass
                             except Exception as e:
                                 logger.warning(f"Opera 3: Could not validate statement balance: {e}")
                                 pass
