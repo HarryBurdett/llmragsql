@@ -175,14 +175,52 @@ def _ensure_company_context(company_id: str) -> None:
 
     changed = (company_id != _last_active_company_id)
 
-    # 1. Swap sql_connector (create lazily if not yet registered)
+    # 1. Swap sql_connector (create lazily if not yet registered).
+    # Earlier code mutated the on-disk config.ini ([database] database
+    # = co_data['database']; save_config(...)) before constructing
+    # SQLConnector(CONFIG_PATH). Two concurrent first-touches for
+    # different companies could race and leave config.ini pointing at
+    # an arbitrary company. Audit 2026-05-05 cross-cutting F12.
+    # Fix: write a per-company temp config file and pass that to
+    # SQLConnector — the on-disk config.ini is left alone.
     if company_id not in _company_sql_connectors:
         try:
             co_data = _company_data.get(company_id) or load_company(company_id)
             if co_data and co_data.get('database'):
-                config["database"]["database"] = co_data['database']
-                save_config(config)
-                _company_sql_connectors[company_id] = SQLConnector(CONFIG_PATH)
+                # Build a temp config that mirrors the live one but with
+                # this company's database name. Cleaned up after the
+                # connector is constructed (the connector cached the
+                # config internally).
+                import tempfile as _tempfile
+                import configparser as _cp
+                _tmp_cfg = _cp.ConfigParser()
+                # Copy the running config in-memory.
+                for section in config.sections():
+                    _tmp_cfg.add_section(section)
+                    for key, value in config.items(section):
+                        _tmp_cfg[section][key] = value
+                _tmp_cfg["database"]["database"] = co_data['database']
+                # Write to a per-company temp file (name includes company_id
+                # so concurrent first-touches don't collide).
+                _tmp = _tempfile.NamedTemporaryFile(
+                    mode='w',
+                    delete=False,
+                    suffix=f'_{company_id}.ini',
+                    prefix='sqlrag_company_cfg_',
+                )
+                try:
+                    _tmp_cfg.write(_tmp)
+                    _tmp_path = _tmp.name
+                finally:
+                    _tmp.close()
+                try:
+                    _company_sql_connectors[company_id] = SQLConnector(_tmp_path)
+                finally:
+                    # Connector has cached its config; safe to remove.
+                    try:
+                        os.remove(_tmp_path)
+                    except Exception:
+                        pass
                 if co_data:
                     _company_data[company_id] = co_data
                 logger.info(f"Created SQL connector for {company_id}")
