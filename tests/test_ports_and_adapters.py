@@ -76,6 +76,26 @@ def test_local_auth_satisfies_port():
     assert isinstance(adapter, AuthPort)
 
 
+def test_local_company_context_satisfies_port():
+    from apps.core.adapters.factory import get_company_context
+    from apps.core.ports import CompanyContextPort
+    adapter = get_company_context()
+    assert isinstance(adapter, CompanyContextPort)
+
+
+def test_local_company_context_returns_none_when_unset(monkeypatch):
+    """No company context active → all getters return None."""
+    import api.main  # noqa: F401
+    from apps.core.adapters.factory import get_company_context
+    with patch('apps.core.state.current_company', None):
+        with patch('apps.core.state.active_system_id', None):
+            with patch('api.main.current_company', None):
+                with patch('api.main.active_system_id', None):
+                    adapter = get_company_context()
+                    assert adapter.get_company() is None
+                    assert adapter.get_active_system_id() is None
+
+
 # =====================================================================
 # Factory selection
 # =====================================================================
@@ -326,6 +346,7 @@ def test_list_adapter_selection_includes_all_ports():
     expected_ports = {
         'opera_sql', 'email_storage', 'opera3_reader',
         'opera3_writer', 'email_sync', 'smtp', 'auth',
+        'company_context',
     }
     assert set(selection.keys()) == expected_ports
     # All values are non-empty strings (adapter class names)

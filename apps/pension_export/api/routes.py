@@ -24,7 +24,8 @@ def get_pension_data_provider(data_source: str = "sql"):
     from sql_rag.pension_exports.data_provider import OperaSQLPensionProvider, Opera3PensionProvider
     from apps.core.adapters.factory import get_opera_sql
     sql_connector = get_opera_sql()
-    from api.main import config
+    from apps.core.env_config import get_config
+    config = get_config()
 
     if data_source == "opera3":
         # Check if Opera 3 is configured
@@ -255,7 +256,10 @@ async def download_nest_export(
 @router.get("/api/pension/config")
 async def get_pension_config():
     """Get pension configuration for the current company."""
-    from api.main import current_company, config
+    from apps.core.adapters.factory import get_company_context
+    current_company = get_company_context().get_company()
+    from apps.core.env_config import get_config
+    config = get_config()
 
     company_name = "Unknown"
     export_folder = ""
@@ -299,7 +303,9 @@ async def get_pension_config():
 async def save_pension_config(request: Request):
     """Save pension configuration for the current company."""
     import json as json_mod
-    from api.main import current_company, COMPANIES_DIR
+    from apps.core.adapters.factory import get_company_context
+    current_company = get_company_context().get_company()
+    from api.main import COMPANIES_DIR
 
     if not current_company:
         raise HTTPException(status_code=400, detail="No company selected")

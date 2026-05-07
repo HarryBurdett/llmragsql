@@ -1694,7 +1694,8 @@ async def scan_supplier_changes():
     """
     from apps.core.adapters.factory import get_opera_sql
     sql_connector = get_opera_sql()
-    from api.main import config as app_config
+    from apps.core.env_config import get_config
+    app_config = get_config()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     try:
@@ -3517,7 +3518,8 @@ async def process_supplier_statement_email(email_id: int):
         # Step 2: Extract using same method as extract-from-email endpoint
         from apps.core.adapters.factory import get_email_sync
         email_sync_manager = get_email_sync()
-        from api.main import config as app_config
+        from apps.core.env_config import get_config
+        app_config = get_config()
         if not email_sync_manager:
             return {"success": False, "error": "Email sync manager not available"}
 
@@ -4140,7 +4142,8 @@ async def extract_supplier_statement_from_email(email_id: int, attachment_id: Op
     email_storage = get_email_storage()
     from apps.core.adapters.factory import get_email_sync
     email_sync_manager = get_email_sync()
-    from api.main import config
+    from apps.core.env_config import get_config
+    config = get_config()
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
 
     if not email_storage or not email_sync_manager:
@@ -4260,7 +4263,8 @@ async def extract_supplier_statement_from_file(file_path: str):
     Returns:
         Extracted statement info and line items
     """
-    from api.main import config
+    from apps.core.env_config import get_config
+    config = get_config()
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
 
     api_key = config.get('gemini', 'api_key', fallback='')
@@ -4302,7 +4306,8 @@ async def extract_supplier_statement_from_text(
     Returns:
         Extracted statement info and line items
     """
-    from api.main import config
+    from apps.core.env_config import get_config
+    config = get_config()
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
 
     api_key = config.get('gemini', 'api_key', fallback='')
@@ -4355,7 +4360,8 @@ async def reconcile_supplier_statement(email_id: int, attachment_id: Optional[st
     email_storage = get_email_storage()
     from apps.core.adapters.factory import get_email_sync
     email_sync_manager = get_email_sync()
-    from api.main import config
+    from apps.core.env_config import get_config
+    config = get_config()
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
     from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
 

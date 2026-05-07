@@ -50,22 +50,34 @@ factory that can swap them per-environment.
 
 ## What's intentionally unmigrated
 
-These imports remain on `from api.main import ...`:
+The following 5 sites remain on `from api.main import ...`:
 
-- `_get_opera3_provider` (8 sites) — Opera 3 provider lookup
-  helper. Could become a port helper; for now reading via
-  api.main is fine.
-- `config` (10 sites) — already env-var-aware via Phase A.
-  Apps just need the ConfigParser object; migrating to a
-  port-based getter is a polish improvement, not a structural one.
-- `current_company`, `active_system_id`, `_request_company_id`
-  — per-request context. These conceptually belong in a
-  `CompanyContextPort` but the migration is mechanical when SAM
-  specifics are known (does SAM provide tenant context, or do
-  we keep our own?).
-- `_company_sql_connectors` — connector registry (2 sites in
-  transaction_snapshot for company switching). Internals.
-- `COMPANIES_DIR` — path constant. Trivial.
+- `apps/pension_export/api/routes.py:308` — `COMPANIES_DIR` path
+  constant. Trivial; not worth a port.
+- `apps/transaction_snapshot/api/routes.py` (4 sites) — internals
+  of the company-switching middleware:
+  - `_company_sql_connectors` — per-company connector registry
+  - `_get_active_company_id` — active-company lookup
+  - `_request_company_id` — context var
+  - `active_system_id` — active system
+
+These are the internal machinery the auth middleware uses; the
+transaction_snapshot app needs to peek under the hood to do
+company-aware snapshot capture. Migrating these would mean
+exposing the connector registry through a port too, which is
+more invasive than needed. Left as direct imports.
+
+## Phase B.3 complete
+
+After Phase B.3 the cross-app dependency posture is:
+
+- Direct `sql_connector` imports in apps/: **0**
+- Direct `email_storage` imports in apps/: **0**
+- Direct `email_sync_manager` imports in apps/: **0**
+- Direct `current_company` imports in apps/: **0** (via CompanyContextPort)
+- Direct `_get_opera3_provider` imports in apps/: **0** (via factory)
+- Direct `config` imports in apps/: **0** (via env_config.get_config)
+- Internal middleware imports remaining: **5** (acknowledged, see above)
 
 ## How to swap adapters at runtime
 

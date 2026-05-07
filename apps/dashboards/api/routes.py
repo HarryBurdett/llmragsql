@@ -1468,7 +1468,8 @@ async def get_available_years():
     """Get years with transaction data and determine the best default year."""
     from apps.core.adapters.factory import get_opera_sql
     sql_connector = get_opera_sql()
-    from api.main import current_company
+    from apps.core.adapters.factory import get_company_context
+    current_company = get_company_context().get_company()
     try:
         # Get years from nominal transactions - support both E/F codes and numeric 30/35 codes
         # Note: RTRIM needed as nt_type may have trailing spaces
@@ -3017,7 +3018,7 @@ async def opera3_credit_control_dashboard(data_path: str = Query(..., descriptio
     Mirrors /api/credit-control/dashboard but reads from DBF files.
     """
     try:
-        from api.main import _get_opera3_provider
+        from apps.core.adapters.factory import get_opera3_data_provider as _get_opera3_provider
         provider = _get_opera3_provider(data_path)
         metrics = provider.get_credit_control_metrics()
         priority_actions = provider.get_priority_customers(limit=10)
@@ -3043,7 +3044,7 @@ async def opera3_debtors_report(data_path: str = Query(..., description="Path to
     Mirrors /api/credit-control/debtors-report but reads from DBF files.
     """
     try:
-        from api.main import _get_opera3_provider
+        from apps.core.adapters.factory import get_opera3_data_provider as _get_opera3_provider
         provider = _get_opera3_provider(data_path)
         data = provider.get_customer_aging()
 
@@ -3081,7 +3082,7 @@ async def opera3_trial_balance(
     Mirrors /api/nominal/trial-balance but reads from DBF files.
     """
     try:
-        from api.main import _get_opera3_provider
+        from apps.core.adapters.factory import get_opera3_data_provider as _get_opera3_provider
         provider = _get_opera3_provider(data_path)
         data = provider.get_nominal_trial_balance(year)
 
@@ -3145,7 +3146,7 @@ async def opera3_finance_summary(
     Mirrors /api/dashboard/finance-summary but reads from DBF files.
     """
     try:
-        from api.main import _get_opera3_provider
+        from apps.core.adapters.factory import get_opera3_data_provider as _get_opera3_provider
         provider = _get_opera3_provider(data_path)
         summary = provider.get_finance_summary(year)
 
@@ -3173,7 +3174,7 @@ async def opera3_finance_monthly(
     Mirrors /api/dashboard/finance-monthly but reads from DBF files.
     """
     try:
-        from api.main import _get_opera3_provider
+        from apps.core.adapters.factory import get_opera3_data_provider as _get_opera3_provider
         provider = _get_opera3_provider(data_path)
         months = provider.get_nominal_monthly(year)
 
@@ -3213,7 +3214,7 @@ async def opera3_executive_summary(
     Mirrors /api/dashboard/executive-summary but reads from DBF files.
     """
     try:
-        from api.main import _get_opera3_provider
+        from apps.core.adapters.factory import get_opera3_data_provider as _get_opera3_provider
         provider = _get_opera3_provider(data_path)
         summary = provider.get_executive_summary(year)
 

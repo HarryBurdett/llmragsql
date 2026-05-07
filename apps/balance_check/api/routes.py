@@ -2780,7 +2780,7 @@ async def opera3_reconcile_debtors(
                 debtors_control = controls.debtors_control
             except Exception as e:
                 logger.warning(f"Could not look up debtors control from Opera 3 config: {e}")
-        from api.main import _get_opera3_provider
+        from apps.core.adapters.factory import get_opera3_data_provider as _get_opera3_provider
         provider = _get_opera3_provider(data_path)
         reconciliation = provider.get_debtors_reconciliation(debtors_control)
 
@@ -2816,7 +2816,7 @@ async def opera3_reconcile_creditors(
                 creditors_control = controls.creditors_control
             except Exception as e:
                 logger.warning(f"Could not look up creditors control from Opera 3 config: {e}")
-        from api.main import _get_opera3_provider
+        from apps.core.adapters.factory import get_opera3_data_provider as _get_opera3_provider
         provider = _get_opera3_provider(data_path)
         reconciliation = provider.get_creditors_reconciliation(creditors_control)
 

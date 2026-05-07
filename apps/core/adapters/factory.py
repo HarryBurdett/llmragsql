@@ -27,6 +27,7 @@ from apps.core.env_config import env_bool, env_str
 if TYPE_CHECKING:
     from apps.core.ports import (
         AuthPort,
+        CompanyContextPort,
         EmailStoragePort,
         EmailSyncPort,
         Opera3ReaderPort,
@@ -87,6 +88,21 @@ def get_opera3_reader(data_path: str | None = None) -> "Opera3ReaderPort":
     return LocalOpera3ReaderAdapter(data_path)
 
 
+def get_opera3_data_provider(data_path: str):
+    """Return an Opera3DataProvider for the given Opera 3 data path.
+
+    Convenience factory for routes that use the higher-level
+    Opera3DataProvider (credit-control metrics, priority customers,
+    aged debt summaries, etc.) rather than the lower-level reader.
+
+    When SAM provides an equivalent Opera 3 data service, this
+    factory would route to its HTTP adapter. Today: thin wrapper
+    over the in-process provider, no behaviour change.
+    """
+    from sql_rag.opera3_data_provider import Opera3DataProvider
+    return Opera3DataProvider(data_path)
+
+
 # =====================================================================
 # Opera3Writer (Write Agent — stays Windows-native)
 # =====================================================================
@@ -142,6 +158,24 @@ def get_auth() -> "AuthPort":
 
 
 # =====================================================================
+# CompanyContext (per-request tenant + system context)
+# =====================================================================
+
+
+def get_company_context() -> "CompanyContextPort":
+    """Return the per-request company context adapter.
+
+    SAM Phase C: read tenant + system from SAM-issued JWT instead
+    of contextvars set by our auth middleware.
+    """
+    if env_bool('SAM_ENABLED') and env_str('AUTH_JWT_PUBLIC_KEY'):
+        logger.debug("SAM-aware CompanyContext not yet implemented; "
+                     "using local adapter")
+    from apps.core.adapters.local.company_context import LocalCompanyContextAdapter
+    return LocalCompanyContextAdapter()
+
+
+# =====================================================================
 # Convenience: for tests / debugging
 # =====================================================================
 
@@ -157,4 +191,5 @@ def list_adapter_selection() -> dict[str, str]:
         'email_sync': type(get_email_sync()).__name__,
         'smtp': type(get_smtp()).__name__,
         'auth': type(get_auth()).__name__,
+        'company_context': type(get_company_context()).__name__,
     }

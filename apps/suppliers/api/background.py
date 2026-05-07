@@ -156,7 +156,8 @@ async def _process_single_email(email_id: int, storage, providers):
     """
     from apps.core.adapters.factory import get_opera_sql
     sql_connector = get_opera_sql()
-    from api.main import config as app_config
+    from apps.core.env_config import get_config
+    app_config = get_config()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
     from sql_rag.supplier_reconciler import reconcile, TheirItem, OurItem, clean_reference
@@ -643,7 +644,8 @@ def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_a
     try:
         from apps.core.adapters.factory import get_opera_sql
         sql_connector = get_opera_sql()
-        from api.main import config as app_config
+        from apps.core.env_config import get_config
+        app_config = get_config()
 
         # Check if acknowledgements are enabled
         send_ack = True

@@ -13,6 +13,7 @@ Mocks satisfy them automatically; no ABC inheritance required.
 """
 
 from .auth import AuthPort
+from .company_context import CompanyContextPort
 from .email_storage import EmailStoragePort
 from .email_sync import EmailSyncPort
 from .opera3_reader import Opera3ReaderPort
@@ -22,6 +23,7 @@ from .smtp import SMTPPort
 
 __all__ = [
     "AuthPort",
+    "CompanyContextPort",
     "EmailStoragePort",
     "EmailSyncPort",
     "Opera3ReaderPort",
