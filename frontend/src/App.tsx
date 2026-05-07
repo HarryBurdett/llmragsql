@@ -159,9 +159,14 @@ function AppRoutes() {
                       </AdminRoute>
                     }
                   />
-                  <Route path="/cashbook/routines-cleardown" element={<SystemReset />} />
-                  {/* Redirect old URLs */}
-                  <Route path="/admin/system-reset" element={<Navigate to="/cashbook/routines-cleardown" replace />} />
+                  {/* Per-app cleardown — each app shows only its own
+                      cleardown items in its own menu. The same SystemReset
+                      page renders, filtered by appFilter. */}
+                  <Route path="/cashbook/routines-cleardown" element={<SystemReset appFilter="bank_reconcile" title="Bank Rec Cleardown" />} />
+                  <Route path="/cashbook/gocardless-cleardown" element={<SystemReset appFilter="gocardless" title="GoCardless Cleardown" />} />
+                  <Route path="/supplier/cleardown" element={<SystemReset appFilter="suppliers" title="Suppliers Cleardown" />} />
+                  {/* Admin-level full cleardown (no filter — shows all options) */}
+                  <Route path="/admin/system-reset" element={<SystemReset />} />
                   <Route path="/system/projects" element={<Navigate to="/admin/projects" replace />} />
                   <Route path="/system/lock-monitor" element={<Navigate to="/admin/lock-monitor" replace />} />
                   <Route path="/lock-monitor" element={<Navigate to="/admin/lock-monitor" replace />} />

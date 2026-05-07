@@ -8,6 +8,11 @@ import { authFetch } from '../api/client';
 import apiClient from '../api/client';
 import { PageHeader, LoadingState } from '../components/ui';
 
+// Each cleardown option is tagged with the app(s) it belongs to.
+// The SystemReset component filters by `appFilter` prop so each app
+// shows only its own cleardown options in its own menu.
+type AppName = 'bank_reconcile' | 'gocardless' | 'suppliers';
+
 interface ResetOption {
   id: string;
   action: string;
@@ -15,6 +20,7 @@ interface ResetOption {
   description: string;
   icon: React.ComponentType<{ className?: string }>;
   tables: string[];
+  apps: AppName[];   // which apps this cleardown belongs to
 }
 
 const RESET_OPTIONS: ResetOption[] = [
@@ -25,6 +31,7 @@ const RESET_OPTIONS: ResetOption[] = [
     description: 'Bank statement import records and transaction lines. Does not affect Opera.',
     icon: FileText,
     tables: ['bank_statement_imports', 'bank_statement_transactions'],
+    apps: ['bank_reconcile'],
   },
   {
     id: 'gocardless_imports',
@@ -33,6 +40,7 @@ const RESET_OPTIONS: ResetOption[] = [
     description: 'GoCardless payout import records. Does not affect Opera.',
     icon: CreditCard,
     tables: ['gocardless_imports'],
+    apps: ['gocardless'],
   },
   {
     id: 'ignored_transactions',
@@ -41,6 +49,7 @@ const RESET_OPTIONS: ResetOption[] = [
     description: 'Transactions marked as "ignore" during bank imports. Items will reappear as unmatched.',
     icon: EyeOff,
     tables: ['ignored_bank_transactions'],
+    apps: ['bank_reconcile'],
   },
   {
     id: 'learned_patterns',
@@ -49,6 +58,7 @@ const RESET_OPTIONS: ResetOption[] = [
     description: 'Auto-learned transaction patterns (nominal codes, VAT codes, types). System will re-learn.',
     icon: Brain,
     tables: ['bank_import_patterns'],
+    apps: ['bank_reconcile'],
   },
   {
     id: 'learned_aliases',
@@ -57,6 +67,7 @@ const RESET_OPTIONS: ResetOption[] = [
     description: 'Auto-learned bank description aliases (customer/supplier name mappings). System will re-learn.',
     icon: Link2,
     tables: ['bank_import_aliases', 'ai_suggestions', 'repeat_entry_aliases'],
+    apps: ['bank_reconcile'],
   },
   {
     id: 'pdf_cache',
@@ -65,6 +76,7 @@ const RESET_OPTIONS: ResetOption[] = [
     description: 'Cached PDF extraction results. Statements will be re-extracted from PDF on next import.',
     icon: FileSearch,
     tables: ['extraction_cache'],
+    apps: ['bank_reconcile', 'suppliers'],
   },
 ];
 
@@ -72,13 +84,29 @@ function getOptionCount(option: ResetOption, counts: Record<string, number>): nu
   return option.tables.reduce((sum, t) => sum + (counts[t] || 0), 0);
 }
 
-export function SystemReset() {
+interface SystemResetProps {
+  /** Restrict visible cleardown options to one app's items only.
+   *  Per-app routes pass this so each app shows only its own
+   *  cleardowns in its own menu (matches the per-app independence
+   *  architecture). When unset (default), shows everything — used
+   *  by admin-level full-reset flows. */
+  appFilter?: AppName;
+  /** Optional title override (default: "Routines Cleardown"). */
+  title?: string;
+}
+
+export function SystemReset({ appFilter, title }: SystemResetProps = {}) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState<{ total: number; companyName: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+
+  // Filter to options for the selected app (or show all when unset)
+  const visibleOptions = appFilter
+    ? RESET_OPTIONS.filter(o => o.apps.includes(appFilter))
+    : RESET_OPTIONS;
 
   // Fetch current company info
   const { data: companiesData } = useQuery({
@@ -106,10 +134,10 @@ export function SystemReset() {
   });
 
   const counts: Record<string, number> = data?.counts || {};
-  const totalSelected = RESET_OPTIONS
+  const totalSelected = visibleOptions
     .filter(o => selected.has(o.id))
     .reduce((sum, o) => sum + getOptionCount(o, counts), 0);
-  const allSelected = selected.size === RESET_OPTIONS.length;
+  const allSelected = visibleOptions.length > 0 && selected.size === visibleOptions.length;
 
   const toggleOption = (id: string) => {
     setSelected(prev => {
@@ -128,7 +156,7 @@ export function SystemReset() {
     if (allSelected) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(RESET_OPTIONS.map(o => o.id)));
+      setSelected(new Set(visibleOptions.map(o => o.id)));
     }
     setConfirmOpen(false);
   };
@@ -166,7 +194,7 @@ export function SystemReset() {
 
   return (
     <div className="p-6 max-w-4xl">
-      <PageHeader icon={RotateCcw} title="Routines Cleardown" subtitle={`Clear application data and caches${companyName ? ` for ${companyName}` : ''}. Opera transactions are never affected.`} />
+      <PageHeader icon={RotateCcw} title={title || 'Routines Cleardown'} subtitle={`Clear application data and caches${companyName ? ` for ${companyName}` : ''}. Opera transactions are never affected.`} />
 
       {/* Success feedback */}
       {result && (
@@ -216,14 +244,14 @@ export function SystemReset() {
             </button>
             {selected.size > 0 && (
               <span className="text-xs text-gray-500">
-                {selected.size} of {RESET_OPTIONS.length} selected ({totalSelected.toLocaleString()} records)
+                {selected.size} of {visibleOptions.length} selected ({totalSelected.toLocaleString()} records)
               </span>
             )}
           </div>
 
           {/* Options list */}
           <div className="space-y-2">
-            {RESET_OPTIONS.map((option) => {
+            {visibleOptions.map((option) => {
               const Icon = option.icon;
               const count = getOptionCount(option, counts);
               const isSelected = selected.has(option.id);

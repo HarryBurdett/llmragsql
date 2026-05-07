@@ -59,13 +59,26 @@ const tileColors: Record<string, { bg: string; iconBg: string; icon: string; bor
 
 // ============ WORKFLOW MENUS (daily use) ============
 
+// Per-app settings live INSIDE the app's own menu (not under Admin).
+// Each app owns its workflow + its settings as one cohesive unit.
+// System-wide infrastructure settings (Opera SQL connection, IMAP server,
+// users, licenses, etc.) remain in the Admin menu.
+
 const cashbookMenu: TopLevelMenu = {
   label: 'Cashbook',
   icon: BookOpen,
   sections: [
     {
+      heading: 'Workflow',
       items: [
         { path: '/cashbook/bank-hub', label: 'Bank Statements', icon: Landmark, description: 'Import & reconcile bank statements', color: 'blue' },
+      ],
+    },
+    {
+      heading: 'Setup',
+      items: [
+        { path: '/cashbook/options', label: 'Settings', icon: Settings, description: 'Configure bank reconciliation', color: 'slate' },
+        { path: '/cashbook/routines-cleardown', label: 'Routines Cleardown', icon: RotateCcw, description: 'Reset routine flags', color: 'slate' },
       ],
     },
   ],
@@ -76,9 +89,17 @@ const gocardlessMenu: TopLevelMenu = {
   icon: CreditCard,
   sections: [
     {
+      heading: 'Workflow',
       items: [
         { path: '/cashbook/gocardless', label: 'Import', icon: CreditCard, description: 'Import direct debit payments', color: 'emerald' },
         { path: '/cashbook/gocardless-requests', label: 'Payment Requests', icon: Send, description: 'Create & manage DD requests', color: 'purple' },
+      ],
+    },
+    {
+      heading: 'Setup',
+      items: [
+        { path: '/cashbook/gocardless-settings', label: 'Settings', icon: Settings, description: 'API keys & connection', color: 'slate' },
+        { path: '/cashbook/gocardless-cleardown', label: 'Cleardown', icon: RotateCcw, description: 'Reset GoCardless import history', color: 'slate' },
       ],
     },
   ],
@@ -89,11 +110,19 @@ const suppliersMenu: TopLevelMenu = {
   icon: Truck,
   sections: [
     {
+      heading: 'Workflow',
       items: [
         { path: '/supplier/dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Overview and alerts', color: 'amber' },
         { path: '/supplier/statements/queue', label: 'Statements', icon: FileText, description: 'Review supplier statements', color: 'blue' },
         { path: '/supplier/directory', label: 'Supplier Directory', icon: Building2, description: 'Supplier list and settings', color: 'purple' },
         { path: '/supplier/aged-creditors', label: 'Aged Creditors', icon: Receipt, description: 'Outstanding balances by age', color: 'teal' },
+      ],
+    },
+    {
+      heading: 'Setup',
+      items: [
+        { path: '/supplier/settings', label: 'Settings', icon: Settings, description: 'Automation parameters', color: 'slate' },
+        { path: '/supplier/cleardown', label: 'Cleardown', icon: RotateCcw, description: 'Reset supplier extraction cache', color: 'slate' },
       ],
     },
   ],
@@ -139,12 +168,13 @@ const getAdminMenu = (isAdmin: boolean): TopLevelMenu => ({
       ],
     },
     {
-      heading: 'Module Setup',
+      // System-wide infrastructure settings only.
+      // Per-app settings (Bank Rec Settings, GoCardless Settings,
+      // Supplier Settings) now live inside each app's own menu so
+      // settings live where the work lives. Routines Cleardown is
+      // also inside the Cashbook menu since it's bank-rec-specific.
+      heading: 'System Setup',
       items: [
-        { path: '/cashbook/options', label: 'Bank Rec Settings', icon: Settings, description: 'Configure bank reconciliation', color: 'slate' },
-        { path: '/cashbook/routines-cleardown', label: 'Routines Cleardown', icon: RotateCcw, description: 'Reset routine flags', color: 'slate' },
-        { path: '/cashbook/gocardless-settings', label: 'GoCardless Settings', icon: CreditCard, description: 'API keys & connection', color: 'slate' },
-        { path: '/supplier/settings', label: 'Supplier Settings', icon: Truck, description: 'Automation parameters', color: 'slate' },
         { path: '/settings', label: 'Application Settings', icon: Settings, description: 'Global configuration', color: 'slate' },
         { path: '/admin/lock-monitor', label: 'Lock Monitor', icon: Lock, description: 'Active database locks', color: 'rose' },
       ],
