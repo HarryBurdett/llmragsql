@@ -27,7 +27,8 @@ router = APIRouter()
 
 def _get_control_accounts_for_reconciliation():
     """Get control accounts from Opera config for reconciliation"""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="No database connection — cannot determine control accounts")
     try:
@@ -56,7 +57,8 @@ async def reconcile_creditors():
     comparison phase still lives inline below — that's the next
     natural seam.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from apps.balance_check.logic.sub_ledger_reconcile import (
         CREDITORS, fetch_outstanding, fetch_breakdown_by_type,
         fetch_master_totals, fetch_master_txn_variance,
@@ -766,7 +768,8 @@ async def reconcile_debtors():
     fetch phases share helpers with reconcile_creditors — see
     apps.balance_check.logic.sub_ledger_reconcile.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from apps.balance_check.logic.sub_ledger_reconcile import (
         DEBTORS, fetch_outstanding, fetch_breakdown_by_type,
         fetch_master_totals, fetch_master_txn_variance,
@@ -1403,7 +1406,8 @@ async def reconcile_trial_balance():
     Trial Balance check - verifies the nominal ledger as a whole balances (debits = credits).
     Also shows all nominal accounts with their balances.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -1647,7 +1651,8 @@ async def reconcile_summary():
     """
     Quick summary of all reconciliation checks - shows at a glance whether everything balances.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -1970,7 +1975,8 @@ async def vat_diagnostic():
     """
     Diagnostic endpoint to check VAT table data availability.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -2055,7 +2061,8 @@ async def vat_variance_drilldown():
     Drill-down to identify causes of VAT variance between zvtran and nominal ledger.
     Shows transactions that don't reconcile.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -2277,7 +2284,8 @@ async def reconcile_vat():
     nvat committed output/input), and the per-account NL movement
     summary are extracted into apps.balance_check.logic.vat_reconcile.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 

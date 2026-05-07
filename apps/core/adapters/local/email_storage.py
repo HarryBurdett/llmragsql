@@ -14,7 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 class LocalEmailStorageAdapter:
-    """In-process email storage adapter."""
+    """In-process email storage adapter.
+
+    `bool(adapter)` is True iff an underlying storage is resolvable.
+    Preserves the legacy `if not email_storage:` pattern that route
+    handlers use to fail fast when storage hasn't been initialised.
+    """
+
+    def __bool__(self) -> bool:
+        return self._resolve_storage() is not None
 
     def get_emails(
         self,

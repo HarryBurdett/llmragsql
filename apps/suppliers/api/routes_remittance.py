@@ -152,7 +152,8 @@ def _get_contact_email(supplier_code: str) -> Optional[str]:
             return contact["email"].strip()
 
     # Fallback: check Opera pname email
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if sql_connector:
         try:
             df = sql_connector.execute_query(f"""
@@ -198,7 +199,8 @@ async def get_recent_payments(
     date range, then joins palloc to get invoice allocation detail grouped
     by payment.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     if not sql_connector:
@@ -329,7 +331,8 @@ async def generate_remittance(
     Looks up the payment and its allocations in ptran/palloc and builds
     a formatted remittance advice document.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not available")
@@ -447,7 +450,9 @@ async def send_remittance(account: str, body: SendRemittanceRequest):
     Records the sent remittance in supplier_remittance_log and
     supplier_communications audit trail.
     """
-    from api.main import sql_connector, email_storage
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
+    from api.main import email_storage
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     if not sql_connector:

@@ -22,7 +22,9 @@ router = APIRouter()
 def get_pension_data_provider(data_source: str = "sql"):
     """Get the appropriate pension data provider based on data source."""
     from sql_rag.pension_exports.data_provider import OperaSQLPensionProvider, Opera3PensionProvider
-    from api.main import sql_connector, config
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
+    from api.main import config
 
     if data_source == "opera3":
         # Check if Opera 3 is configured
@@ -80,7 +82,8 @@ async def get_pension_schemes(data_source: str = Query("sql", description="Data 
 async def get_pension_enrolled_employees(scheme_code: str = Query(...)):
     """Get employees enrolled in a specific pension scheme."""
     try:
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
 
         sql = f"""
         SELECT
@@ -164,7 +167,8 @@ async def preview_nest_export(
     """Preview NEST pension export for a specific period."""
     try:
         from sql_rag.pension_exports.nest_export import NestExport
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
 
         nest = NestExport(sql_connector)
         preview = nest.preview_export(tax_year, period)
@@ -187,7 +191,8 @@ async def generate_nest_export(
     """Generate NEST pension contribution CSV file."""
     try:
         from sql_rag.pension_exports.nest_export import NestExport
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
 
         nest = NestExport(sql_connector)
         result = nest.generate_csv(tax_year, period, payment_source)
@@ -224,7 +229,8 @@ async def download_nest_export(
     try:
         from sql_rag.pension_exports.nest_export import NestExport
         from fastapi.responses import Response
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
 
         nest = NestExport(sql_connector)
         result = nest.generate_csv(tax_year, period, payment_source)
@@ -366,7 +372,8 @@ async def get_pension_payment_sources(scheme_code: str = Query(...)):
     for forward-compatibility and used to look up the scheme's default.
     """
     try:
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
 
         # Get all payment sources from wpnps (real columns: wpo_code,
         # wpo_desc, wpo_memo).
@@ -421,7 +428,8 @@ async def get_pension_payment_sources(scheme_code: str = Query(...)):
 async def get_pension_contribution_groups(scheme_code: str = Query(...)):
     """Get contribution groups for a pension scheme."""
     try:
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
 
         # Get contribution groups from wpncg (pension contribution groups)
         sql = f"""
@@ -573,7 +581,8 @@ async def generate_pension_export(
     """Generate pension export file for any provider. Supports both Opera SQL SE and Opera 3."""
     try:
         from sql_rag.pension_exports import get_provider_class, PENSION_PROVIDERS
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
 
         # Get the provider class
         provider_class = get_provider_class(provider)
@@ -667,7 +676,8 @@ async def download_pension_export(
     try:
         from sql_rag.pension_exports import get_provider_class
         from fastapi.responses import Response
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
 
         provider_class = get_provider_class(provider)
         if not provider_class:

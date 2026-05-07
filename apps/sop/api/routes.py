@@ -16,7 +16,8 @@ sql_connector = None
 
 def _get_sql():
     """Get the SQL connector — synced per-request from main app."""
-    from api.main import sql_connector as main_sql
+    from apps.core.adapters.factory import get_opera_sql
+    main_sql = get_opera_sql()
     return main_sql
 
 

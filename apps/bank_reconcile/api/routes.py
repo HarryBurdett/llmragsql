@@ -1620,7 +1620,8 @@ async def refresh_statement_matches(
     transaction and returns updated is_duplicate/skip_reason flags.
     The frontend updates its display without needing a full re-extract.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         return {"success": False, "error": "Database not connected"}
 

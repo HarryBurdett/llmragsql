@@ -84,7 +84,8 @@ def _get_sql_connector():
         return sql_connector
     except Exception:
         try:
-            from api.main import sql_connector
+            from apps.core.adapters.factory import get_opera_sql
+            sql_connector = get_opera_sql()
             return sql_connector
         except Exception:
             return None

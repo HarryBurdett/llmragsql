@@ -110,6 +110,7 @@ def test_factory_writer_always_local_per_directive():
 def test_local_opera_sql_raises_when_no_connector():
     """If neither apps.core.state nor api.main has a connector,
     execute_query raises with a clear error."""
+    import api.main  # noqa: F401  ensure module is imported before patch
     from apps.core.adapters.local.opera_sql import LocalOperaSQLAdapter
     with patch('apps.core.state.sql_connector', None):
         with patch('api.main.sql_connector', None):
@@ -134,6 +135,7 @@ def test_local_opera_sql_uses_state_connector_when_present():
 
 def test_local_opera_sql_falls_back_to_api_main():
     """When state has no connector, fall back to api.main."""
+    import api.main  # noqa: F401
     from apps.core.adapters.local.opera_sql import LocalOperaSQLAdapter
     fake = MagicMock()
     fake.execute_query.return_value = "from_main"
@@ -142,6 +144,39 @@ def test_local_opera_sql_falls_back_to_api_main():
             adapter = LocalOperaSQLAdapter()
             result = adapter.execute_query("SELECT 1")
             assert result == "from_main"
+
+
+def test_local_opera_sql_bool_is_false_when_no_connector():
+    """bool(adapter) preserves the `if not sql_connector:` pattern
+    that route handlers use to fail fast."""
+    import api.main  # noqa: F401
+    from apps.core.adapters.local.opera_sql import LocalOperaSQLAdapter
+    with patch('apps.core.state.sql_connector', None):
+        with patch('api.main.sql_connector', None):
+            adapter = LocalOperaSQLAdapter()
+            assert bool(adapter) is False
+            assert not adapter   # idiomatic check used in route handlers
+
+
+def test_local_opera_sql_bool_is_true_when_connector_present():
+    from apps.core.adapters.local.opera_sql import LocalOperaSQLAdapter
+    fake = MagicMock()
+    with patch('apps.core.state.sql_connector', fake):
+        adapter = LocalOperaSQLAdapter()
+        assert bool(adapter) is True
+
+
+def test_local_email_storage_bool_reflects_underlying_storage():
+    import api.main  # noqa: F401
+    from apps.core.adapters.local.email_storage import LocalEmailStorageAdapter
+    fake = MagicMock()
+    with patch('apps.core.state.email_storage', fake):
+        adapter = LocalEmailStorageAdapter()
+        assert bool(adapter) is True
+    with patch('apps.core.state.email_storage', None):
+        with patch('api.main.email_storage', None):
+            adapter = LocalEmailStorageAdapter()
+            assert bool(adapter) is False
 
 
 # =====================================================================
@@ -174,6 +209,7 @@ def test_to_records_handles_dataframe_like():
 
 def test_local_email_storage_returns_empty_when_no_storage():
     """Graceful degrade — no storage means empty results, not crash."""
+    import api.main  # noqa: F401
     from apps.core.adapters.local.email_storage import LocalEmailStorageAdapter
     with patch('apps.core.state.email_storage', None):
         with patch('api.main.email_storage', None):

@@ -85,7 +85,8 @@ async def aged_creditors_summary():
     which matches Opera's own aged creditors report exactly.
     Falls back to ptran-based calculation if phist is unavailable.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="Database connection not available")
@@ -278,7 +279,8 @@ async def aged_creditors_trend(
     querying all ptran records (not just outstanding) and computing balances
     as at each month-end.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="Database connection not available")
@@ -373,7 +375,8 @@ async def aged_creditors_detail(account: str):
     Returns individual outstanding invoices/credit notes/debit notes grouped
     into aging buckets with transaction-level detail.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="Database connection not available")

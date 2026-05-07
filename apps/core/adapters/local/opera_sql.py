@@ -24,7 +24,15 @@ class LocalOperaSQLAdapter:
     company switches mid-request work correctly). The underlying
     SQLConnector handles pooling + locking hints + per-company
     isolation.
+
+    `bool(adapter)` is True iff an underlying connector is currently
+    resolvable. This preserves the legacy `if not sql_connector:`
+    pattern that route handlers use to fail fast when no company
+    is active.
     """
+
+    def __bool__(self) -> bool:
+        return self._resolve_connector() is not None
 
     def execute_query(
         self,

@@ -154,7 +154,9 @@ async def _process_single_email(email_id: int, storage, providers):
         opera3_data_provider.py patterns. See SQL SE queries below marked with
         TODO comments for the specific queries that need Opera 3 equivalents.
     """
-    from api.main import sql_connector, config as app_config
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
+    from api.main import config as app_config
     from sql_rag.supplier_statement_db import get_supplier_statement_db
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
     from sql_rag.supplier_reconciler import reconcile, TheirItem, OurItem, clean_reference

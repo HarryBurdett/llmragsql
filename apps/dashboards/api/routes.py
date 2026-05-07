@@ -428,7 +428,8 @@ async def credit_control_query_param(query_name: str, account: str = None, custo
     Execute a parameterized credit control query.
     For use by the credit control agent with specific parameters.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -471,7 +472,8 @@ async def credit_control_dashboard():
     Get summary dashboard data for credit control.
     Returns key metrics in a single API call.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -620,7 +622,8 @@ async def credit_control_debtors_report():
     Get aged debtors report with balance breakdown by aging period.
     Columns: Account, Customer, Balance, Current, 1 Month, 2 Month, 3 Month+
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -681,7 +684,8 @@ async def nominal_trial_balance(year: int = 2026):
     Returns account balances with debit/credit columns for the specified year.
     Only includes transactions dated within the specified year.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -769,7 +773,8 @@ async def nominal_statutory_accounts(year: int = 2026):
     Generate UK statutory accounts (P&L and Balance Sheet) from ntran.
     Returns formatted accounts following UK GAAP structure.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -911,7 +916,8 @@ async def credit_control_query(request: CreditControlQueryRequest):
     More accurate than RAG for precise financial data.
     Supports all 15+ credit control agent query types.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     # Backend validation - check for empty question
     if not request.question or not request.question.strip():
@@ -1091,7 +1097,8 @@ async def cashflow_forecast(years_history: int = 3):
     Generate cashflow forecast based on historical transaction patterns.
     Analyzes receipts (money in) and payments (money out) to predict monthly cashflow.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -1374,7 +1381,8 @@ async def cashflow_history():
     """
     Get detailed cashflow history by year and month.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
 
@@ -1458,7 +1466,9 @@ async def cashflow_history():
 @router.get("/api/dashboard/available-years")
 async def get_available_years():
     """Get years with transaction data and determine the best default year."""
-    from api.main import sql_connector, current_company
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
+    from api.main import current_company
     try:
         # Get years from nominal transactions - support both E/F codes and numeric 30/35 codes
         # Note: RTRIM needed as nt_type may have trailing spaces
@@ -1506,7 +1516,8 @@ async def get_available_years():
 @router.get("/api/dashboard/sales-categories")
 async def get_sales_categories():
     """Get sales categories/segments for the current company's data."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Try to get categories from invoice lines with analysis codes
         df = sql_connector.execute_query("""
@@ -1534,7 +1545,8 @@ async def get_sales_categories():
 @router.get("/api/dashboard/ceo-kpis")
 async def get_ceo_kpis(year: int = 2026):
     """Get CEO-level KPIs: MTD, QTD, YTD sales, growth, customer metrics."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         from datetime import datetime as dt
 
@@ -1631,7 +1643,8 @@ async def get_ceo_kpis(year: int = 2026):
 @router.get("/api/dashboard/revenue-over-time")
 async def get_revenue_over_time(year: int = 2026):
     """Get monthly revenue breakdown by category."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Get monthly totals - simpler approach that works across company types
         df = sql_connector.execute_query(f"""
@@ -1680,7 +1693,8 @@ async def get_revenue_over_time(year: int = 2026):
 @router.get("/api/dashboard/revenue-composition")
 async def get_revenue_composition(year: int = 2026):
     """Get revenue breakdown by category with comparison to previous year."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Get revenue by nominal account description - works for all company types
         df = sql_connector.execute_query(f"""
@@ -1742,7 +1756,8 @@ async def get_revenue_composition(year: int = 2026):
 @router.get("/api/dashboard/top-customers")
 async def get_top_customers(year: int = 2026, limit: int = 20):
     """Get top customers by revenue with trends."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         df = sql_connector.execute_query(f"""
             SELECT
@@ -1803,7 +1818,8 @@ async def get_top_customers(year: int = 2026, limit: int = 20):
 @router.get("/api/dashboard/customer-concentration")
 async def get_customer_concentration(year: int = 2026):
     """Get customer concentration analysis."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         df = sql_connector.execute_query(f"""
             SELECT
@@ -1852,7 +1868,8 @@ async def get_customer_concentration(year: int = 2026):
 @router.get("/api/dashboard/customer-lifecycle")
 async def get_customer_lifecycle(year: int = 2026):
     """Get customer lifecycle analysis - new, lost, by age band."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Get first transaction date per customer
         df = sql_connector.execute_query(f"""
@@ -1927,7 +1944,8 @@ async def get_customer_lifecycle(year: int = 2026):
 @router.get("/api/dashboard/margin-by-category")
 async def get_margin_by_category(year: int = 2026):
     """Get gross margin analysis by revenue category."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Get total revenue and COS - works for all company types
         # Note: RTRIM needed as nt_type may have trailing spaces
@@ -2004,7 +2022,8 @@ async def get_margin_by_category(year: int = 2026):
 @router.get("/api/dashboard/finance-summary")
 async def get_finance_summary(year: int = 2024):
     """Get financial summary: P&L overview, Balance Sheet summary, Key ratios."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Get P&L summary by type - using ntran for YTD values by year
         # Note: RTRIM needed as nt_type may have trailing spaces
@@ -2111,7 +2130,8 @@ async def get_finance_summary(year: int = 2024):
 @router.get("/api/dashboard/finance-monthly")
 async def get_finance_monthly(year: int = 2024):
     """Get monthly P&L breakdown for finance view."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Support both E/F/H codes and numeric 30/35/45 codes
         # Note: RTRIM needed as nt_type may have trailing spaces
@@ -2194,7 +2214,8 @@ async def get_finance_monthly(year: int = 2024):
 @router.get("/api/dashboard/sales-by-product")
 async def get_sales_by_product(year: int = 2024):
     """Get sales breakdown by product category - adapts to company data structure."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     # Analysis code description mapping for Company Z style codes
     analysis_code_descriptions = {
@@ -2333,7 +2354,8 @@ async def get_executive_summary(year: int = 2026):
     Executive Summary KPIs - what a Sales Director should see first.
     Provides at-a-glance performance metrics with like-for-like comparisons.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from datetime import datetime as dt
 
     try:
@@ -2470,7 +2492,8 @@ async def get_revenue_by_category_detailed(year: int = 2026):
     Detailed revenue breakdown by sales category with YoY comparison.
     Categories: Recurring (Support/AMC), Consultancy, Cloud/Hosting, Software Resale.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Get revenue by nominal account subtype - provides category breakdown
         df = sql_connector.execute_query(f"""
@@ -2575,7 +2598,8 @@ async def get_new_vs_existing_revenue(year: int = 2026):
     vs existing customers (invoiced in prior years).
     Critical for understanding growth sources.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         # Get customer first transaction dates and revenue by year
         df = sql_connector.execute_query(f"""
@@ -2665,7 +2689,8 @@ async def get_customer_churn_analysis(year: int = 2026):
     Customer churn and retention analysis.
     Shows customers lost, at risk, and retention rate.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         df = sql_connector.execute_query(f"""
             SELECT
@@ -2778,7 +2803,8 @@ async def get_forward_indicators(year: int = 2026):
     Forward-looking indicators: run rate, recurring revenue base, risk flags.
     Helps predict future performance.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from datetime import datetime as dt
 
     try:
@@ -2898,7 +2924,8 @@ async def get_monthly_comparison(year: int = 2026):
     Detailed month-by-month comparison: current year vs same month last year.
     Shows seasonality patterns and identifies anomalies.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     try:
         df = sql_connector.execute_query(f"""
             SELECT

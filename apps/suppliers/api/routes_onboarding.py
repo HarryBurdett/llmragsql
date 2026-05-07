@@ -41,7 +41,8 @@ class VerifyBankRequest(BaseModel):
 
 def _get_supplier_names_sql() -> dict:
     """Fetch supplier account -> name mapping from Opera SQL SE pname table."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     supplier_names = {}
     if sql_connector:
         try:
@@ -57,7 +58,8 @@ def _get_supplier_names_sql() -> dict:
 
 def _get_supplier_name_sql(account: str) -> Optional[str]:
     """Fetch a single supplier name from Opera SQL SE pname table."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if sql_connector:
         try:
             df = sql_connector.execute_query(
@@ -73,7 +75,8 @@ def _get_supplier_name_sql(account: str) -> Optional[str]:
 
 def _get_supplier_detail_sql(account: str) -> Optional[dict]:
     """Fetch supplier details from Opera SQL SE pname table."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     if sql_connector:
         try:
             df = sql_connector.execute_query(
@@ -437,7 +440,8 @@ async def detect_new_suppliers():
     records for any suppliers not yet tracked.
     """
     try:
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
         from sql_rag.supplier_statement_db import get_supplier_statement_db
         db = get_supplier_statement_db()
 

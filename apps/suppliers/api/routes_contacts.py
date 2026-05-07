@@ -305,7 +305,8 @@ async def get_supplier_contacts(account: str):
     Reads from Opera zcontacts table (SQL SE) and merges with local
     supplier_contacts_ext extensions for role flags.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import SupplierStatementDB
 
     try:
@@ -644,7 +645,8 @@ async def create_opera_contact(account: str, body: OperaContactCreateRequest):
     inserts the contact record, logs the change to the audit table,
     and optionally stores security/automation extension fields locally.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import SupplierStatementDB
     from sqlalchemy import text
 
@@ -770,7 +772,8 @@ async def update_opera_contact(account: str, contact_id: int, body: OperaContact
     changes to the audit table. Security/automation fields are stored
     in the local supplier_contacts_ext table.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import SupplierStatementDB
     from sqlalchemy import text
 
@@ -911,7 +914,8 @@ async def delete_opera_contact(account: str, contact_id: int):
     Logs the deletion to the audit table and removes any associated
     local security extension.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import SupplierStatementDB
     from sqlalchemy import text
 

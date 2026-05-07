@@ -88,7 +88,8 @@ def _check_supplier_communication_allowed(supplier_code: str) -> tuple:
         # No supplier scope (e.g. internal alerts) — let the caller decide.
         return True, ""
     try:
-        from api.main import sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
         from sql_rag.supplier_config import SupplierConfigManager
         db_path = _get_db_path()
         if not db_path or not Path(str(db_path)).exists():
@@ -138,7 +139,8 @@ class ApproveWithBodyRequest(BaseModel):
 @router.get("/api/supplier-config")
 async def list_supplier_config(active_only: bool = False):
     """List all suppliers with their automation flags."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_config import SupplierConfigManager
     from sql_rag.company_data import get_current_db_path
 
@@ -158,7 +160,8 @@ async def list_supplier_config(active_only: bool = False):
 @router.get("/api/supplier-config/{account}")
 async def get_supplier_config(account: str):
     """Get config for a single supplier."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_config import SupplierConfigManager
     from sql_rag.company_data import get_current_db_path
 
@@ -187,7 +190,8 @@ async def update_supplier_flags(account: str, request: Request):
     reconciliation_active, auto_respond, never_communicate,
     statements_contact_position.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_config import SupplierConfigManager
     from sql_rag.company_data import get_current_db_path
 
@@ -220,7 +224,8 @@ async def update_supplier_flags(account: str, request: Request):
 @router.post("/api/supplier-config/sync")
 async def sync_supplier_config():
     """Trigger a one-way sync of supplier master data from Opera into supplier_config."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_config import SupplierConfigManager
     from sql_rag.company_data import get_current_db_path
 
@@ -258,7 +263,8 @@ async def get_supplier_statement_dashboard():
         - Alerts (security, overdue, failed processing)
         - Recent statements, queries, and responses
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -512,7 +518,8 @@ async def get_supplier_statement_dashboard():
 @router.get("/api/supplier-statements")
 async def list_supplier_statements(status: Optional[str] = None):
     """List all supplier statements with line counts and match statistics."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -610,7 +617,8 @@ async def list_supplier_reconciliations():
 @router.get("/api/supplier-statements/history")
 async def list_supplier_statement_history(days: int = 90):
     """List completed/sent statements for history view."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -674,7 +682,8 @@ async def list_supplier_queries(status: Optional[str] = None):
     - overdue: open query older than query_response_days config
     - resolved: query_resolved_at is set
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -822,7 +831,8 @@ async def auto_resolve_supplier_queries():
     - After invoice entry
     - When processing new statements
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     if not sql_connector:
@@ -942,7 +952,8 @@ async def send_query_reminder(query_id: int):
     Returns:
         {success, sent_to, reminder_number, escalated}
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     db_path = _get_db_path()
@@ -1211,7 +1222,8 @@ async def get_overdue_supplier_queries(days_overdue: Optional[int] = None):
     Returns:
         {success, queries: [...], count}
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -1292,7 +1304,8 @@ async def send_updated_statement_status(statement_id: int):
     Generates a final reconciliation response confirming all items
     are now agreed and showing the payment schedule.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     if not sql_connector:
@@ -1426,7 +1439,8 @@ async def send_updated_statement_status(statement_id: int):
 @router.get("/api/supplier-communications")
 async def list_supplier_communications(supplier_code: Optional[str] = None, days: int = 90):
     """List supplier communications history."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -1481,7 +1495,8 @@ async def list_supplier_communications(supplier_code: Optional[str] = None, days
 @router.get("/api/supplier-communications/{account}")
 async def get_supplier_communications(account: str):
     """Get all communications for a supplier — full audit trail."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -1535,7 +1550,8 @@ async def get_supplier_communications(account: str):
 @router.get("/api/supplier-security/alerts")
 async def list_security_alerts():
     """List unverified supplier change alerts (bank details, etc.)."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -1617,7 +1633,8 @@ async def verify_security_alert(alert_id: int, verified_by: str = "System"):
 @router.get("/api/supplier-security/audit")
 async def list_security_audit_log(days: int = 90):
     """List all supplier change audit entries (verified and unverified)."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -1675,7 +1692,9 @@ async def scan_supplier_changes():
     Returns:
         {success, changes_detected: count, alerts_sent: count}
     """
-    from api.main import sql_connector, config as app_config
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
+    from api.main import config as app_config
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     try:
@@ -1996,7 +2015,8 @@ def _check_bank_detail_keywords(text: str) -> bool:
 @router.get("/api/supplier-security/approved-senders")
 async def list_approved_senders(supplier_code: Optional[str] = None):
     """List approved email senders for suppliers."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -2240,7 +2260,8 @@ async def update_supplier_settings(settings: Dict[str, str] = Body(...)):
 @router.get("/api/supplier-directory")
 async def list_supplier_directory(search: Optional[str] = None):
     """List all suppliers from Opera with statement automation info."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     if not sql_connector:
@@ -2331,7 +2352,8 @@ async def preview_supplier_statement_response(statement_id: int):
     Generate a draft response email for a statement without sending it.
     Returns subject, body HTML, and recipient for preview/editing.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     db_path = _get_db_path()
     _run_migrations(db_path)
@@ -2408,7 +2430,8 @@ async def approve_supplier_statement(statement_id: int, request: ApproveWithBody
     Marks the statement as approved, sends the response email to the supplier,
     and records the communication in the audit trail.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     db_path = _get_db_path()
@@ -2570,7 +2593,8 @@ async def acknowledge_supplier_statement(statement_id: int):
     supplier_contacts_ext (is_statement_contact) or falls back to sender_email.
     Respects acknowledgment_delay_minutes from config (0 = immediate).
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     db_path = _get_db_path()
@@ -2790,7 +2814,8 @@ async def bulk_approve_statements(body: BulkApproveRequest):
     Iterates through each statement_id, approves it, and sends the
     response email. Returns a summary of successes and failures.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     db_path = _get_db_path()
@@ -2968,7 +2993,8 @@ def _get_supplier_contact_email(cursor, supplier_code: str, fallback_sender_emai
     # etc.) and prefer a contact whose `position` / role matches.
     target_position = None
     try:
-        from api.main import sql_connector as _sql
+        from apps.core.adapters.factory import get_opera_sql
+        _sql = get_opera_sql()
         from sql_rag.supplier_config import SupplierConfigManager
         db_path = _get_db_path()
         if db_path and Path(str(db_path)).exists():
@@ -3467,7 +3493,9 @@ async def process_supplier_statement_email(email_id: int):
     Full automated pipeline: extract → save → reconcile → acknowledge → generate response.
     This is the main automation entry point.
     """
-    from api.main import sql_connector, email_storage
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
+    from api.main import email_storage
     from sql_rag.supplier_statement_db import get_supplier_statement_db
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
     from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
@@ -3723,7 +3751,8 @@ async def get_supplier_statement_queue():
 @router.get("/api/supplier-statements/{statement_id}")
 async def get_supplier_statement_detail(statement_id: int):
     """Get detailed information about a specific statement."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -3962,7 +3991,8 @@ async def process_supplier_statement(statement_id: int):
     4. Generates draft response
     5. Updates status to 'queued' for approval
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.company_data import get_current_db_path
 
     db_path = get_current_db_path('supplier_statements.db') or Path(__file__).parent.parent.parent.parent / 'supplier_statements.db'
@@ -4311,7 +4341,9 @@ async def reconcile_supplier_statement(email_id: int, attachment_id: Optional[st
     Returns:
         Reconciliation result with match details and generated response
     """
-    from api.main import sql_connector, email_storage, email_sync_manager, config
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
+    from api.main import email_storage, email_sync_manager, config
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
     from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
 
@@ -4447,7 +4479,8 @@ async def creditors_dashboard():
     """
     Get creditors control dashboard with key metrics.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -4558,7 +4591,8 @@ async def creditors_report():
     """
     Get aged creditors report with balance breakdown by aging period.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -4610,7 +4644,8 @@ async def get_supplier_details(account: str):
     """
     Get detailed information for a specific supplier.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -4658,7 +4693,8 @@ async def get_supplier_transactions(account: str, include_paid: bool = False):
     """
     Get outstanding transactions for a specific supplier.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -4724,7 +4760,8 @@ async def get_supplier_statement(account: str, from_date: str = None, to_date: s
     """
     Generate a supplier statement showing outstanding transactions only.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -4820,7 +4857,8 @@ async def search_suppliers(query: str, limit: int = Query(20, ge=1, le=1000)):
     """
     Search for suppliers by any field - account, name, address, contact, email, phone.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -4874,7 +4912,8 @@ async def search_suppliers(query: str, limit: int = Query(20, ge=1, le=1000)):
 @router.get("/api/supplier/account/first")
 async def get_first_supplier_account():
     """Get the first supplier with a balance (for default view)."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -4906,7 +4945,8 @@ async def get_supplier_account_view(
     Get full supplier account view matching Opera's Purchase Processing screen.
     Returns supplier details, outstanding transactions, and aging analysis.
     """
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
 
     if not sql_connector:
         raise HTTPException(status_code=503, detail="SQL connector not initialized")
@@ -5086,7 +5126,8 @@ async def get_supplier_account_view(
 @router.get("/api/supplier-config/{account}/detail")
 async def get_supplier_detail(account: str):
     """Full supplier detail — Opera data, automation flags, contact, statement history, audit trail."""
-    from api.main import sql_connector
+    from apps.core.adapters.factory import get_opera_sql
+    sql_connector = get_opera_sql()
     from sql_rag.supplier_config import SupplierConfigManager
     from sql_rag.company_data import get_current_db_path
 
