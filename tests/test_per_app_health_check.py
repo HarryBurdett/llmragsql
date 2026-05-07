@@ -202,6 +202,83 @@ def test_bank_reconcile_health_check_graceful_when_no_dbs():
     assert result.healthy is True
 
 
+def test_bank_reconcile_handles_pre_migration_aliases_db(tmp_path):
+    """Regression: a real bank_aliases.db without the bank_code
+    column (pre-Phase-6 migration) must NOT cause an error-severity
+    check failure. The health check should:
+      - tolerate the missing column (build SELECT dynamically)
+      - return info-severity 'skipped' for the bank-code check
+      - still report customer/supplier orphans correctly
+
+    Caused by user-reported bug: 'Could not read bank_aliases.db:
+    no such column: bank_code'.
+    """
+    import sqlite3
+    from apps.bank_reconcile.logic.health_check import run_health_check
+
+    # Build a pre-migration schema (no bank_code column)
+    db_path = tmp_path / 'bank_aliases.db'
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE bank_import_aliases (
+            id INTEGER PRIMARY KEY,
+            bank_name TEXT NOT NULL,
+            account_code TEXT,
+            ledger_type TEXT,
+            active INTEGER DEFAULT 1
+        )
+    """)
+    conn.execute(
+        "INSERT INTO bank_import_aliases (bank_name, account_code, ledger_type) "
+        "VALUES (?, ?, ?)",
+        ('TESCO', 'CUST001', 'C'),
+    )
+    conn.commit()
+    conn.close()
+
+    opera = _StubOperaSQL(codes_by_table={
+        'nbank': ['BC010'],
+        'sname': ['CUST001'],
+        'pname': ['SUPP001'],
+        'nacnt': ['1000'],
+    })
+
+    result = run_health_check(opera, company_db_paths={
+        'bank_aliases.db': str(db_path),
+        'bank_patterns.db': None,
+        'email_data.db': None,
+    })
+
+    # The 'Bank aliases' top-level read should NOT fail with an
+    # error severity any more.
+    error_aliases = [
+        c for c in result.checks
+        if c.name == 'Bank aliases' and c.severity == 'error'
+    ]
+    assert not error_aliases, (
+        f"Pre-migration aliases DB triggered an error: "
+        f"{[c.description for c in error_aliases]}"
+    )
+
+    # The bank-code check should either be skipped (info severity)
+    # if the migration didn't run, or pass cleanly (warning severity,
+    # 0 orphans) if it did. Either way, no failure.
+    bank_code_check = [c for c in result.checks if c.name == 'Alias bank codes']
+    assert len(bank_code_check) == 1
+    assert bank_code_check[0].passed is True
+    assert bank_code_check[0].orphan_count == 0
+
+    # Customer/supplier checks should still run normally (the row
+    # has valid customer 'CUST001' so passes).
+    cust_check = [c for c in result.checks if c.name == 'Alias customer codes']
+    assert len(cust_check) == 1
+    assert cust_check[0].passed is True
+    assert cust_check[0].total_checked == 1
+
+    # Overall: healthy=True (no error-severity failures)
+    assert result.healthy is True
+
+
 def test_gocardless_health_check_graceful_when_no_dbs():
     from apps.gocardless.logic.health_check import run_health_check
     opera = _StubOperaSQL()

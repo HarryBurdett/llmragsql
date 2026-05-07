@@ -158,53 +158,87 @@ def _check_settings_fees_account(
 def _check_payment_customer_codes(
     db_path: str, valid_customer_codes: set[str],
 ) -> HealthCheckItem:
+    """Inspect the GoCardless app's local DB for orphan Opera customer
+    references.
+
+    The actual schema (sql_rag/gocardless_payments.py) uses two
+    tables:
+      - gocardless_mandates.opera_account
+      - gocardless_payment_requests.opera_account
+
+    Both reference Opera customers (sname.sn_account). We union the
+    distinct codes from both and check each against Opera.
+    """
+    # Discover which expected tables actually exist (schema may
+    # have evolved across versions / installations).
     try:
-        # The exact column name varies by schema version. Try both.
-        rows = _read_sqlite(
-            db_path,
-            "SELECT DISTINCT customer_code FROM gocardless_payments "
-            "WHERE customer_code IS NOT NULL AND customer_code != ''"
+        tables = _sqlite_tables(db_path)
+    except Exception as e:
+        return HealthCheckItem(
+            name='Payment history customers',
+            description=f'Skipped — could not read GoCardless DB: {e}',
+            passed=True,
+            severity='info',
         )
-    except Exception:
+
+    # Pull opera_account codes from each table that exists.
+    referenced: set[str] = set()
+    sources_inspected = 0
+    for table in ('gocardless_mandates', 'gocardless_payment_requests'):
+        if table not in tables:
+            continue
         try:
             rows = _read_sqlite(
                 db_path,
-                "SELECT DISTINCT account_code AS customer_code FROM gocardless_payments "
-                "WHERE account_code IS NOT NULL AND account_code != ''"
+                f"SELECT DISTINCT opera_account FROM {table} "
+                "WHERE opera_account IS NOT NULL AND opera_account != ''"
             )
+            sources_inspected += 1
+            for r in rows:
+                code = (r.get('opera_account') or '').strip()
+                if code:
+                    referenced.add(code)
         except Exception as e:
-            return HealthCheckItem(
-                name='Payment history customers',
-                description=f'Skipped — could not read gocardless_payments: {e}',
-                passed=True,
-                severity='info',
-            )
+            logger.debug(f"Skipping {table}: {e}")
 
-    if not rows:
+    if sources_inspected == 0:
         return HealthCheckItem(
             name='Payment history customers',
-            description='No payment history yet — nothing to check',
+            description=(
+                'Skipped — no GoCardless tables present yet '
+                '(no mandates or payment requests recorded)'
+            ),
+            passed=True,
+            severity='info',
+        )
+
+    if not referenced:
+        return HealthCheckItem(
+            name='Payment history customers',
+            description='No customer references in GoCardless data — nothing to check',
             passed=True,
             severity='info',
         )
 
     orphans: list[dict[str, Any]] = []
     orphan_total = 0
-    for r in rows:
-        code = (r.get('customer_code') or '').strip()
-        if code and code not in valid_customer_codes:
+    for code in sorted(referenced):
+        if code not in valid_customer_codes:
             orphan_total += 1
             if len(orphans) < MAX_ORPHANS_RETURNED:
                 orphans.append({
-                    'customer_code': code,
-                    'reason': f"customer '{code}' from payment history not in Opera sname",
+                    'opera_account': code,
+                    'reason': f"customer '{code}' from GoCardless data not in Opera sname",
                 })
 
     return HealthCheckItem(
         name='Payment history customers',
-        description='Customer codes in payment history must exist in Opera sname',
+        description=(
+            'Opera customer codes referenced in GoCardless mandates / '
+            'payment requests must exist in Opera sname'
+        ),
         passed=orphan_total == 0,
-        total_checked=len(rows),
+        total_checked=len(referenced),
         orphan_count=orphan_total,
         orphans=orphans,
         severity='warning',
@@ -234,5 +268,19 @@ def _read_sqlite(path: str, sql: str) -> list[dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(sql)
         return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _sqlite_tables(path: str) -> set[str]:
+    """Return the set of table names in the SQLite at `path`.
+    Used so the health check can adapt to whichever schema version
+    is present (no hard dependency on a specific table existing)."""
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+        return {row[0] for row in cur.fetchall()}
     finally:
         conn.close()

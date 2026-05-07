@@ -131,14 +131,56 @@ def _check_bank_aliases(
     """Inspect bank_aliases.db for orphan code references."""
     items: list[HealthCheckItem] = []
 
-    # Read all aliases
+    # Trigger any pending schema migrations before reading. The
+    # health check reads SQLite directly (not via BankAliasManager),
+    # so any column added by a migration won't exist on a DB that
+    # hasn't been touched since the migration shipped. Instantiating
+    # BankAliasManager is idempotent and runs the migration if needed.
+    try:
+        from sql_rag.bank_aliases import BankAliasManager
+        BankAliasManager(db_path=aliases_path)
+    except Exception as e:
+        logger.debug(f"Could not pre-migrate bank_aliases.db: {e}")
+        # Continue — the column-tolerant query below will still work
+        # even if the migration didn't run.
+
+    # Discover which columns actually exist (defensive: pre-migration
+    # DBs lack 'bank_code'; future migrations may add more).
+    try:
+        cols = _sqlite_columns(aliases_path, 'bank_import_aliases')
+    except Exception as e:
+        items.append(HealthCheckItem(
+            name='Bank aliases',
+            description=f'Could not read bank_aliases.db: {e}',
+            passed=False,
+            severity='error',
+        ))
+        return items
+
+    # Build SELECT with only the columns we have. account_code +
+    # ledger_type + bank_name are required for the orphan checks;
+    # bank_code is optional (post-migration).
+    required = {'bank_name', 'account_code', 'ledger_type'}
+    missing_required = required - cols
+    if missing_required:
+        items.append(HealthCheckItem(
+            name='Bank aliases',
+            description=f'bank_import_aliases missing required columns: {sorted(missing_required)}',
+            passed=False,
+            severity='error',
+        ))
+        return items
+
+    has_bank_code = 'bank_code' in cols
+    select_cols = ['bank_name', 'account_code', 'ledger_type']
+    if has_bank_code:
+        select_cols.append('bank_code')
     try:
         rows = _read_sqlite(
             aliases_path,
-            "SELECT bank_name, account_code, ledger_type, bank_code FROM bank_import_aliases"
+            f"SELECT {', '.join(select_cols)} FROM bank_import_aliases",
         )
     except Exception as e:
-        logger.warning(f"Could not read bank aliases for health check: {e}")
         items.append(HealthCheckItem(
             name='Bank aliases',
             description=f'Could not read bank_aliases.db: {e}',
@@ -156,31 +198,43 @@ def _check_bank_aliases(
         ))
         return items
 
-    # Bank-code orphans
-    bank_orphans: list[dict[str, Any]] = []
-    for r in rows:
-        bc = (r.get('bank_code') or '').strip()
-        if bc and bc not in valid_bank_codes:
-            if len(bank_orphans) < MAX_ORPHANS_RETURNED:
-                bank_orphans.append({
-                    'bank_name': r.get('bank_name'),
-                    'bank_code': bc,
-                    'reason': f"bank_code '{bc}' not in Opera nbank",
-                })
-    bank_orphan_total = sum(
-        1 for r in rows
-        if (r.get('bank_code') or '').strip()
-        and (r.get('bank_code') or '').strip() not in valid_bank_codes
-    )
-    items.append(HealthCheckItem(
-        name='Alias bank codes',
-        description='Bank codes used in alias rows must exist in Opera nbank',
-        passed=bank_orphan_total == 0,
-        total_checked=len(rows),
-        orphan_count=bank_orphan_total,
-        orphans=bank_orphans,
-        severity='warning',
-    ))
+    # Bank-code orphans (only meaningful post-migration when the
+    # column exists; pre-migration DBs default-imply 'no bank scope').
+    if has_bank_code:
+        bank_orphans: list[dict[str, Any]] = []
+        for r in rows:
+            bc = (r.get('bank_code') or '').strip()
+            if bc and bc not in valid_bank_codes:
+                if len(bank_orphans) < MAX_ORPHANS_RETURNED:
+                    bank_orphans.append({
+                        'bank_name': r.get('bank_name'),
+                        'bank_code': bc,
+                        'reason': f"bank_code '{bc}' not in Opera nbank",
+                    })
+        bank_orphan_total = sum(
+            1 for r in rows
+            if (r.get('bank_code') or '').strip()
+            and (r.get('bank_code') or '').strip() not in valid_bank_codes
+        )
+        items.append(HealthCheckItem(
+            name='Alias bank codes',
+            description='Bank codes used in alias rows must exist in Opera nbank',
+            passed=bank_orphan_total == 0,
+            total_checked=len(rows),
+            orphan_count=bank_orphan_total,
+            orphans=bank_orphans,
+            severity='warning',
+        ))
+    else:
+        items.append(HealthCheckItem(
+            name='Alias bank codes',
+            description=(
+                'Skipped — bank_aliases.db is pre-migration (no bank_code '
+                'column). Migration runs on next BankAliasManager use.'
+            ),
+            passed=True,
+            severity='info',
+        ))
 
     # Customer-code orphans (ledger_type 'C')
     cust_rows = [r for r in rows if (r.get('ledger_type') or '').upper() == 'C']
@@ -409,5 +463,16 @@ def _read_sqlite(path: str, sql: str) -> list[dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(sql)
         return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _sqlite_columns(path: str, table: str) -> set[str]:
+    """Return the set of column names for `table` in the SQLite at
+    `path`. Used to build SELECTs that tolerate pre-migration schemas."""
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.execute(f"PRAGMA table_info({table})")
+        return {row[1] for row in cur.fetchall()}
     finally:
         conn.close()
