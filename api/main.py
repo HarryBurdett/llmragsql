@@ -382,13 +382,25 @@ SYSTEMS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 active_system_id: Optional[str] = None
 
 def load_config(config_path: str = None) -> configparser.ConfigParser:
-    """Load configuration from file."""
-    if config_path is None:
-        config_path = CONFIG_PATH
-    cfg = configparser.ConfigParser()
-    if os.path.exists(config_path):
-        cfg.read(config_path)
-    return cfg
+    """Load configuration with env-var precedence (Phase A — SAM-readiness).
+
+    Resolution order:
+      1. Environment variables (SECTION_KEY uppercased)
+      2. config.ini at the repo root (development convenience only)
+      3. Caller-supplied fallback= in `cfg.get(...)` calls
+
+    For containerised deployment, set env vars instead of shipping
+    config.ini. For SAM platform integration, the platform populates
+    env vars and our code keeps working unchanged.
+
+    The legacy `config_path` argument is honoured for backwards compat
+    with tests that point at a temp config.ini — when present, it is
+    set as CONFIG_INI_PATH so the env loader picks it up.
+    """
+    from apps.core.env_config import reload_config
+    if config_path is not None and config_path != CONFIG_PATH:
+        os.environ['CONFIG_INI_PATH'] = config_path
+    return reload_config()
 
 def load_companies() -> List[Dict[str, Any]]:
     """Load all company configurations from the companies directory."""

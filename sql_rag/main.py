@@ -39,14 +39,22 @@ class SQLRagApplication:
         logger.info("SQL RAG Application initialized")
 
     def _load_config(self, config_path: str) -> configparser.ConfigParser:
-        """Load configuration from the specified file."""
-        if not os.path.exists(config_path):
-            logger.error(f"Configuration file {config_path} not found")
-            sys.exit(1)
-            
-        config = configparser.ConfigParser()
-        config.read(config_path)
-        return config
+        """Load configuration with env-var precedence (Phase A — SAM-readiness).
+
+        Env vars override config.ini. Containerised deployments set
+        env vars instead of shipping a config.ini.
+        """
+        from apps.core.env_config import reload_config
+        if config_path and os.path.exists(config_path):
+            os.environ['CONFIG_INI_PATH'] = config_path
+        elif config_path:
+            # Path was specified but file missing — log warning but
+            # continue: env vars may still provide everything needed.
+            logger.warning(
+                f"Configuration file {config_path} not found; "
+                "relying on env vars only"
+            )
+        return reload_config()
     
     def setup_logging(self):
         """Configure logging based on settings in config."""

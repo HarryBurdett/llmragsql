@@ -92,10 +92,22 @@ class SQLConnector:
             FileNotFoundError: If the config file doesn't exist
             configparser.Error: If there's an error parsing the config file
         """
-        if not os.path.exists(self.config_path):
-            logger.warning(f"Config file not found: {self.config_path}, using default configuration")
-            config = configparser.ConfigParser()
-            config['database'] = {
+        # Phase A — SAM-readiness: prefer env vars, fall back to
+        # config.ini at self.config_path. The env-var loader handles
+        # the path lookup; passing self.config_path through
+        # CONFIG_INI_PATH preserves existing call-site contracts (some
+        # tests pass a custom path).
+        from apps.core.env_config import reload_config
+        if self.config_path and self.config_path != os.environ.get('CONFIG_INI_PATH'):
+            os.environ['CONFIG_INI_PATH'] = self.config_path
+        config = reload_config()
+
+        # If neither env vars nor config.ini provided database settings,
+        # fall back to the historical defaults so the same code path
+        # works in test environments that use SQLite-in-memory.
+        if not config.has_section('database'):
+            config.add_section('database')
+            for k, v in {
                 'type': DatabaseType.MSSQL,
                 'server': 'localhost',
                 'database': '',
@@ -107,17 +119,10 @@ class SQLConnector:
                 'pool_timeout': str(DEFAULT_POOL_TIMEOUT),
                 'pool_recycle': str(DEFAULT_POOL_RECYCLE),
                 'connection_timeout': str(DEFAULT_CONNECTION_TIMEOUT),
-                'command_timeout': str(DEFAULT_COMMAND_TIMEOUT)
-            }
-            return config
-        
-        config = configparser.ConfigParser()
-        try:
-            config.read(self.config_path)
-            return config
-        except configparser.Error as e:
-            logger.error(f"Error parsing config file: {e}")
-            raise
+                'command_timeout': str(DEFAULT_COMMAND_TIMEOUT),
+            }.items():
+                config.set('database', k, v)
+        return config
     
     def _get_database_type(self) -> str:
         """

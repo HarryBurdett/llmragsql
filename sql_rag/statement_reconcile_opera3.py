@@ -59,15 +59,14 @@ class StatementReconcilerOpera3:
         """
         self.reader = opera3_reader
 
-        # Load config if not provided
+        # Load config if not provided. Phase A — env-var precedence.
         if config is None:
-            config = configparser.ConfigParser()
+            from apps.core.env_config import reload_config
             cfg_path = config_path or DEFAULT_CONFIG_PATH
-            if Path(cfg_path).exists():
-                config.read(cfg_path)
+            if cfg_path and Path(cfg_path).exists():
+                os.environ['CONFIG_INI_PATH'] = str(cfg_path)
                 logger.info(f"Loaded config from {cfg_path}")
-            else:
-                logger.warning(f"Config file not found: {cfg_path}")
+            config = reload_config()
 
         self.config = config
 
