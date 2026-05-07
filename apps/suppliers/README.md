@@ -1,6 +1,6 @@
 # Supplier Statement Reconciliation — Integration Guide
 
-> Generated 10 April 2026
+> Generated 10 April 2026 — last updated 2026-05-07
 
 ## Overview
 
@@ -8,6 +8,15 @@ Receive supplier statements by email, auto-reconcile against purchase ledger, ge
 
 **Module ID:** `suppliers`
 **Version:** 1.0
+
+## Docker / SAM deployment
+
+This app is Docker-compliant and ready for SAM platform deployment.
+
+- **Image target:** `suppliers` (in repo-root `Dockerfile`)
+- **INSTALLED_APPS:** `suppliers`
+- **Env-var contract:** see [`docs/sam-migration/apps/suppliers.md`](../../../docs/sam-migration/apps/suppliers.md)
+- **Local dev:** `docker compose up suppliers`
 
 ---
 

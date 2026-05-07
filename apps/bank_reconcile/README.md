@@ -1,6 +1,6 @@
 # Bank Statement Reconciliation — Integration Guide
 
-> Generated 10 April 2026
+> Generated 10 April 2026 — last updated 2026-05-07
 
 ## Overview
 
@@ -8,6 +8,15 @@ Import bank statements from PDF (email or file), AI-extract transactions, auto-m
 
 **Module ID:** `bank_reconcile`
 **Version:** 1.0
+
+## Docker / SAM deployment
+
+This app is Docker-compliant and ready for SAM platform deployment.
+
+- **Image target:** `bank-reconcile` (in repo-root `Dockerfile`)
+- **INSTALLED_APPS:** `bank_reconcile`
+- **Env-var contract:** see [`docs/sam-migration/apps/bank-reconcile.md`](../../../docs/sam-migration/apps/bank-reconcile.md)
+- **Local dev:** `docker compose up bank-reconcile`
 
 ---
 

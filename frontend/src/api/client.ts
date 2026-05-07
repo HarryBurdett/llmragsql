@@ -1,6 +1,14 @@
 import axios from 'axios';
 
-const API_BASE_URL = '/api';
+// SAM-readiness: when running inside docker-compose with the
+// nginx-gateway in front, set VITE_API_BASE_URL=http://localhost:8080
+// at build time so the frontend talks to the gateway. SAM deployment:
+// VITE_API_BASE_URL is set to SAM's ingress URL.
+//
+// Default '/' (relative path) preserves today's behaviour for the
+// un-containerised Vite dev server with Python API on the same host.
+const API_ROOT = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '';
+const API_BASE_URL = `${API_ROOT}/api`;
 
 /**
  * Translate raw database/technical error messages into user-friendly text.

@@ -1,6 +1,6 @@
 # GoCardless Direct Debit Import — Integration Guide
 
-> Generated 10 April 2026
+> Generated 10 April 2026 — last updated 2026-05-07
 
 ## Overview
 
@@ -8,6 +8,17 @@ Collect payments via GoCardless Direct Debit, match to customer invoices, post r
 
 **Module ID:** `gocardless`
 **Version:** 1.0
+
+## Docker / SAM deployment
+
+This app is Docker-compliant and ready for SAM platform deployment.
+
+- **Image target:** `gocardless` (in repo-root `Dockerfile`)
+- **INSTALLED_APPS:** `gocardless`
+- **Env-var contract:** see [`docs/sam-migration/apps/gocardless.md`](../../../docs/sam-migration/apps/gocardless.md)
+- **Local dev:** `docker compose up gocardless`
+
+⚠️ **Sandbox tokens only in development.** See [CLAUDE.md](../../../CLAUDE.md) — never make live API requests to GoCardless production while testing.
 
 ---
 
