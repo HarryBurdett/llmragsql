@@ -641,7 +641,9 @@ async def _process_single_email(email_id: int, storage, providers):
 def _send_acknowledgement(db, statement_id, supplier_name, supplier_code, from_addr, info):
     """Send acknowledgement email to the supplier contact in Opera."""
     try:
-        from api.main import config as app_config, sql_connector
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
+        from api.main import config as app_config
 
         # Check if acknowledgements are enabled
         send_ack = True

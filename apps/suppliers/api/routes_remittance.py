@@ -452,7 +452,8 @@ async def send_remittance(account: str, body: SendRemittanceRequest):
     """
     from apps.core.adapters.factory import get_opera_sql
     sql_connector = get_opera_sql()
-    from api.main import email_storage
+    from apps.core.adapters.factory import get_email_storage
+    email_storage = get_email_storage()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
 
     if not sql_connector:

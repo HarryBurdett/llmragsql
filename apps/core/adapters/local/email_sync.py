@@ -8,7 +8,40 @@ logger = logging.getLogger(__name__)
 
 
 class LocalEmailSyncAdapter:
-    """Wraps the in-process email_sync_manager singleton."""
+    """Wraps the in-process email_sync_manager singleton.
+
+    `bool(adapter)` reflects whether an underlying manager exists —
+    preserves the legacy `if not email_sync_manager:` pattern.
+    """
+
+    def __bool__(self) -> bool:
+        return self._resolve_manager() is not None
+
+    @property
+    def providers(self):
+        """Pass-through property for code that does
+        `email_sync_manager.providers`."""
+        manager = self._resolve_manager()
+        return manager.providers if manager else {}
+
+    @property
+    def storage(self):
+        """Pass-through for code that does `email_sync_manager.storage`."""
+        manager = self._resolve_manager()
+        return getattr(manager, 'storage', None) if manager else None
+
+    @storage.setter
+    def storage(self, value):
+        manager = self._resolve_manager()
+        if manager is not None:
+            manager.storage = value
+
+    def get_sync_status(self):
+        """Pass-through for code that calls .get_sync_status() directly."""
+        manager = self._resolve_manager()
+        if manager is None:
+            return {'providers': []}
+        return manager.get_sync_status()
 
     def is_syncing(self) -> bool:
         manager = self._resolve_manager()

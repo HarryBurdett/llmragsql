@@ -71,7 +71,9 @@ MODULES = {
 def _get_sql_connector():
     """Get the active SQL connector for the current company/system."""
     try:
-        from api.main import _get_active_company_id, _company_sql_connectors, sql_connector, active_system_id
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
+        from api.main import _get_active_company_id, _company_sql_connectors, active_system_id
         company_id = _get_active_company_id()
         # Try system-scoped connector first (per-session isolation)
         if active_system_id and company_id:
@@ -800,7 +802,9 @@ async def get_library_entry(entry_id: str):
 def _get_request_sql_connector(request=None):
     """Get SQL connector for the current request's session context."""
     try:
-        from api.main import _company_sql_connectors, sql_connector, active_system_id
+        from apps.core.adapters.factory import get_opera_sql
+        sql_connector = get_opera_sql()
+        from api.main import _company_sql_connectors, active_system_id
         # Try to get session context from request
         if request:
             system_id = getattr(request.state, 'session_system_id', None) or active_system_id

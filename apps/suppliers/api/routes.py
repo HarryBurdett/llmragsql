@@ -3495,7 +3495,8 @@ async def process_supplier_statement_email(email_id: int):
     """
     from apps.core.adapters.factory import get_opera_sql
     sql_connector = get_opera_sql()
-    from api.main import email_storage
+    from apps.core.adapters.factory import get_email_storage
+    email_storage = get_email_storage()
     from sql_rag.supplier_statement_db import get_supplier_statement_db
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
     from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
@@ -3514,7 +3515,9 @@ async def process_supplier_statement_email(email_id: int):
         subject = email_data.get('subject', '')
 
         # Step 2: Extract using same method as extract-from-email endpoint
-        from api.main import email_sync_manager, config as app_config
+        from apps.core.adapters.factory import get_email_sync
+        email_sync_manager = get_email_sync()
+        from api.main import config as app_config
         if not email_sync_manager:
             return {"success": False, "error": "Email sync manager not available"}
 
@@ -3644,7 +3647,8 @@ async def process_supplier_statement_email(email_id: int):
 <p>Regards,<br>Accounts Department</p>
 </body></html>"""
 
-            from api.main import email_storage as es
+            from apps.core.adapters.factory import get_email_storage
+            es = get_email_storage()
             if es and hasattr(es, 'get_provider_config'):
                 import smtplib
                 from email.mime.text import MIMEText
@@ -4132,7 +4136,11 @@ async def extract_supplier_statement_from_email(email_id: int, attachment_id: Op
     Returns:
         Extracted statement info and line items
     """
-    from api.main import email_storage, email_sync_manager, config
+    from apps.core.adapters.factory import get_email_storage
+    email_storage = get_email_storage()
+    from apps.core.adapters.factory import get_email_sync
+    email_sync_manager = get_email_sync()
+    from api.main import config
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
 
     if not email_storage or not email_sync_manager:
@@ -4343,7 +4351,11 @@ async def reconcile_supplier_statement(email_id: int, attachment_id: Optional[st
     """
     from apps.core.adapters.factory import get_opera_sql
     sql_connector = get_opera_sql()
-    from api.main import email_storage, email_sync_manager, config
+    from apps.core.adapters.factory import get_email_storage
+    email_storage = get_email_storage()
+    from apps.core.adapters.factory import get_email_sync
+    email_sync_manager = get_email_sync()
+    from api.main import config
     from sql_rag.supplier_statement_extract import SupplierStatementExtractor
     from sql_rag.supplier_statement_reconcile import SupplierStatementReconciler
 
