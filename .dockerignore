@@ -1,0 +1,83 @@
+# SQL RAG — files NOT to copy into Docker images
+# ==================================================
+
+# Python build artefacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Node / frontend build (frontend has its own image)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
+# Local databases (per-company SQLite — mounted as volumes)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+archive/
+companies/
+
+# IDE / editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Tests don't ship in the runtime image (use a separate build for CI)
+tests/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local development files
+.env
+.env.local
+config.ini
+config.ini.local-backup
+config.ini.sql-se-backup
+systems.json
+systems.json.sql-se-backup
+installations.db
+api_debug.log
+*.log
+nul
+
+# Marketing / demos / screenshots — not part of the application
+marketing/
+demos/
+*.png
+*.jpg
+*.gif
+
+# Documentation — useful for repo, not for runtime
+docs/superpowers/
+README.md
+CLAUDE.md
+*.md
+
+# Dev scripts
+run_dev.sh
+setup.py
+
+# Claude Code internal
+.claude/

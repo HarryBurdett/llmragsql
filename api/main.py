@@ -970,36 +970,104 @@ async def auth_middleware(request: Request, call_next):
 
     return await call_next(request)
 
-# Include Opera integration rules API router
-app.include_router(opera_rules_router)
+# =====================================================================
+# Router registration — INSTALLED_APPS-aware (Phase A SAM-readiness)
+# =====================================================================
+# When deployed as a per-app container, INSTALLED_APPS env var lists
+# only the app(s) that container should serve. The rest of the routers
+# don't register, so e.g. the GoCardless container can't accidentally
+# respond to /api/bank-import/*.
+#
+# Default (unset / empty) = all routers register, matching the
+# current monolithic behaviour.
+#
+# Recognised values (comma-separated):
+#   bank_reconcile, gocardless, suppliers, balance_check,
+#   pension_export, lock_monitor, opera_rules, dashboards,
+#   transaction_snapshot, transaction_monitor, sop, migration,
+#   core_email
+#
+# Special values:
+#   (unset)  → all routers
+#   "*"      → all routers
+#   "all"    → all routers
 
-# Include lock monitor API router
-app.include_router(lock_monitor_router)
+_installed_apps_raw = os.environ.get('INSTALLED_APPS', '').strip()
+if _installed_apps_raw in ('', '*', 'all'):
+    _installed_apps: set[str] = set()  # empty set = "register everything"
+else:
+    _installed_apps = {a.strip() for a in _installed_apps_raw.split(',') if a.strip()}
 
-# Include pension export API router
-app.include_router(pension_export_router)
 
-# Include balance check API router
-app.include_router(balance_check_router)
+def _should_install(app_name: str) -> bool:
+    """True if the named app's router(s) should be registered."""
+    if not _installed_apps:
+        return True  # All apps registered (default)
+    return app_name in _installed_apps
 
-# Include supplier API router
-app.include_router(suppliers_router)
-app.include_router(supplier_contacts_router)
-app.include_router(supplier_onboarding_router)
-app.include_router(supplier_remittance_router)
-app.include_router(supplier_aged_router)
 
-# Include dashboard API router
-app.include_router(dashboards_router)
+# Always-on (system-level): nothing on this list right now, but the
+# auth/healthz/company-switch endpoints in api/main.py itself register
+# regardless of INSTALLED_APPS.
 
-# Include GoCardless API router
-app.include_router(gocardless_router)
-app.include_router(bank_reconcile_router)
-app.include_router(bank_reconcile_o3_mirrors_router)
-app.include_router(transaction_snapshot_router)
-app.include_router(transaction_monitor_router)
-app.include_router(sop_router)
-app.include_router(migration_router)
+# bank_reconcile
+if _should_install('bank_reconcile'):
+    app.include_router(bank_reconcile_router)
+    app.include_router(bank_reconcile_o3_mirrors_router)
+
+# gocardless
+if _should_install('gocardless'):
+    app.include_router(gocardless_router)
+
+# suppliers
+if _should_install('suppliers'):
+    app.include_router(suppliers_router)
+    app.include_router(supplier_contacts_router)
+    app.include_router(supplier_onboarding_router)
+    app.include_router(supplier_remittance_router)
+    app.include_router(supplier_aged_router)
+
+# balance_check
+if _should_install('balance_check'):
+    app.include_router(balance_check_router)
+
+# pension_export
+if _should_install('pension_export'):
+    app.include_router(pension_export_router)
+
+# lock_monitor (utility, ships with monolith only by default)
+if _should_install('lock_monitor'):
+    app.include_router(lock_monitor_router)
+
+# opera_rules (cross-cutting utility)
+if _should_install('opera_rules'):
+    app.include_router(opera_rules_router)
+
+# dashboards (cross-cutting UI)
+if _should_install('dashboards'):
+    app.include_router(dashboards_router)
+
+# transaction_snapshot, transaction_monitor (utilities)
+if _should_install('transaction_snapshot'):
+    app.include_router(transaction_snapshot_router)
+if _should_install('transaction_monitor'):
+    app.include_router(transaction_monitor_router)
+
+# sop, migration (SOP module + DB migrations)
+if _should_install('sop'):
+    app.include_router(sop_router)
+if _should_install('migration'):
+    app.include_router(migration_router)
+
+# Health endpoint — always registered regardless of INSTALLED_APPS.
+# Used by docker-compose healthcheck and SAM readiness probes.
+@app.get("/healthz")
+async def healthz():
+    return {
+        "status": "ok",
+        "app_name": os.environ.get('APP_NAME', 'monolith'),
+        "installed_apps": sorted(_installed_apps) if _installed_apps else 'all',
+    }
 
 # ============ Pydantic Models ============
 
