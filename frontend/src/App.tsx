@@ -58,6 +58,7 @@ import { BillOfMaterials } from './pages/BillOfMaterials';
 import { UserManagement } from './pages/UserManagement';
 import { LicenseManagement } from './pages/LicenseManagement';
 import { SystemReset } from './pages/SystemReset';
+import { HealthCheck } from './pages/HealthCheck';
 import { Home } from './pages/Home';
 import CashbookOptions from './pages/CashbookOptions';
 import { GoCardlessSettings } from './pages/GoCardlessSettings';
@@ -167,6 +168,13 @@ function AppRoutes() {
                   <Route path="/supplier/cleardown" element={<SystemReset appFilter="suppliers" title="Suppliers Cleardown" />} />
                   {/* Admin-level full cleardown (no filter — shows all options) */}
                   <Route path="/admin/system-reset" element={<SystemReset />} />
+
+                  {/* Per-app health check — verifies the app's local data
+                      still references valid Opera codes. Useful after Opera 3
+                      → SE upgrades and as a periodic data-integrity audit. */}
+                  <Route path="/cashbook/health-check" element={<HealthCheck appFilter="bank_reconcile" />} />
+                  <Route path="/cashbook/gocardless-health-check" element={<HealthCheck appFilter="gocardless" />} />
+                  <Route path="/supplier/health-check" element={<HealthCheck appFilter="suppliers" />} />
                   <Route path="/system/projects" element={<Navigate to="/admin/projects" replace />} />
                   <Route path="/system/lock-monitor" element={<Navigate to="/admin/lock-monitor" replace />} />
                   <Route path="/lock-monitor" element={<Navigate to="/admin/lock-monitor" replace />} />

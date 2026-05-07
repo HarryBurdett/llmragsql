@@ -132,6 +132,30 @@ class ApproveWithBodyRequest(BaseModel):
     body: Optional[str] = None
 
 
+@router.get("/api/suppliers/health-check")
+async def suppliers_health_check():
+    """Per-app data-integrity health check for the suppliers app.
+
+    Verifies supplier codes referenced in our local data still
+    exist in Opera pname. Used post-Opera-3-to-SE upgrade and as
+    a periodic diagnostic.
+    """
+    from apps.core.adapters.factory import get_opera_sql
+    from apps.suppliers.logic.health_check import run_health_check
+    from sql_rag.company_data import get_current_db_path
+
+    opera_sql = get_opera_sql()
+    if not opera_sql:
+        raise HTTPException(
+            status_code=503,
+            detail="No Opera SQL connection — cannot run health check",
+        )
+
+    supplier_db = str(get_current_db_path('supplier_statements.db') or '') or None
+    result = run_health_check(opera_sql, supplier_db_path=supplier_db)
+    return result.to_response_dict()
+
+
 # ============================================================
 # Supplier Config API Endpoints
 # ============================================================

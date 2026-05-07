@@ -240,6 +240,43 @@ def _check_opera3_write_agent() -> tuple:
         return True, None  # Not Opera 3 mode — allow (SE uses SQL directly)
 
 
+@router.get("/api/bank-import/health-check")
+async def bank_reconcile_health_check():
+    """Per-app data-integrity health check.
+
+    Verifies that the bank-rec app's own data (bank_aliases.db,
+    bank_patterns.db, bank_statement_imports history) still
+    references valid Opera codes. Especially useful right after an
+    Opera 3 → Opera SE upgrade.
+
+    Returns the standardised HealthCheckResult shape — see
+    apps/core/health_check.py. SAM (Phase C) fans out across each
+    app's endpoint and aggregates the results.
+    """
+    from apps.bank_reconcile.logic.health_check import run_health_check
+    from apps.core.adapters.factory import get_opera_sql
+    from sql_rag.company_data import get_current_db_path
+
+    opera_sql = get_opera_sql()
+    if not opera_sql:
+        raise HTTPException(
+            status_code=503,
+            detail="No Opera SQL connection — cannot run health check",
+        )
+
+    # Resolve per-company SQLite paths (None for unprovisioned DBs)
+    db_paths = {
+        'bank_aliases.db': str(get_current_db_path('bank_aliases.db') or ''),
+        'bank_patterns.db': str(get_current_db_path('bank_patterns.db') or ''),
+        'email_data.db': str(get_current_db_path('email_data.db') or ''),
+    }
+    # Strip empty strings → None so the health check skips them
+    db_paths = {k: (v if v else None) for k, v in db_paths.items()}
+
+    result = run_health_check(opera_sql, company_db_paths=db_paths)
+    return result.to_response_dict()
+
+
 @router.get("/api/reconcile/banks")
 async def get_bank_accounts():
     """

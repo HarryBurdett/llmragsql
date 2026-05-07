@@ -75,6 +75,12 @@ const cashbookMenu: TopLevelMenu = {
       ],
     },
     {
+      heading: 'Diagnostics',
+      items: [
+        { path: '/cashbook/health-check', label: 'Health Check', icon: Activity, description: 'Verify aliases + history reference valid Opera codes', color: 'emerald' },
+      ],
+    },
+    {
       heading: 'Setup',
       items: [
         { path: '/cashbook/options', label: 'Settings', icon: Settings, description: 'Configure bank reconciliation', color: 'slate' },
@@ -93,6 +99,12 @@ const gocardlessMenu: TopLevelMenu = {
       items: [
         { path: '/cashbook/gocardless', label: 'Import', icon: CreditCard, description: 'Import direct debit payments', color: 'emerald' },
         { path: '/cashbook/gocardless-requests', label: 'Payment Requests', icon: Send, description: 'Create & manage DD requests', color: 'purple' },
+      ],
+    },
+    {
+      heading: 'Diagnostics',
+      items: [
+        { path: '/cashbook/gocardless-health-check', label: 'Health Check', icon: Activity, description: 'Verify settings + payment history reference valid Opera codes', color: 'emerald' },
       ],
     },
     {
@@ -116,6 +128,12 @@ const suppliersMenu: TopLevelMenu = {
         { path: '/supplier/statements/queue', label: 'Statements', icon: FileText, description: 'Review supplier statements', color: 'blue' },
         { path: '/supplier/directory', label: 'Supplier Directory', icon: Building2, description: 'Supplier list and settings', color: 'purple' },
         { path: '/supplier/aged-creditors', label: 'Aged Creditors', icon: Receipt, description: 'Outstanding balances by age', color: 'teal' },
+      ],
+    },
+    {
+      heading: 'Diagnostics',
+      items: [
+        { path: '/supplier/health-check', label: 'Health Check', icon: Activity, description: 'Verify supplier history references valid Opera codes', color: 'emerald' },
       ],
     },
     {

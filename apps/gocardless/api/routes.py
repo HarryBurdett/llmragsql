@@ -153,6 +153,41 @@ async def ocr_gocardless_image_path(file_path: str = Body(..., embed=True)):
         return {"success": False, "error": friendly_db_error(e)}
 
 
+@router.get("/api/gocardless/health-check")
+async def gocardless_health_check():
+    """Per-app data-integrity health check.
+
+    Verifies the GoCardless app's settings (bank code, fees nominal
+    account) and payment history reference valid Opera codes.
+    """
+    from apps.core.adapters.factory import get_opera_sql
+    from apps.gocardless.logic.health_check import run_health_check
+    from sql_rag.company_data import get_current_db_path
+
+    opera_sql = get_opera_sql()
+    if not opera_sql:
+        raise HTTPException(
+            status_code=503,
+            detail="No Opera SQL connection — cannot run health check",
+        )
+
+    payments_db = str(get_current_db_path('gocardless_payments.db') or '') or None
+
+    # Load per-company GoCardless settings if available
+    settings: dict | None = None
+    try:
+        settings = _load_gocardless_settings()
+    except Exception as e:
+        logger.debug(f"GoCardless settings not loadable: {e}")
+
+    result = run_health_check(
+        opera_sql,
+        gocardless_db_path=payments_db,
+        settings=settings,
+    )
+    return result.to_response_dict()
+
+
 @router.get("/api/gocardless/test-data")
 async def get_gocardless_test_data():
     """
