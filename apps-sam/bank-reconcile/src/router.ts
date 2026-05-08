@@ -30,6 +30,11 @@ import {
   getRecurringEntriesMode,
   setRecurringEntriesMode,
 } from './services/settings.js';
+import { listCashbookTypes } from './services/cashbook-types.js';
+import {
+  getMatchConfig,
+  updateMatchConfig,
+} from './services/match-config.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -417,6 +422,80 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Set recurring-entries mode failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/bank-import/cashbook-types?category=R|P|T
+   *
+   * Returns the configured Opera cashbook entry types from `atype`,
+   * optionally filtered by category. Faithful port of
+   * `get_cashbook_types` (apps/bank_reconcile/api/routes.py:3009-3040).
+   */
+  router.get('/api/bank-import/cashbook-types', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const category =
+        typeof req.query.category === 'string' && req.query.category.trim()
+          ? req.query.category.trim()
+          : null;
+      const result = await listCashbookTypes(operaDb, category);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Cashbook types fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/bank-import/config
+   *
+   * Returns the bank-import matching thresholds (min_match_score,
+   * learn_threshold, ambiguity_threshold, use_phonetic, use_levenshtein,
+   * use_ngram). If no row exists, returns hard-coded defaults — same
+   * fallback as `get_match_config` in routes.py:3046-3088.
+   */
+  router.get('/api/bank-import/config', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const result = await getMatchConfig(appDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Match config fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * PUT /api/bank-import/config?min_match_score=...&learn_threshold=...
+   *
+   * Update the bank-import matching thresholds. Faithful port of
+   * `update_match_config` (routes.py:3094-3134). All numeric thresholds
+   * are clamped to [0,1] (matches the FastAPI `ge=0.0, le=1.0` validator).
+   */
+  router.put('/api/bank-import/config', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const q = req.query;
+      const result = await updateMatchConfig(appDb, {
+        min_match_score:
+          q.min_match_score !== undefined ? Number(q.min_match_score) : 0.6,
+        learn_threshold:
+          q.learn_threshold !== undefined ? Number(q.learn_threshold) : 0.8,
+        ambiguity_threshold:
+          q.ambiguity_threshold !== undefined ? Number(q.ambiguity_threshold) : 0.15,
+        use_phonetic: q.use_phonetic !== undefined ? q.use_phonetic === 'true' : true,
+        use_levenshtein:
+          q.use_levenshtein !== undefined ? q.use_levenshtein === 'true' : true,
+        use_ngram: q.use_ngram !== undefined ? q.use_ngram === 'true' : true,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Match config update failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

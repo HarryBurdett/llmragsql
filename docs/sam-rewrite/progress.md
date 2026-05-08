@@ -7,7 +7,7 @@ Live tracker. Each session updates this file before committing.
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 18 of ~124 endpoints (70 tests)
-**bank-reconcile:** 15 of ~127 endpoints (39 tests)
+**bank-reconcile:** 18 of ~127 endpoints (50 tests)
 **suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
 **Sessions logged:** 1 (extended session — 33 substantive commits)
@@ -123,7 +123,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `src/services/gocardless-api.ts` — wrap the GoCardless REST API (testConnection + getPayouts)
 - [ ] `src/services/remittance.ts` — generate + send remittance via SAM email
 
-### bank-reconcile (foundation only)
+### bank-reconcile (in progress — 18 of ~127 endpoints)
 
 - [x] Directory scaffolded: `apps-sam/bank-reconcile/`
 - [x] `manifest.json` — full-stack plugin, separateDatabase=true
@@ -159,6 +159,11 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
   - DELETE /api/reconcile/bank/:bank_code/unignore-transaction
   - POST /api/statement-files/mark-reconciled
   - GET /api/statement-files/imported-for-reconciliation
+  - GET /api/recurring-entries/config
+  - PUT /api/recurring-entries/config
+  - GET /api/bank-import/cashbook-types
+  - GET /api/bank-import/config
+  - PUT /api/bank-import/config
 - [x] TypeScript builds cleanly
 - [x] 8 tests passing (4 banks + 4 health-check)
 - [ ] Endpoints: 3 of ~127 ported. Future-session priorities:
