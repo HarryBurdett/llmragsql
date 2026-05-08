@@ -45,8 +45,14 @@ export {
   updateNbankBalance,
   updateNacntBalance,
   getNacntType,
+  insertNjmemo,
 } from './balance-updates.js';
 export type { NacntType, UpdateNacntBalanceOptions } from './balance-updates.js';
+
+export {
+  generateOperaUniqueId,
+  generateOperaUniqueIds,
+} from './unique-id.js';
 export type {
   LedgerType,
   PeriodInfo,

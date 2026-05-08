@@ -281,6 +281,44 @@ async function updateNhist(
   }
 }
 
+// ---------------------------------------------------------------------
+// insertNjmemo — journal memo for a nominal-ledger posting
+// ---------------------------------------------------------------------
+
+/**
+ * Insert a journal memo record into njmemo for a nominal ledger posting.
+ *
+ * Faithful port of `_insert_njmemo` (opera_sql_import.py:709-741).
+ * Opera creates an njmemo record for each journal number when posting
+ * to the nominal ledger. nj_memo uses a sentinel pattern with chr(255)
+ * surrounds; nj_txtrep holds the human-readable description (truncated
+ * to 60 chars).
+ *
+ * Allocates the njmemo id via getNextId('njmemo').
+ */
+export async function insertNjmemo(
+  trx: Knex,
+  journalNumber: number,
+  description: string,
+): Promise<void> {
+  const { getNextId } = await import('./id-allocation.js');
+  const id = await getNextId(trx, 'njmemo');
+  // chr(255) sentinel surrounds — JS stores it as the same code point.
+  const sentinel = String.fromCharCode(255);
+  const memoTag = `${sentinel}<<JOURNAL_DATA_ONLY>>${sentinel}`;
+  const safeDesc = (description ?? '').slice(0, 60);
+
+  await trx.raw(
+    `INSERT INTO njmemo (
+       id, nj_journal, nj_memo, nj_image, nj_txtrep, nj_binrep,
+       datecreated, datemodified, state
+     ) VALUES (
+       ?, ?, ?, '', ?, 0, GETDATE(), GETDATE(), 1
+     )`,
+    [id, journalNumber, memoTag, safeDesc],
+  );
+}
+
 async function updateNsubtNtype(
   trx: Knex,
   account: string,

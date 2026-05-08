@@ -59,6 +59,7 @@ import {
   recordCorrection,
   listCorrections,
 } from './services/alias-corrections.js';
+import { completeBatch } from './services/complete-batch.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1030,6 +1031,46 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List corrections failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/complete-batch/:entry_number
+   *
+   * Complete an incomplete cashbook batch by posting to the nominal
+   * ledger. Faithful port of complete_batch (routes.py:849-891) +
+   * OperaSQLImport.complete_batch_posting (opera_sql_import.py
+   * :8809-9019).
+   *
+   * Reads unposted anoml records (ax_done='N') for the entry,
+   * creates the corresponding ntran rows + updates nacnt/nhist/
+   * nbank, marks anoml ax_done='Y', and sets ae_complet=1. All in
+   * a single transaction with bank-level lock.
+   *
+   * SQL injection guards: bank_code + entry_number validated at
+   * the route boundary.
+   */
+  router.post(
+    '/api/reconcile/bank/:bank_code/complete-batch/:entry_number',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await completeBatch(appDb, operaDb, {
+          bankCode: String(req.params.bank_code ?? ''),
+          entryNumber: String(req.params.entry_number ?? ''),
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Complete batch failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
