@@ -4,9 +4,10 @@ Live tracker. Each session updates this file before committing.
 
 ## Status
 
-**Active app:** `balance-check` (5 of 7 endpoints ported, 2 remaining — main VAT + variance-drilldown)
+**Active app:** `balance-check` ✅ **BACKEND COMPLETE — all 7 endpoints ported.**
+                 Frontend repackaging next, then `gocardless`.
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 4 substantive commits)
+**Sessions logged:** 1 (long session — 5 substantive commits)
 
 ## Per-app progress
 
@@ -38,8 +39,8 @@ Live tracker. Each session updates this file before committing.
 - [x] `/api/reconcile/debtors` — full port including variance analysis + aged + top customers
 - [x] `/api/reconcile/trial-balance` — NL-wide debits=credits check across B/F + current + closing
 - [x] `/api/reconcile/vat/diagnostic` — VAT table data-availability check
-- [ ] `/api/reconcile/vat`
-- [ ] `/api/reconcile/vat/variance-drilldown`
+- [x] `/api/reconcile/vat` — quarterly + YTD VAT reconciliation across zvtran, nvat, ntran
+- [x] `/api/reconcile/vat/variance-drilldown` — drill-down report identifying causes of VAT variance
 
 NB: `/api/reconcile/cashbook` does NOT exist as a separate endpoint in
 the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
@@ -53,7 +54,9 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `src/services/reconcile-debtors.ts` — `/api/reconcile/debtors` business logic
 - [x] `src/services/reconcile-trial-balance.ts` — `/api/reconcile/trial-balance` business logic
 - [x] `src/services/vat-diagnostic.ts` — `/api/reconcile/vat/diagnostic` business logic
-- [ ] Port `apps/balance_check/logic/vat_reconcile.py` (next session — main VAT logic with UK quarter calcs)
+- [x] `src/services/vat-helpers.ts` — port of `apps/balance_check/logic/vat_reconcile.py` + `get_vat_quarter_dates`
+- [x] `src/services/reconcile-vat.ts` — `/api/reconcile/vat` business logic
+- [x] `src/services/vat-variance-drilldown.ts` — `/api/reconcile/vat/variance-drilldown` business logic
 
 #### Known follow-ups (parity refinements)
 - [ ] Debtors `variance_analysis` response shape — Python has flat top-level
@@ -92,9 +95,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/balance-check/tests/reconcile-creditors.test.ts` | 3 | ✅ passing |
 | `apps-sam/balance-check/tests/reconcile-trial-balance.test.ts` | 4 | ✅ passing |
 | `apps-sam/balance-check/tests/vat-diagnostic.test.ts` | 3 | ✅ passing |
-| **Total TypeScript tests** | **27** | ✅ all passing |
+| `apps-sam/balance-check/tests/vat-helpers.test.ts` | 13 | ✅ passing |
+| **Total TypeScript tests** | **40** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **631** | ✅ |
+| **Grand total** | **644** | ✅ |
 
 ## Open questions / blockers
 

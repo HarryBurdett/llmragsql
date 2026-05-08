@@ -15,6 +15,8 @@ import { reconcileCreditors } from './services/reconcile-creditors.js';
 import { reconcileDebtors } from './services/reconcile-debtors.js';
 import { reconcileTrialBalance } from './services/reconcile-trial-balance.js';
 import { vatDiagnostic } from './services/vat-diagnostic.js';
+import { reconcileVat } from './services/reconcile-vat.js';
+import { vatVarianceDrilldown } from './services/vat-variance-drilldown.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -135,9 +137,43 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
-  // Future endpoints (port next):
-  //   GET /api/reconcile/vat
-  //   GET /api/reconcile/vat/variance-drilldown
+  /**
+   * GET /api/reconcile/vat
+   *
+   * Faithful port of `reconcile_vat()`. Reconciles VAT accounts —
+   * compares VAT liability in NL to VAT transactions across quarter
+   * (uncommitted zvtran + committed nvat) and YTD (nvat totals).
+   */
+  router.get('/api/reconcile/vat', async (req: Request, res: Response) => {
+    const db = resolveCompanyDb(req, res);
+    if (!db) return;
+    try {
+      const result = await reconcileVat(db);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('VAT reconciliation failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/reconcile/vat/variance-drilldown
+   *
+   * Faithful port of `vat_variance_drilldown()`. Drill-down report
+   * showing uncommitted VAT by period, NL movements by period,
+   * largest transactions, and a variance summary with explanations.
+   */
+  router.get('/api/reconcile/vat/variance-drilldown', async (req: Request, res: Response) => {
+    const db = resolveCompanyDb(req, res);
+    if (!db) return;
+    try {
+      const result = await vatVarianceDrilldown(db);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('VAT variance drilldown failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
 
   return router;
 }
