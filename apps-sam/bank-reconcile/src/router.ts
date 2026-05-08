@@ -41,6 +41,11 @@ import {
 } from './services/format-detect.js';
 import { detectBankFromContent } from './services/detect-bank.js';
 import { recordDuplicateOverride } from './services/duplicate-override.js';
+import {
+  saveImportDraft,
+  loadImportDraft,
+  deleteImportDraft,
+} from './services/bank-import-drafts.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -649,6 +654,124 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Duplicate override failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/bank-import/draft
+   *
+   * Save (upsert) a work-in-progress bank statement import. Faithful
+   * port of `save_bank_import_draft` (routes.py:3297-3327).
+   *
+   * Body: { bank_code, source, filename, preview_data, user_edits,
+   *         email_id?, attachment_id?, pdf_hash?, target_system? }
+   */
+  router.post('/api/bank-import/draft', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await saveImportDraft(appDb, {
+        bankCode: String(body.bank_code ?? ''),
+        source: String(body.source ?? ''),
+        filename: String(body.filename ?? ''),
+        previewData: body.preview_data ?? {},
+        userEdits: body.user_edits ?? {},
+        emailId: body.email_id as number | string | null | undefined,
+        attachmentId: (body.attachment_id as string | null | undefined) ?? null,
+        pdfHash: (body.pdf_hash as string | null | undefined) ?? null,
+        targetSystem: (body.target_system as string | undefined) ?? 'opera_se',
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Save bank import draft failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/bank-import/draft
+   *
+   * Load a previously-saved draft. Faithful port of
+   * `load_bank_import_draft` (routes.py:3333-3371). Optional filters
+   * are applied only when explicitly provided (`null` means "no filter
+   * on this column" — same as Python's `if x is not None` guards).
+   */
+  router.get('/api/bank-import/draft', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const q = req.query;
+      const bankCode = String(q.bank_code ?? '').trim();
+      const source = String(q.source ?? '').trim();
+      if (!bankCode || !source) {
+        res.status(400).json({
+          success: false,
+          error: 'bank_code and source are required',
+        });
+        return;
+      }
+      const result = await loadImportDraft(appDb, {
+        bankCode,
+        source,
+        emailId:
+          q.email_id !== undefined && q.email_id !== ''
+            ? String(q.email_id)
+            : undefined,
+        attachmentId:
+          q.attachment_id !== undefined ? String(q.attachment_id) : undefined,
+        pdfHash:
+          q.pdf_hash !== undefined ? String(q.pdf_hash) : undefined,
+        filename:
+          q.filename !== undefined ? String(q.filename) : undefined,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Load bank import draft failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * DELETE /api/bank-import/draft
+   *
+   * Delete a saved draft (after import completion or manual clear).
+   * Same identifying-key shape as load.
+   */
+  router.delete(
+    '/api/bank-import/draft',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const q = req.query;
+        const bankCode = String(q.bank_code ?? '').trim();
+        const source = String(q.source ?? '').trim();
+        if (!bankCode || !source) {
+          res.status(400).json({
+            success: false,
+            error: 'bank_code and source are required',
+          });
+          return;
+        }
+        const result = await deleteImportDraft(appDb, {
+          bankCode,
+          source,
+          emailId:
+            q.email_id !== undefined && q.email_id !== ''
+              ? String(q.email_id)
+              : undefined,
+          attachmentId:
+            q.attachment_id !== undefined ? String(q.attachment_id) : undefined,
+          pdfHash:
+            q.pdf_hash !== undefined ? String(q.pdf_hash) : undefined,
+          filename: q.filename !== undefined ? String(q.filename) : undefined,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Delete bank import draft failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
