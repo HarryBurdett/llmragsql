@@ -65,6 +65,7 @@ import {
   confirmStatementMatches,
   type ConfirmMatchInput,
 } from './services/confirm-matches.js';
+import { updateRepeatEntryDate } from './services/repeat-entries.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1213,6 +1214,52 @@ export function createRouter(ctx: AppContext): Router {
           'been removed to stop callers silently receiving zero results.',
         statements_found: [],
       });
+    },
+  );
+
+  /**
+   * POST /api/bank-import/update-repeat-entry-date
+   *
+   * Update ae_nxtpost on an arhead row so the operator can sync a
+   * repeat entry's next posting date with the actual bank
+   * transaction date. Faithful port of update_repeat_entry_date
+   * (routes.py:5320-5419).
+   *
+   * Bank-level lock + ROWLOCK on the UPDATE per CLAUDE.md.
+   *
+   * Optional alias save: when statement_name is supplied, upsert a
+   * row in repeat_entry_aliases (per-app DB) so future imports
+   * auto-match this bank statement description to this repeat entry.
+   *
+   * Query params:
+   *   - bank_code, entry_ref, new_date (YYYY-MM-DD)
+   *   - statement_name (optional)
+   */
+  router.post(
+    '/api/bank-import/update-repeat-entry-date',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const q = req.query;
+        const result = await updateRepeatEntryDate(appDb, operaDb, {
+          bankCode: String(q.bank_code ?? ''),
+          entryRef: String(q.entry_ref ?? ''),
+          newDate: String(q.new_date ?? ''),
+          statementName:
+            typeof q.statement_name === 'string' ? q.statement_name : null,
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Update repeat entry date failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
     },
   );
 
