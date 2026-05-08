@@ -14,6 +14,7 @@ import { reconcileSummary } from './services/reconcile-summary.js';
 import { reconcileCreditors } from './services/reconcile-creditors.js';
 import { reconcileDebtors } from './services/reconcile-debtors.js';
 import { reconcileTrialBalance } from './services/reconcile-trial-balance.js';
+import { vatDiagnostic } from './services/vat-diagnostic.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -115,9 +116,27 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
+  /**
+   * GET /api/reconcile/vat/diagnostic
+   *
+   * Faithful port of `vat_diagnostic()`. Reports row counts and date
+   * ranges for the VAT tables (zvtran, nvat, ztax, ntran) — used to
+   * confirm data availability before running the main VAT reconcile.
+   */
+  router.get('/api/reconcile/vat/diagnostic', async (req: Request, res: Response) => {
+    const db = resolveCompanyDb(req, res);
+    if (!db) return;
+    try {
+      const result = await vatDiagnostic(db);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('VAT diagnostic failed', err);
+      res.status(500).json({ error: err?.message ?? String(err) });
+    }
+  });
+
   // Future endpoints (port next):
   //   GET /api/reconcile/vat
-  //   GET /api/reconcile/vat/diagnostic
   //   GET /api/reconcile/vat/variance-drilldown
 
   return router;

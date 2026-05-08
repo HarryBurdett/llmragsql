@@ -4,9 +4,9 @@ Live tracker. Each session updates this file before committing.
 
 ## Status
 
-**Active app:** `balance-check` (4 of 7 endpoints ported, 3 remaining — all VAT-related)
+**Active app:** `balance-check` (5 of 7 endpoints ported, 2 remaining — main VAT + variance-drilldown)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 3 substantive commits)
+**Sessions logged:** 1 (long session — 4 substantive commits)
 
 ## Per-app progress
 
@@ -37,8 +37,8 @@ Live tracker. Each session updates this file before committing.
 - [x] `/api/reconcile/creditors` — full port including variance analysis + aged + top suppliers
 - [x] `/api/reconcile/debtors` — full port including variance analysis + aged + top customers
 - [x] `/api/reconcile/trial-balance` — NL-wide debits=credits check across B/F + current + closing
+- [x] `/api/reconcile/vat/diagnostic` — VAT table data-availability check
 - [ ] `/api/reconcile/vat`
-- [ ] `/api/reconcile/vat/diagnostic`
 - [ ] `/api/reconcile/vat/variance-drilldown`
 
 NB: `/api/reconcile/cashbook` does NOT exist as a separate endpoint in
@@ -52,7 +52,8 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `src/services/reconcile-creditors.ts` — `/api/reconcile/creditors` business logic
 - [x] `src/services/reconcile-debtors.ts` — `/api/reconcile/debtors` business logic
 - [x] `src/services/reconcile-trial-balance.ts` — `/api/reconcile/trial-balance` business logic
-- [ ] Port `apps/balance_check/logic/vat_reconcile.py` (next session)
+- [x] `src/services/vat-diagnostic.ts` — `/api/reconcile/vat/diagnostic` business logic
+- [ ] Port `apps/balance_check/logic/vat_reconcile.py` (next session — main VAT logic with UK quarter calcs)
 
 #### Known follow-ups (parity refinements)
 - [ ] Debtors `variance_analysis` response shape — Python has flat top-level
@@ -90,9 +91,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/balance-check/tests/reconcile-summary.test.ts` | 9 | ✅ passing |
 | `apps-sam/balance-check/tests/reconcile-creditors.test.ts` | 3 | ✅ passing |
 | `apps-sam/balance-check/tests/reconcile-trial-balance.test.ts` | 4 | ✅ passing |
-| **Total TypeScript tests** | **24** | ✅ all passing |
+| `apps-sam/balance-check/tests/vat-diagnostic.test.ts` | 3 | ✅ passing |
+| **Total TypeScript tests** | **27** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **628** | ✅ |
+| **Grand total** | **631** | ✅ |
 
 ## Open questions / blockers
 
