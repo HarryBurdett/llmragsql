@@ -19,20 +19,26 @@ on a single host.
 **Phase B (next)**: each application becomes its own container with
 its own database; they communicate via HTTP.
 
-**Phase C (SAM merge)**: SAM provides connections, secrets, and
-shared services. The apps are pointed at SAM-provided URLs/values
-via env vars. No app code changes — only what populates env vars.
+**Phase C (SAM merge)**: SAM provides connections, secrets, **email
+services, auth, the Opera 3 Agent**, and other platform services.
+The apps are pointed at SAM-provided URLs/values via env vars. No
+app code changes — only what populates env vars and which adapters
+the factory selects.
 
 ## Application catalogue
 
+**SAM merge bundle: 4 workflow apps + frontend.** SAM provides email
+(inbox + attachments + send), auth, and the Opera 3 Agent — so
+`core-email` and `core-opera3` are not part of our merge.
+
 | App | Purpose | Owns | Reads from |
 |---|---|---|---|
-| [bank-reconcile](./apps/bank-reconcile.md) | Bank statement scan + reconcile + Opera posting | `bank_aliases.db`, `bank_patterns.db`, statement-tracking SQLite | Opera SQL, IMAP, Gemini |
-| [gocardless](./apps/gocardless.md) | Direct Debit payout import | `gocardless_payments.db` | Opera SQL, IMAP, GoCardless API, Gemini |
-| [suppliers](./apps/suppliers.md) | Supplier statement reconciliation | `supplier_extraction_cache.db`, `supplier_statements.db` | Opera SQL, IMAP, SMTP, Gemini |
+| [bank-reconcile](./apps/bank-reconcile.md) | Bank statement scan + reconcile + Opera posting | `bank_aliases.db`, `bank_patterns.db`, statement-tracking SQLite | Opera SQL, **SAM email service**, Gemini |
+| [gocardless](./apps/gocardless.md) | Direct Debit payout import | `gocardless_payments.db` | Opera SQL, **SAM email service**, GoCardless API, Gemini |
+| [suppliers](./apps/suppliers.md) | Supplier statement reconciliation | `supplier_extraction_cache.db`, `supplier_statements.db` | Opera SQL, **SAM email service**, Gemini |
 | [balance-check](./apps/balance-check.md) | Internal Opera balance reconciliation | (read-only, no own state) | Opera SQL |
-| [core-email](./apps/core-email.md) | Shared IMAP poller + email storage | `email_data.db` | IMAP server |
-| [core-opera-se](./apps/core-opera-se.md) | Opera SQL connection gateway | (stateless) | Opera SQL Server |
+| ~~core-email~~ | *Replaced by SAM* — SAM provides inbox / attachment / send services; our apps consume them via `SAM_EMAIL_URL`. The container is dropped from the merge bundle. | n/a | n/a |
+| ~~core-opera-se~~ | *Optional / not in initial merge* — apps talk to Opera SQL directly today. A shared SQL gateway can be introduced later if SAM prefers. | n/a | n/a |
 | ~~core-opera3~~ | *No longer needed* — SAM hosts the expanded Opera 3 Agent (handles both reads and writes; replaces the legacy DBF-share + Windows-write-agent pair) | n/a | n/a |
 
 ## Documents

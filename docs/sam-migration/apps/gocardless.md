@@ -15,24 +15,23 @@ APP_NAME=gocardless
 
 ## Required env vars
 
-**Always:**
-- `DATABASE_*` — Opera SQL connection
-- `EMAIL_PROVIDER` — `microsoft` (MS Graph) or `imap`
+**Always (SAM-hosted):**
+- `DATABASE_*` — Opera SQL connection (per tenant)
+- `OPERA_VERSION` — `SE` or `3`
 - `EMAIL_MAILBOX` — **the inbox GoCardless payout emails arrive in**
   (e.g. `payments@customer.com`, or the shared `accounts@customer.com`
   if the customer uses one inbox for everything)
-- If `EMAIL_PROVIDER=microsoft`: `EMAIL_MICROSOFT_TENANT_ID`,
-  `EMAIL_MICROSOFT_CLIENT_ID`, `EMAIL_MICROSOFT_CLIENT_SECRET`
-  (central, shared with all apps for the same customer)
-- If `EMAIL_PROVIDER=imap`: `EMAIL_IMAP_SERVER`, `EMAIL_IMAP_USERNAME`,
-  `EMAIL_IMAP_PASSWORD`
-- `EMAIL_SMTP_*`, `EMAIL_FROM_ADDRESS` (optional — defaults to
-  `EMAIL_MAILBOX`) — remittance emails
+- `SAM_EMAIL_URL` — SAM's email service base URL for this tenant
+  (also used to send remittance — SAM handles inbound and outbound)
+- `SAM_AUTH_TOKEN` — service token for calls to SAM
 - `GEMINI_API_KEY` — AI extraction
 - `GOCARDLESS_ACCESS_TOKEN` — API token (sandbox in dev)
 - `GOCARDLESS_ENVIRONMENT` — sandbox / live
 - `GOCARDLESS_WEBHOOK_SECRET` — inbound webhook validation
-- `OPERA_VERSION` — `SE` or `3`
+
+**Local dev / standalone (not SAM):**
+- Replace SAM email vars with `EMAIL_PROVIDER`, `EMAIL_IMAP_*` or
+  `EMAIL_MICROSOFT_*`, plus `EMAIL_SMTP_*` for remittance send.
 
 ⚠️ **Use sandbox tokens in development** per
 [CLAUDE.md](../../CLAUDE.md). Never make live API requests against

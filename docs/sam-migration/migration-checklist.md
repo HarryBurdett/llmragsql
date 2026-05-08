@@ -16,19 +16,24 @@ For **every** app being migrated:
       `OPERA_DB_HOST` whereas we call it `DATABASE_SERVER`).
       Add an alias adapter in `apps/core/env_config.py` if needed
       so apps don't change.
-- [ ] Confirm volume / persistent-storage strategy for the app's
-      SQLite databases (or migrate to SAM-provided Postgres).
+- [ ] **Storage:** confirm SAM provisions a per-tenant persistent
+      volume mounted at `/app/data/{tenant}/{app}/`. SQLite stays as
+      the storage engine — see handover Phase 3a for the rationale.
+      **Do not migrate to central Postgres for the initial merge.**
+- [ ] **Email service:** confirm the app uses `SAM_EMAIL_URL` +
+      `EMAIL_MAILBOX` rather than direct IMAP/SMTP credentials.
+      `EMAIL_MAILBOX` is per-app; SAM credentials are central.
 - [ ] Health/readiness probe path: `/healthz` works today; confirm
       SAM uses this or change to SAM's convention.
 - [ ] Logging format: today's apps log to stdout with Python's
       default formatter. If SAM expects JSON / structured logs,
       add a log adapter.
 - [ ] Authentication: confirm whether SAM provides JWTs and we
-      validate, or we keep `core-auth`. Set `AUTH_JWT_PUBLIC_KEY`
-      env var or remove `core-auth` accordingly.
+      validate, or we keep a slim `core-auth`. Set
+      `AUTH_JWT_PUBLIC_KEY` env var accordingly.
 - [ ] Inter-service URLs: confirm SAM's service discovery
-      mechanism. Today's `CORE_EMAIL_URL` etc. need pointing at
-      SAM's equivalent.
+      mechanism. `SAM_EMAIL_URL`, `OPERA3_AGENT_URL`,
+      `SAM_AUTH_URL`, `SAM_SECRETS_URL` populated per tenant.
 
 ## Per-app specific checklist
 
@@ -72,15 +77,24 @@ For **every** app being migrated:
 - [ ] Confirm SQL connection pool size + timeouts are appropriate
       under SAM's load model
 
-### core-email
+### core-email — DROPPED FROM MERGE BUNDLE
 
-- [ ] If SAM provides an email/document ingestion service:
-      - [ ] Replace `core-email` with a SAM adapter in each app
-      - [ ] Drop the `core-email` container from the deployment
-- [ ] Otherwise:
-      - [ ] Migrate `email_data.db` to volume / Postgres
-      - [ ] Confirm IMAP poller schedule (default: every 5 min)
-            is appropriate
+**Confirmed direction: SAM provides email; we drop core-email.**
+
+- [x] Replace `core-email` with SAM email adapter in each workflow app
+      (`apps/core/adapters/sam/email_storage.py` — to be written
+      against SAM's email API contract once it's confirmed)
+- [x] Drop the `core-email` container from the SAM deployment manifest
+- [ ] Migrate any residual `email_data.db` content (e.g.
+      `bank_statement_imports` tracking rows) into the relevant
+      app's own SQLite store. Most of this is already in the right
+      place; verify before retiring core-email.
+- [ ] Confirm SAM's email API contract (handover §3 Q6) — needed
+      before writing the adapter:
+      - Endpoint shape (REST? GraphQL?)
+      - Per-app mailbox routing mechanism
+      - Attachment delivery (inline vs separate fetch)
+      - Caching behaviour
 
 ## Frontend
 

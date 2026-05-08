@@ -17,21 +17,21 @@ APP_NAME=bank-reconcile
 See [`../env-var-contract.md`](../env-var-contract.md) for full
 descriptions.
 
-**Always:**
-- `DATABASE_*` — Opera SQL connection
-- `EMAIL_PROVIDER` — `microsoft` (MS Graph) or `imap`
+**Always (SAM-hosted):**
+- `DATABASE_*` — Opera SQL connection (per tenant)
+- `OPERA_VERSION` — `SE` or `3`
 - `EMAIL_MAILBOX` — **the inbox this app reads bank statements from**
   (e.g. `banking@customer.com`, or the customer's shared
   `accounts@customer.com` if they only use one inbox)
-- If `EMAIL_PROVIDER=microsoft`: `EMAIL_MICROSOFT_TENANT_ID`,
-  `EMAIL_MICROSOFT_CLIENT_ID`, `EMAIL_MICROSOFT_CLIENT_SECRET`
-  (central, shared with all apps for the same customer)
-- If `EMAIL_PROVIDER=imap`: `EMAIL_IMAP_SERVER`, `EMAIL_IMAP_USERNAME`,
-  `EMAIL_IMAP_PASSWORD`
+- `SAM_EMAIL_URL` — SAM's email service base URL for this tenant
+- `SAM_AUTH_TOKEN` — service token for calls to SAM
 - `GEMINI_API_KEY`, `GEMINI_MODEL` — AI extraction
-- `OPERA_VERSION` — `SE` or `3`
-- `COMPANY_DATA_BASE_PATH` — per-company SQLite root
+- `COMPANY_DATA_BASE_PATH` — per-company SQLite root (mounted volume)
 - `SYSTEM_LOG_LEVEL`
+
+**Local dev / standalone (not SAM):**
+- Replace `SAM_EMAIL_URL` + `SAM_AUTH_TOKEN` with `EMAIL_PROVIDER` +
+  `EMAIL_IMAP_*` or `EMAIL_MICROSOFT_*` (see env-var-contract).
 
 **If `OPERA_VERSION=3`:**
 - `OPERA3_AGENT_URL` — SAM's expanded Opera 3 Agent (handles both

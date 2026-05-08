@@ -15,47 +15,94 @@ document to do the work.
 
 ## TL;DR
 
-We have four containerised business applications + a small core that
+We have four containerised business applications + a frontend that
 share a common architecture (env-var-driven config, ports/adapters
 behind every external dependency). Phase A and Phase B of our work
 were specifically designed for SAM-merge: every config value, every
 external service, every shared resource is already abstracted behind
 a swap point.
 
+**Confirmed scope (revised):** SAM provides email (inbox / attachment
+storage / send), auth, secrets, and the Opera 3 Agent. Our previous
+`core-email` and `core-opera3` services are therefore **not** part of
+the merge bundle — SAM replaces them. Our four workflow apps consume
+SAM's services through Phase B's adapter ports.
+
 **Deployment context:** SAM and our apps run on the same platform
 technology, in different locations. Same image format, same
 manifest conventions, same observability stack — apps reach SAM via
 URL across locations.
 
-Your job is roughly:
+### Step-by-step at a glance
 
-1. Provide your conventions (auth, secrets) — see §3
-2. We write ~6 small SAM adapter files matching those conventions
-3. You configure per-tenant secrets in SAM
-4. Deploy our images alongside SAM, run the included Health Check per app
-5. Cut over
+| # | Step | Owner | Effort |
+|---|---|---|---|
+| 1 | Confirm SAM conventions (auth, secrets, email API, etc.) — answer the questions in §3 | SAM team | Half a day |
+| 2 | Write SAM adapter files (~6 small files: auth, email, secrets, opera-sql credentials) | Us | 3-5 days |
+| 3 | Build container images per app and push to your registry | Us | 1 day |
+| 4 | Create deployment manifests (5 deployments: 4 apps + frontend) | SAM team | 1-2 days |
+| 5 | Provision per-tenant persistent volumes for each app's data (see Phase 3a) | SAM team | Per-tenant |
+| 6 | Populate per-tenant secrets per the env-var contract (see Phase 4) | SAM team | Per-tenant |
+| 7 | Deploy apps, run `/healthz` + per-app data-integrity health check | Joint | 1 hour per customer |
+| 8 | Cut traffic from old to new deployment | SAM team | Per-tenant |
 
-Estimated effort once SAM specifics are known: **~1 week of focused work**
-on the application side, deployment + per-tenant configuration on yours.
+**Total: ~1 week our side; deployment + per-tenant work on yours.**
 
 **No application code changes are required for the merge** — only the
 adapter layer and your deployment manifests.
+
+### Considerations split: who handles what
+
+**SAM-side considerations:**
+- Email service (inbox poller, attachment storage, send) — SAM provides; replaces our `core-email`
+- Opera 3 Agent — SAM hosts; our apps consume via `OPERA3_AGENT_URL`
+- Auth (JWT issuance + validation) — SAM owns; our apps validate inbound JWTs against `AUTH_JWT_PUBLIC_KEY`
+- Secrets store — SAM owns; populated per tenant
+- Persistent volumes per tenant per app for SQLite operational data
+- Ingress / routing — SAM's gateway replaces our nginx
+- Logging / metrics conventions — SAM specifies; we adapt
+
+**Our-side considerations:**
+- App business logic (bank rec, GoCardless, suppliers, balance check) — unchanged, no code edits for the merge
+- Adapter implementations (one per SAM service we consume — auth, email, secrets)
+- Image build + push pipeline
+- Health-check + smoke-test scripts
+- Per-app data integrity checks (validates SQLite state against the tenant's Opera)
+- Frontend bundle build + deploy
+
+**Joint considerations (need both sides to agree):**
+- Cutover runbook per customer (parallel run, switch ingress, monitor, retire old)
+- Data migration of existing operational SQLite (rsync into SAM volume)
+- Tenant onboarding workflow (who provisions what, in what order)
+- Rollback path (SAM-side ingress flip back to legacy deployment)
+
+Estimated effort once SAM specifics are known: **~1 week of focused
+work on the application side**, deployment + per-tenant configuration
+on yours.
 
 ---
 
 ## §1 What's being merged
 
-### Application catalogue
+### Application catalogue (4 apps + 1 frontend = 5 SAM deployments)
 
 | App | Purpose | Owns | Reads from |
 |---|---|---|---|
-| `bank-reconcile` | Bank statement scan + reconcile + Opera posting | `bank_aliases.db`, `bank_patterns.db`, statement-tracking SQLite | Opera SQL, IMAP, Gemini |
-| `gocardless` | Direct Debit payout import | `gocardless_payments.db` | Opera SQL, IMAP, GoCardless API, Gemini |
-| `suppliers` | Supplier statement reconciliation | `supplier_extraction_cache.db`, `supplier_statements.db` | Opera SQL, IMAP, SMTP, Gemini |
+| `bank-reconcile` | Bank statement scan + reconcile + Opera posting | `bank_aliases.db`, `bank_patterns.db`, statement-tracking SQLite | Opera SQL, **SAM email service**, Gemini |
+| `gocardless` | Direct Debit payout import | `gocardless_payments.db` | Opera SQL, **SAM email service**, GoCardless API, Gemini |
+| `suppliers` | Supplier statement reconciliation | `supplier_extraction_cache.db`, `supplier_statements.db` | Opera SQL, **SAM email service**, Gemini |
 | `balance-check` | Internal Opera balance reconciliation | (read-only, no own state) | Opera SQL |
+| `frontend` | Single React SPA serving all four apps behind your ingress | (stateless, static bundle) | Gateway URL only |
 
-Plus a shared `core-email` IMAP poller (Phase B; can be replaced by SAM's
-equivalent if SAM provides one).
+### Not in the merge bundle
+
+| ~~Service~~ | Reason |
+|---|---|
+| ~~`core-email`~~ | **Replaced by SAM.** SAM provides inbox / attachment storage / send. Our apps consume it via `SAM_EMAIL_URL`. |
+| ~~`core-opera3`~~ | **Replaced by SAM.** SAM hosts the expanded Opera 3 Agent (handles both reads and writes). |
+| ~~`core-opera-se`~~ | Optional shared SQL gateway; not required for initial merge. Apps talk to Opera SQL directly today. |
+| ~~`core-auth`~~ | If SAM provides JWT-based auth, we drop our internal auth too; otherwise we keep a minimal auth surface. See §3 Q3. |
+| ~~`nginx-gateway`~~ | Replaced by SAM's ingress / service mesh. |
 
 ### External dependencies
 
@@ -65,7 +112,7 @@ These exist outside SAM's control and your apps still consume them:
 |---|---|---|
 | Opera SQL Server | Customer's accounting database (Windows host) | Yes — connection details supplied per tenant |
 | Opera 3 Agent | **SAM-hosted** service handling all Opera 3 reads + writes (expanded from the original write-only Windows agent). Reads FoxPro DBFs and posts transactions on behalf of our containers. | **Hosted by SAM** — no longer customer-deployed |
-| Email IMAP/SMTP | Customer's email server | Yes — credentials per tenant |
+| Email (inbox + attachments + send) | **SAM email service** — SAM owns the connection to the customer's mailbox (MS Graph / IMAP) and the send pipeline. Our apps no longer hold mailbox credentials. | **Hosted by SAM** |
 | Gemini API | Google AI for PDF extraction | Yes — API key per deployment or per tenant |
 | GoCardless API | Direct Debit platform | Yes — token per tenant |
 
@@ -195,6 +242,30 @@ What this means:
    - Our apps will call SAM's secret/config API. How do they authenticate?
    - mTLS? Service token in env? Workload identity?
 
+6. **SAM email service API contract** — *new, replaces core-email*
+   - **Endpoint shape:** REST? GraphQL? SAM SDK? Confirm base URL pattern
+     (we propose `SAM_EMAIL_URL=https://sam.example.com/email/{tenant}/`).
+   - **Capabilities required by our apps:**
+     - List emails by mailbox / since-date / search filter
+     - Fetch a single message body
+     - Download an attachment by message-id + filename (returns bytes)
+     - Send an email (SMTP-equivalent — used by gocardless + suppliers
+       remittance, suppliers contact email)
+     - Mark as read / move to folder (suppliers archives processed
+       statements)
+   - **Per-app mailbox routing — who decides?**
+     - Option A: each app passes a `mailbox` query parameter (e.g.
+       `?mailbox=banking@customer.com`) — SAM uses it to route
+     - Option B: SAM maps "this service token = this mailbox" centrally;
+       our apps just call `/email/list` and get the right inbox
+     - This determines whether `EMAIL_MAILBOX` stays as our env var or
+       gets dropped entirely.
+   - **Attachment delivery:** inline base64 in the email response, or
+     a separate attachment-fetch endpoint with byte-stream response?
+   - **Attachment caching:** does SAM cache attachments, or do we still
+     need our app-private cache? (We currently dedupe-by-hash to save
+     re-extraction cost.)
+
 ### Operational (refines, not blocking)
 
 6. **Logging conventions**
@@ -282,60 +353,133 @@ placeholders — we wire them up.
 
 You create the deployment configuration in your platform's format:
 
-- One deployment per app (5 deployments total: bank-reconcile, gocardless,
-  suppliers, balance-check, core-email)
-- Plus the frontend image (1 deployment) behind your ingress
+- **5 SAM deployments total: 4 app containers + 1 frontend.**
+  bank-reconcile, gocardless, suppliers, balance-check + frontend SPA.
+  No `core-email` (SAM provides it). No `core-opera3` (SAM hosts the
+  agent). No `nginx-gateway` (your ingress replaces it).
 - Health probes pointing at `/healthz`
 - Resource requests/limits (we'll suggest baselines)
 - Environment variables populated from your secrets store
+- One persistent volume per app per tenant (see Storage strategy below)
 
 Required env vars per app: see [env-var-contract.md](./env-var-contract.md).
 Common to all:
 ```
-DATABASE_*           Opera SQL connection
-OPERA_VERSION        SE | 3 (per tenant — comes from SAM token claim)
-COMPANY_DATA_BASE_PATH  /app/data (mounted volume)
+DATABASE_*           Opera SQL connection (per tenant)
+OPERA_VERSION        SE | 3 (per tenant — comes from SAM token claim
+                     or SAM-provided central config)
+COMPANY_DATA_BASE_PATH  /app/data (mounted volume root)
 SYSTEM_LOG_LEVEL     INFO
 SAM_ENABLED          true
-SAM_*_URL            your service URLs
-AUTH_JWT_PUBLIC_KEY  for token validation
+SAM_EMAIL_URL        your email service base URL
+SAM_AUTH_TOKEN       short-lived service token issued by SAM
+SAM_*_URL            other service URLs (registry, secrets, etc.)
+AUTH_JWT_PUBLIC_KEY  for inbound token validation
 ```
 
+### Phase 3a — Storage strategy (decision recorded for the merge)
+
+**Recommendation: keep SQLite per-tenant per-app, mounted on
+SAM-managed persistent volumes. Do NOT move to a central Postgres for
+the initial merge.**
+
+**What lives on disk per tenant:**
+```
+/app/data/{tenant}/
+├── bank_reconcile/   # aliases, pattern-learning, PDF cache, locks
+├── gocardless/       # mandate registry, payment-request log
+├── suppliers/        # statement extraction history, automation rules
+└── core/             # (only if any auth state remains; otherwise dropped)
+```
+
+Sizes: typically <100 MB per tenant, dominated by extraction caches.
+50 tenants ≈ 5 GB total — well within a single volume mount.
+
+**Why this is the right choice for the merge:**
+
+| Concern | Why SQLite-on-SAM-volume is right |
+|---|---|
+| **Tenant isolation** | File-level isolation by directory layout. Impossible to accidentally read another tenant's data. With central Postgres every query needs `WHERE tenant_id = ?` — one missed filter leaks finance data. |
+| **Backup / DR** | SAM volume snapshot ≡ database snapshot. Same recovery story, no extra tier. |
+| **Tenant offboarding** | `rm -rf /app/data/{tenant}/` — single atomic operation. With central DB it's a delete script that has to be foolproof. |
+| **Schema evolution** | Each app evolves its schema independently. No central DBA approval path. |
+| **Performance** | In-process SQLite (microseconds) vs network Postgres (milliseconds with auth overhead). Reads are tiny but frequent. |
+| **Failure blast radius** | One tenant's IO doesn't affect others. Central DB slow = all tenants affected. |
+| **Migration cost** | Today's code is SQLite-flavoured. Moving to Postgres is months of work for benefits we don't currently need. |
+
+**When to revisit (triggers for moving to central Postgres later):**
+
+1. Regulatory requirement for centralised, queryable, sealed
+   audit-time records across tenants
+2. Per-tenant data outgrows SQLite (tens of millions of rows in a
+   single app — not close to this)
+3. A concrete cross-tenant product feature is built (e.g. cross-customer
+   benchmarking). For analytics, a downstream warehouse is the right
+   home anyway, not the operational store.
+
+**SAM-side action:** provision per-tenant persistent volumes with
+backup/snapshot policy applied. Mount each at `/app/data/{tenant}/`
+inside the relevant app container.
+
+**Our-side action:** none — already file-based, already isolated by
+directory.
+
 ### Phase 4 — Per-tenant configuration (variable, SAM team per customer)
+
+**SAM owns the email credentials, the Opera 3 Agent, and auth.** Our
+apps never see mailbox passwords or Graph secrets — they call SAM's
+services and SAM brokers the connection to the customer's mailbox.
 
 For each customer being migrated, SAM admin populates their secret
 slot with:
 
+**Opera SQL (always required)**
 - `DATABASE_SERVER`, `DATABASE_PORT`, `DATABASE_DATABASE`,
-  `DATABASE_USERNAME`, `DATABASE_PASSWORD` — Opera SQL credentials
-- **Email — central per customer:**
-  - `EMAIL_PROVIDER` — `microsoft` (MS Graph, preferred) or `imap`
-  - If `microsoft`: `EMAIL_MICROSOFT_TENANT_ID`,
-    `EMAIL_MICROSOFT_CLIENT_ID`, `EMAIL_MICROSOFT_CLIENT_SECRET`
-  - If `imap`: `EMAIL_IMAP_SERVER`, `EMAIL_IMAP_USERNAME`,
-    `EMAIL_IMAP_PASSWORD`
-  - `EMAIL_SMTP_SERVER`, `EMAIL_SMTP_USERNAME`, `EMAIL_SMTP_PASSWORD`
-    (suppliers + gocardless send remittance emails)
-- **Email — per-app mailbox identity** (set per app/container, not per
-  customer):
-  - `EMAIL_MAILBOX` — the inbox this app reads from / sends as.
-    A customer may have one inbox for everything (set the same value
-    for every app) or separate inboxes per workflow (e.g.
-    `banking@customer.com` for bank-reconcile,
-    `payments@customer.com` for gocardless,
-    `ap@customer.com` for suppliers). The credentials above are
-    shared; only `EMAIL_MAILBOX` differs per app.
-  - `EMAIL_FROM_ADDRESS` — optional; defaults to `EMAIL_MAILBOX`
-- `GEMINI_API_KEY` — AI extraction
-- For GoCardless customers: `GOCARDLESS_ACCESS_TOKEN`,
-  `GOCARDLESS_WEBHOOK_SECRET`
-- For Opera 3 customers: `OPERA3_AGENT_URL` (per-tenant URL of SAM's
-  Opera 3 Agent — handles both reads and writes; SAM populates this
-  per tenant)
+  `DATABASE_USERNAME`, `DATABASE_PASSWORD` — Opera SQL credentials.
+  Per tenant.
 
-⚠️ **`GOCARDLESS_ENVIRONMENT`** must be set per-deployment, not per-tenant
-(sandbox in dev, live in prod). Never per-tenant — it would risk live API
-calls during testing.
+**Opera version routing (always required)**
+- `OPERA_VERSION` — `SE` or `3`. Determines which code path runs.
+- `OPERA3_AGENT_URL` — only when `OPERA_VERSION=3`. URL of SAM's Opera
+  3 Agent for this tenant; agent handles both reads and writes.
+
+**Email — SAM-provided (always required)**
+- `SAM_EMAIL_URL` — base URL of SAM's email service, scoped to this
+  tenant (e.g. `https://sam.example.com/email/{tenant}/`).
+- `SAM_AUTH_TOKEN` — service token our apps use to authenticate to
+  SAM's email service (and other SAM services).
+
+**Per-app mailbox identity (set per app, not per customer)**
+- `EMAIL_MAILBOX` — the inbox this specific app reads from / sends
+  as. Examples:
+  - Single shared mailbox: every app gets `accounts@customer.com`
+  - Per-workflow mailboxes:
+    - bank-reconcile → `banking@customer.com`
+    - gocardless → `payments@customer.com`
+    - suppliers → `ap@customer.com`
+
+  This is the only value that differs across apps for the same
+  customer. SAM uses it to decide which mailbox to expose when the
+  app calls `SAM_EMAIL_URL`. *(See §3 Q6 — exact mechanism depends
+  on SAM's email API contract; either passed as a parameter or
+  encoded in `SAM_AUTH_TOKEN`'s scope.)*
+
+**AI extraction**
+- `GEMINI_API_KEY` — Google Gemini key. Per deployment or per
+  tenant; either works.
+
+**GoCardless (only for customers using DD)**
+- `GOCARDLESS_ACCESS_TOKEN` — per tenant
+- `GOCARDLESS_WEBHOOK_SECRET` — per tenant
+
+⚠️ **`GOCARDLESS_ENVIRONMENT`** must be set per-deployment, not
+per-tenant (sandbox in dev, live in prod). Never per-tenant — it
+would risk live API calls during testing.
+
+**No longer needed (compared to the previous handover):**
+- ~~`EMAIL_PROVIDER`~~, ~~`EMAIL_MICROSOFT_*`~~, ~~`EMAIL_IMAP_*`~~,
+  ~~`EMAIL_SMTP_*`~~, ~~`EMAIL_FROM_ADDRESS`~~ — SAM owns all of
+  these. Our apps never see mailbox credentials.
 
 ### Phase 5 — Smoke test per app (1 hour per customer, us + SAM team)
 

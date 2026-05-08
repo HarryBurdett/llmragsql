@@ -4,41 +4,47 @@ Which application depends on which other application, and on which
 external systems. Read this alongside [`env-var-contract.md`](./env-var-contract.md)
 to understand what to plug in where.
 
-## App-to-app dependencies (HTTP)
+## App-to-app dependencies (post-SAM merge)
 
 ```
                     ┌──────────────┐
                     │   frontend   │
                     │  (React UI)  │
                     └──────┬───────┘
-                           │ HTTP
+                           │ HTTPS
                            ▼
                     ┌──────────────┐
-                    │   gateway    │
-                    │   (nginx)    │
-                    └──┬─┬─┬─┬─┬───┘
-                       │ │ │ │ │
-        ┌──────────────┘ │ │ │ └────────────────┐
-        │                │ │ │                  │
-        ▼                ▼ │ ▼                  ▼
+                    │ SAM ingress  │
+                    │  (replaces   │
+                    │   nginx)     │
+                    └──┬─┬─┬─┬─────┘
+                       │ │ │ │
+        ┌──────────────┘ │ │ └────────────────┐
+        │                │ │                  │
+        ▼                ▼ ▼                  ▼
  ┌─────────────┐  ┌──────────┐  ┌────────────┐  ┌───────────────┐
  │bank-recon-  │  │gocardless│  │ suppliers  │  │balance-check  │
  │   cile      │  │          │  │            │  │   (read-only) │
  └─────┬───────┘  └────┬─────┘  └────┬───────┘  └───────┬───────┘
        │               │             │                  │
        │               │             │                  │
-       │  HTTP         │             │                  │
+       │  HTTPS via SAM_EMAIL_URL    │                  │
        └───────┬───────┴─────────────┘                  │
                ▼                                        │
-        ┌─────────────┐                                 │
-        │ core-email  │                                 │
-        │ (IMAP +     │                                 │
-        │  storage)   │                                 │
-        └─────┬───────┘                                 │
-              │                                         │
-              ▼                                         │
+       ┌────────────────────────┐                       │
+       │  SAM email service     │                       │
+       │  - Inbox / list / fetch│                       │
+       │  - Attachments         │                       │
+       │  - Send (SMTP equiv)   │                       │
+       │  Per-app routing via   │                       │
+       │  EMAIL_MAILBOX         │                       │
+       └─────────┬──────────────┘                       │
+                 │                                      │
+                 ▼                                      │
        ┌──────────────────────────────────┐             │
-       │  External: IMAP server           │             │
+       │ External: customer's mailbox     │             │
+       │  (MS 365 / IMAP — connection     │             │
+       │   owned by SAM, not our apps)    │             │
        └──────────────────────────────────┘             │
                                                         │
        ┌──────────────────────────────────────┬─────────┘
@@ -47,32 +53,39 @@ to understand what to plug in where.
  ┌───────────────────┐                        │
  │ External:         │                        │
  │ Opera SQL Server  │◄───────────────────────┤
- │ (Windows)         │                        │
+ │ (per tenant)      │                        │
  └───────────────────┘                        │
                                               │
  ┌─────────────────────────────────┐
- │ SAM (different location):       │
+ │ SAM-hosted:                     │
  │ Opera 3 Agent                   │
  │ — handles BOTH reads + writes   │
  │ (expanded from legacy           │
  │  Windows-only write agent)      │
  └─────────────────────────────────┘
                   ▲
-                  │ HTTP (read DBF + write DBF)
+                  │ HTTPS (read DBF + write DBF)
                   │
           ┌───────┴───────────────────┐
-          │ All apps when             │
-          │ OPERA_VERSION=3           │
+          │ Opera 3 tenants only      │
+          │ (OPERA_VERSION=3)         │
           └───────────────────────────┘
 ```
+
+**Key changes vs pre-SAM Docker stack:**
+- ~~core-email~~ replaced by SAM email service
+- ~~nginx-gateway~~ replaced by SAM ingress
+- Opera 3 Agent now SAM-hosted (was customer-deployed Windows agent)
+- Mailbox credentials now held by SAM, not in our env vars
+- Each app calls `SAM_EMAIL_URL` and identifies its mailbox via `EMAIL_MAILBOX`
 
 ## Per-app dependencies
 
 ### bank-reconcile
 
 **Depends on (HTTP):**
-- `core-email` — fetches PDF attachments from inbox
-- (Phase B: also `core-opera-se` via HTTP. Phase A: direct pyodbc.)
+- **SAM email service** (`SAM_EMAIL_URL`) — fetches PDF attachments from inbox identified by `EMAIL_MAILBOX`
+- (Optional: `core-opera-se` shared SQL gateway, not in initial merge)
 
 **Depends on (external):**
 - Opera SQL Server (writes via SQLAlchemy + pyodbc)
@@ -87,14 +100,13 @@ to understand what to plug in where.
 ### gocardless
 
 **Depends on (HTTP):**
-- `core-email` — fetches GoCardless payout emails
-- `bank-reconcile` (Phase B) — bank-aliases lookup if needed
+- **SAM email service** (`SAM_EMAIL_URL`) — fetches GoCardless payout emails + sends remittance via the same service
+- `bank-reconcile` (optional) — bank-aliases lookup if needed
 
 **Depends on (external):**
 - Opera SQL Server
 - SAM Opera 3 Agent (when `OPERA_VERSION=3`) — single HTTP endpoint for reads + writes
 - GoCardless API (payment platform)
-- IMAP / SMTP (remittance)
 - Gemini API
 
 **Provides (HTTP):**
@@ -104,11 +116,10 @@ to understand what to plug in where.
 ### suppliers
 
 **Depends on (HTTP):**
-- `core-email` — supplier statement attachments
+- **SAM email service** (`SAM_EMAIL_URL`) — supplier statement attachments, remittance email send, contact email send
 
 **Depends on (external):**
 - Opera SQL Server
-- IMAP / SMTP (remittance, contact email)
 - Gemini API (PDF extraction)
 
 **Provides (HTTP):**
@@ -132,20 +143,15 @@ to understand what to plug in where.
 - `/api/reconcile/vat`
 - `/api/reconcile/cashbook` (variance)
 
-### core-email
+### ~~core-email~~ — replaced by SAM email service
 
-**Depends on (HTTP):**
-- (none)
+The `core-email` container is **no longer part of the SAM merge bundle**.
+SAM's email service replaces it — same capabilities (inbox poll,
+attachment storage, send), but hosted by SAM and credentialed
+centrally per customer.
 
-**Depends on (external):**
-- IMAP server (poll for new mail)
-- SMTP server (send remittance — actually owned by sender apps,
-  but core-email exposes a send helper)
-
-**Provides (HTTP):**
-- `/api/email/*` — list, search, attachment download
-- `/api/system/*` — auth, company switching (during Phase A)
-- IMAP poller runs as a background task in the same process
+If SAM doesn't take over auth/login, a slim `core-auth` may still be
+needed for that — see §3 Q3 in the handover document.
 
 ## Routing summary (gateway)
 

@@ -54,59 +54,80 @@ Optional alternative AI providers (set the matching key + change `MODELS_PROVIDE
 
 ## Required for email-using apps (bank-reconcile, gocardless, suppliers)
 
-### Per-app mailbox identity (NEW — required for every email-using app)
+**Architecture (post-SAM):** SAM owns the connection to the customer's
+mailbox — MS Graph credentials, IMAP credentials, SMTP send pipeline.
+Our apps **never see mailbox passwords**. They call SAM's email service
+via `SAM_EMAIL_URL` and identify their target mailbox via
+`EMAIL_MAILBOX`.
 
-Each app may need a **different inbox**. Common scenario: bank statements
-land in `accounts@customer.com`, supplier statements in
+### Per-app mailbox identity (required for every email-using app)
+
+Each app may need a **different inbox**. Common scenario: bank
+statements land in `banking@customer.com`, supplier statements in
 `ap@customer.com`, GoCardless payouts in `payments@customer.com`.
-Equally common: a customer just uses **one** inbox for everything — in
+Equally common: a customer uses **one** inbox for everything — in
 which case set the same value for every app.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `EMAIL_MAILBOX` | string | (falls back to `EMAIL_IMAP_USERNAME`) | The mailbox identity this app instance reads from / sends as. Set **per app** (per container). On Microsoft Graph this is the `userPrincipalName` (e.g. `payments@customer.com`); on classic IMAP/SMTP this matches the login. |
+| `EMAIL_MAILBOX` | string | — | The mailbox identity this app reads from / sends as. Set **per app** (per container). SAM uses this to route the app to the right mailbox when it calls `SAM_EMAIL_URL`. |
 
-The MS Graph / IMAP / SMTP **credentials** are centralised — one set
-per customer (see below). The mailbox identity is the only per-app
-difference.
+Examples:
+```bash
+# Single shared mailbox
+bank-reconcile:    EMAIL_MAILBOX=accounts@customer.com
+gocardless:        EMAIL_MAILBOX=accounts@customer.com
+suppliers:         EMAIL_MAILBOX=accounts@customer.com
 
-### Microsoft Graph (preferred for Microsoft 365 customers — central)
+# Separate mailboxes per workflow
+bank-reconcile:    EMAIL_MAILBOX=banking@customer.com
+gocardless:        EMAIL_MAILBOX=payments@customer.com
+suppliers:         EMAIL_MAILBOX=ap@customer.com
+```
 
-| Env var | Type | Default | Description |
-|---|---|---|---|
-| `EMAIL_PROVIDER` | string | imap | `imap` (default), `microsoft` (MS Graph), or `gmail` |
-| `EMAIL_MICROSOFT_TENANT_ID` | string | — | Azure AD / Entra ID tenant ID — **central**, one per customer |
-| `EMAIL_MICROSOFT_CLIENT_ID` | string | — | Application (client) ID of the registered app — **central** |
-| `EMAIL_MICROSOFT_CLIENT_SECRET` | string | — | Client secret — **central**; SAM populates per customer |
-
-When `EMAIL_PROVIDER=microsoft`, the app uses the central Graph
-credentials to authenticate, then accesses `EMAIL_MAILBOX` via the
-`/users/{mailbox}/...` Graph endpoint. The app-registration must be
-granted `Mail.Read`, `Mail.Send`, and (for suppliers) `Mail.ReadWrite`
-on the `Application` permission set, with admin consent.
-
-### IMAP (classic — receiving)
-
-Used when `EMAIL_PROVIDER=imap` (or unset).
+### SAM email service (post-SAM, central per tenant)
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `EMAIL_IMAP_ENABLED` | bool | true | Master switch for IMAP polling |
-| `EMAIL_IMAP_SERVER` | string | — | IMAP hostname |
-| `EMAIL_IMAP_PORT` | int | 993 | IMAP port |
-| `EMAIL_IMAP_USE_SSL` | bool | true | Use TLS |
-| `EMAIL_IMAP_USERNAME` | string | — | IMAP login (used as `EMAIL_MAILBOX` fallback) |
-| `EMAIL_IMAP_PASSWORD` | string | — | IMAP password / app password |
+| `SAM_EMAIL_URL` | URL | — | Base URL of SAM's email service for this tenant (e.g. `https://sam.example.com/email/{tenant}/`). Provides inbox listing, message fetch, attachment download, send. |
+| `SAM_AUTH_TOKEN` | string | — | Service token our apps use to authenticate to SAM's email service (and other SAM services). |
 
-### SMTP (sending — gocardless remittance, suppliers remittance)
+**SAM-side responsibilities:**
+- Holds MS Graph / IMAP / SMTP credentials per customer
+- Connects to the customer's mailbox on our apps' behalf
+- Exposes inbox / attachments / send via HTTP
+- Routes per-app calls to the right mailbox using `EMAIL_MAILBOX`
+
+**Our-side responsibilities:**
+- Implement HTTP adapter against SAM's email API
+  (`apps/core/adapters/sam/email_storage.py`)
+- Pass `EMAIL_MAILBOX` when listing or fetching messages
+
+### Pre-SAM email config (for development / standalone deployments only)
+
+These env vars are **only used when running outside SAM** (e.g. local
+dev, on-prem standalone, or pre-merge testing). SAM-hosted deployments
+don't set these — SAM's email service replaces them.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
+| `EMAIL_PROVIDER` | string | imap | `imap`, `microsoft` (MS Graph), or `gmail` |
+| `EMAIL_MICROSOFT_TENANT_ID` | string | — | Entra ID tenant — Microsoft 365 deployments |
+| `EMAIL_MICROSOFT_CLIENT_ID` | string | — | App registration client ID |
+| `EMAIL_MICROSOFT_CLIENT_SECRET` | string | — | App registration secret |
+| `EMAIL_IMAP_SERVER` | string | — | IMAP hostname (classic) |
+| `EMAIL_IMAP_PORT` | int | 993 | |
+| `EMAIL_IMAP_USE_SSL` | bool | true | |
+| `EMAIL_IMAP_USERNAME` | string | — | IMAP login |
+| `EMAIL_IMAP_PASSWORD` | string | — | IMAP password |
 | `EMAIL_SMTP_SERVER` | string | — | SMTP hostname |
-| `EMAIL_SMTP_PORT` | int | 587 | SMTP port |
-| `EMAIL_SMTP_USERNAME` | string | — | SMTP login |
-| `EMAIL_SMTP_PASSWORD` | string | — | SMTP password |
-| `EMAIL_FROM_ADDRESS` | string | (falls back to `EMAIL_MAILBOX`) | Default From: header. Most installs leave this unset and let it default to the per-app mailbox. |
+| `EMAIL_SMTP_PORT` | int | 587 | |
+| `EMAIL_SMTP_USERNAME` | string | — | |
+| `EMAIL_SMTP_PASSWORD` | string | — | |
+| `EMAIL_FROM_ADDRESS` | string | (falls back to `EMAIL_MAILBOX`) | From: header for sends |
+
+When `SAM_ENABLED=true`, the adapter factory ignores all of the above
+and uses the SAM email adapter instead.
 
 ## Required for Opera 3 deployments
 
@@ -143,11 +164,13 @@ production GoCardless endpoint while testing.
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `SAM_ENABLED` | bool | false | Enables SAM-specific adapters |
+| `SAM_ENABLED` | bool | false | Enables SAM-specific adapters across the board |
 | `SAM_AUTH_URL` | URL | — | SAM auth service endpoint |
 | `SAM_SECRETS_URL` | URL | — | SAM secrets service endpoint |
 | `SAM_SERVICE_REGISTRY_URL` | URL | — | SAM service discovery |
-| `AUTH_JWT_PUBLIC_KEY` | string | — | Public key to validate SAM-issued JWTs |
+| `SAM_EMAIL_URL` | URL | — | SAM email service base URL (per tenant) |
+| `SAM_AUTH_TOKEN` | string | — | Short-lived service token for inter-service auth to SAM |
+| `AUTH_JWT_PUBLIC_KEY` | string | — | Public key to validate inbound SAM-issued JWTs |
 
 When `SAM_ENABLED=true`, apps switch to SAM-aware adapters that:
 - Validate inbound JWTs against `AUTH_JWT_PUBLIC_KEY`
@@ -177,39 +200,27 @@ docker-compose / SAM, not by users.
 Apps only need URLs for services they actually call — see each app's
 detail page for its specific dependencies.
 
-## Per-app required-env summary
+## Per-app required-env summary (SAM-hosted)
+
+When `SAM_ENABLED=true`:
 
 | App | Always required | Conditional |
 |---|---|---|
-| bank-reconcile | `DATABASE_*`, `EMAIL_MAILBOX`, `EMAIL_*` (provider-specific), `GEMINI_API_KEY`, `OPERA_VERSION` | `OPERA3_AGENT_URL` if Opera 3 |
-| gocardless | `DATABASE_*`, `EMAIL_MAILBOX`, `EMAIL_*` (provider-specific), `EMAIL_SMTP_*`, `GEMINI_API_KEY`, `GOCARDLESS_ACCESS_TOKEN` | `OPERA3_AGENT_URL` if Opera 3 |
-| suppliers | `DATABASE_*`, `EMAIL_MAILBOX`, `EMAIL_*` (provider-specific), `EMAIL_SMTP_*`, `GEMINI_API_KEY` | `OPERA3_AGENT_URL` if Opera 3 |
-| balance-check | `DATABASE_*` | `OPERA3_AGENT_URL` if Opera 3 |
-| core-email | `EMAIL_MAILBOX`, `EMAIL_*` (provider-specific) | — |
-| core-opera-se | `DATABASE_*` | — |
-| ~~core-opera3~~ | *(no longer needed — SAM hosts the Opera 3 Agent)* | — |
+| bank-reconcile | `DATABASE_*`, `OPERA_VERSION`, `EMAIL_MAILBOX`, `SAM_EMAIL_URL`, `SAM_AUTH_TOKEN`, `GEMINI_API_KEY` | `OPERA3_AGENT_URL` if Opera 3 |
+| gocardless | `DATABASE_*`, `OPERA_VERSION`, `EMAIL_MAILBOX`, `SAM_EMAIL_URL`, `SAM_AUTH_TOKEN`, `GEMINI_API_KEY`, `GOCARDLESS_ACCESS_TOKEN` | `OPERA3_AGENT_URL` if Opera 3 |
+| suppliers | `DATABASE_*`, `OPERA_VERSION`, `EMAIL_MAILBOX`, `SAM_EMAIL_URL`, `SAM_AUTH_TOKEN`, `GEMINI_API_KEY` | `OPERA3_AGENT_URL` if Opera 3 |
+| balance-check | `DATABASE_*`, `OPERA_VERSION` | `OPERA3_AGENT_URL` if Opera 3 |
+| ~~core-email~~ | *(replaced by SAM's email service)* | — |
+| ~~core-opera3~~ | *(SAM hosts the Opera 3 Agent)* | — |
 
-**`EMAIL_*` (provider-specific)** means: when `EMAIL_PROVIDER=microsoft`,
-the central Graph creds (`EMAIL_MICROSOFT_TENANT_ID/CLIENT_ID/CLIENT_SECRET`).
-When `EMAIL_PROVIDER=imap` (default), the classic creds
-(`EMAIL_IMAP_SERVER/PORT/USERNAME/PASSWORD`).
-
-**Per-app mailbox examples**:
-```bash
-# Single shared mailbox — same value everywhere
-bank-reconcile:    EMAIL_MAILBOX=accounts@customer.com
-gocardless:        EMAIL_MAILBOX=accounts@customer.com
-suppliers:         EMAIL_MAILBOX=accounts@customer.com
-
-# Separate mailboxes per workflow
-bank-reconcile:    EMAIL_MAILBOX=banking@customer.com
-gocardless:        EMAIL_MAILBOX=payments@customer.com
-suppliers:         EMAIL_MAILBOX=ap@customer.com
-```
-
-The credentials block (`EMAIL_MICROSOFT_*` or `EMAIL_IMAP_PASSWORD`) is
-identical across all three apps for the same customer — only
-`EMAIL_MAILBOX` differs.
+**Notes:**
+- `EMAIL_MAILBOX` is the only per-app email env var. Everything else
+  about email (credentials, connection to MS Graph / IMAP, send
+  pipeline) lives in SAM.
+- `SAM_EMAIL_URL` and `SAM_AUTH_TOKEN` are typically the same value
+  across all apps for a given tenant — SAM populates them centrally.
+- For local dev / standalone (no SAM), use the "Pre-SAM email config"
+  block above instead of `SAM_EMAIL_URL`.
 
 ## Migration to SAM
 

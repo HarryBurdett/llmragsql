@@ -15,21 +15,21 @@ APP_NAME=suppliers
 
 ## Required env vars
 
-**Always:**
-- `DATABASE_*` — Opera SQL connection
-- `EMAIL_PROVIDER` — `microsoft` (MS Graph) or `imap`
+**Always (SAM-hosted):**
+- `DATABASE_*` — Opera SQL connection (per tenant)
+- `OPERA_VERSION` — `SE` or `3`
 - `EMAIL_MAILBOX` — **the inbox supplier statements arrive in**
   (e.g. `ap@customer.com`, or the shared `accounts@customer.com` if
   the customer uses one inbox for everything)
-- If `EMAIL_PROVIDER=microsoft`: `EMAIL_MICROSOFT_TENANT_ID`,
-  `EMAIL_MICROSOFT_CLIENT_ID`, `EMAIL_MICROSOFT_CLIENT_SECRET`
-  (central, shared with all apps for the same customer)
-- If `EMAIL_PROVIDER=imap`: `EMAIL_IMAP_SERVER`, `EMAIL_IMAP_USERNAME`,
-  `EMAIL_IMAP_PASSWORD`
-- `EMAIL_SMTP_*`, `EMAIL_FROM_ADDRESS` (optional — defaults to
-  `EMAIL_MAILBOX`) — remittance + contact email
+- `SAM_EMAIL_URL` — SAM's email service base URL for this tenant
+  (used for inbox + remittance + contact email — SAM handles inbound
+  and outbound)
+- `SAM_AUTH_TOKEN` — service token for calls to SAM
 - `GEMINI_API_KEY` — AI extraction
-- `OPERA_VERSION` — `SE` or `3`
+
+**Local dev / standalone (not SAM):**
+- Replace SAM email vars with `EMAIL_PROVIDER`, `EMAIL_IMAP_*` or
+  `EMAIL_MICROSOFT_*`, plus `EMAIL_SMTP_*` for outbound mail.
 
 **If `OPERA_VERSION=3`:**
 - `OPERA3_AGENT_URL` — SAM's expanded Opera 3 Agent (handles both
