@@ -27,6 +27,10 @@ import {
   listStatements,
   getStatement,
 } from './services/supplier-statements.js';
+import {
+  getAutomationConfig,
+  saveAutomationConfig,
+} from './services/automation-config.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -381,6 +385,61 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Get statement failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/:code/automation — per-supplier automation
+   * config (auto_process, frequency, matching_rules).
+   */
+  router.get('/api/suppliers/:code/automation', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const result = await getAutomationConfig(appDb, code);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get automation-config failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * PUT /api/suppliers/:code/automation — partial-merge update of
+   * automation config. Body fields are optional; only provided fields
+   * overwrite. matching_rules MUST be a JSON object if present.
+   */
+  router.put('/api/suppliers/:code/automation', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await saveAutomationConfig(appDb, {
+        supplier_code: code,
+        auto_process:
+          typeof body.auto_process === 'boolean' ? body.auto_process : undefined,
+        frequency: typeof body.frequency === 'string' ? body.frequency : undefined,
+        matching_rules:
+          body.matching_rules &&
+          typeof body.matching_rules === 'object' &&
+          !Array.isArray(body.matching_rules)
+            ? (body.matching_rules as Record<string, unknown>)
+            : undefined,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Save automation-config failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
