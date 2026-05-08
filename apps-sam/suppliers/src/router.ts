@@ -57,6 +57,11 @@ import {
   type MatchStatus,
   type NewStatementLine,
 } from './services/statement-lines.js';
+import {
+  isEmailProcessed,
+  recordProcessedEmail,
+  listProcessedEmails,
+} from './services/processed-emails.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -897,6 +902,95 @@ export function createRouter(ctx: AppContext): Router {
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
+
+  /**
+   * GET /api/suppliers/processed-emails
+   *
+   * List processed-email dedup entries (audit trail of which emails
+   * have been extracted into supplier statements).
+   */
+  router.get('/api/suppliers/processed-emails', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const result = await listProcessedEmails(appDb, {
+        supplierCode:
+          typeof req.query.supplier_code === 'string'
+            ? req.query.supplier_code
+            : null,
+        fromDate:
+          typeof req.query.from_date === 'string' ? req.query.from_date : null,
+        toDate:
+          typeof req.query.to_date === 'string' ? req.query.to_date : null,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List processed-emails failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/processed-emails
+   *
+   * Record a Graph message as processed (called by the scan-emails
+   * flow after a successful statement extraction). Body:
+   *   { message_id: string, supplier_code?: string, subject?: string }
+   *
+   * Idempotent — a duplicate message_id returns success=true with
+   * duplicate=true.
+   */
+  router.post('/api/suppliers/processed-emails', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const body = (req.body ?? {}) as {
+        message_id?: string;
+        supplier_code?: string;
+        subject?: string;
+      };
+      const result = await recordProcessedEmail(appDb, {
+        message_id: String(body.message_id ?? ''),
+        supplier_code: body.supplier_code,
+        subject: body.subject,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Record processed-email failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/processed-emails/:message_id/exists
+   *
+   * Fast existence check used by the scan-emails dedup gate.
+   * Returns { exists: boolean }.
+   */
+  router.get(
+    '/api/suppliers/processed-emails/:message_id/exists',
+    async (req, res) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const messageId = String(req.params.message_id ?? '').trim();
+        const exists = await isEmailProcessed(appDb, messageId);
+        res.json({ success: true, message_id: messageId, exists });
+      } catch (err: any) {
+        ctx.logger.error('Check processed-email failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
 
   /**
    * GET /api/suppliers/:code — single supplier detail. Mounted LAST
