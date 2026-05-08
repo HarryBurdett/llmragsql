@@ -37,6 +37,10 @@ import {
   updateOnboardingState,
   type OnboardingStage,
 } from './services/onboarding.js';
+import {
+  listRemittanceLog,
+  recordRemittance,
+} from './services/remittance-log.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -520,6 +524,65 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Update onboarding state failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/remittance — list remittance log entries.
+   * Optional filters: supplier_code, from_date, to_date.
+   *
+   * Mounted before /api/suppliers/:code so the static path matches first.
+   */
+  router.get('/api/suppliers/remittance', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const supplierCode =
+        typeof req.query.supplier_code === 'string'
+          ? req.query.supplier_code
+          : null;
+      const fromDate =
+        typeof req.query.from_date === 'string' ? req.query.from_date : null;
+      const toDate =
+        typeof req.query.to_date === 'string' ? req.query.to_date : null;
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      const result = await listRemittanceLog(appDb, {
+        supplierCode,
+        fromDate,
+        toDate,
+        limit,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List remittance log failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/:code/remittance — record a remittance send.
+   * Body: { to_address, subject, amount }
+   */
+  router.post('/api/suppliers/:code/remittance', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await recordRemittance(appDb, {
+        supplier_code: code,
+        to_address: typeof body.to_address === 'string' ? body.to_address : '',
+        subject: typeof body.subject === 'string' ? body.subject : '',
+        amount: typeof body.amount === 'number' ? body.amount : NaN,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Record remittance failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

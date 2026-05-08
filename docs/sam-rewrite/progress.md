@@ -8,9 +8,9 @@ Live tracker. Each session updates this file before committing.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 16 of ~124 endpoints (57 tests)
 **bank-reconcile:** 15 of ~127 endpoints (39 tests)
-**suppliers:** 20 endpoints (greenfield TS work — 62 tests)
+**suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (extended session — 32 substantive commits)
+**Sessions logged:** 1 (extended session — 33 substantive commits)
 
 ## Per-app progress
 
@@ -240,9 +240,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/suppliers/tests/automation-config.test.ts` | 9 | ✅ passing |
 | `apps-sam/suppliers/tests/onboarding.test.ts` | 10 | ✅ passing |
 | `apps-sam/gocardless/tests/import-history-delete.test.ts` | 6 | ✅ passing |
-| **Total TypeScript tests** | **198** | ✅ all passing |
+| `apps-sam/suppliers/tests/remittance-log.test.ts` | 7 | ✅ passing |
+| **Total TypeScript tests** | **205** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **802** | ✅ |
+| **Grand total** | **809** | ✅ |
 
 ## Open questions / blockers
 
