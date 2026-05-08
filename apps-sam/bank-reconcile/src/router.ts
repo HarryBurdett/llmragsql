@@ -8,6 +8,10 @@ import { Router, type Request, type Response } from 'express';
 import type { AppContext } from './app-context.js';
 import { listBanks } from './services/banks.js';
 import { runHealthCheck } from './services/health-check.js';
+import {
+  listOrphanTmpstat,
+  clearOrphanTmpstat,
+} from './services/orphan-tmpstat.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -75,6 +79,56 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Health check failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/reconcile/bank/:bank_code/orphan-tmpstat — list orphaned
+   * partial reconcile reservations on a bank. Read-only.
+   */
+  router.get('/api/reconcile/bank/:bank_code/orphan-tmpstat', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      if (!bankCode) {
+        res.status(400).json({ success: false, error: 'Missing bank_code' });
+        return;
+      }
+      const result = await listOrphanTmpstat(operaDb, bankCode);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List orphan tmpstat failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/clear-orphan-tmpstat —
+   * clear orphan tmpstat reservations. Optional body
+   * `{ entry_numbers: [...] }` restricts to specific entries.
+   *
+   * Faithful port of `clear_orphan_tmpstat`. Uses ROWLOCK on a narrow
+   * UPDATE per CLAUDE.md locking rules.
+   */
+  router.post('/api/reconcile/bank/:bank_code/clear-orphan-tmpstat', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      if (!bankCode) {
+        res.status(400).json({ success: false, error: 'Missing bank_code' });
+        return;
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const entryNumbers = Array.isArray(body.entry_numbers)
+        ? (body.entry_numbers as string[])
+        : undefined;
+      const result = await clearOrphanTmpstat(operaDb, bankCode, entryNumbers);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Clear orphan tmpstat failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
