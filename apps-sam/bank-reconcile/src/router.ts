@@ -35,6 +35,11 @@ import {
   getMatchConfig,
   updateMatchConfig,
 } from './services/match-config.js';
+import {
+  detectFormat,
+  supportedFormats,
+} from './services/format-detect.js';
+import { detectBankFromContent } from './services/detect-bank.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -496,6 +501,106 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Match config update failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/bank-import/detect-format
+   *
+   * Detect the format of a bank-statement file. Faithful port of
+   * `detect_file_format` (apps/bank_reconcile/api/routes.py:2337-2363).
+   *
+   * SAM port note: the Python endpoint took a server-side `filepath`
+   * and read the file from disk. Under SAM the plugin doesn't see
+   * the user's file system — the frontend uploads the file content
+   * (or the email-ingest service produces it). Accept the content in
+   * the JSON body instead. This is the only difference; the parser
+   * sniffing logic is unchanged.
+   *
+   * Body: { content: string, filename?: string }
+   * Returns: { success, format: 'CSV'|'OFX'|'QIF'|'MT940'|null,
+   *            supported_formats: string[] }
+   */
+  router.post('/api/bank-import/detect-format', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as { content?: string; filename?: string };
+      const content = String(body.content ?? '');
+      const filename = String(body.filename ?? '');
+      if (!content) {
+        res.status(400).json({ success: false, error: 'content is required' });
+        return;
+      }
+      const format = detectFormat(content, filename);
+      res.json({
+        success: true,
+        format,
+        supported_formats: supportedFormats,
+      });
+    } catch (err: any) {
+      ctx.logger.error('Detect format failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/bank-import/detect-bank
+   *
+   * Detect which Opera bank account a bank-statement file belongs to.
+   * Faithful port of `detect_bank_from_file`
+   * (apps/bank_reconcile/api/routes.py:2369-2490).
+   *
+   * Two extraction strategies on the first 30 lines:
+   *   1. regex: sort code (XX-XX-XX) + 8-digit account number
+   *   2. CSV header scan + 'Account' field "20-96-89 90764205"
+   *
+   * Once extracted, both sides are normalised (whitespace + dashes
+   * stripped) before comparing against Opera nbank.
+   *
+   * Body: { content: string }
+   * Returns:
+   *   - detected=true:  bank_code + bank_description + sort_code + account_number
+   *   - detected=false: available_banks for manual selection
+   */
+  router.post('/api/bank-import/detect-bank', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const body = (req.body ?? {}) as { content?: string };
+      const content = String(body.content ?? '');
+      if (!content) {
+        res.status(400).json({ success: false, error: 'content is required' });
+        return;
+      }
+      const detected = await detectBankFromContent(operaDb, content);
+      if (detected.bank_code) {
+        const banks = await listBanks(operaDb);
+        const info = banks.banks?.find((b) => b.account_code === detected.bank_code);
+        res.json({
+          success: true,
+          detected: true,
+          bank_code: detected.bank_code,
+          bank_description: info?.description ?? detected.bank_code,
+          sort_code: info?.sort_code ?? detected.sort_code ?? '',
+          account_number: info?.account_number ?? detected.account_number ?? '',
+          message: `Detected bank account: ${detected.bank_code}`,
+        });
+      } else {
+        const banks = await listBanks(operaDb);
+        const found =
+          detected.sort_code && detected.account_number
+            ? ` Found: ${detected.sort_code} ${detected.account_number}`
+            : '';
+        res.json({
+          success: true,
+          detected: false,
+          bank_code: null,
+          message: `Could not detect bank account from file.${found} Please select manually.`,
+          available_banks: banks.banks ?? [],
+        });
+      }
+    } catch (err: any) {
+      ctx.logger.error('Detect bank failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
