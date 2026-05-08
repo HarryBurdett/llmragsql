@@ -129,6 +129,95 @@ export async function listMandates(
   }
 }
 
+// ---------------------------------------------------------------------
+// cancel — GoCardless API + local status update
+// ---------------------------------------------------------------------
+
+export interface CancelMandateResponse {
+  success: boolean;
+  message?: string;
+  status?: string;
+  error?: string;
+}
+
+export async function cancelMandate(
+  appDb: Knex,
+  mandateId: string,
+  cancelRemote?: (
+    id: string,
+  ) => Promise<{ success: boolean; status?: string; error?: string; alreadyCancelled?: boolean }>,
+): Promise<CancelMandateResponse> {
+  const id = (mandateId ?? '').trim();
+  if (!id) return { success: false, error: 'mandate_id is required' };
+
+  // 1. Try GoCardless API cancel (when client passed). On failure
+  //    don't update local — caller must retry.
+  let gcStatus = 'cancelled';
+  if (cancelRemote) {
+    const r = await cancelRemote(id);
+    if (!r.success) {
+      return { success: false, error: r.error ?? 'Remote cancel failed' };
+    }
+    gcStatus = r.status ?? 'cancelled';
+  }
+
+  // 2. Update local mandate_status
+  try {
+    const updated = await appDb('gocardless_mandates')
+      .where({ mandate_id: id })
+      .update({
+        mandate_status: gcStatus,
+        updated_at: appDb.fn.now(),
+      });
+    if (!Number(updated)) {
+      return { success: false, error: 'Mandate not found' };
+    }
+    return {
+      success: true,
+      message: `Mandate ${id} cancelled`,
+      status: gcStatus,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
+// unlink — local-only, removes Opera linking
+// ---------------------------------------------------------------------
+
+export interface UnlinkMandateResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+export async function unlinkMandate(
+  appDb: Knex,
+  mandateId: string,
+): Promise<UnlinkMandateResponse> {
+  const id = (mandateId ?? '').trim();
+  if (!id) return { success: false, error: 'mandate_id is required' };
+  try {
+    // Set opera_account to __UNLINKED__ to preserve the row's
+    // existence (so future syncs don't try to re-create it). Don't
+    // delete — mandate-level history matters for audit.
+    const updated = await appDb('gocardless_mandates')
+      .where({ mandate_id: id })
+      .andWhere('opera_account', '!=', '__UNLINKED__')
+      .update({
+        opera_account: '__UNLINKED__',
+        updated_at: appDb.fn.now(),
+      });
+    if (!Number(updated)) {
+      return { success: false, error: 'Mandate not found' };
+    }
+    return { success: true, message: `Mandate ${id} unlinked` };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
 export async function listUnlinkedMandates(
   appDb: Knex,
 ): Promise<ListMandatesResponse> {

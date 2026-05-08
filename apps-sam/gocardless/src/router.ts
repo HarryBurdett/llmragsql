@@ -61,7 +61,12 @@ import {
   cancelPaymentRequest,
 } from './services/payment-requests.js';
 import { listSubscriptions } from './services/subscriptions.js';
-import { listMandates, listUnlinkedMandates } from './services/mandates.js';
+import {
+  listMandates,
+  listUnlinkedMandates,
+  cancelMandate,
+  unlinkMandate,
+} from './services/mandates.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -796,6 +801,82 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List unlinked mandates failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/mandates/:mandate_id/cancel
+   *
+   * Cancel a mandate via GoCardless API and update the local
+   * mandate_status. Faithful port of cancel_gocardless_mandate
+   * (routes.py:6795-6830). Local update only proceeds if the remote
+   * cancel succeeds (or returns "already cancelled").
+   */
+  router.post(
+    '/api/gocardless/mandates/:mandate_id/cancel',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless not configured',
+          });
+          return;
+        }
+        const cancelRemote = async (id: string) => client.cancelMandate(id);
+        const result = await cancelMandate(
+          appDb,
+          String(req.params.mandate_id ?? ''),
+          cancelRemote,
+        );
+        if (!result.success) {
+          res
+            .status(result.error === 'Mandate not found' ? 404 : 400)
+            .json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Cancel mandate failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * DELETE /api/gocardless/mandates/:mandate_id
+   *
+   * Unlink a mandate from its Opera customer (sets opera_account to
+   * '__UNLINKED__' rather than deleting the row — mandate-level
+   * history matters for audit). Faithful port of
+   * unlink_gocardless_mandate (routes.py:6833-6849). Does NOT cancel
+   * the mandate in GoCardless — operator must call /cancel for that.
+   */
+  router.delete(
+    '/api/gocardless/mandates/:mandate_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await unlinkMandate(
+          appDb,
+          String(req.params.mandate_id ?? ''),
+        );
+        if (!result.success) {
+          res
+            .status(result.error === 'Mandate not found' ? 404 : 400)
+            .json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Unlink mandate failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

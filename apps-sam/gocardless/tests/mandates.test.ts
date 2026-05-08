@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   listMandates,
   listUnlinkedMandates,
+  cancelMandate,
+  unlinkMandate,
 } from '../src/services/mandates.js';
 
 interface MandateRow {
@@ -28,9 +30,16 @@ function makeAppDb(state: MockState): any {
       throw new Error(`Unexpected table: ${table}`);
     }
     let conds: Record<string, unknown> = {};
+    let neqConds: Array<{ col: string; val: unknown }> = [];
     const builder: any = {
       where: (cond: Record<string, unknown>) => {
         Object.assign(conds, cond);
+        return builder;
+      },
+      andWhere: (col: string, op: string, val: unknown) => {
+        if (op === '!=') {
+          neqConds.push({ col, val });
+        }
         return builder;
       },
       then: (cb: (rows: MandateRow[]) => unknown) => {
@@ -38,6 +47,19 @@ function makeAppDb(state: MockState): any {
           Object.entries(conds).every(([k, v]) => (r as any)[k] === v),
         );
         return Promise.resolve(cb(rows));
+      },
+      update: (data: Record<string, unknown>) => {
+        let count = 0;
+        for (const r of state.rows) {
+          if (
+            Object.entries(conds).every(([k, v]) => (r as any)[k] === v) &&
+            neqConds.every((nc) => (r as any)[nc.col] !== nc.val)
+          ) {
+            Object.assign(r, data);
+            count++;
+          }
+        }
+        return Promise.resolve(count);
       },
     };
     return builder;
@@ -153,5 +175,87 @@ describe('listUnlinkedMandates', () => {
     // Sorted alphabetically by opera_name
     expect(result.mandates[0]?.opera_name).toBe('Alpha');
     expect(result.mandates[1]?.opera_name).toBe('Bravo');
+  });
+});
+
+describe('cancelMandate', () => {
+  it('updates local mandate_status when remote cancel succeeds', async () => {
+    const state: MockState = {
+      rows: [emptyMandate({ id: 1, mandate_id: 'MD_X', mandate_status: 'active' })],
+    };
+    const remote = async () => ({ success: true, status: 'cancelled' });
+    const result = await cancelMandate(makeAppDb(state), 'MD_X', remote);
+    expect(result.success).toBe(true);
+    expect(result.status).toBe('cancelled');
+    expect(state.rows[0]?.mandate_status).toBe('cancelled');
+  });
+
+  it('does NOT update local when remote cancel fails', async () => {
+    const state: MockState = {
+      rows: [emptyMandate({ id: 1, mandate_id: 'MD_X', mandate_status: 'active' })],
+    };
+    const remote = async () => ({ success: false, error: 'API error' });
+    const result = await cancelMandate(makeAppDb(state), 'MD_X', remote);
+    expect(result.success).toBe(false);
+    expect(state.rows[0]?.mandate_status).toBe('active');
+  });
+
+  it('returns 404 when mandate_id not in DB', async () => {
+    const state: MockState = { rows: [] };
+    const remote = async () => ({ success: true, status: 'cancelled' });
+    const result = await cancelMandate(makeAppDb(state), 'MISSING', remote);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/);
+  });
+
+  it('handles already-cancelled gracefully (remote success with status)', async () => {
+    const state: MockState = {
+      rows: [emptyMandate({ id: 1, mandate_id: 'MD_X', mandate_status: 'active' })],
+    };
+    const remote = async () => ({
+      success: true,
+      status: 'cancelled',
+      alreadyCancelled: true,
+    });
+    const result = await cancelMandate(makeAppDb(state), 'MD_X', remote);
+    expect(result.success).toBe(true);
+    expect(state.rows[0]?.mandate_status).toBe('cancelled');
+  });
+
+  it('rejects empty mandate_id', async () => {
+    const state: MockState = { rows: [] };
+    const result = await cancelMandate(makeAppDb(state), '', async () => ({ success: true }));
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('unlinkMandate', () => {
+  it('marks the row __UNLINKED__ when currently linked', async () => {
+    const state: MockState = {
+      rows: [emptyMandate({ id: 1, mandate_id: 'MD_X', opera_account: 'CUST01' })],
+    };
+    const result = await unlinkMandate(makeAppDb(state), 'MD_X');
+    expect(result.success).toBe(true);
+    expect(state.rows[0]?.opera_account).toBe('__UNLINKED__');
+  });
+
+  it('returns not-found when mandate already unlinked', async () => {
+    const state: MockState = {
+      rows: [
+        emptyMandate({
+          id: 1,
+          mandate_id: 'MD_X',
+          opera_account: '__UNLINKED__',
+        }),
+      ],
+    };
+    const result = await unlinkMandate(makeAppDb(state), 'MD_X');
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/);
+  });
+
+  it('rejects empty mandate_id', async () => {
+    const result = await unlinkMandate(makeAppDb({ rows: [] }), '');
+    expect(result.success).toBe(false);
   });
 });

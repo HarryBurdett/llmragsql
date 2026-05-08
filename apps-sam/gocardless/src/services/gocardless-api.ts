@@ -157,6 +157,54 @@ export class GoCardlessClient {
   }
 
   /**
+   * POST /mandates/:id/actions/cancel — cancel a mandate.
+   *
+   * Faithful port of the cancel call wrapped by
+   * cancel_gocardless_mandate (apps/gocardless/api/routes.py
+   * :6795-6830). Returns uniform shape so the wrapping service can
+   * detect "already cancelled" responses gracefully (Python's source
+   * treats them as success too).
+   */
+  async cancelMandate(
+    mandateId: string,
+  ): Promise<{ success: boolean; status?: string; error?: string; alreadyCancelled?: boolean }> {
+    if (!mandateId) return { success: false, error: 'mandateId required' };
+    try {
+      const res = await this.request(
+        'POST',
+        `/mandates/${encodeURIComponent(mandateId)}/actions/cancel`,
+        {},
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        if (
+          text.toLowerCase().includes('already') &&
+          text.toLowerCase().includes('cancel')
+        ) {
+          return { success: true, status: 'cancelled', alreadyCancelled: true };
+        }
+        return {
+          success: false,
+          error: `GoCardless API error: ${text.slice(0, 200) || `${res.status}`}`,
+        };
+      }
+      const data = (await res.json()) as { mandates?: { status?: string } };
+      return { success: true, status: data.mandates?.status ?? 'cancelled' };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * Test the API token by hitting GET /creditors.
    *
    * Returns success + organisation name on a 200, or a friendly error
