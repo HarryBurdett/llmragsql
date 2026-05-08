@@ -22,12 +22,17 @@ were specifically designed for SAM-merge: every config value, every
 external service, every shared resource is already abstracted behind
 a swap point.
 
+**Deployment context:** SAM and our apps run on the same platform
+technology, in different locations. Same image format, same
+manifest conventions, same observability stack — apps reach SAM via
+URL across locations.
+
 Your job is roughly:
 
-1. Provide your conventions (auth, secrets, deployment) — see §3
+1. Provide your conventions (auth, secrets) — see §3
 2. We write ~6 small SAM adapter files matching those conventions
 3. You configure per-tenant secrets in SAM
-4. Deploy our images, run the included Health Check per app
+4. Deploy our images alongside SAM, run the included Health Check per app
 5. Cut over
 
 Estimated effort once SAM specifics are known: **~1 week of focused work**
@@ -125,12 +130,39 @@ to your merge.
 These are the conventions we need from you before writing the SAM adapter.
 None require us to make changes to apps; they configure the adapter.
 
+### Confirmed deployment context (✅ already known)
+
+**SAM and our apps run on the same platform technology, in different
+locations.**
+
+What this means:
+- ✅ Same image format and deployment manifest conventions
+- ✅ Same observability stack (logs / metrics / traces use one toolchain)
+- ✅ Same container registry conventions
+- ✅ Same operational tooling (rolling upgrades, secret store, etc.)
+- ⚠ Different network locations → SAM is reachable by URL only (no
+  local-host or sidecar shortcut); explicit DNS / service-discovery
+  setup needed
+- ⚠ Inter-location latency is real (~10-100ms typical) → SAM-config
+  responses must be cached aggressively in our adapter (TTL or
+  webhook-based invalidation)
+
+**Implications for the SAM adapter:**
+- The `SAMConfigClient` already designed has aggressive caching built
+  in. We bias toward longer TTL (default 5 min) given cross-location
+  latency.
+- Service-to-service auth between our apps and SAM may need an explicit
+  bootstrap (service token / mTLS cert) since cross-location workload
+  identity is platform-dependent. Confirm with SAM team how this works
+  on your shared platform.
+
 ### Critical (block adapter work)
 
-1. **Where SAM hosts our containers**
-   - Cloud / on-prem / hybrid?
-   - Kubernetes? Specific managed platform (ECS, Cloud Run, etc.)?
-   - Service mesh (Istio, Linkerd, Consul)?
+1. **Where SAM hosts our containers** ✅ same platform as SAM, different
+   location. Confirm specifically:
+   - Same Kubernetes cluster (different namespace), or different cluster?
+   - Service-mesh available across locations, or HTTP-over-internal-DNS?
+   - Latency budget between our apps and SAM (informs caching strategy)
 
 2. **How SAM injects secrets into our containers**
    - Environment variables (most common; what we expect today)
