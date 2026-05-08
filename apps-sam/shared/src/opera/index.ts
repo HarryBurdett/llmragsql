@@ -34,6 +34,12 @@ export {
   validateReference,
   validateBatchNumber,
 } from './sql-input-validators.js';
+
+export {
+  getNextJournal,
+  getNextId,
+  incrementAtypeEntry,
+} from './id-allocation.js';
 export type {
   LedgerType,
   PeriodInfo,
