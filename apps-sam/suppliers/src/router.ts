@@ -48,6 +48,15 @@ import {
   type CommunicationChannel,
 } from './services/communications.js';
 import { listChangeAudit, recordChange } from './services/change-audit.js';
+import {
+  listStatementLines,
+  addStatementLines,
+  updateStatementLineMatch,
+  deleteStatementLines,
+  listOperaOnlyItems,
+  type MatchStatus,
+  type NewStatementLine,
+} from './services/statement-lines.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -762,6 +771,129 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Record change-audit failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/statements/:id/lines
+   *
+   * List the line items for a statement. Returns the lines plus
+   * aggregates (total_amount, matched_count, unmatched_count,
+   * disputed_count) so the UI can render a summary.
+   */
+  router.get('/api/suppliers/statements/:id/lines', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      const result = await listStatementLines(appDb, id);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List statement lines failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/statements/:id/lines
+   *
+   * Bulk-insert lines for a statement (used by extract-statement when
+   * AI extracts items from PDF). Body: { lines: NewStatementLine[] }.
+   */
+  router.post('/api/suppliers/statements/:id/lines', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      const body = (req.body ?? {}) as { lines?: NewStatementLine[] };
+      const result = await addStatementLines(appDb, id, body.lines ?? []);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Add statement lines failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * PATCH /api/suppliers/statement-lines/:line_id
+   *
+   * Update match_status / matched_opera_ref on a single line. Used by
+   * the matching pipeline and by manual operator overrides.
+   * Body: { match_status?: 'matched'|'unmatched'|'disputed',
+   *         matched_opera_ref?: string|null }
+   */
+  router.patch('/api/suppliers/statement-lines/:line_id', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const lineId = Number(req.params.line_id);
+      const body = (req.body ?? {}) as {
+        match_status?: MatchStatus;
+        matched_opera_ref?: string | null;
+      };
+      const result = await updateStatementLineMatch(appDb, lineId, body);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Update statement line failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * DELETE /api/suppliers/statements/:id/lines
+   *
+   * Remove all lines for a statement (used when re-extracting).
+   */
+  router.delete('/api/suppliers/statements/:id/lines', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      const result = await deleteStatementLines(appDb, id);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Delete statement lines failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/statements/:id/opera-only
+   *
+   * List statement_opera_only items — lines that appear in the
+   * supplier statement but have no corresponding Opera ptran row
+   * (typically missing invoices the supplier is asking us about).
+   */
+  router.get('/api/suppliers/statements/:id/opera-only', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      const result = await listOperaOnlyItems(appDb, id);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List opera-only items failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
