@@ -38,7 +38,7 @@ default factory, and passes a context our types already match.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 35 of ~124 endpoints (166 tests)
 **bank-reconcile:** 32 of ~127 endpoints (166 tests)
-**suppliers:** 35 endpoints (greenfield TS work — 117 tests)
+**suppliers:** 38 endpoints (greenfield TS work — 128 tests)
 **Calendar week of project:** 1
 **Sessions logged:** 1 (extended session — 33 substantive commits)
 

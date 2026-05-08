@@ -62,6 +62,11 @@ import {
   recordProcessedEmail,
   listProcessedEmails,
 } from './services/processed-emails.js';
+import {
+  listOverrides,
+  recordOverride,
+  deleteOverride,
+} from './services/supplier-overrides.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -991,6 +996,86 @@ export function createRouter(ctx: AppContext): Router {
       }
     },
   );
+
+  /**
+   * GET /api/suppliers/statements/:id/overrides
+   *
+   * List operator overrides (accept / reject / dispute) recorded
+   * against a statement.
+   */
+  router.get('/api/suppliers/statements/:id/overrides', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      const result = await listOverrides(appDb, id);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List overrides failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/statements/:id/overrides
+   *
+   * Record a new override for a statement (statement-level) or a
+   * specific line (line_id provided). Body:
+   *   { line_id?: number, override_type: 'accept'|'reject'|'dispute',
+   *     reason?: string }
+   */
+  router.post('/api/suppliers/statements/:id/overrides', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      const body = (req.body ?? {}) as {
+        line_id?: number;
+        override_type?: string;
+        reason?: string;
+      };
+      const result = await recordOverride(appDb, {
+        statement_id: id,
+        line_id: body.line_id ?? null,
+        override_type: String(body.override_type ?? ''),
+        reason: body.reason,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Record override failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * DELETE /api/suppliers/overrides/:id
+   *
+   * Remove a previously-recorded override.
+   */
+  router.delete('/api/suppliers/overrides/:id', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      const result = await deleteOverride(appDb, id);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Delete override failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
 
   /**
    * GET /api/suppliers/:code — single supplier detail. Mounted LAST
