@@ -34,6 +34,7 @@ export interface GoCardlessSettings {
   partner_client_secret?: string;
   partner_redirect_uri?: string;
   request_statement_reference?: boolean;
+  payout_lookback_days?: number;
 }
 
 const DEFAULTS: GoCardlessSettings = {
@@ -158,6 +159,7 @@ export function mergeSettingsUpdate(
     'partner_client_id',
     'partner_redirect_uri',
     'request_statement_reference',
+    'payout_lookback_days',
   ];
 
   for (const key of mergeableKeys) {

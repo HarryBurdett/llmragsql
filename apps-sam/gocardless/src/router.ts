@@ -358,6 +358,87 @@ export function createRouter(ctx: AppContext): Router {
   });
 
   /**
+   * GET /api/gocardless/api-payouts
+   *
+   * Fetch payouts directly from the GoCardless REST API. Faithful slim
+   * port of `get_gocardless_api_payouts` (apps/gocardless/api/routes.py
+   * lines 1952-1989). Query params:
+   *   - status:    payout status filter (default 'paid')
+   *   - limit:     number of payouts (default 20)
+   *   - days_back: lookback window (default settings.payout_lookback_days
+   *                or 30)
+   *
+   * NB: the Python version then enriches each payout with full payment
+   * details, dedupes against Opera + import history, and applies
+   * period-closed filtering. That enrichment depends on
+   * OperaSQLImport.get_home_currency, get_payout_with_payments,
+   * email_storage.is_gocardless_payout_imported, and _is_period_closed
+   * — none of which are ported yet. This endpoint returns the raw
+   * payouts array; the enrichment is added in a later session once
+   * the helper services land.
+   */
+  router.get('/api/gocardless/api-payouts', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const settings = await loadSettings(appDb);
+      const accessToken = settings.api_access_token ?? '';
+      if (!accessToken) {
+        res.json({
+          success: false,
+          error:
+            'No API access token configured. Go to Settings to add your GoCardless API credentials.',
+        });
+        return;
+      }
+
+      const status =
+        typeof req.query.status === 'string' ? req.query.status : 'paid';
+      const limit = req.query.limit ? Number(req.query.limit) : 20;
+      const daysBackOverride = req.query.days_back
+        ? Number(req.query.days_back)
+        : NaN;
+      const daysBack = Number.isFinite(daysBackOverride)
+        ? daysBackOverride
+        : Number(settings.payout_lookback_days ?? 30);
+
+      // Compute YYYY-MM-DD created_at_gte (mirrors Python's
+      // (datetime.now() - timedelta(days=days_back)).date()).
+      const cutoff = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+      const createdAtGte = cutoff.toISOString().slice(0, 10);
+
+      const client = createClientFromSettings(settings);
+      if (!client) {
+        res.json({ success: false, error: 'No API access token configured' });
+        return;
+      }
+
+      const result = await client.getPayouts({
+        status,
+        limit,
+        createdAtGte,
+      });
+
+      if (!result.success) {
+        res.json(result);
+        return;
+      }
+
+      res.json({
+        success: true,
+        payouts: result.payouts,
+        before: result.before,
+        days_back: daysBack,
+        status,
+        limit,
+      });
+    } catch (err: any) {
+      ctx.logger.error('GoCardless api-payouts failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
    * GET /api/gocardless/receipt-search
    *
    * Search GoCardless receipts by customer + date range. Faithful
@@ -448,12 +529,9 @@ export function createRouter(ctx: AppContext): Router {
   );
 
   // Many more endpoints to port from apps/gocardless/api/routes.py:
-  //   /api/gocardless/setup-status       — wizard / onboarding state
   //   /api/gocardless/scan-emails        — IMAP/Graph scan via SAM email service
   //   /api/gocardless/preview-batch      — match payments to Opera customers
   //   /api/gocardless/import             — post sales receipts to Opera
-  //   /api/gocardless/api-payouts        — query GoCardless API directly
-  //   /api/gocardless/import-history     — view past imports
   //   /api/gocardless/remittance/*       — generate / send remittance emails
   //   /api/gocardless/partner/*          — partner portal flows
   //   /api/gocardless/update-subscription-tags

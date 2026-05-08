@@ -97,6 +97,136 @@ describe('GoCardlessClient', () => {
   });
 });
 
+describe('GoCardlessClient.getPayouts', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns payouts and before-cursor on success', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        payouts: [
+          { id: 'PO0001', amount: 1000, currency: 'GBP', status: 'paid' },
+          { id: 'PO0002', amount: 2500, currency: 'GBP', status: 'paid' },
+        ],
+        meta: { cursors: { before: 'CUR_ABC' } },
+      }),
+    });
+
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getPayouts({
+      status: 'paid',
+      limit: 10,
+      createdAtGte: '2026-04-01',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.payouts).toHaveLength(2);
+    expect(result.before).toBe('CUR_ABC');
+
+    const fetchCall = (global.fetch as any).mock.calls[0];
+    const url = fetchCall[0] as string;
+    expect(url).toMatch(/\/payouts\?/);
+    expect(url).toContain('status=paid');
+    expect(url).toContain('limit=10');
+    // GoCardless filter syntax — bracketed key URL-encoded
+    expect(url).toMatch(/created_at(\[gte\]|%5Bgte%5D)=2026-04-01/);
+  });
+
+  it('omits query params when not provided', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ payouts: [], meta: { cursors: { before: null } } }),
+    });
+
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getPayouts();
+
+    expect(result.success).toBe(true);
+    expect(result.payouts).toEqual([]);
+    expect(result.before).toBeNull();
+
+    const url = (global.fetch as any).mock.calls[0][0] as string;
+    expect(url).toMatch(/\/payouts$/);
+  });
+
+  it('passes through before cursor for pagination', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ payouts: [], meta: { cursors: { before: null } } }),
+    });
+
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    await client.getPayouts({ before: 'PAGE_2' });
+
+    const url = (global.fetch as any).mock.calls[0][0] as string;
+    expect(url).toContain('before=PAGE_2');
+  });
+
+  it('returns success=false on 401', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => 'Unauthorized',
+    });
+
+    const client = new GoCardlessClient({ accessToken: 'bad', sandbox: true });
+    const result = await client.getPayouts();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Invalid GoCardless API token/);
+    expect(result.payouts).toEqual([]);
+    expect(result.before).toBeNull();
+  });
+
+  it('returns success=false on other HTTP errors', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => 'Server crashed',
+    });
+
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getPayouts();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/500/);
+    expect(result.error).toContain('Server crashed');
+  });
+
+  it('handles network errors', async () => {
+    (global.fetch as any).mockRejectedValue(new Error('ECONNREFUSED'));
+
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getPayouts();
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/ECONNREFUSED/);
+  });
+
+  it('handles missing payouts array gracefully', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ meta: { cursors: {} } }),
+    });
+
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getPayouts();
+
+    expect(result.success).toBe(true);
+    expect(result.payouts).toEqual([]);
+    expect(result.before).toBeNull();
+  });
+});
+
 describe('createClientFromSettings', () => {
   it('returns null when no token', () => {
     expect(createClientFromSettings({})).toBeNull();

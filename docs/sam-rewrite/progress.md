@@ -6,7 +6,7 @@ Live tracker. Each session updates this file before committing.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 16 of ~124 endpoints (57 tests)
+**gocardless:** 17 of ~124 endpoints (64 tests)
 **bank-reconcile:** 15 of ~127 endpoints (39 tests)
 **suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
@@ -70,7 +70,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       SL-only and top 10 NL-only when count > 50; current port returns
       all items. Cosmetic; doesn't affect totals.
 
-### gocardless (in progress — 3 of ~124 endpoints)
+### gocardless (in progress — 17 of ~124 endpoints)
 
 #### Foundation
 - [x] Directory scaffolded: `apps-sam/gocardless/`
@@ -98,7 +98,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [ ] `POST /api/gocardless/match-customers` — fuzzy match payments to Opera customers
 - [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
 - [ ] `GET /api/gocardless/scan-emails` — scan SAM mailbox for payout emails
-- [ ] `GET /api/gocardless/api-payouts` — query GoCardless API directly
+- [x] `GET /api/gocardless/api-payouts` — query GoCardless API directly (slim port; enrichment deferred)
 - [x] `GET /api/gocardless/import-history` — past imports with Opera + GC name enrichment
 - [x] `POST /api/gocardless/skip-payout` — record payout to history without importing (foreign / manual / dup)
 - [x] `POST /api/gocardless/test-api` — validate the saved GoCardless token against /creditors
@@ -120,7 +120,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [ ] `src/services/payment-extract.ts` — Gemini AI extraction
 - [ ] `src/services/customer-match.ts` — fuzzy match payments to Opera customers
 - [ ] `src/services/import.ts` — post sales receipts (the big one)
-- [ ] `src/services/gocardless-api.ts` — wrap the GoCardless REST API
+- [x] `src/services/gocardless-api.ts` — wrap the GoCardless REST API (testConnection + getPayouts)
 - [ ] `src/services/remittance.ts` — generate + send remittance via SAM email
 
 ### bank-reconcile (foundation only)

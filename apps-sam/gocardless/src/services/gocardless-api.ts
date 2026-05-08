@@ -50,6 +50,71 @@ export class GoCardlessClient {
   }
 
   /**
+   * GET /payouts — list payouts with optional filters.
+   *
+   * Faithful port of the get_payouts call in
+   * sql_rag/gocardless_api.py. Returns the raw payouts array plus
+   * the cursor `before` from GoCardless's pagination metadata.
+   *
+   * NB: this returns raw GoCardless objects. The matching/import
+   * pipeline that joins payouts → payments → mandates → customers
+   * lives elsewhere (and isn't ported in this session).
+   */
+  async getPayouts(opts: {
+    status?: string;
+    limit?: number;
+    createdAtGte?: string; // ISO date 'YYYY-MM-DD'
+    before?: string;
+  } = {}): Promise<{
+    success: boolean;
+    payouts: Array<Record<string, unknown>>;
+    before: string | null;
+    error?: string;
+  }> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.status) params.set('status', opts.status);
+      if (opts.limit) params.set('limit', String(opts.limit));
+      if (opts.createdAtGte) params.set('created_at[gte]', opts.createdAtGte);
+      if (opts.before) params.set('before', opts.before);
+      const path = `/payouts${params.toString() ? `?${params.toString()}` : ''}`;
+
+      const res = await this.request('GET', path);
+      if (res.status === 401) {
+        return {
+          success: false,
+          payouts: [],
+          before: null,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          payouts: [],
+          before: null,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        payouts?: Array<Record<string, unknown>>;
+        meta?: { cursors?: { before?: string | null } };
+      };
+      const payouts = Array.isArray(data.payouts) ? data.payouts : [];
+      const before = data.meta?.cursors?.before ?? null;
+      return { success: true, payouts, before };
+    } catch (err: any) {
+      return {
+        success: false,
+        payouts: [],
+        before: null,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * Test the API token by hitting GET /creditors.
    *
    * Returns success + organisation name on a 200, or a friendly error
