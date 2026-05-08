@@ -26,6 +26,7 @@ import {
 import { getImportHistory } from './services/import-history.js';
 import { skipPayout } from './services/skip-payout.js';
 import { createClientFromSettings } from './services/gocardless-api.js';
+import { searchReceipts } from './services/receipt-search.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -348,6 +349,42 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('GoCardless test-api failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/receipt-search
+   *
+   * Search GoCardless receipts by customer + date range. Faithful
+   * port of `search_gocardless_receipts`. Reads from app DB import
+   * history, flattens payments_json, enriches with Opera names.
+   */
+  router.get('/api/gocardless/receipt-search', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    let operaDb: import('knex').Knex | null = null;
+    const company = req.operaCompany;
+    if (company) {
+      operaDb = ctx.db.getCompanyDb(company);
+    }
+    try {
+      const customer =
+        typeof req.query.customer === 'string' ? req.query.customer : null;
+      const fromDate =
+        typeof req.query.from_date === 'string' ? req.query.from_date : null;
+      const toDate =
+        typeof req.query.to_date === 'string' ? req.query.to_date : null;
+      const limit = req.query.limit ? Number(req.query.limit) : 200;
+      const result = await searchReceipts(appDb, operaDb, {
+        customer,
+        fromDate,
+        toDate,
+        limit,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Receipt search failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
