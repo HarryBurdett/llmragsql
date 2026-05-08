@@ -25,6 +25,7 @@ import {
 } from './services/lookups.js';
 import { getImportHistory } from './services/import-history.js';
 import { skipPayout } from './services/skip-payout.js';
+import { createClientFromSettings } from './services/gocardless-api.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -323,6 +324,30 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Skip payout failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/gocardless/test-api
+   *
+   * Test the saved GoCardless API token by hitting GET /creditors.
+   * Faithful port of `test_gocardless_api`.
+   */
+  router.post('/api/gocardless/test-api', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const settings = await loadSettings(appDb);
+      const client = createClientFromSettings(settings);
+      if (!client) {
+        res.json({ success: false, error: 'No API access token configured' });
+        return;
+      }
+      const result = await client.testConnection();
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('GoCardless test-api failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

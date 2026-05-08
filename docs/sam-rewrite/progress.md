@@ -6,11 +6,11 @@ Live tracker. Each session updates this file before committing.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 12 of ~124 endpoints (38 tests)
+**gocardless:** 13 of ~124 endpoints (46 tests)
 **bank-reconcile:** 7 of ~127 endpoints (21 tests)
 **suppliers:** 3 endpoints (greenfield TS work — 6 tests)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 17 substantive commits)
+**Sessions logged:** 1 (long session — 18 substantive commits)
 
 ## Per-app progress
 
@@ -101,6 +101,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [ ] `GET /api/gocardless/api-payouts` — query GoCardless API directly
 - [x] `GET /api/gocardless/import-history` — past imports with Opera + GC name enrichment
 - [x] `POST /api/gocardless/skip-payout` — record payout to history without importing (foreign / manual / dup)
+- [x] `POST /api/gocardless/test-api` — validate the saved GoCardless token against /creditors
 - [ ] `POST /api/gocardless/remittance/*` — generate / send remittance emails
 - [ ] `*` /api/gocardless/partner/*` — partner portal flow (~10 endpoints)
 - [ ] `POST /api/gocardless/update-subscription-tags` — Opera repeat-doc tagging
@@ -220,9 +221,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/gocardless/tests/import-history.test.ts` | 4 | ✅ passing |
 | `apps-sam/gocardless/tests/skip-payout.test.ts` | 5 | ✅ passing |
 | `apps-sam/bank-reconcile/tests/reconciliation-status.test.ts` | 6 | ✅ passing |
-| **Total TypeScript tests** | **105** | ✅ all passing |
+| `apps-sam/gocardless/tests/gocardless-api.test.ts` | 8 | ✅ passing |
+| **Total TypeScript tests** | **113** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **709** | ✅ |
+| **Grand total** | **717** | ✅ |
 
 ## Open questions / blockers
 
