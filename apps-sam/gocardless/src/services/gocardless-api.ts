@@ -172,3 +172,216 @@ export function createClientFromSettings(settings: {
     sandbox: !!settings.api_sandbox,
   });
 }
+
+// =====================================================================
+// GoCardlessPartnerClient — OAuth Connect for merchant onboarding
+// =====================================================================
+
+/**
+ * GoCardless Partner / Connect OAuth client.
+ *
+ * Faithful port of `GoCardlessPartnerClient`
+ * (sql_rag/gocardless_api.py:855-1001).
+ *
+ * Used by the partner-portal flow to:
+ *   1. Generate an authorisation URL for a new merchant
+ *   2. Exchange the returned code for a merchant access token
+ *   3. Fetch the merchant's creditor info to verify the token works
+ *
+ * NB: per MEMORY.md, sandbox=true is the default for safety. Live
+ * mode must be explicitly opted in.
+ */
+const PARTNER_SANDBOX_CONNECT_URL = 'https://connect-sandbox.gocardless.com';
+const PARTNER_LIVE_CONNECT_URL = 'https://connect.gocardless.com';
+const PARTNER_SANDBOX_API_URL = 'https://api-sandbox.gocardless.com';
+const PARTNER_LIVE_API_URL = 'https://api.gocardless.com';
+
+export interface GoCardlessPartnerClientOptions {
+  clientId: string;
+  clientSecret: string;
+  sandbox?: boolean;
+  /** Override fetch — primarily for tests. */
+  fetchImpl?: typeof fetch;
+}
+
+export interface AuthorisationUrlOptions {
+  redirectUri: string;
+  scope?: string;
+  prefillEmail?: string | null;
+  prefillCompanyName?: string | null;
+  state?: string | null;
+}
+
+export interface ExchangeCodeResult {
+  access_token: string;
+  token_type?: string;
+  scope?: string;
+  organisation_id?: string;
+}
+
+export interface ExchangeCodeResponse {
+  success: boolean;
+  data?: ExchangeCodeResult;
+  error?: string;
+}
+
+export interface OrganisationInfo {
+  id?: string;
+  name?: string;
+  [k: string]: unknown;
+}
+
+export interface OrganisationInfoResponse {
+  success: boolean;
+  organisation?: OrganisationInfo;
+  error?: string;
+}
+
+export class GoCardlessPartnerClient {
+  private clientId: string;
+  private clientSecret: string;
+  private sandbox: boolean;
+  private connectUrl: string;
+  private apiUrl: string;
+  private fetchImpl: typeof fetch;
+
+  constructor(opts: GoCardlessPartnerClientOptions) {
+    this.clientId = opts.clientId;
+    this.clientSecret = opts.clientSecret;
+    this.sandbox = opts.sandbox ?? true;
+    this.connectUrl = this.sandbox
+      ? PARTNER_SANDBOX_CONNECT_URL
+      : PARTNER_LIVE_CONNECT_URL;
+    this.apiUrl = this.sandbox ? PARTNER_SANDBOX_API_URL : PARTNER_LIVE_API_URL;
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  /**
+   * Generate the OAuth consent URL the merchant visits to authorise
+   * our app. Uses GoCardless OAuth Connect bracketed-prefill keys
+   * (`prefill[email]`, `prefill[company_name]`).
+   */
+  getAuthorisationUrl(opts: AuthorisationUrlOptions): string {
+    const params = new URLSearchParams();
+    params.set('response_type', 'code');
+    params.set('client_id', this.clientId);
+    params.set('scope', opts.scope ?? 'read_write');
+    params.set('redirect_uri', opts.redirectUri);
+    params.set('access_type', 'offline');
+    if (opts.prefillEmail) params.set('prefill[email]', opts.prefillEmail);
+    if (opts.prefillCompanyName)
+      params.set('prefill[company_name]', opts.prefillCompanyName);
+    if (opts.state) params.set('state', opts.state);
+    return `${this.connectUrl}/oauth/authorize?${params.toString()}`;
+  }
+
+  /**
+   * Exchange the authorisation code for a merchant access token.
+   * The redirect_uri MUST match the one used in getAuthorisationUrl.
+   */
+  async exchangeAuthorisationCode(
+    code: string,
+    redirectUri: string,
+  ): Promise<ExchangeCodeResponse> {
+    const url = `${this.connectUrl}/oauth/access_token`;
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 30000);
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            client_id: this.clientId,
+            client_secret: this.clientSecret,
+            code,
+            redirect_uri: redirectUri,
+          }),
+          signal: ac.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (res.status !== 200) {
+        let msg = await res.text().catch(() => '');
+        try {
+          const data = JSON.parse(msg) as {
+            error?: string;
+            error_description?: string;
+          };
+          msg = data.error_description ?? data.error ?? msg;
+        } catch {
+          // keep raw text
+        }
+        return {
+          success: false,
+          error: `Token exchange failed (${res.status}): ${msg.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as ExchangeCodeResult;
+      return { success: true, data };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Token exchange request failed: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
+   * Verify the merchant token by fetching the first creditor.
+   * Returns the creditor (or `{}` when none) — same shape as Python.
+   */
+  async getOrganisationInfo(accessToken: string): Promise<OrganisationInfoResponse> {
+    const url = `${this.apiUrl}/creditors`;
+    try {
+      const res = await this.fetchImpl(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'GoCardless-Version': '2015-07-06',
+          'Content-Type': 'application/json',
+        },
+      });
+      if (res.status !== 200) {
+        return {
+          success: false,
+          error: `Failed to get organisation info: ${res.status}`,
+        };
+      }
+      const data = (await res.json()) as { creditors?: OrganisationInfo[] };
+      const creditors = Array.isArray(data.creditors) ? data.creditors : [];
+      return { success: true, organisation: creditors[0] ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Organisation info request failed: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+}
+
+/**
+ * Build a GoCardlessPartnerClient from saved settings, or return null
+ * when partner credentials aren't configured.
+ */
+export function createPartnerClientFromSettings(
+  settings: {
+    partner_client_id?: string;
+    partner_client_secret?: string;
+    api_sandbox?: boolean;
+  },
+  fetchImpl?: typeof fetch,
+): GoCardlessPartnerClient | null {
+  const clientId = (settings.partner_client_id ?? '').trim();
+  const clientSecret = (settings.partner_client_secret ?? '').trim();
+  if (!clientId || !clientSecret) return null;
+  return new GoCardlessPartnerClient({
+    clientId,
+    clientSecret,
+    sandbox: !!settings.api_sandbox,
+    fetchImpl,
+  });
+}

@@ -50,6 +50,9 @@ import {
   updateMerchantAppUrl,
   activateMerchant,
   deployToken,
+  initiatePartnerSignup,
+  handlePartnerCallback,
+  partnerCallbackHtml,
 } from './services/partner.js';
 import {
   validatePostingPeriod,
@@ -379,6 +382,49 @@ export function createRouter(ctx: AppContext): Router {
       ctx.logger.error('GoCardless test-api failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
+  });
+
+  /**
+   * GET /api/gocardless/test-data
+   *
+   * Returns a hard-coded sample GoCardless payout dataset (the
+   * Intsys-extracted figures from the gocardless.png screenshot used
+   * during development). Faithful port of get_gocardless_test_data
+   * (apps/gocardless/api/routes.py:191-224).
+   *
+   * Used by the frontend dev playground when the user wants to
+   * exercise the matching/import UI without a real payout email.
+   */
+  router.get('/api/gocardless/test-data', async (_req: Request, res: Response) => {
+    res.json({
+      success: true,
+      payment_count: 18,
+      gross_amount: 29869.8,
+      gocardless_fees: -118.31,
+      vat_on_fees: -19.73,
+      net_amount: 29751.49,
+      bank_reference: 'INTSYSUKLTD-KN3CMJ',
+      payments: [
+        { customer_name: 'Deep Blue Restaurantes Ltd', description: 'Intsys INV26362,26363', amount: 7380.0, invoice_refs: ['INV26362', 'INV26363'] },
+        { customer_name: 'Medimpex UK Ltd', description: 'Intsys INV26365', amount: 1530.0, invoice_refs: ['INV26365'] },
+        { customer_name: 'The Prospect Trust', description: 'Intsys INV', amount: 3000.0, invoice_refs: [] },
+        { customer_name: 'SMCP UK Limited', description: 'Intsys INV26374,26375', amount: 1320.0, invoice_refs: ['INV26374', 'INV26375'] },
+        { customer_name: 'Vectair Systems Limited', description: 'Intsys INV26378', amount: 8398.8, invoice_refs: ['INV26378'] },
+        { customer_name: 'Jackson Lifts', description: 'Intsys Opera 3 Support', amount: 123.0, invoice_refs: [] },
+        { customer_name: 'Vectair Systems Limited', description: 'Opera SE Toolkit', amount: 109.2, invoice_refs: [] },
+        { customer_name: 'A WARNE & CO LTD', description: 'Intsys Data Connector', amount: 168.0, invoice_refs: [] },
+        { customer_name: 'Physique Management Ltd', description: 'Intsys Pegasus Support', amount: 551.4, invoice_refs: [] },
+        { customer_name: 'Ormiston Wire Ltd', description: 'Intsys Opera 3 Support', amount: 90.0, invoice_refs: [] },
+        { customer_name: 'Totality GCS Ltd', description: 'Intsys Pegasus Support', amount: 240.0, invoice_refs: [] },
+        { customer_name: 'Red Band Chemical Co Ltd T/A Lindsay & Gilmour', description: 'Intsys Pegasus Upgrade Plan', amount: 74.4, invoice_refs: [] },
+        { customer_name: 'P Flannery Plant Hire (Oval) Ltd', description: 'Intsys Pegasus Upgrade Plan', amount: 78.0, invoice_refs: [] },
+        { customer_name: 'Harro Foods Limited', description: 'Intsys Opera 3 Sales Website', amount: 5607.0, invoice_refs: [] },
+        { customer_name: 'Physique Management Ltd', description: 'Intsys Data Connector', amount: 168.0, invoice_refs: [] },
+        { customer_name: 'Nisbets Limited', description: 'Intsys Opera 3 Licence Subs', amount: 540.0, invoice_refs: [] },
+        { customer_name: 'Vectair Systems Limited', description: 'Intsys Pegasus WEBLINK', amount: 192.0, invoice_refs: [] },
+        { customer_name: 'ST Astier Limited', description: 'Intsys CIS Support', amount: 300.0, invoice_refs: [] },
+      ],
+    });
   });
 
   /**
@@ -771,6 +817,88 @@ export function createRouter(ctx: AppContext): Router {
       } catch (err: any) {
         ctx.logger.error('Update subscription tags failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/partner/initiate-signup
+   *
+   * Start the OAuth Connect flow for a new merchant. Faithful port of
+   * initiate_gocardless_partner_signup (routes.py:1153-1219). Inserts
+   * a pending row in gocardless_partner_signups and returns the
+   * GoCardless authorisation URL the merchant should be redirected
+   * to. State token is stored in status_detail for CSRF validation
+   * on /partner/callback.
+   *
+   * Body: { company_name, company_email }
+   */
+  router.post(
+    '/api/gocardless/partner/initiate-signup',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as {
+          company_name?: string;
+          company_email?: string;
+        };
+        const proto = (req.headers['x-forwarded-proto'] as string) ?? req.protocol;
+        const host = (req.headers['x-forwarded-host'] as string) ?? req.get('host') ?? '';
+        const baseUrl = host ? `${proto}://${host}` : '';
+        const result = await initiatePartnerSignup(appDb, {
+          companyName: String(body.company_name ?? ''),
+          companyEmail: String(body.company_email ?? ''),
+          baseUrl,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Initiate partner signup failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/partner/callback
+   *
+   * OAuth redirect target — GoCardless sends the merchant's browser
+   * here after they complete signup. Faithful port of
+   * gocardless_partner_callback (routes.py:1222-1319).
+   *
+   * Validates the state token (CSRF), exchanges the auth code for a
+   * merchant access token, fetches the creditor info, and stores
+   * everything against the latest signup row. Returns HTML (not JSON)
+   * because the merchant's browser hits this URL — the partner-portal
+   * UI polls /signup-status to detect completion.
+   */
+  router.get(
+    '/api/gocardless/partner/callback',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const proto = (req.headers['x-forwarded-proto'] as string) ?? req.protocol;
+        const host = (req.headers['x-forwarded-host'] as string) ?? req.get('host') ?? '';
+        const baseUrl = host ? `${proto}://${host}` : '';
+        const result = await handlePartnerCallback(appDb, {
+          code: typeof req.query.code === 'string' ? req.query.code : null,
+          state: typeof req.query.state === 'string' ? req.query.state : null,
+          error: typeof req.query.error === 'string' ? req.query.error : null,
+          baseUrl,
+        });
+        const html = partnerCallbackHtml(result);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.status(200).send(html);
+      } catch (err: any) {
+        ctx.logger.error('Partner callback failed', err);
+        const html = partnerCallbackHtml({
+          ok: false,
+          title: 'Connection Failed',
+          message: `Something went wrong: ${err?.message ?? String(err)}`,
+        });
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.status(500).send(html);
       }
     },
   );

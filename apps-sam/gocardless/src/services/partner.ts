@@ -16,11 +16,15 @@
  * frontend — the response gets a `has_token: bool` instead.
  */
 import type { Knex } from 'knex';
+import { randomBytes } from 'node:crypto';
 import {
   loadSettings,
   saveSettings,
   type GoCardlessSettings,
 } from './settings.js';
+import {
+  createPartnerClientFromSettings,
+} from './gocardless-api.js';
 
 // ---------------------------------------------------------------------
 // Types
@@ -451,6 +455,255 @@ export async function deployToken(
   } catch (err: any) {
     return { success: false, error: err?.message ?? String(err) };
   }
+}
+
+// ---------------------------------------------------------------------
+// POST /api/gocardless/partner/initiate-signup
+// ---------------------------------------------------------------------
+
+export interface InitiateSignupInput {
+  companyName?: string;
+  companyEmail: string;
+  /** Origin/base URL for the redirect_uri fallback. */
+  baseUrl?: string;
+}
+
+export interface InitiateSignupResponse {
+  success: boolean;
+  signup_id?: number;
+  authorisation_url?: string | null;
+  message?: string;
+  next_step?: string;
+  error?: string;
+}
+
+function urlSafeToken(byteLen: number = 32): string {
+  return randomBytes(byteLen)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+export async function initiatePartnerSignup(
+  appDb: Knex,
+  input: InitiateSignupInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<InitiateSignupResponse> {
+  const companyName = (input.companyName ?? '').trim();
+  const companyEmail = (input.companyEmail ?? '').trim();
+  if (!companyEmail) {
+    return { success: false, error: 'Company email is required' };
+  }
+
+  try {
+    const settings = await loadSettings(appDb);
+    const partnerClient = createPartnerClientFromSettings(settings, fetchImpl);
+    const stateToken = urlSafeToken();
+
+    let authorisationUrl: string | null = null;
+    if (partnerClient) {
+      let redirectUri = (settings.partner_redirect_uri ?? '').trim();
+      if (!redirectUri) {
+        const base = (input.baseUrl ?? '').replace(/\/+$/, '');
+        redirectUri = `${base}/api/gocardless/partner/callback`;
+      }
+      authorisationUrl = partnerClient.getAuthorisationUrl({
+        redirectUri,
+        prefillEmail: companyEmail,
+        prefillCompanyName: companyName,
+        state: stateToken,
+      });
+    }
+
+    // Insert the signup row + store state token in status_detail (CSRF
+    // validation on callback). Faithful to Python:
+    //   create_partner_signup(...); update_partner_signup(id, status_detail=state)
+    const inserted = await appDb('gocardless_partner_signups')
+      .insert({
+        company_name: companyName,
+        company_email: companyEmail,
+        authorisation_url: authorisationUrl,
+        status_detail: stateToken,
+        status: 'pending',
+        updated_at: appDb.fn.now(),
+      })
+      .returning('id');
+    const signupId =
+      Array.isArray(inserted) && inserted.length > 0
+        ? typeof inserted[0] === 'object'
+          ? (inserted[0] as { id: number }).id
+          : Number(inserted[0])
+        : 0;
+
+    if (authorisationUrl) {
+      return {
+        success: true,
+        signup_id: signupId,
+        authorisation_url: authorisationUrl,
+        message: 'Redirecting to GoCardless to complete registration.',
+      };
+    }
+    return {
+      success: true,
+      signup_id: signupId,
+      authorisation_url: null,
+      message:
+        'Partner credentials not configured. Please register at GoCardless and enter your API key in Settings.',
+      next_step: 'manual',
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
+// GET /api/gocardless/partner/callback (OAuth redirect target)
+// ---------------------------------------------------------------------
+
+export interface PartnerCallbackInput {
+  code?: string | null;
+  state?: string | null;
+  error?: string | null;
+  baseUrl?: string;
+}
+
+export interface PartnerCallbackResult {
+  ok: boolean;
+  title: string;
+  message: string;
+}
+
+export async function handlePartnerCallback(
+  appDb: Knex,
+  input: PartnerCallbackInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PartnerCallbackResult> {
+  if (input.error) {
+    return {
+      ok: false,
+      title: 'Signup Error',
+      message: `GoCardless returned an error: ${input.error}`,
+    };
+  }
+  const code = (input.code ?? '').trim();
+  if (!code) {
+    return {
+      ok: false,
+      title: 'Missing Code',
+      message: 'No authorisation code received from GoCardless.',
+    };
+  }
+
+  try {
+    const settings = await loadSettings(appDb);
+    const partnerClient = createPartnerClientFromSettings(settings, fetchImpl);
+    if (!partnerClient) {
+      return {
+        ok: false,
+        title: 'Not Configured',
+        message: 'Partner credentials not configured.',
+      };
+    }
+
+    // CSRF validation: the state token we issued in initiate-signup is
+    // stored in status_detail of the latest signup row.
+    const latest = (await appDb('gocardless_partner_signups')
+      .orderBy('id', 'desc')
+      .first()) as
+      | { id: number; status_detail: string | null }
+      | undefined;
+    if (latest && input.state && latest.status_detail !== input.state) {
+      return {
+        ok: false,
+        title: 'Invalid Request',
+        message: 'Invalid state token — please try signing up again.',
+      };
+    }
+
+    let redirectUri = (settings.partner_redirect_uri ?? '').trim();
+    if (!redirectUri) {
+      const base = (input.baseUrl ?? '').replace(/\/+$/, '');
+      redirectUri = `${base}/api/gocardless/partner/callback`;
+    }
+
+    const exchange = await partnerClient.exchangeAuthorisationCode(
+      code,
+      redirectUri,
+    );
+    if (!exchange.success || !exchange.data) {
+      return {
+        ok: false,
+        title: 'Connection Failed',
+        message: exchange.error ?? 'Token exchange failed.',
+      };
+    }
+
+    const accessToken = exchange.data.access_token;
+    const organisationId = (exchange.data.organisation_id ?? '').toString();
+    if (!accessToken) {
+      return {
+        ok: false,
+        title: 'Connection Failed',
+        message: 'No access token received from GoCardless.',
+      };
+    }
+
+    let creditorName = '';
+    try {
+      const orgInfo = await partnerClient.getOrganisationInfo(accessToken);
+      if (orgInfo.success && orgInfo.organisation) {
+        creditorName = String(orgInfo.organisation.name ?? '').trim();
+      }
+    } catch {
+      // best-effort
+    }
+
+    if (latest) {
+      await appDb('gocardless_partner_signups')
+        .where({ id: latest.id })
+        .update({
+          status: 'completed',
+          completed_at: appDb.fn.now(),
+          access_token_obtained: true,
+          merchant_access_token: accessToken,
+          merchant_organisation_id: organisationId || null,
+          merchant_creditor_name: creditorName || null,
+          partner_referral_id: organisationId || null,
+          status_detail: 'OAuth token obtained successfully',
+          updated_at: appDb.fn.now(),
+        });
+    }
+
+    const orgDisplay = creditorName ? ` (${creditorName})` : '';
+    return {
+      ok: true,
+      title: 'Account Connected',
+      message: `Your GoCardless account${orgDisplay} has been connected successfully. The signup page will update automatically.`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      title: 'Connection Failed',
+      message: `Something went wrong: ${err?.message ?? String(err)}`,
+    };
+  }
+}
+
+/** Build the friendly HTML page the OAuth callback shows the merchant. */
+export function partnerCallbackHtml(result: PartnerCallbackResult): string {
+  const color = result.ok ? '#10b981' : '#ef4444';
+  const icon = result.ok ? '&#10003;' : '&#10007;';
+  // Mirror Python's HTML format byte-for-byte (matches snapshot tests in
+  // the future + existing UI styling expectations).
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${result.title}</title>
+<style>body{font-family:Inter,system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f8fafc}
+.card{text-align:center;max-width:420px;padding:3rem;background:white;border-radius:1rem;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
+.icon{font-size:3rem;color:${color};margin-bottom:1rem}.title{font-size:1.25rem;font-weight:700;margin-bottom:0.5rem}
+.msg{color:#64748b;font-size:0.95rem;line-height:1.5}.hint{margin-top:1.5rem;color:#94a3b8;font-size:0.85rem}</style></head>
+<body><div class="card"><div class="icon">${icon}</div><div class="title">${result.title}</div>
+<div class="msg">${result.message}</div><div class="hint">You can close this tab and return to the signup page.</div></div></body></html>`;
 }
 
 // ---------------------------------------------------------------------

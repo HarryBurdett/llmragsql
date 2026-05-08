@@ -36,7 +36,7 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 30 of ~124 endpoints (132 tests)
+**gocardless:** 33 of ~124 endpoints (155 tests)
 **bank-reconcile:** 24 of ~127 endpoints (106 tests)
 **suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
@@ -105,7 +105,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       SL-only and top 10 NL-only when count > 50; current port returns
       all items. Cosmetic; doesn't affect totals.
 
-### gocardless (in progress — 30 of ~124 endpoints)
+### gocardless (in progress — 33 of ~124 endpoints)
 
 #### Foundation
 - [x] Directory scaffolded: `apps-sam/gocardless/`
@@ -140,6 +140,9 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `PUT /api/gocardless/partner/merchant-app-url` — save deployment URL for a merchant
 - [x] `POST /api/gocardless/partner/activate-merchant` — push token (local→settings, remote→fetch)
 - [x] `PUT /api/gocardless/deploy-token` — receive a token from the partner portal
+- [x] `GET /api/gocardless/test-data` — hardcoded sample payout dataset
+- [x] `POST /api/gocardless/partner/initiate-signup` — start OAuth Connect; insert pending signup with state token
+- [x] `GET /api/gocardless/partner/callback` — OAuth callback; CSRF-validate state, exchange code for token, fetch creditor, update signup, render HTML
 - [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
 - [ ] `GET /api/gocardless/scan-emails` — scan SAM mailbox for payout emails
 - [x] `GET /api/gocardless/api-payouts` — query GoCardless API directly (slim port; enrichment deferred)
