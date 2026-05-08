@@ -99,7 +99,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
 - [ ] `GET /api/gocardless/scan-emails` — scan SAM mailbox for payout emails
 - [ ] `GET /api/gocardless/api-payouts` — query GoCardless API directly
-- [ ] `GET /api/gocardless/import-history` — past imports
+- [x] `GET /api/gocardless/import-history` — past imports with Opera + GC name enrichment
 - [ ] `POST /api/gocardless/remittance/*` — generate / send remittance emails
 - [ ] `*` /api/gocardless/partner/*` — partner portal flow (~10 endpoints)
 - [ ] `POST /api/gocardless/update-subscription-tags` — Opera repeat-doc tagging
@@ -203,9 +203,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/bank-reconcile/tests/banks.test.ts` | 4 | ✅ passing |
 | `apps-sam/bank-reconcile/tests/health-check.test.ts` | 4 | ✅ passing |
 | `apps-sam/suppliers/tests/supplier-list.test.ts` | 6 | ✅ passing |
-| **Total TypeScript tests** | **83** | ✅ all passing |
+| `apps-sam/gocardless/tests/import-history.test.ts` | 4 | ✅ passing |
+| **Total TypeScript tests** | **87** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **687** | ✅ |
+| **Grand total** | **691** | ✅ |
 
 ## Open questions / blockers
 

@@ -23,6 +23,7 @@ import {
   getImportConfig,
   getSetupStatus,
 } from './services/lookups.js';
+import { getImportHistory } from './services/import-history.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -258,6 +259,39 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Import config fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/import-history
+   *
+   * Past GoCardless batches imported to Opera. Faithful port of
+   * `get_gocardless_import_history`. Enriches payment records with
+   * Opera customer names (sname) and GC mandate customer names.
+   */
+  router.get('/api/gocardless/import-history', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    // Opera DB is optional — if missing the history is returned without
+    // Opera-name enrichment.
+    let operaDb: import('knex').Knex | null = null;
+    const company = req.operaCompany;
+    if (company) {
+      operaDb = ctx.db.getCompanyDb(company);
+    }
+    try {
+      const limit = req.query.limit ? Number(req.query.limit) : 50;
+      const fromDate = typeof req.query.from_date === 'string' ? req.query.from_date : null;
+      const toDate = typeof req.query.to_date === 'string' ? req.query.to_date : null;
+      const result = await getImportHistory(appDb, operaDb, {
+        limit,
+        fromDate,
+        toDate,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Import history fetch failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
