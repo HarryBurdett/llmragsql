@@ -50,6 +50,7 @@ import {
   getCustomersForDropdown,
   getSuppliersForDropdown,
 } from './services/account-dropdowns.js';
+import { unreconcileEntries } from './services/unreconcile.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -827,6 +828,62 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Suppliers dropdown failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/unreconcile
+   *
+   * Reverse a previously-reconciled batch. Faithful port of
+   * `unreconcile_entries` (apps/bank_reconcile/api/routes.py:981-1143).
+   *
+   * Body: array of entry numbers to unreconcile.
+   *
+   * Resets every per-aentry rec field, recalculates nbank.nk_recbal,
+   * and walks back to the prior batch state to update nbank's last-rec
+   * fields. Bank-level lock + ROWLOCK on writes per CLAUDE.md.
+   *
+   * SQL injection guards: bank_code + every entry number validated at
+   * the boundary via @sqlrag/sam-shared validators.
+   */
+  router.post(
+    '/api/reconcile/bank/:bank_code/unreconcile',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const bankCode = String(req.params.bank_code ?? '');
+        const body = req.body as
+          | string[]
+          | { entry_numbers?: string[] }
+          | null;
+        const entryNumbers = Array.isArray(body)
+          ? body
+          : Array.isArray(body?.entry_numbers)
+            ? body.entry_numbers
+            : null;
+        if (!entryNumbers) {
+          res.status(400).json({
+            success: false,
+            error: 'Body must be an array of entry numbers',
+          });
+          return;
+        }
+        const result = await unreconcileEntries(appDb, operaDb, {
+          bankCode,
+          entryNumbers,
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Unreconcile failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
