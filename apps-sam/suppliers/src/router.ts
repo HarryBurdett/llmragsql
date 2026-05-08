@@ -19,6 +19,10 @@ import {
   approveEmail,
   revokeEmail,
 } from './services/approved-emails.js';
+import {
+  getSupplierConfig,
+  saveSupplierConfig,
+} from './services/supplier-config.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -265,6 +269,58 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Revoke email failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/:code/config — per-supplier configuration.
+   * Returns merged-with-defaults config dict.
+   */
+  router.get('/api/suppliers/:code/config', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const result = await getSupplierConfig(appDb, code);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get supplier config failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * PUT /api/suppliers/:code/config — replace per-supplier config.
+   * Body: the full config JSON object.
+   */
+  router.put('/api/suppliers/:code/config', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const body = req.body;
+      if (
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body)
+      ) {
+        res
+          .status(400)
+          .json({ success: false, error: 'Request body must be a JSON object' });
+        return;
+      }
+      const result = await saveSupplierConfig(appDb, {
+        supplier_code: code,
+        config: body as Record<string, unknown>,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Save supplier config failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
