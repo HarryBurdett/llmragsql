@@ -31,6 +31,7 @@ import {
   clearImportHistory,
   deleteImportRecord,
 } from './services/import-history-delete.js';
+import { updateSubscriptionTags } from './services/subscription-tags.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -523,6 +524,47 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Delete import record failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/update-subscription-tags
+   *
+   * Preview or apply ih_analsys tag updates to Opera repeat documents
+   * matching the configured frequency filters. Faithful port of
+   * `update_subscription_tags`.
+   *
+   * Body:
+   *   - mode: 'preview' (default) or 'apply'
+   *   - overwrite: bool — if true, also update docs whose ih_analsys
+   *                differs from the configured tag
+   */
+  router.post(
+    '/api/gocardless/update-subscription-tags',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const result = await updateSubscriptionTags(
+          operaDb,
+          {
+            subscription_tag: settings.subscription_tag ?? '',
+            subscription_frequencies: settings.subscription_frequencies ?? [],
+          },
+          {
+            mode: body.mode === 'apply' ? 'apply' : 'preview',
+            overwrite: !!body.overwrite,
+          },
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Update subscription tags failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

@@ -6,7 +6,7 @@ Live tracker. Each session updates this file before committing.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 17 of ~124 endpoints (64 tests)
+**gocardless:** 18 of ~124 endpoints (70 tests)
 **bank-reconcile:** 15 of ~127 endpoints (39 tests)
 **suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
@@ -70,7 +70,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       SL-only and top 10 NL-only when count > 50; current port returns
       all items. Cosmetic; doesn't affect totals.
 
-### gocardless (in progress — 17 of ~124 endpoints)
+### gocardless (in progress — 18 of ~124 endpoints)
 
 #### Foundation
 - [x] Directory scaffolded: `apps-sam/gocardless/`
@@ -104,7 +104,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `POST /api/gocardless/test-api` — validate the saved GoCardless token against /creditors
 - [ ] `POST /api/gocardless/remittance/*` — generate / send remittance emails
 - [ ] `*` /api/gocardless/partner/*` — partner portal flow (~10 endpoints)
-- [ ] `POST /api/gocardless/update-subscription-tags` — Opera repeat-doc tagging
+- [x] `POST /api/gocardless/update-subscription-tags` — Opera repeat-doc tagging (preview + apply, ROWLOCK)
 - [ ] `GET /api/gocardless/nominal-accounts`
 - [ ] `GET /api/gocardless/vat-codes`
 - [ ] `POST /api/gocardless/test-api`
