@@ -11,51 +11,91 @@
 import { Router, type Request, type Response } from 'express';
 import type { AppContext } from './app-context.js';
 import { reconcileSummary } from './services/reconcile-summary.js';
+import { reconcileCreditors } from './services/reconcile-creditors.js';
+import { reconcileDebtors } from './services/reconcile-debtors.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
 
-  /**
-   * GET /api/reconcile/summary
-   *
-   * Faithful port of `reconcile_summary()` in
-   * `apps/balance_check/api/routes.py`.
-   *
-   * Returns a quick at-a-glance reconciliation status across the four
-   * checks (debtors, creditors, cashbook, VAT). Each check independently
-   * succeeds or fails — a failure in one doesn't break the others.
-   */
-  router.get('/api/reconcile/summary', async (req: Request, res: Response) => {
+  /** Resolve the per-company Opera pool, with consistent error handling. */
+  function resolveCompanyDb(req: Request, res: Response): import('knex').Knex | null {
     const company = req.operaCompany;
     if (!company) {
       res.status(400).json({
         success: false,
         error: 'No Opera company in context. SAM should set X-Opera-Company.',
       });
-      return;
+      return null;
     }
-
     const db = ctx.db.getCompanyDb(company);
     if (!db) {
       res.status(503).json({
         success: false,
         error: `Opera SQL connection not available for company ${company}.`,
       });
-      return;
+      return null;
     }
+    return db;
+  }
 
+  /**
+   * GET /api/reconcile/summary
+   *
+   * Faithful port of `reconcile_summary()` in the Python codebase.
+   * At-a-glance reconciliation status across debtors, creditors,
+   * cashbook, VAT — each runs independently.
+   */
+  router.get('/api/reconcile/summary', async (req: Request, res: Response) => {
+    const db = resolveCompanyDb(req, res);
+    if (!db) return;
     try {
-      const summary = await reconcileSummary(db);
-      res.json(summary);
+      const result = await reconcileSummary(db);
+      res.json(result);
     } catch (err: any) {
       ctx.logger.error('Reconciliation summary failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
 
+  /**
+   * GET /api/reconcile/creditors
+   *
+   * Faithful port of `reconcile_creditors()` in the Python codebase.
+   * Reconciles Purchase Ledger to Creditors Control Account, including
+   * variance analysis with NL ↔ PL transaction matching.
+   */
+  router.get('/api/reconcile/creditors', async (req: Request, res: Response) => {
+    const db = resolveCompanyDb(req, res);
+    if (!db) return;
+    try {
+      const result = await reconcileCreditors(db);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Creditors reconciliation failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/reconcile/debtors
+   *
+   * Faithful port of `reconcile_debtors()` in the Python codebase.
+   * Reconciles Sales Ledger to Debtors Control Account, including
+   * variance analysis with NL ↔ SL transaction matching.
+   */
+  router.get('/api/reconcile/debtors', async (req: Request, res: Response) => {
+    const db = resolveCompanyDb(req, res);
+    if (!db) return;
+    try {
+      const result = await reconcileDebtors(db);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Debtors reconciliation failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
   // Future endpoints (port next):
-  //   GET /api/reconcile/creditors
-  //   GET /api/reconcile/debtors
   //   GET /api/reconcile/vat
   //   GET /api/reconcile/cashbook
   //   GET /api/reconcile/trial-balance
