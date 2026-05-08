@@ -39,8 +39,59 @@ default factory, and passes a context our types already match.
 **gocardless:** 43 of ~124 endpoints (208 tests)
 **bank-reconcile:** 36 of ~127 endpoints (181 tests)
 **suppliers:** 38 endpoints (greenfield TS work — 128 tests)
+**shared:** 11 utility modules covering all foundational primitives (92 tests)
+**Total TS tests across all packages:** 641 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** 86 of ~258 = ~33%
 **Calendar week of project:** 1
-**Sessions logged:** 1 (extended session — 33 substantive commits)
+**Sessions logged:** 1 (extended autonomous session — 60+ commits)
+
+### Foundational primitives in @sqlrag/sam-shared
+All primitives needed for finance-write endpoints are now in place:
+- Period validation (`getPeriodForDate`, `getCurrentPeriodInfo`,
+  `getPeriodStatus`, `isOpenPeriodAccountingEnabled`, `validatePostingPeriod`,
+  `getLedgerTypeForTransaction`)
+- Home currency lookup (`getHomeCurrency` with WeakMap cache)
+- SQL input validators (`validateBankCode`, `validateAccountCode`,
+  `validateEntryNumber`, `validateCbtype`, `validatePaymentRef`,
+  `validateReference`, `validateBatchNumber` + `SqlInputValidationError`)
+- Id allocation (`getNextJournal`, `getNextId`, `incrementAtypeEntry`)
+- Balance updates (`updateNbankBalance`, `updateNacntBalance` with
+  cascading nhist+nsubt+ntype updates, `getNacntType` cached, `insertNjmemo`)
+- Opera unique-id generator (`generateOperaUniqueId` —
+  underscore-prefixed base-36 timestamp+sequence)
+- Control accounts (`getControlAccounts`)
+- VAT rates (`fetchVatCodesWithRates`)
+
+### Finance writes ported (with full bank-lock + ROWLOCK + transaction)
+- bank-reconcile `POST /api/reconcile/bank/:bank/unreconcile`
+- bank-reconcile `POST /api/reconcile/bank/:bank/mark-reconciled`
+  (full + partial modes, fresh-bank auto-recovery, running balance)
+- bank-reconcile `POST /api/reconcile/bank/:bank/complete-batch/:entry`
+  (anoml→ntran with journal allocation + njmemo + nbank balance)
+- bank-reconcile `POST /api/reconcile/bank/:bank/confirm-matches`
+  (thin wrapper around mark-reconciled with statement_line auto-assign)
+- bank-reconcile `POST /api/bank-import/update-repeat-entry-date`
+  (arhead update with audit fields + alias save)
+- bank-reconcile `POST /api/bank-import/duplicate-override`
+- bank-reconcile `POST /api/bank-import/persist-decisions`
+- bank-reconcile `POST /api/bank-import/correction` (alias learning)
+
+### Endpoints still to port
+Mostly the heavy-AI/email-ingest/big-posting flows:
+- gocardless `POST /api/gocardless/import` (~1000 LOC posting flow)
+- gocardless `POST /api/gocardless/parse` (Gemini AI extraction)
+- gocardless `POST /api/gocardless/scan-emails` (SAM emailIngest)
+- gocardless `POST /api/gocardless/import-from-email` (email + import)
+- bank-reconcile `POST /api/bank-import/import-from-pdf` (~500 LOC + AI)
+- bank-reconcile `POST /api/reconcile/process-statement` (AI matcher)
+- bank-reconcile `POST /api/reconcile/refresh-matches` (full BankImport)
+- bank-reconcile `POST /api/bank-import/preview-multiformat` (file parser)
+- bank-reconcile `GET /api/reconcile/bank/:bank` (~600 LOC reconcile view)
+- bank-reconcile `POST /api/bank-import/scan-emails` (SAM emailIngest)
+- suppliers `POST /api/suppliers/scan-emails` (SAM emailIngest)
+- suppliers `POST /api/suppliers/extract-statement` (SAM llm)
+- suppliers `POST /api/suppliers/reconcile` (matcher pipeline)
+- ~120 other smaller endpoints across the apps
 
 ## Per-app progress
 
