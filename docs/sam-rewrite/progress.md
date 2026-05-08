@@ -7,10 +7,10 @@ Live tracker. Each session updates this file before committing.
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 13 of ~124 endpoints (46 tests)
-**bank-reconcile:** 11 of ~127 endpoints (28 tests)
+**bank-reconcile:** 13 of ~127 endpoints (33 tests)
 **suppliers:** 3 endpoints (greenfield TS work — 6 tests)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 19 substantive commits)
+**Sessions logged:** 1 (long session — 20 substantive commits)
 
 ## Per-app progress
 
@@ -157,6 +157,8 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
   - GET /api/reconcile/bank/:bank_code/ignored-transactions
   - DELETE /api/reconcile/bank/ignored-transaction/:record_id
   - DELETE /api/reconcile/bank/:bank_code/unignore-transaction
+  - POST /api/statement-files/mark-reconciled
+  - GET /api/statement-files/imported-for-reconciliation
 - [x] TypeScript builds cleanly
 - [x] 8 tests passing (4 banks + 4 health-check)
 - [ ] Endpoints: 3 of ~127 ported. Future-session priorities:
@@ -227,9 +229,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/bank-reconcile/tests/reconciliation-status.test.ts` | 6 | ✅ passing |
 | `apps-sam/gocardless/tests/gocardless-api.test.ts` | 8 | ✅ passing |
 | `apps-sam/bank-reconcile/tests/ignored-transactions.test.ts` | 7 | ✅ passing |
-| **Total TypeScript tests** | **120** | ✅ all passing |
+| `apps-sam/bank-reconcile/tests/statement-files.test.ts` | 5 | ✅ passing |
+| **Total TypeScript tests** | **125** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **724** | ✅ |
+| **Grand total** | **729** | ✅ |
 
 ## Open questions / blockers
 

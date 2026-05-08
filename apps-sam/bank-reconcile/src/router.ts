@@ -22,6 +22,10 @@ import {
   unignoreTransactionById,
   unignoreTransactionByMatch,
 } from './services/ignored-transactions.js';
+import {
+  markStatementReconciled,
+  listImportedStatements,
+} from './services/statement-files.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -311,6 +315,63 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Unignore (by match) failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/statement-files/mark-reconciled
+   *
+   * Mark a statement file as reconciled. Faithful port of
+   * `mark_statement_reconciled`.
+   */
+  router.post('/api/statement-files/mark-reconciled', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const filename = String(req.query.filename ?? '').trim();
+      const bankCode = typeof req.query.bank_code === 'string' ? req.query.bank_code : null;
+      const reconciledCount = req.query.reconciled_count
+        ? Number(req.query.reconciled_count)
+        : 0;
+      if (!filename) {
+        res.status(400).json({ success: false, error: 'filename is required' });
+        return;
+      }
+      const result = await markStatementReconciled(appDb, {
+        filename,
+        bankCode,
+        reconciledCount,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Mark statement reconciled failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/statement-files/imported-for-reconciliation
+   *
+   * List imported bank statements pending reconciliation.
+   * Faithful port (without the Opera-side cross-check yet — queued for
+   * a future session per progress.md).
+   */
+  router.get('/api/statement-files/imported-for-reconciliation', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const bankCode = typeof req.query.bank_code === 'string' ? req.query.bank_code : null;
+      const limit = req.query.limit ? Number(req.query.limit) : 200;
+      const includeReconciled = req.query.include_reconciled === 'true';
+      const result = await listImportedStatements(appDb, {
+        bankCode,
+        limit,
+        includeReconciled,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List imported statements failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
