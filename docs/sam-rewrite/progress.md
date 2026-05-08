@@ -36,7 +36,7 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 22 of ~124 endpoints (102 tests)
+**gocardless:** 27 of ~124 endpoints (118 tests)
 **bank-reconcile:** 24 of ~127 endpoints (106 tests)
 **suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
@@ -105,7 +105,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       SL-only and top 10 NL-only when count > 50; current port returns
       all items. Cosmetic; doesn't affect totals.
 
-### gocardless (in progress — 22 of ~124 endpoints)
+### gocardless (in progress — 27 of ~124 endpoints)
 
 #### Foundation
 - [x] Directory scaffolded: `apps-sam/gocardless/`
@@ -132,6 +132,11 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [ ] `POST /api/gocardless/parse` — extract payments from email content
 - [x] `POST /api/gocardless/match-customers` — match payments via metadata + mandates + sname (5 priorities + 1p-tolerance duplicate check + customer-id backfill)
 - [x] `POST /api/gocardless/revalidate-batches` — refresh period_valid + possible_duplicate against current Opera state (foreign-currency aware, ref + amount duplicate detection, 14-day fallback)
+- [x] `GET /api/gocardless/partner/config` — partner-credentials probe + redirect_uri builder
+- [x] `GET /api/gocardless/partner/signup-status` — latest signup, token redacted
+- [x] `GET /api/gocardless/partner/merchants` — all signups, tokens redacted
+- [x] `POST /api/gocardless/partner/admin-auth` — admin password gate (first-time aware)
+- [x] `PUT /api/gocardless/partner/admin-password` — set/change admin password (≥4 chars)
 - [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
 - [ ] `GET /api/gocardless/scan-emails` — scan SAM mailbox for payout emails
 - [x] `GET /api/gocardless/api-payouts` — query GoCardless API directly (slim port; enrichment deferred)

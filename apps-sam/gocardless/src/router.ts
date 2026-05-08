@@ -42,6 +42,13 @@ import {
   type BatchInput,
 } from './services/revalidate-batches.js';
 import {
+  getPartnerConfig,
+  getLatestPartnerSignup,
+  getAllMerchantSignups,
+  partnerAdminAuth,
+  setPartnerAdminPassword,
+} from './services/partner.js';
+import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
 } from '@sqlrag/sam-shared';
@@ -760,6 +767,130 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Update subscription tags failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/partner/config
+   *
+   * Probe whether GoCardless Partner credentials are configured.
+   * Faithful port of get_gocardless_partner_config (routes.py:1487-1501).
+   * Constructs a redirect_uri fallback from request origin when no
+   * explicit partner_redirect_uri is configured.
+   */
+  router.get(
+    '/api/gocardless/partner/config',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        // Mirror Python's `request.base_url`: protocol://host (+ port)
+        const proto = (req.headers['x-forwarded-proto'] as string) ?? req.protocol;
+        const host = (req.headers['x-forwarded-host'] as string) ?? req.get('host') ?? '';
+        const baseUrl = host ? `${proto}://${host}` : '';
+        const result = await getPartnerConfig(appDb, { baseUrl });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Partner config failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/partner/signup-status
+   *
+   * Latest partner signup record (token redacted). Faithful port of
+   * get_gocardless_partner_signup_status (routes.py:1322-1339).
+   */
+  router.get(
+    '/api/gocardless/partner/signup-status',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await getLatestPartnerSignup(appDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Partner signup-status failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/partner/merchants?status=...
+   *
+   * All merchants onboarded via the partner signup flow.
+   * Faithful port of list_gocardless_partner_merchants
+   * (routes.py:1504-1522). Tokens NEVER returned.
+   */
+  router.get(
+    '/api/gocardless/partner/merchants',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const status =
+          typeof req.query.status === 'string' && req.query.status.trim()
+            ? req.query.status.trim()
+            : null;
+        const result = await getAllMerchantSignups(appDb, { status });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Partner merchants failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/partner/admin-auth
+   *
+   * Validate admin password gate for the partner signup app config.
+   * Faithful port of gocardless_partner_admin_auth (routes.py:1342-1354).
+   * Returns first_time=true when no password is set yet (allow operator
+   * to define one).
+   */
+  router.post(
+    '/api/gocardless/partner/admin-auth',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as { password?: string };
+        const result = await partnerAdminAuth(appDb, String(body.password ?? ''));
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Partner admin auth failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * PUT /api/gocardless/partner/admin-password
+   *
+   * Set or change the partner admin password. Faithful port of
+   * update_gocardless_partner_admin_password (routes.py:1357-1369).
+   * Minimum 4 chars (matches Python's check).
+   */
+  router.put(
+    '/api/gocardless/partner/admin-password',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as { password?: string };
+        const result = await setPartnerAdminPassword(
+          appDb,
+          String(body.password ?? ''),
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Partner admin-password failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
