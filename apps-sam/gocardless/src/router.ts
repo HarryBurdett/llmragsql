@@ -61,6 +61,7 @@ import {
   cancelPaymentRequest,
 } from './services/payment-requests.js';
 import { listSubscriptions } from './services/subscriptions.js';
+import { listMandates, listUnlinkedMandates } from './services/mandates.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -743,6 +744,58 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Revalidate batches failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/mandates
+   *
+   * List all GoCardless mandates linked to Opera customers. Faithful
+   * port of list_gocardless_mandates (routes.py:6404-6425). Filters
+   * out __UNLINKED__ rows when a linked version of the same
+   * mandate_id exists. Sorted alphabetically by opera_name.
+   */
+  router.get(
+    '/api/gocardless/mandates',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await listMandates(appDb, {
+          status:
+            typeof req.query.status === 'string' ? req.query.status : null,
+          operaAccount:
+            typeof req.query.opera_account === 'string'
+              ? req.query.opera_account
+              : null,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List mandates failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/mandates/unlinked
+   *
+   * List GoCardless mandates synced from the API but not yet linked to
+   * an Opera customer (opera_account='__UNLINKED__'). Faithful port of
+   * list_unlinked_gocardless_mandates (routes.py:6428-6447).
+   */
+  router.get(
+    '/api/gocardless/mandates/unlinked',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await listUnlinkedMandates(appDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List unlinked mandates failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
