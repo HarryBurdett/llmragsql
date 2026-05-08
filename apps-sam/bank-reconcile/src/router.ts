@@ -46,6 +46,10 @@ import {
   loadImportDraft,
   deleteImportDraft,
 } from './services/bank-import-drafts.js';
+import {
+  getCustomersForDropdown,
+  getSuppliersForDropdown,
+} from './services/account-dropdowns.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -772,6 +776,57 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Delete bank import draft failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/bank-import/accounts/customers
+   *
+   * Customer accounts for the import-UI manual override dropdown.
+   * Faithful port of get_customers_for_dropdown
+   * (apps/bank_reconcile/api/routes.py:4767-4805).
+   *
+   * Adds the dormant + stopped filters per CLAUDE.md "cannot post to
+   * dormant accounts" — the original Python missed these on the
+   * dropdown but enforces them on actual posting; this prevents the
+   * operator from picking an account they couldn't post to anyway.
+   */
+  router.get(
+    '/api/bank-import/accounts/customers',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const result = await getCustomersForDropdown(operaDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Customers dropdown failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/bank-import/accounts/suppliers
+   *
+   * Supplier accounts for the import-UI manual override dropdown.
+   * Faithful port of get_suppliers_for_dropdown
+   * (apps/bank_reconcile/api/routes.py:4811-4849).
+   *
+   * Same dormant+stopped filtering as the customer dropdown.
+   */
+  router.get(
+    '/api/bank-import/accounts/suppliers',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const result = await getSuppliersForDropdown(operaDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Suppliers dropdown failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
