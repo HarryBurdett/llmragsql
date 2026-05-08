@@ -24,6 +24,7 @@ import {
   getSetupStatus,
 } from './services/lookups.js';
 import { getImportHistory } from './services/import-history.js';
+import { skipPayout } from './services/skip-payout.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -292,6 +293,36 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Import history fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/gocardless/skip-payout
+   *
+   * Record a payout to history without importing — used for foreign-currency,
+   * already-manually-entered, or duplicate payouts. Faithful port of
+   * `skip_gocardless_payout`.
+   */
+  router.post('/api/gocardless/skip-payout', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const q = req.query;
+      const body = (req.body ?? null) as Array<Record<string, unknown>> | null;
+      const result = await skipPayout(appDb, {
+        payoutId: String(q.payout_id ?? ''),
+        bankReference: String(q.bank_reference ?? ''),
+        grossAmount: Number(q.gross_amount ?? 0),
+        currency: typeof q.currency === 'string' ? q.currency : 'GBP',
+        paymentCount: q.payment_count ? Number(q.payment_count) : 0,
+        reason: typeof q.reason === 'string' ? q.reason : 'manual',
+        fxAmount: q.fx_amount ? Number(q.fx_amount) : null,
+        payments: Array.isArray(body) ? (body as any) : undefined,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Skip payout failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
