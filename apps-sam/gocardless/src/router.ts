@@ -72,6 +72,7 @@ import {
   listMandateSetups,
   cancelMandateSetup,
 } from './services/mandate-setups.js';
+import { getEligibleCustomers } from './services/eligible-customers.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -806,6 +807,36 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List unlinked mandates failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/eligible-customers
+   *
+   * Customers eligible for GoCardless: union of customers with
+   * sn_analsys='GC' (operator-flagged) + customers with a linked
+   * mandate. Faithful port of get_gocardless_eligible_customers
+   * (routes.py:7551-7635). Each row reports has_mandate +
+   * mandate_id + mandate_status so the UI can show "needs setup"
+   * vs "already mandated" status.
+   *
+   * Adds dormant + stopped filter per CLAUDE.md (the original
+   * Python missed these).
+   */
+  router.get(
+    '/api/gocardless/eligible-customers',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await getEligibleCustomers(appDb, operaDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Eligible customers failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
