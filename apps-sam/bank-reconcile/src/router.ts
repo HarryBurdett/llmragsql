@@ -60,6 +60,7 @@ import {
   listCorrections,
 } from './services/alias-corrections.js';
 import { completeBatch } from './services/complete-batch.js';
+import { persistImportDecisions } from './services/persist-decisions.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1071,6 +1072,65 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Complete batch failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/bank-import/persist-decisions
+   *
+   * Persist defer / partial-rec decisions for a bank statement WITHOUT
+   * requiring the user to click the green Import button. Faithful
+   * port of persist_bank_import_decisions (routes.py:3406-3565).
+   *
+   * Body:
+   *   {
+   *     bank_code, filename,
+   *     source: 'pdf'|'email',
+   *     statement_info: { opening_balance?, closing_balance?,
+   *                        statement_date?, period_start?, period_end?,
+   *                        account_number?, sort_code? },
+   *     deferred_transactions: [{date, amount, description}],
+   *     imported_by?: string
+   *   }
+   *
+   * Behaviour:
+   *   - Idempotent UPSERT of bank_statement_imports row
+   *   - Replaces the bank+period defer set in deferred_transactions
+   *     (period bounds optional — full-bank clear if omitted)
+   */
+  router.post(
+    '/api/bank-import/persist-decisions',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as {
+          bank_code?: string;
+          filename?: string;
+          source?: string;
+          statement_info?: any;
+          deferred_transactions?: any[];
+          imported_by?: string;
+        };
+        const result = await persistImportDecisions(appDb, {
+          bankCode: String(body.bank_code ?? ''),
+          filename: String(body.filename ?? ''),
+          source: String(body.source ?? 'pdf'),
+          statementInfo: body.statement_info ?? null,
+          deferredTransactions: Array.isArray(body.deferred_transactions)
+            ? body.deferred_transactions
+            : [],
+          importedBy: body.imported_by ?? req.user?.userId ?? 'admin',
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Persist decisions failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
