@@ -4,10 +4,12 @@ Live tracker. Each session updates this file before committing.
 
 ## Status
 
-**Active app:** `gocardless` (foundation + 8 of ~124 endpoints ported)
-**Other apps:** `balance-check` ✅ BACKEND COMPLETE
+**Status:** All 4 plugin foundations in place; 1 fully ported; 1 in progress.
+**Active app:** `gocardless` (foundation + 10 of ~124 endpoints ported)
+**Foundations also in place for:** `bank-reconcile`, `suppliers`
+**Complete:** `balance-check` ✅ BACKEND COMPLETE
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 7 substantive commits)
+**Sessions logged:** 1 (long session — 9 substantive commits)
 
 ## Per-app progress
 
@@ -118,13 +120,49 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [ ] `src/services/gocardless-api.ts` — wrap the GoCardless REST API
 - [ ] `src/services/remittance.ts` — generate + send remittance via SAM email
 
-### bank-reconcile
+### bank-reconcile (foundation only)
 
-- [ ] (queued — starts after gocardless)
+- [x] Directory scaffolded: `apps-sam/bank-reconcile/`
+- [x] `manifest.json` — full-stack plugin, separateDatabase=true
+- [x] `package.json`, `tsconfig.json`, `vitest.config.ts`
+- [x] `src/app-context.ts` + `src/index.ts` (status endpoint)
+- [x] `db/migrations/001_initial_schema.ts` — settings + bank_import_aliases +
+      repeat_entry_aliases + ai_suggestions + duplicate_overrides +
+      bank_import_patterns + extraction_cache + import_locks +
+      deferred_transactions + bank_statement_imports tables (mirrors
+      Python SQLite schemas)
+- [x] TypeScript builds cleanly
+- [ ] Endpoints: 0 of ~80+ ported. Future-session priorities:
+  - `/api/bank-import/scan-emails` (via SAM email service)
+  - `/api/bank-import/preview-from-pdf`
+  - `/api/bank-import/preview-from-email`
+  - `/api/bank-import/import` (the big posting flow)
+  - `/api/reconcile/bank/{code}/list`
+  - `/api/reconcile/bank/{code}/reconcile`
+  - `/api/repeat-entries/*`
+- [ ] Services to port:
+  - `sql_rag/bank_import.py` — main matcher + importer
+  - `sql_rag/opera_sql_import.py` — Opera posting logic
+  - `sql_rag/bank_patterns.py` — pattern learning
+  - `sql_rag/statement_reconcile.py` — reconcile workflow
+  - `sql_rag/bank_pdf_extract.py` — Gemini extraction
 
-### suppliers
+### suppliers (foundation only — finished in TS directly per user direction)
 
-- [ ] (queued — finished in TypeScript directly)
+- [x] Directory scaffolded: `apps-sam/suppliers/`
+- [x] `manifest.json` — full-stack plugin, separateDatabase=true,
+      version `0.1.0-dev`, navLabel "Suppliers (DEV)"
+- [x] `package.json`, `tsconfig.json`, `vitest.config.ts`
+- [x] `src/app-context.ts` + `src/index.ts` (status endpoint)
+- [x] `db/migrations/001_initial_schema.ts` — supplier_statements +
+      statement_lines + statement_opera_only + processed_emails +
+      supplier_config + supplier_automation_config + supplier_overrides +
+      supplier_contacts_ext + supplier_onboarding +
+      supplier_approved_emails + supplier_remittance_log +
+      supplier_change_audit + supplier_communications tables
+- [x] TypeScript builds cleanly
+- [ ] Endpoints: not yet defined — being designed during the TS port
+  rather than translated from incomplete Python.
 
 ### frontend plugins
 

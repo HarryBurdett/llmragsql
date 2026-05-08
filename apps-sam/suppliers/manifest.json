@@ -1,0 +1,31 @@
+{
+  "id": "suppliers",
+  "name": "Supplier Reconciliation",
+  "description": "Supplier statement reconciliation. Scans the customer's mailbox for supplier statements, extracts line items via AI, and reconciles against the Opera Purchase Ledger. Currently in development — being completed in TypeScript directly per CLAUDE.md.",
+  "version": "0.1.0-dev",
+  "author": "IntSys",
+  "category": "finance",
+  "type": "full-stack",
+  "minSamVersion": "1.0.0",
+  "frontend": {
+    "entryComponent": "Suppliers",
+    "basePath": "/suppliers",
+    "navLabel": "Suppliers (DEV)",
+    "navIcon": "Truck",
+    "requiredSharedDeps": ["react", "react-dom", "react-router-dom"]
+  },
+  "backend": {
+    "routePrefix": "/api/apps/suppliers",
+    "requiresDatabase": true,
+    "databaseType": "opera-se",
+    "separateDatabase": true,
+    "internalApiPrefix": "/api"
+  },
+  "permissions": [
+    "opera:read",
+    "opera:write",
+    "sam:config:read",
+    "sam:email:read",
+    "sam:email:send"
+  ]
+}
