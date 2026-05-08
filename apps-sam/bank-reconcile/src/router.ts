@@ -26,6 +26,10 @@ import {
   markStatementReconciled,
   listImportedStatements,
 } from './services/statement-files.js';
+import {
+  getRecurringEntriesMode,
+  setRecurringEntriesMode,
+} from './services/settings.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -372,6 +376,47 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('List imported statements failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/recurring-entries/config
+   *
+   * Read recurring-entries processing mode ('process' or 'warn').
+   * Faithful port of `get_recurring_entries_config` (api/main.py:10290).
+   */
+  router.get('/api/recurring-entries/config', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const result = await getRecurringEntriesMode(appDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get recurring-entries mode failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * PUT /api/recurring-entries/config?mode=process|warn
+   *
+   * Update recurring-entries processing mode. Faithful port of
+   * `update_recurring_entries_config`.
+   */
+  router.put('/api/recurring-entries/config', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const mode = String(req.query.mode ?? '').trim();
+      const result = await setRecurringEntriesMode(appDb, mode);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Set recurring-entries mode failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

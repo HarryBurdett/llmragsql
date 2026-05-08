@@ -7,10 +7,10 @@ Live tracker. Each session updates this file before committing.
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 13 of ~124 endpoints (46 tests)
-**bank-reconcile:** 13 of ~127 endpoints (33 tests)
+**bank-reconcile:** 15 of ~127 endpoints (39 tests)
 **suppliers:** 8 endpoints (greenfield TS work — 20 tests)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (extended session — 23 substantive commits)
+**Sessions logged:** 1 (extended session — 24 substantive commits)
 
 ## Per-app progress
 
@@ -232,9 +232,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/bank-reconcile/tests/statement-files.test.ts` | 5 | ✅ passing |
 | `apps-sam/suppliers/tests/aged-debt.test.ts` | 6 | ✅ passing |
 | `apps-sam/suppliers/tests/contacts.test.ts` | 8 | ✅ passing |
-| **Total TypeScript tests** | **139** | ✅ all passing |
+| `apps-sam/bank-reconcile/tests/settings.test.ts` | 6 | ✅ passing |
+| **Total TypeScript tests** | **145** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **743** | ✅ |
+| **Grand total** | **749** | ✅ |
 
 ## Open questions / blockers
 
