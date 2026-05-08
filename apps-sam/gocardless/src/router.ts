@@ -32,6 +32,7 @@ import {
   deleteImportRecord,
 } from './services/import-history-delete.js';
 import { updateSubscriptionTags } from './services/subscription-tags.js';
+import { getPaymentStats } from './services/payment-stats.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -528,6 +529,30 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Delete import record failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/payment-requests/stats
+   *
+   * Dashboard statistics for the GoCardless payments-DB. Faithful port
+   * of `get_gocardless_payment_stats` (routes.py:6271-6280) which calls
+   * `GoCardlessPaymentsDB.get_statistics()`. Returns active-mandate
+   * count, pending count + amount, month-to-date paid-out, and 30-day
+   * failed count — flat shape merged onto {success}.
+   */
+  router.get(
+    '/api/gocardless/payment-requests/stats',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await getPaymentStats(appDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Payment stats failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
