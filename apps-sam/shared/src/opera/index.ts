@@ -23,6 +23,17 @@ export {
 
 export { getHomeCurrency, clearHomeCurrencyCache } from './home-currency.js';
 export type { HomeCurrency } from './home-currency.js';
+
+export {
+  SqlInputValidationError,
+  validateBankCode,
+  validateAccountCode,
+  validateEntryNumber,
+  validateCbtype,
+  validatePaymentRef,
+  validateReference,
+  validateBatchNumber,
+} from './sql-input-validators.js';
 export type {
   LedgerType,
   PeriodInfo,
