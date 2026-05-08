@@ -12,6 +12,10 @@ import {
   listOrphanTmpstat,
   clearOrphanTmpstat,
 } from './services/orphan-tmpstat.js';
+import {
+  getUnreconciledEntries,
+  getReconciliationStatus,
+} from './services/reconciliation-status.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -129,6 +133,55 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Clear orphan tmpstat failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/reconcile/bank/:bank_code/unreconciled — list unreconciled
+   * cashbook entries for a bank account. Faithful port of
+   * `get_unreconciled_entries` (line 818).
+   *
+   * Query: ?include_incomplete=true to include batches with ae_complet=0
+   * (not yet posted to NL).
+   */
+  router.get('/api/reconcile/bank/:bank_code/unreconciled', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      if (!bankCode) {
+        res.status(400).json({ success: false, error: 'Missing bank_code' });
+        return;
+      }
+      const includeIncomplete = req.query.include_incomplete === 'true';
+      const result = await getUnreconciledEntries(operaDb, bankCode, includeIncomplete);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get unreconciled entries failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/reconcile/bank/:bank_code/status — current reconciliation
+   * status (balances + last reconcile info). Faithful port of
+   * `get_reconciliation_status` (the OperaSQLImport method, not the
+   * full route handler with sequential-gating logic).
+   */
+  router.get('/api/reconcile/bank/:bank_code/status', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      if (!bankCode) {
+        res.status(400).json({ success: false, error: 'Missing bank_code' });
+        return;
+      }
+      const result = await getReconciliationStatus(operaDb, bankCode);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get reconciliation status failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

@@ -7,10 +7,10 @@ Live tracker. Each session updates this file before committing.
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 12 of ~124 endpoints (38 tests)
-**bank-reconcile:** 5 of ~127 endpoints (15 tests)
+**bank-reconcile:** 7 of ~127 endpoints (21 tests)
 **suppliers:** 3 endpoints (greenfield TS work — 6 tests)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 16 substantive commits)
+**Sessions logged:** 1 (long session — 17 substantive commits)
 
 ## Per-app progress
 
@@ -139,12 +139,19 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `src/services/orphan-tmpstat.ts` — list + clear orphan ae_tmpstat
       reservations (residual partial-reconcile state). NOLOCK for read,
       ROWLOCK for clear UPDATE per CLAUDE.md.
+- [x] `src/services/reconciliation-status.ts` — port of
+      `OperaSQLImport.get_unreconciled_entries` and
+      `OperaSQLImport.get_reconciliation_status`. Reconciled balance
+      from nbank, unreconciled count + total from aentry; current
+      balance derived (NOT from nk_curbal which has historical drift).
 - [x] `src/router.ts` — mounts:
   - GET /api/bank-reconcile/status
   - GET /api/reconcile/banks
   - GET /api/bank-import/health-check
   - GET /api/reconcile/bank/:bank_code/orphan-tmpstat
   - POST /api/reconcile/bank/:bank_code/clear-orphan-tmpstat
+  - GET /api/reconcile/bank/:bank_code/unreconciled
+  - GET /api/reconcile/bank/:bank_code/status
 - [x] TypeScript builds cleanly
 - [x] 8 tests passing (4 banks + 4 health-check)
 - [ ] Endpoints: 3 of ~127 ported. Future-session priorities:
@@ -212,9 +219,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/suppliers/tests/supplier-list.test.ts` | 6 | ✅ passing |
 | `apps-sam/gocardless/tests/import-history.test.ts` | 4 | ✅ passing |
 | `apps-sam/gocardless/tests/skip-payout.test.ts` | 5 | ✅ passing |
-| **Total TypeScript tests** | **99** | ✅ all passing |
+| `apps-sam/bank-reconcile/tests/reconciliation-status.test.ts` | 6 | ✅ passing |
+| **Total TypeScript tests** | **105** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **703** | ✅ |
+| **Grand total** | **709** | ✅ |
 
 ## Open questions / blockers
 
