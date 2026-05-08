@@ -37,7 +37,7 @@ default factory, and passes a context our types already match.
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 22 of ~124 endpoints (102 tests)
-**bank-reconcile:** 20 of ~127 endpoints (86 tests)
+**bank-reconcile:** 21 of ~127 endpoints (94 tests)
 **suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
 **Sessions logged:** 1 (extended session — 33 substantive commits)
@@ -161,7 +161,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `src/services/gocardless-api.ts` — wrap the GoCardless REST API (testConnection + getPayouts)
 - [ ] `src/services/remittance.ts` — generate + send remittance via SAM email
 
-### bank-reconcile (in progress — 20 of ~127 endpoints)
+### bank-reconcile (in progress — 21 of ~127 endpoints)
 
 - [x] Directory scaffolded: `apps-sam/bank-reconcile/`
 - [x] `manifest.json` — full-stack plugin, separateDatabase=true
@@ -204,6 +204,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
   - PUT /api/bank-import/config
   - POST /api/bank-import/detect-format (CSV/OFX/QIF/MT940 sniff)
   - POST /api/bank-import/detect-bank (regex + CSV-header sniff vs nbank)
+  - POST /api/bank-import/duplicate-override (record user-confirmed not-a-dup)
 - [x] TypeScript builds cleanly
 - [x] 8 tests passing (4 banks + 4 health-check)
 - [ ] Endpoints: 3 of ~127 ported. Future-session priorities:

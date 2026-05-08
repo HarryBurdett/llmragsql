@@ -40,6 +40,7 @@ import {
   supportedFormats,
 } from './services/format-detect.js';
 import { detectBankFromContent } from './services/detect-bank.js';
+import { recordDuplicateOverride } from './services/duplicate-override.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -604,6 +605,54 @@ export function createRouter(ctx: AppContext): Router {
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
+
+  /**
+   * POST /api/bank-import/duplicate-override
+   *
+   * Record a user's decision to import a transaction despite it being
+   * flagged as a possible duplicate. Faithful port of
+   * `override_duplicate` (apps/bank_reconcile/api/routes.py:2961-3003).
+   *
+   * Query params:
+   *   - transaction_hash: hash of the transaction
+   *   - reason: free-text explanation
+   *   - user_code: (optional) operator code from req.user.appRole etc.
+   *
+   * Upsert semantics — re-overriding the same hash updates the reason
+   * and timestamp.
+   */
+  router.post(
+    '/api/bank-import/duplicate-override',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const transactionHash = String(req.query.transaction_hash ?? '').trim();
+        const reason = String(req.query.reason ?? '').trim();
+        const userCode = req.user?.userId ?? null;
+        if (!transactionHash) {
+          res.status(400).json({
+            success: false,
+            error: 'transaction_hash is required',
+          });
+          return;
+        }
+        if (!reason) {
+          res.status(400).json({ success: false, error: 'reason is required' });
+          return;
+        }
+        const result = await recordDuplicateOverride(appDb, {
+          transactionHash,
+          reason,
+          userCode,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Duplicate override failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
 
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
