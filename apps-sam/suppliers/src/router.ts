@@ -8,6 +8,7 @@
 import { Router, type Request, type Response } from 'express';
 import type { AppContext } from './app-context.js';
 import { listSuppliers, getSupplier } from './services/supplier-list.js';
+import { getAgedDebtSummary, getAgedDebtBySupplier } from './services/aged-debt.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -57,7 +58,42 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
-  /** GET /api/suppliers/:code — single supplier detail. */
+  /**
+   * GET /api/suppliers/aged-debt — aged-bucket totals across all
+   * active suppliers (Current 0-30 / 31-60 / 61-90 / Over 90).
+   */
+  router.get('/api/suppliers/aged-debt', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await getAgedDebtSummary(operaDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Aged-debt summary failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/aged-debt/by-supplier — per-supplier rows
+   * with bucket breakdown. Suppliers ordered by total descending.
+   */
+  router.get('/api/suppliers/aged-debt/by-supplier', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await getAgedDebtBySupplier(operaDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Aged-debt by-supplier failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/:code — single supplier detail. Mounted LAST
+   * so specific paths above (status, aged-debt, etc.) match first.
+   */
   router.get('/api/suppliers/:code', async (req, res) => {
     const operaDb = getOperaDb(req, res);
     if (!operaDb) return;
