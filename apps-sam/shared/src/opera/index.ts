@@ -40,6 +40,13 @@ export {
   getNextId,
   incrementAtypeEntry,
 } from './id-allocation.js';
+
+export {
+  updateNbankBalance,
+  updateNacntBalance,
+  getNacntType,
+} from './balance-updates.js';
+export type { NacntType, UpdateNacntBalanceOptions } from './balance-updates.js';
 export type {
   LedgerType,
   PeriodInfo,

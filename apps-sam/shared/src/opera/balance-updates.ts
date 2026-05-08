@@ -1,0 +1,309 @@
+/**
+ * Opera balance-update primitives — keep aggregate balances in sync
+ * with transaction-level postings.
+ *
+ * Faithful ports of:
+ *   - update_nbank_balance  → updateNbankBalance()
+ *   - _get_nacnt_type       → getNacntType()
+ *   - update_nacnt_balance  → updateNacntBalance() (with nsubt/ntype/nhist)
+ *
+ * Per CLAUDE.md "complete data updates": every ntran INSERT MUST be
+ * accompanied by an updateNacntBalance() call (also handles nhist
+ * automatically). Every cashbook-affecting post MUST call
+ * updateNbankBalance(). Skipping these causes control-account
+ * mismatches and audit failures.
+ *
+ * Always called WITHIN an open MSSQL transaction. ROWLOCK on writes,
+ * NOLOCK on the type lookup.
+ */
+import type { Knex } from 'knex';
+
+// ---------------------------------------------------------------------
+// updateNbankBalance — nbank.nk_curbal += amount (in pence)
+// ---------------------------------------------------------------------
+
+/**
+ * Update nbank.nk_curbal after posting cashbook transactions.
+ *
+ * @param amountPounds positive = receipt (increases balance),
+ *                     negative = payment (decreases balance).
+ *                     Stored in pence internally.
+ *
+ * Throws when the bank account isn't found in nbank — caller is in a
+ * transaction and the throw forces a rollback rather than commit
+ * with an out-of-sync bank balance.
+ */
+export async function updateNbankBalance(
+  trx: Knex,
+  bankAccount: string,
+  amountPounds: number,
+): Promise<void> {
+  const amountPence = Math.round(amountPounds * 100);
+  const result = (await trx.raw(
+    `UPDATE nbank WITH (ROWLOCK)
+     SET nk_curbal = ISNULL(nk_curbal, 0) + ?,
+         datemodified = GETDATE()
+     WHERE RTRIM(nk_acnt) = ?`,
+    [amountPence, bankAccount],
+  )) as unknown as { rowCount?: number } | Array<{ rowCount?: number }>;
+  const rows =
+    typeof result === 'object' && result !== null
+      ? Array.isArray(result)
+        ? Number(result[0]?.rowCount ?? 0)
+        : Number(result.rowCount ?? 0)
+      : 0;
+  if (rows === 0) {
+    throw new Error(
+      `nbank balance update failed: bank account '${bankAccount}' not found ` +
+        `in nbank. Attempted to adjust by ${amountPence} pence ` +
+        `(£${amountPounds.toFixed(2)}). Transaction will be rolled back to ` +
+        `prevent balance drift.`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// getNacntType — cached na_type / na_subt lookup
+// ---------------------------------------------------------------------
+
+export interface NacntType {
+  na_type: string;
+  na_subt: string;
+}
+
+// WeakMap so the cache is per-trx and dies when the trx does.
+const nacntTypeCache = new WeakMap<Knex, Map<string, NacntType>>();
+
+export async function getNacntType(
+  trx: Knex,
+  account: string,
+): Promise<NacntType | null> {
+  const key = (account ?? '').trim();
+  let cache = nacntTypeCache.get(trx);
+  if (!cache) {
+    cache = new Map();
+    nacntTypeCache.set(trx, cache);
+  }
+  if (cache.has(key)) return cache.get(key)!;
+
+  const rows = (await trx.raw(
+    `SELECT na_type, na_subt FROM nacnt WITH (NOLOCK)
+     WHERE RTRIM(na_acnt) = ?`,
+    [key],
+  )) as unknown as Array<{ na_type: string | null; na_subt: string | null }>;
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const t: NacntType = {
+    na_type: (rows[0]?.na_type ?? '').toString(),
+    na_subt: (rows[0]?.na_subt ?? '').toString(),
+  };
+  cache.set(key, t);
+  return t;
+}
+
+// ---------------------------------------------------------------------
+// updateNacntBalance — full nacnt + nhist + nsubt + ntype update
+// ---------------------------------------------------------------------
+
+const VALID_PERIODS = (() => {
+  const s = new Set<number>();
+  for (let i = 1; i <= 24; i++) s.add(i);
+  return s;
+})();
+
+export interface UpdateNacntBalanceOptions {
+  /** Posting period (1..24). Outside that range is silently skipped
+   *  (matches Python's `logger.warning + return`). */
+  period: number;
+  /** Financial year — required for nhist write (passed through). */
+  year: number;
+}
+
+/**
+ * Update nacnt + nhist + nsubt + ntype after posting an ntran row.
+ *
+ * Sign convention:
+ *   value > 0  → DEBIT  (na_ptddr/na_ytddr += value)
+ *   value < 0  → CREDIT (na_ptdcr/na_ytdcr += abs(value))
+ *   period column (na_balc01..24) ALWAYS += value (signed net)
+ *
+ * Throws when nacnt update affects 0 rows — that means the account
+ * isn't in nacnt, which would silently leak balance drift.
+ *
+ * NB: the nhist write follows Opera's convention of storing nh_ptdcr
+ * as a NEGATIVE number (vs nacnt's positive magnitudes). Don't
+ * "correct" that — Opera's reports rely on the negative sign.
+ *
+ * Caller is responsible for being inside a transaction.
+ */
+export async function updateNacntBalance(
+  trx: Knex,
+  account: string,
+  value: number,
+  opts: UpdateNacntBalanceOptions,
+): Promise<void> {
+  const period = Number(opts.period);
+  const year = Number(opts.year);
+  if (!VALID_PERIODS.has(period)) return; // skip — same as Python warning+return
+
+  const account_ = (account ?? '').trim();
+  const periodCol = `na_balc${period.toString().padStart(2, '0')}`;
+  const v = Number(value);
+  const absV = Math.abs(v);
+
+  // 1. Update nacnt
+  let nacntSql: string;
+  let nacntParams: Array<string | number>;
+  if (v >= 0) {
+    nacntSql = `
+      UPDATE nacnt WITH (ROWLOCK)
+      SET na_ptddr = ISNULL(na_ptddr, 0) + ?,
+          na_ytddr = ISNULL(na_ytddr, 0) + ?,
+          ${periodCol} = ISNULL(${periodCol}, 0) + ?,
+          datemodified = GETDATE()
+      WHERE RTRIM(na_acnt) = ?
+    `;
+    nacntParams = [v, v, v, account_];
+  } else {
+    nacntSql = `
+      UPDATE nacnt WITH (ROWLOCK)
+      SET na_ptdcr = ISNULL(na_ptdcr, 0) + ?,
+          na_ytdcr = ISNULL(na_ytdcr, 0) + ?,
+          ${periodCol} = ISNULL(${periodCol}, 0) + ?,
+          datemodified = GETDATE()
+      WHERE RTRIM(na_acnt) = ?
+    `;
+    nacntParams = [absV, absV, v, account_];
+  }
+  const result = (await trx.raw(nacntSql, nacntParams)) as unknown as
+    | { rowCount?: number }
+    | Array<{ rowCount?: number }>;
+  const rows =
+    typeof result === 'object' && result !== null
+      ? Array.isArray(result)
+        ? Number(result[0]?.rowCount ?? 0)
+        : Number(result.rowCount ?? 0)
+      : 0;
+  if (rows === 0) {
+    throw new Error(
+      `nacnt update affected 0 rows for account ${account_} - ` +
+        'account may not exist in nacnt table',
+    );
+  }
+
+  // 2. Update nhist
+  await updateNhist(trx, account_, v, period, year);
+
+  // 3. Update nsubt + ntype
+  await updateNsubtNtype(trx, account_, v);
+}
+
+async function updateNhist(
+  trx: Knex,
+  account: string,
+  value: number,
+  period: number,
+  year: number,
+): Promise<void> {
+  const typeInfo = await getNacntType(trx, account);
+  if (!typeInfo) return; // matches Python's warning + return — non-fatal
+
+  const costCentre = '    ';
+  const findRows = (await trx.raw(
+    `SELECT TOP 1 id FROM nhist WITH (UPDLOCK, ROWLOCK)
+     WHERE RTRIM(nh_nacnt) = ?
+       AND nh_ntype = ?
+       AND nh_nsubt = ?
+       AND nh_ncntr = ?
+       AND nh_year = ?
+       AND nh_period = ?`,
+    [account, typeInfo.na_type, typeInfo.na_subt, costCentre, year, period],
+  )) as unknown as Array<{ id: number | null }>;
+  const id = Array.isArray(findRows) && findRows[0] ? Number(findRows[0].id) : null;
+
+  if (id !== null && Number.isFinite(id)) {
+    if (value >= 0) {
+      await trx.raw(
+        `UPDATE nhist WITH (ROWLOCK)
+         SET nh_bal = ISNULL(nh_bal, 0) + ?,
+             nh_ptddr = ISNULL(nh_ptddr, 0) + ?,
+             datemodified = GETDATE()
+         WHERE id = ?`,
+        [value, value, id],
+      );
+    } else {
+      // ptdcr stored as NEGATIVE (Opera convention)
+      await trx.raw(
+        `UPDATE nhist WITH (ROWLOCK)
+         SET nh_bal = ISNULL(nh_bal, 0) + ?,
+             nh_ptdcr = ISNULL(nh_ptdcr, 0) + ?,
+             datemodified = GETDATE()
+         WHERE id = ?`,
+        [value, value, id],
+      );
+    }
+  } else {
+    // No row — INSERT new one. Caller's transaction handles the id
+    // allocation via getNextId (imported in posting code, not here,
+    // to avoid circular reference between balance-updates and
+    // id-allocation).
+    const { getNextId } = await import('./id-allocation.js');
+    const newId = await getNextId(trx, 'nhist');
+    const ptddr = value >= 0 ? value : 0;
+    const ptdcr = value >= 0 ? 0 : value; // negative
+    const accountPadded = account.padEnd(8, ' ');
+    await trx.raw(
+      `INSERT INTO nhist (
+         id,
+         nh_rectype, nh_ntype, nh_nsubt, nh_nacnt, nh_ncntr,
+         nh_job, nh_project, nh_year, nh_period,
+         nh_bal, nh_budg, nh_rbudg, nh_ptddr, nh_ptdcr, nh_fbal,
+         datecreated, datemodified, state
+       ) VALUES (
+         ?,
+         1, ?, ?, ?, ?,
+         '        ', '        ', ?, ?,
+         ?, 0, 0, ?, ?, 0,
+         GETDATE(), GETDATE(), 1
+       )`,
+      [
+        newId,
+        typeInfo.na_type,
+        typeInfo.na_subt,
+        accountPadded,
+        costCentre,
+        year,
+        period,
+        value,
+        ptddr,
+        ptdcr,
+      ],
+    );
+  }
+}
+
+async function updateNsubtNtype(
+  trx: Knex,
+  account: string,
+  value: number,
+): Promise<void> {
+  const typeInfo = await getNacntType(trx, account);
+  if (!typeInfo) return; // matches Python warning + return
+
+  // nsubt
+  await trx.raw(
+    `UPDATE nsubt WITH (ROWLOCK)
+     SET ns_balance = ISNULL(ns_balance, 0) + ?,
+         datemodified = GETDATE()
+     WHERE ns_subt = ? AND ns_type = ?`,
+    [value, typeInfo.na_subt, typeInfo.na_type],
+  );
+
+  // ntype
+  await trx.raw(
+    `UPDATE ntype WITH (ROWLOCK)
+     SET nt_bal = ISNULL(nt_bal, 0) + ?,
+         datemodified = GETDATE()
+     WHERE nt_type = ?`,
+    [value, typeInfo.na_type],
+  );
+}
