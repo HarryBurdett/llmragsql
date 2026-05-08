@@ -4,13 +4,13 @@ Live tracker. Each session updates this file before committing.
 
 ## Status
 
-**Status:** All 4 plugin foundations in place; 1 fully ported; 2 in progress.
+**Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 10 of ~124 endpoints (29 tests)
 **bank-reconcile:** 3 of ~127 endpoints (8 tests)
-**suppliers:** Foundation only (greenfield TS work)
+**suppliers:** 3 endpoints (greenfield TS work — 6 tests)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 11 substantive commits)
+**Sessions logged:** 1 (long session — 13 substantive commits)
 
 ## Per-app progress
 
@@ -156,22 +156,29 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
   - `sql_rag/statement_reconcile.py` — reconcile workflow
   - `sql_rag/bank_pdf_extract.py` — Gemini extraction
 
-### suppliers (foundation only — finished in TS directly per user direction)
+### suppliers (foundation + 3 endpoints — finished in TS directly)
 
 - [x] Directory scaffolded: `apps-sam/suppliers/`
 - [x] `manifest.json` — full-stack plugin, separateDatabase=true,
       version `0.1.0-dev`, navLabel "Suppliers (DEV)"
 - [x] `package.json`, `tsconfig.json`, `vitest.config.ts`
-- [x] `src/app-context.ts` + `src/index.ts` (status endpoint)
-- [x] `db/migrations/001_initial_schema.ts` — supplier_statements +
-      statement_lines + statement_opera_only + processed_emails +
-      supplier_config + supplier_automation_config + supplier_overrides +
-      supplier_contacts_ext + supplier_onboarding +
-      supplier_approved_emails + supplier_remittance_log +
-      supplier_change_audit + supplier_communications tables
+- [x] `src/app-context.ts` + `src/index.ts` + `src/router.ts`
+- [x] `db/migrations/001_initial_schema.ts` — full per-app schema
+- [x] `src/services/supplier-list.ts` — list active suppliers + supplier-detail
+      from Opera pname (excludes dormant per CLAUDE.md)
+- [x] `src/router.ts` — mounts:
+  - GET /api/suppliers/status (liveness)
+  - GET /api/suppliers (list active suppliers)
+  - GET /api/suppliers/:code (supplier detail)
 - [x] TypeScript builds cleanly
-- [ ] Endpoints: not yet defined — being designed during the TS port
-  rather than translated from incomplete Python.
+- [x] 6 tests passing (4 listSuppliers + 2 getSupplier)
+- [ ] Endpoints: 3 of TBD ported. Future-session priorities:
+  - POST /api/suppliers/scan-emails (via SAM email)
+  - POST /api/suppliers/extract-statement (Gemini)
+  - POST /api/suppliers/reconcile (statement vs ptran)
+  - GET  /api/suppliers/:code/contacts
+  - POST /api/suppliers/onboard
+  - POST /api/suppliers/remittance
 
 ### frontend plugins
 
@@ -195,9 +202,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/gocardless/tests/lookups.test.ts` | 12 | ✅ passing |
 | `apps-sam/bank-reconcile/tests/banks.test.ts` | 4 | ✅ passing |
 | `apps-sam/bank-reconcile/tests/health-check.test.ts` | 4 | ✅ passing |
-| **Total TypeScript tests** | **77** | ✅ all passing |
+| `apps-sam/suppliers/tests/supplier-list.test.ts` | 6 | ✅ passing |
+| **Total TypeScript tests** | **83** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **681** | ✅ |
+| **Grand total** | **687** | ✅ |
 
 ## Open questions / blockers
 
