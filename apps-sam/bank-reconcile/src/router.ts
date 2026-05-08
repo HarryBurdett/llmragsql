@@ -51,6 +51,10 @@ import {
   getSuppliersForDropdown,
 } from './services/account-dropdowns.js';
 import { unreconcileEntries } from './services/unreconcile.js';
+import {
+  markEntriesReconciled,
+  type ReconcileEntryInput,
+} from './services/mark-reconciled.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -884,6 +888,65 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Unreconcile failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/mark-reconciled
+   *
+   * Mark cashbook entries as reconciled (full or partial).
+   * Faithful port of mark_entries_reconciled (apps/bank_reconcile/api/
+   * routes.py:897-975) + the underlying OperaSQLImport method.
+   *
+   * Body:
+   *   {
+   *     entries: [{entry_number, statement_line}, ...],
+   *     statement_number: number,
+   *     statement_date?:    'YYYY-MM-DD',
+   *     reconciliation_date?: 'YYYY-MM-DD',
+   *     partial?: boolean,
+   *     closing_balance?: number  // pounds, used for nk_reccfwd in partial mode
+   *   }
+   *
+   * Bank-level lock + UPDLOCK on nbank/aentry reads, ROWLOCK on
+   * writes, single transaction.
+   */
+  router.post(
+    '/api/reconcile/bank/:bank_code/mark-reconciled',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const bankCode = String(req.params.bank_code ?? '');
+        const body = (req.body ?? {}) as {
+          entries?: ReconcileEntryInput[];
+          statement_number?: number;
+          statement_date?: string;
+          reconciliation_date?: string;
+          partial?: boolean;
+          closing_balance?: number;
+        };
+        const result = await markEntriesReconciled(appDb, operaDb, {
+          bankCode,
+          entries: Array.isArray(body.entries) ? body.entries : [],
+          statementNumber: Number(body.statement_number ?? 0),
+          statementDate: body.statement_date ?? null,
+          reconciliationDate: body.reconciliation_date ?? null,
+          partial: !!body.partial,
+          closingBalance:
+            body.closing_balance !== undefined ? Number(body.closing_balance) : null,
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Mark reconciled failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

@@ -37,7 +37,7 @@ default factory, and passes a context our types already match.
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 33 of ~124 endpoints (155 tests)
-**bank-reconcile:** 27 of ~127 endpoints (131 tests)
+**bank-reconcile:** 28 of ~127 endpoints (140 tests)
 **suppliers:** 27 endpoints (greenfield TS work — 92 tests)
 **Calendar week of project:** 1
 **Sessions logged:** 1 (extended session — 33 substantive commits)
@@ -172,7 +172,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `src/services/gocardless-api.ts` — wrap the GoCardless REST API (testConnection + getPayouts)
 - [ ] `src/services/remittance.ts` — generate + send remittance via SAM email
 
-### bank-reconcile (in progress — 27 of ~127 endpoints)
+### bank-reconcile (in progress — 28 of ~127 endpoints)
 
 - [x] Directory scaffolded: `apps-sam/bank-reconcile/`
 - [x] `manifest.json` — full-stack plugin, separateDatabase=true
@@ -222,6 +222,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
   - GET /api/bank-import/accounts/customers (dormant-filtered)
   - GET /api/bank-import/accounts/suppliers (dormant-filtered)
   - POST /api/reconcile/bank/:bank_code/unreconcile **(first finance-write port — bank lock + ROWLOCK + transaction)**
+  - POST /api/reconcile/bank/:bank_code/mark-reconciled **(full + partial — UPDLOCK on read, ROWLOCK on writes, fresh-bank auto-recovery)**
 - [x] TypeScript builds cleanly
 - [x] 8 tests passing (4 banks + 4 health-check)
 - [ ] Endpoints: 3 of ~127 ported. Future-session priorities:
