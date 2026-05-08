@@ -23,8 +23,9 @@ APP_NAME=suppliers
 - `OPERA_VERSION` — `SE` or `3`
 
 **If `OPERA_VERSION=3`:**
-- `OPERA3_DATA_PATH`
-- `OPERA3_WRITE_AGENT_URL`
+- `OPERA3_AGENT_URL` — SAM's expanded Opera 3 Agent (handles both
+  reads and writes; replaces the legacy `OPERA3_DATA_PATH` /
+  `OPERA3_WRITE_AGENT_URL` pair from the standalone era)
 
 **Phase B:**
 - `CORE_EMAIL_URL`
@@ -59,7 +60,8 @@ APP_NAME=suppliers
 
 - Opera SQL Server (read pname, ptran, palloc; suppliers app is
   read-only against Opera in production today — no postings)
-- Opera 3 file share / Write Agent when `OPERA_VERSION=3`
+- SAM's Opera 3 Agent when `OPERA_VERSION=3` (HTTP — handles both
+  reads and writes; no direct DBF access needed)
 - IMAP / SMTP
 - Gemini API
 

@@ -23,11 +23,11 @@ When SAM is the source of truth, it provides:
 | **User identity + roles** | username, password (or SSO), role assignments | Yes |
 | **Tenant configuration** | Opera version (SE/3), enabled apps, locale | Yes |
 | **Database credentials** | Opera SQL host/db/user/password | Yes |
-| **Opera 3 location** | DBF file share path, Write Agent URL | Yes |
+| **Opera 3 Agent URL** | SAM's expanded Opera 3 Agent (single endpoint for reads + writes — replaces the legacy DBF-share + Windows-write-agent pair) | Yes |
 | **Email credentials** | IMAP server/port/user/password, SMTP equivalent | Yes |
 | **AI credentials** | Gemini API key (or alternative provider) | Could be shared or per-tenant |
 | **Payment integration** | GoCardless access token, webhook secret | Yes (per-tenant) |
-| **Service URLs** | core-email service, Opera 3 Write Agent locations | Often shared infrastructure |
+| **Service URLs** | core-email service, SAM Opera 3 Agent (per-tenant) | Often shared infrastructure |
 
 ## Architecture
 
@@ -287,9 +287,12 @@ code changes — only the adapter files.
 6. **Operational mode**: One app instance serves all tenants
    (multi-tenant)? Or one instance per tenant (single-tenant
    deployment)?
-7. **Opera 3 Write Agent**: How does SAM tell apps which Write
-   Agent URL to use for which tenant (since the Agent stays
-   Windows-native and customer-deployed)?
+7. **Opera 3 Agent** (now SAM-hosted, expanded): How does SAM
+   tell apps which Opera 3 Agent endpoint to use per tenant?
+   (Single env var `OPERA3_AGENT_URL`, populated per-tenant by SAM's
+   secret store, is the expected shape.) The agent now handles both
+   reads and writes, so no SMB / DBF-share configuration is needed
+   on our containers.
 
 ## Migration checklist for SAM-day
 

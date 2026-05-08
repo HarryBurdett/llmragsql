@@ -13,7 +13,7 @@ factory that can swap them per-environment.
   - `OperaSQLPort` — Opera SQL Server queries
   - `EmailStoragePort` — email metadata + attachments store
   - `Opera3ReaderPort` — FoxPro DBF read access
-  - `Opera3WriterPort` — Windows Write Agent HTTP client
+  - `Opera3WriterPort` — HTTP client to the Opera 3 Agent (now SAM-hosted; agent has been expanded to handle both reads and writes)
   - `EmailSyncPort` — IMAP poller control
   - `SMTPPort` — outbound email
   - `AuthPort` — request authentication

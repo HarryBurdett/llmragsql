@@ -79,12 +79,20 @@ Optional alternative AI providers (set the matching key + change `MODELS_PROVIDE
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
-| `OPERA3_DATA_PATH` | path | — | Path/UNC to Opera 3 data folder |
-| `OPERA3_WRITE_AGENT_URL` | URL | — | HTTP URL of the Windows Write Agent |
+| `OPERA3_AGENT_URL` | URL | — | HTTP URL of SAM's expanded Opera 3 Agent — handles BOTH reads (FoxPro DBF queries) AND writes (postings). Per-tenant; SAM populates this. |
+| `OPERA3_WRITE_AGENT_URL` | URL | — | **Legacy / backwards-compat.** When `OPERA3_AGENT_URL` is unset, the local writer falls back to this for write operations only. New deployments should use `OPERA3_AGENT_URL`. |
 
-Opera 3 deployments require the Write Agent to be running on a
-Windows host with the FoxPro DBF file share. The agent stays
-**Windows-native** — see `apps/core-opera3.md`.
+**Architecture update (post-SAM expansion):** The Opera 3 Agent has
+been **expanded to handle both reads and writes** and is now hosted
+by SAM. Our containers no longer need direct DBF file-share access
+(no SMB mount required). All Opera 3 access — read and write — flows
+through the agent over HTTP.
+
+Older standalone deployments (pre-SAM) still work via the legacy
+`OPERA3_WRITE_AGENT_URL` env var pointing at a customer-deployed
+Windows Write Agent for writes only, with reads going through direct
+DBF access. SAM-hosted deployments use the single `OPERA3_AGENT_URL`
+endpoint for everything.
 
 ## Required for GoCardless app
 
@@ -140,13 +148,13 @@ detail page for its specific dependencies.
 
 | App | Always required | Conditional |
 |---|---|---|
-| bank-reconcile | `DATABASE_*`, `EMAIL_IMAP_*`, `GEMINI_API_KEY`, `OPERA_VERSION` | `OPERA3_*` if Opera 3 |
-| gocardless | `DATABASE_*`, `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, `GEMINI_API_KEY`, `GOCARDLESS_ACCESS_TOKEN` | `OPERA3_*` if Opera 3 |
-| suppliers | `DATABASE_*`, `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, `GEMINI_API_KEY` | `OPERA3_*` if Opera 3 |
-| balance-check | `DATABASE_*` | `OPERA3_*` if Opera 3 |
+| bank-reconcile | `DATABASE_*`, `EMAIL_IMAP_*`, `GEMINI_API_KEY`, `OPERA_VERSION` | `OPERA3_AGENT_URL` if Opera 3 |
+| gocardless | `DATABASE_*`, `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, `GEMINI_API_KEY`, `GOCARDLESS_ACCESS_TOKEN` | `OPERA3_AGENT_URL` if Opera 3 |
+| suppliers | `DATABASE_*`, `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, `GEMINI_API_KEY` | `OPERA3_AGENT_URL` if Opera 3 |
+| balance-check | `DATABASE_*` | `OPERA3_AGENT_URL` if Opera 3 |
 | core-email | `EMAIL_IMAP_*` | — |
 | core-opera-se | `DATABASE_*` | — |
-| core-opera3 | `OPERA3_*` | — |
+| ~~core-opera3~~ | *(no longer needed — SAM hosts the Opera 3 Agent)* | — |
 
 ## Migration to SAM
 

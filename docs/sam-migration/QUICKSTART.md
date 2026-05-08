@@ -37,8 +37,12 @@ GEMINI_API_KEY=...
 For Opera 3 deployments add:
 ```bash
 OPERA_VERSION=3
-OPERA3_DATA_PATH=//windows-server/opera3-share/COMPANY01
-OPERA3_WRITE_AGENT_URL=http://windows-server:9000
+# SAM-hosted (preferred): single endpoint for reads + writes
+OPERA3_AGENT_URL=https://sam.example.com/opera3/agent
+
+# OR — legacy / standalone (pre-SAM expansion):
+# OPERA3_DATA_PATH=//windows-server/opera3-share/COMPANY01
+# OPERA3_WRITE_AGENT_URL=http://windows-server:9000
 ```
 
 For GoCardless add (sandbox token in dev — NEVER use a live token

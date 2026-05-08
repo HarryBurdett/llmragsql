@@ -64,15 +64,25 @@ These exist outside SAM's control and your apps still consume them:
 | External | What | Stays as-is? |
 |---|---|---|
 | Opera SQL Server | Customer's accounting database (Windows host) | Yes — connection details supplied per tenant |
-| Opera 3 file share | Customer's FoxPro DBF files (Windows SMB) | Yes — only relevant for Opera 3 customers |
-| Opera 3 Write Agent | Windows service handling FoxPro writes | **YES — stays as-is** (our directive) |
+| Opera 3 Agent | **SAM-hosted** service handling all Opera 3 reads + writes (expanded from the original write-only Windows agent). Reads FoxPro DBFs and posts transactions on behalf of our containers. | **Hosted by SAM** — no longer customer-deployed |
 | Email IMAP/SMTP | Customer's email server | Yes — credentials per tenant |
 | Gemini API | Google AI for PDF extraction | Yes — API key per deployment or per tenant |
 | GoCardless API | Direct Debit platform | Yes — token per tenant |
 
-The Write Agent is a Windows-native service that customers run on their
-own server. Our containers call it over HTTP. SAM does not need to
-manage it.
+**Architecture update:** The Opera 3 Agent has been **expanded by SAM
+to handle both reads and writes**, replacing two earlier integrations:
+the direct DBF file-share access (for reads) and the customer-deployed
+Windows Write Agent (for writes). Our containers no longer need an SMB
+mount or direct file access — every Opera 3 operation goes over HTTP to
+SAM's Opera 3 Agent.
+
+Implications:
+- ✅ No SMB / CIFS configuration needed in our containers
+- ✅ No `OPERA3_DATA_PATH` env var (deprecated)
+- ✅ Single integration point for all Opera 3 access
+- ✅ SAM's agent handles authentication, locking, multi-tenant isolation
+- ✅ Our `Opera3WriterPort` and `Opera3ReaderPort` adapters both
+  become HTTP clients pointing at the same agent URL
 
 ### See also
 
@@ -304,7 +314,9 @@ slot with:
 - `GEMINI_API_KEY` — AI extraction
 - For GoCardless customers: `GOCARDLESS_ACCESS_TOKEN`,
   `GOCARDLESS_WEBHOOK_SECRET`
-- For Opera 3 customers: `OPERA3_DATA_PATH`, `OPERA3_WRITE_AGENT_URL`
+- For Opera 3 customers: `OPERA3_AGENT_URL` (per-tenant URL of SAM's
+  Opera 3 Agent — handles both reads and writes; SAM populates this
+  per tenant)
 
 ⚠️ **`GOCARDLESS_ENVIRONMENT`** must be set per-deployment, not per-tenant
 (sandbox in dev, live in prod). Never per-tenant — it would risk live API
@@ -424,7 +436,9 @@ Use this checklist for each tenant-app pair after deployment.
 
 ### Customer-facing **non**-changes
 
-- Opera 3 Write Agent on customer's Windows server stays as-is
+- Opera 3 Agent now hosted by SAM (expanded from the legacy
+  Windows-only write-only agent to handle both reads and writes;
+  apps' adapters call it over HTTP)
 - Per-app data (bank aliases, learned patterns, supplier history) stays
   with the customer's tenant, ported across to SAM-hosted volumes
 - Workflow is identical (bank rec, gocardless import, supplier reconcile,
@@ -457,9 +471,11 @@ architectural blockers, but worth knowing in advance.
 Solution: add aliases in `apps/core/env_config.py`. One file, ~10 lines.
 Apps don't change.
 
-### "Tenant has Opera 3 but SAM forgets to set OPERA3_DATA_PATH"
-Symptom: bank-reconcile / gocardless return 503 from Opera 3 routes.
-Fix: set the env var in that tenant's secrets in SAM. Health Check
+### "Tenant has Opera 3 but SAM forgets to set OPERA3_AGENT_URL"
+Symptom: bank-reconcile / gocardless return 503 from Opera 3 routes
+(or HTTP 404/connection-refused from the Opera 3 Agent client).
+Fix: set the env var in that tenant's secrets in SAM, pointing at
+SAM's expanded Opera 3 Agent endpoint for that tenant. Health Check
 catches this — its "Opera connection" sub-check fails with a clear
 error message.
 

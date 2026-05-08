@@ -109,10 +109,18 @@ def get_opera3_data_provider(data_path: str):
 
 
 def get_opera3_writer() -> "Opera3WriterPort":
-    """The Write Agent stays as-is per the SAM-readiness directive.
+    """Return the Opera 3 writer adapter (HTTP client to the Agent).
 
-    There's only ever one adapter here — HTTP to the Windows agent.
-    The agent's URL comes from OPERA3_WRITE_AGENT_URL env var.
+    🆕 SAM-hosted deployments: the Opera 3 Agent has been expanded to
+    handle reads + writes. URL comes from `OPERA3_AGENT_URL` env var
+    (per-tenant; SAM populates it).
+
+    Standalone / legacy deployments: `OPERA3_WRITE_AGENT_URL` points
+    at the customer-deployed Windows agent for writes only (reads use
+    direct DBF access via Opera3ReaderPort).
+
+    The adapter prefers `OPERA3_AGENT_URL` when set, falling back to
+    the legacy variable — single adapter, two configurations.
     """
     from apps.core.adapters.local.opera3_writer import LocalOpera3WriterAdapter
     return LocalOpera3WriterAdapter()

@@ -33,7 +33,7 @@ via env vars. No app code changes — only what populates env vars.
 | [balance-check](./apps/balance-check.md) | Internal Opera balance reconciliation | (read-only, no own state) | Opera SQL |
 | [core-email](./apps/core-email.md) | Shared IMAP poller + email storage | `email_data.db` | IMAP server |
 | [core-opera-se](./apps/core-opera-se.md) | Opera SQL connection gateway | (stateless) | Opera SQL Server |
-| [core-opera3](./apps/core-opera3.md) | Opera 3 read gateway | (stateless) | Opera 3 file share, Write Agent |
+| ~~core-opera3~~ | *No longer needed* — SAM hosts the expanded Opera 3 Agent (handles both reads and writes; replaces the legacy DBF-share + Windows-write-agent pair) | n/a | n/a |
 
 ## Documents
 

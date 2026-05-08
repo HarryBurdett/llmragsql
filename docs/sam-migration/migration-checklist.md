@@ -41,8 +41,11 @@ For **every** app being migrated:
       owns these; verify they migrate cleanly
 - [ ] PDF extraction cache (`pdf_extraction_cache.db`) — keep
       in-app (small, app-private cache)
-- [ ] If Opera 3 is in scope: confirm `OPERA3_WRITE_AGENT_URL`
-      points at the customer's Windows Write Agent
+- [ ] If Opera 3 is in scope: confirm `OPERA3_AGENT_URL` points
+      at SAM's expanded Opera 3 Agent for that tenant (the agent
+      handles both reads and writes — no separate DBF share path
+      needed; the legacy `OPERA3_DATA_PATH` / `OPERA3_WRITE_AGENT_URL`
+      pair is deprecated)
 - [ ] Confirm IMAP credentials are SAM-provided (`EMAIL_IMAP_*`)
 
 ### gocardless

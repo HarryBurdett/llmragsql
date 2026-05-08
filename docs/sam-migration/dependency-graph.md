@@ -50,18 +50,20 @@ to understand what to plug in where.
  │ (Windows)         │                        │
  └───────────────────┘                        │
                                               │
- ┌────────────────────────┐  ┌────────────────▼──────┐
- │ External:              │  │ External:             │
- │ Opera 3 file share     │  │ Opera 3 Write Agent   │
- │ (Windows SMB)          │  │ (Windows service)     │
- └────────────────────────┘  └───────────────────────┘
-            ▲                          ▲
-            │                          │
-            │ (read DBF)               │ (write DBF)
-            │                          │
-       ┌────┴──────────────────────────┴──┐
-       │ All apps when OPERA_VERSION=3    │
-       └──────────────────────────────────┘
+ ┌─────────────────────────────────┐
+ │ SAM (different location):       │
+ │ Opera 3 Agent                   │
+ │ — handles BOTH reads + writes   │
+ │ (expanded from legacy           │
+ │  Windows-only write agent)      │
+ └─────────────────────────────────┘
+                  ▲
+                  │ HTTP (read DBF + write DBF)
+                  │
+          ┌───────┴───────────────────┐
+          │ All apps when             │
+          │ OPERA_VERSION=3           │
+          └───────────────────────────┘
 ```
 
 ## Per-app dependencies
@@ -74,7 +76,7 @@ to understand what to plug in where.
 
 **Depends on (external):**
 - Opera SQL Server (writes via SQLAlchemy + pyodbc)
-- Opera 3 file share + Write Agent (when `OPERA_VERSION=3`)
+- SAM Opera 3 Agent (when `OPERA_VERSION=3`) — single HTTP endpoint for reads + writes
 - Gemini API (PDF extraction)
 
 **Provides (HTTP):**
@@ -90,7 +92,7 @@ to understand what to plug in where.
 
 **Depends on (external):**
 - Opera SQL Server
-- Opera 3 file share + Write Agent (when `OPERA_VERSION=3`)
+- SAM Opera 3 Agent (when `OPERA_VERSION=3`) — single HTTP endpoint for reads + writes
 - GoCardless API (payment platform)
 - IMAP / SMTP (remittance)
 - Gemini API

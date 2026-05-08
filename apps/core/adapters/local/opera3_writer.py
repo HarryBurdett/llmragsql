@@ -1,10 +1,13 @@
-"""Local Opera3Writer adapter — HTTP client to the Windows Write Agent.
+"""Local Opera3Writer adapter — HTTP client to the Opera 3 Agent.
 
-Both today's deployment and tomorrow's SAM deployment use the same
-Windows Write Agent (per the SAM-readiness directive: "the write
-agent stays as is"). The local adapter is the HTTP client that
-talks to it; the SAM adapter would be the same client pointing at
-SAM's URL.
+🆕 **Architecture update:** SAM has expanded the Opera 3 Agent to
+handle both reads and writes (replacing the legacy write-only
+Windows agent). The agent URL is now `OPERA3_AGENT_URL` (per-tenant,
+populated by SAM).
+
+For standalone (pre-SAM) deployments, the legacy
+`OPERA3_WRITE_AGENT_URL` env var still works as a fallback for
+write operations.
 """
 from __future__ import annotations
 

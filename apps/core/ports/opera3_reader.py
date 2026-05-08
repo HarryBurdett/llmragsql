@@ -1,12 +1,19 @@
-"""Opera3Reader port — read-only access to FoxPro DBF files.
+"""Opera3Reader port — read access to Opera 3 via the SAM-hosted Agent.
 
-Used when OPERA_VERSION=3. The local adapter wraps Opera3Reader
-which reads DBF files directly via the file system (or SMB mount).
-The HTTP adapter calls a core-opera3 gateway service that owns the
-file-system access.
+🆕 **Architecture update:** the Opera 3 Agent has been expanded by SAM
+to handle BOTH reads and writes. Our containers no longer access DBF
+files directly via SMB / file system — they call SAM's Agent over HTTP
+for every read.
 
-WRITES go through Opera3WriterPort, which talks to the existing
-Windows Write Agent — not through this port.
+Used when `OPERA_VERSION=3`. The agent's URL comes from
+`OPERA3_AGENT_URL` (per-tenant; SAM populates it).
+
+Backwards compatibility: standalone (pre-SAM) deployments that read
+DBFs directly continue to work via `LocalOpera3ReaderAdapter` reading
+from `OPERA3_DATA_PATH`. SAM-hosted deployments use the HTTP client
+adapter that talks to SAM's Opera 3 Agent.
+
+WRITES go through `Opera3WriterPort` against the same agent.
 """
 from __future__ import annotations
 
@@ -17,8 +24,11 @@ from typing import Any, Iterable, Optional, Protocol, runtime_checkable
 class Opera3ReaderPort(Protocol):
     """Read DBF tables from Opera 3.
 
-    All adapters are read-only. Writes go through Opera3WriterPort
-    (which calls the Windows Write Agent).
+    Implementations:
+      - `RemoteOpera3ReaderAdapter` (preferred, post-SAM) — HTTP
+        client to SAM's Opera 3 Agent
+      - `LocalOpera3ReaderAdapter` (legacy / standalone) — direct
+        DBF read via the file system / SMB
     """
 
     def read_table(

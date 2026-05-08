@@ -26,8 +26,9 @@ descriptions.
 - `SYSTEM_LOG_LEVEL`
 
 **If `OPERA_VERSION=3`:**
-- `OPERA3_DATA_PATH`
-- `OPERA3_WRITE_AGENT_URL`
+- `OPERA3_AGENT_URL` — SAM's expanded Opera 3 Agent (handles both
+  reads and writes; replaces the legacy `OPERA3_DATA_PATH` and
+  `OPERA3_WRITE_AGENT_URL` from the standalone era)
 
 **Phase B (per-app split):**
 - `CORE_EMAIL_URL` — point at the core-email service
@@ -66,7 +67,8 @@ and are mounted as a volume.
 
 - Opera SQL Server (writes via SQLAlchemy + pyodbc)
 - Opera 3 file share (read DBF) when `OPERA_VERSION=3`
-- Opera 3 Write Agent (HTTP) for Opera 3 writes
+- SAM's Opera 3 Agent (HTTP) for ALL Opera 3 reads + writes — no
+  direct DBF access needed
 - Gemini API for PDF extraction
 - IMAP server (via core-email today; direct in Phase A monolith)
 
