@@ -157,6 +157,54 @@ export class GoCardlessClient {
   }
 
   /**
+   * GET /payments/:id — fetch a single payment's current status.
+   *
+   * Used by payment-requests/sync to reconcile local state with
+   * GoCardless's view of each pending payment.
+   */
+  async getPayment(
+    paymentId: string,
+  ): Promise<{
+    success: boolean;
+    payment?: {
+      id?: string;
+      status?: string;
+      charge_date?: string;
+      amount?: number;
+      [k: string]: unknown;
+    };
+    error?: string;
+  }> {
+    if (!paymentId) return { success: false, error: 'paymentId required' };
+    try {
+      const res = await this.request(
+        'GET',
+        `/payments/${encodeURIComponent(paymentId)}`,
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as { payments?: Record<string, unknown> };
+      return { success: true, payment: data.payments ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * POST /mandates/:id/actions/cancel — cancel a mandate.
    *
    * Faithful port of the cancel call wrapped by

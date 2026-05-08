@@ -59,6 +59,7 @@ import {
   listPaymentRequests,
   getPaymentRequest,
   cancelPaymentRequest,
+  syncPaymentStatuses,
 } from './services/payment-requests.js';
 import { listSubscriptions } from './services/subscriptions.js';
 import {
@@ -941,6 +942,42 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List payment requests failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/payment-requests/sync
+   *
+   * Poll the GoCardless API for status updates on all pending payment
+   * requests and update local rows. Faithful port of
+   * sync_payment_statuses (apps/gocardless/api/routes.py:8556-8616).
+   *
+   * Per-payment failures are logged + skipped — never fails the whole
+   * sync run. Returns counts so the UI can show "synced X / total Y".
+   */
+  router.post(
+    '/api/gocardless/payment-requests/sync',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const syncRemote = async (paymentId: string) =>
+          client.getPayment(paymentId);
+        const result = await syncPaymentStatuses(appDb, syncRemote);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Sync payment statuses failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

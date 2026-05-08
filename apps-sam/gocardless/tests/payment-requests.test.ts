@@ -3,6 +3,7 @@ import {
   listPaymentRequests,
   getPaymentRequest,
   cancelPaymentRequest,
+  syncPaymentStatuses,
 } from '../src/services/payment-requests.js';
 
 interface RequestRow {
@@ -47,6 +48,22 @@ function makeAppDb(state: MockState): any {
         where: (cond: Record<string, unknown>) => {
           Object.assign(conds, cond);
           return builder;
+        },
+        whereIn: (col: string, vals: unknown[]) => {
+          inCol = col;
+          inVals = vals;
+          return builder;
+        },
+        select: (..._cols: string[]) => {
+          let rows = state.requests.filter((r) =>
+            Object.entries(conds).every(([k, v]) => (r as any)[k] === v),
+          );
+          if (inCol && inVals) {
+            rows = rows.filter((r) =>
+              inVals!.includes((r as any)[inCol!]),
+            );
+          }
+          return Promise.resolve(rows);
         },
         orderBy: (col: string, dir: 'asc' | 'desc' = 'asc') => {
           order = { col, dir };
@@ -348,5 +365,99 @@ describe('cancelPaymentRequest', () => {
     expect(result.success).toBe(true);
     expect(remoteCalled).toBe(false);
     expect(state.requests[0]?.status).toBe('cancelled');
+  });
+});
+
+describe('syncPaymentStatuses', () => {
+  it('returns 0-checked when no pending requests', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({ id: 1, status: 'paid_out', payment_id: 'P1' }),
+        emptyRequest({ id: 2, status: 'failed', payment_id: 'P2' }),
+      ],
+      mandates: [],
+    };
+    const result = await syncPaymentStatuses(makeAppDb(state), async () =>
+      ({ success: true, payment: { status: 'paid_out' } }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.total_checked).toBe(0);
+    expect(result.updated).toBe(0);
+  });
+
+  it('updates rows where remote returns a different status', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({ id: 1, status: 'pending', payment_id: 'P1' }),
+        emptyRequest({ id: 2, status: 'submitted', payment_id: 'P2' }),
+      ],
+      mandates: [],
+    };
+    const remote = async (id: string) => {
+      if (id === 'P1') return { success: true, payment: { status: 'paid_out' } };
+      if (id === 'P2') return { success: true, payment: { status: 'submitted' } };
+      return { success: false };
+    };
+    const result = await syncPaymentStatuses(makeAppDb(state), remote);
+    expect(result.success).toBe(true);
+    expect(result.total_checked).toBe(2);
+    expect(result.updated).toBe(1); // only P1 changed
+    expect(state.requests[0]?.status).toBe('paid_out');
+    expect(state.requests[1]?.status).toBe('submitted'); // unchanged
+  });
+
+  it('skips remote failures and continues with the rest', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({ id: 1, status: 'pending', payment_id: 'P1' }),
+        emptyRequest({ id: 2, status: 'pending', payment_id: 'P2' }),
+      ],
+      mandates: [],
+    };
+    const remote = async (id: string) => {
+      if (id === 'P1') return { success: false, error: 'API down' };
+      if (id === 'P2') return { success: true, payment: { status: 'paid_out' } };
+      return { success: false };
+    };
+    const result = await syncPaymentStatuses(makeAppDb(state), remote);
+    expect(result.success).toBe(true);
+    expect(result.updated).toBe(1);
+    expect(state.requests[0]?.status).toBe('pending'); // skipped
+    expect(state.requests[1]?.status).toBe('paid_out');
+  });
+
+  it('skips entries with empty payment_id', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({ id: 1, status: 'pending', payment_id: '' }),
+      ],
+      mandates: [],
+    };
+    let remoteCalled = false;
+    const remote = async () => {
+      remoteCalled = true;
+      return { success: true };
+    };
+    const result = await syncPaymentStatuses(makeAppDb(state), remote);
+    expect(result.success).toBe(true);
+    expect(remoteCalled).toBe(false);
+  });
+
+  it('updates charge_date when included in remote response', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({ id: 1, status: 'pending', payment_id: 'P1' }),
+      ],
+      mandates: [],
+    };
+    const remote = async () => ({
+      success: true,
+      payment: {
+        status: 'submitted',
+        charge_date: '2026-04-22',
+      },
+    });
+    await syncPaymentStatuses(makeAppDb(state), remote);
+    expect(state.requests[0]?.charge_date).toBe('2026-04-22');
   });
 });

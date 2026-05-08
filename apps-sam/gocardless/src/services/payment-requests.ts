@@ -124,6 +124,95 @@ export async function getPaymentRequest(
 }
 
 // ---------------------------------------------------------------------
+// sync — poll GoCardless for status updates on pending requests
+// ---------------------------------------------------------------------
+
+const PENDING_SYNC_STATUSES = [
+  'pending',
+  'pending_submission',
+  'pending_customer_approval',
+  'submitted',
+  'confirmed',
+];
+
+export interface SyncRemote {
+  (paymentId: string): Promise<{
+    success: boolean;
+    payment?: {
+      status?: string;
+      charge_date?: string;
+      [k: string]: unknown;
+    };
+    error?: string;
+  }>;
+}
+
+export interface SyncPaymentStatusesResponse {
+  success: boolean;
+  message?: string;
+  total_checked?: number;
+  updated?: number;
+  error?: string;
+}
+
+export async function syncPaymentStatuses(
+  appDb: Knex,
+  syncRemote: SyncRemote,
+): Promise<SyncPaymentStatusesResponse> {
+  try {
+    const requestsToSync = (await appDb('gocardless_payment_requests')
+      .whereIn('status', PENDING_SYNC_STATUSES)
+      .select('id', 'payment_id', 'status')) as unknown as Array<{
+      id: number;
+      payment_id: string | null;
+      status: string;
+    }>;
+
+    if (!Array.isArray(requestsToSync) || requestsToSync.length === 0) {
+      return {
+        success: true,
+        message: 'No pending payments to sync',
+        total_checked: 0,
+        updated: 0,
+      };
+    }
+
+    let updatedCount = 0;
+    for (const req of requestsToSync) {
+      const paymentId = (req.payment_id ?? '').trim();
+      if (!paymentId) continue;
+
+      try {
+        const r = await syncRemote(paymentId);
+        if (!r.success || !r.payment) continue;
+        const newStatus = (r.payment.status ?? '').toString().trim();
+        const newChargeDate = (r.payment.charge_date ?? '').toString().trim();
+        if (newStatus && newStatus !== req.status) {
+          await appDb('gocardless_payment_requests').where({ id: req.id }).update({
+            status: newStatus,
+            charge_date: newChargeDate || null,
+            updated_at: appDb.fn.now(),
+          });
+          updatedCount++;
+        }
+      } catch {
+        // Per-payment failure logged + continue (matches Python's
+        // try/except wrapping a logger.warning).
+      }
+    }
+
+    return {
+      success: true,
+      message: `Synced ${updatedCount} payment statuses`,
+      total_checked: requestsToSync.length,
+      updated: updatedCount,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
 // cancel
 // ---------------------------------------------------------------------
 
