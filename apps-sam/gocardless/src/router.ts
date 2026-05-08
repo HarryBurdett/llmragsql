@@ -69,6 +69,10 @@ import {
   unlinkMandate,
 } from './services/mandates.js';
 import {
+  listMandateSetups,
+  cancelMandateSetup,
+} from './services/mandate-setups.js';
+import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
 } from '@sqlrag/sam-shared';
@@ -802,6 +806,57 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List unlinked mandates failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/mandates/pending-setups
+   *
+   * List all mandate setup requests with current status. Faithful
+   * port of list_pending_mandate_setups (routes.py:7054-7067).
+   * Returns pending_count for the dashboard "X to chase up" widget.
+   */
+  router.get(
+    '/api/gocardless/mandates/pending-setups',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await listMandateSetups(appDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List mandate setups failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/mandates/cancel-setup/:setup_id
+   *
+   * Cancel a pending mandate setup request. Faithful port of
+   * cancel_mandate_setup (routes.py:7220-7244). Refuses cancellation
+   * when status is already final (completed/failed/cancelled).
+   */
+  router.post(
+    '/api/gocardless/mandates/cancel-setup/:setup_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const id = Number(req.params.setup_id);
+        const result = await cancelMandateSetup(appDb, id);
+        if (!result.success) {
+          res
+            .status(result.error === 'Setup request not found' ? 404 : 400)
+            .json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Cancel mandate setup failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
