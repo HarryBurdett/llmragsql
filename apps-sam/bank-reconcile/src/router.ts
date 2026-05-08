@@ -16,9 +16,26 @@ import {
   getUnreconciledEntries,
   getReconciliationStatus,
 } from './services/reconciliation-status.js';
+import {
+  ignoreTransaction,
+  listIgnoredTransactions,
+  unignoreTransactionById,
+  unignoreTransactionByMatch,
+} from './services/ignored-transactions.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
+
+  function getAppDb(req: Request, res: Response): import('knex').Knex | null {
+    if (!ctx.db.app) {
+      res.status(503).json({
+        success: false,
+        error: 'bank-reconcile per-app database not provisioned for this tenant.',
+      });
+      return null;
+    }
+    return ctx.db.app;
+  }
 
   function getOperaDb(req: Request, res: Response): import('knex').Knex | null {
     const company = req.operaCompany;
@@ -182,6 +199,118 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Get reconciliation status failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/ignore-transaction
+   *
+   * Mark a bank statement line as "already in Opera, ignore for reconcile".
+   * Faithful port of `ignore_bank_transaction`.
+   */
+  router.post('/api/reconcile/bank/:bank_code/ignore-transaction', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      const q = req.query;
+      const tx = String(q.transaction_date ?? '').trim();
+      const amt = q.amount !== undefined ? Number(q.amount) : NaN;
+      if (!bankCode || !tx || Number.isNaN(amt)) {
+        res.status(400).json({
+          success: false,
+          error: 'bank_code, transaction_date, and amount are required',
+        });
+        return;
+      }
+      const result = await ignoreTransaction(appDb, {
+        bankCode,
+        transactionDate: tx,
+        amount: amt,
+        description: typeof q.description === 'string' ? q.description : null,
+        reference: typeof q.reference === 'string' ? q.reference : null,
+        reason: typeof q.reason === 'string' ? q.reason : null,
+        ignoredBy: 'API',
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Ignore transaction failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/reconcile/bank/:bank_code/ignored-transactions
+   *
+   * List the ignored transactions for a bank account. Faithful port of
+   * `get_ignored_transactions`.
+   */
+  router.get('/api/reconcile/bank/:bank_code/ignored-transactions', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      const result = await listIgnoredTransactions(appDb, bankCode, limit);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List ignored transactions failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * DELETE /api/reconcile/bank/ignored-transaction/:record_id
+   *
+   * Remove an ignored-transaction record by id. Faithful port of
+   * `unignore_transaction`.
+   */
+  router.delete('/api/reconcile/bank/ignored-transaction/:record_id', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const recordId = Number(req.params.record_id);
+      if (!Number.isFinite(recordId)) {
+        res.status(400).json({ success: false, error: 'Invalid record_id' });
+        return;
+      }
+      const result = await unignoreTransactionById(appDb, recordId);
+      if (!result.success && result.error === 'Record not found') {
+        res.status(404).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Unignore transaction failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * DELETE /api/reconcile/bank/:bank_code/unignore-transaction
+   *
+   * Remove an ignored transaction by matching bank+date+amount.
+   * Faithful port of `unignore_transaction_by_match`.
+   */
+  router.delete('/api/reconcile/bank/:bank_code/unignore-transaction', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      const tx = String(req.query.transaction_date ?? '').trim();
+      const amt = req.query.amount !== undefined ? Number(req.query.amount) : NaN;
+      if (!bankCode || !tx || Number.isNaN(amt)) {
+        res.status(400).json({
+          success: false,
+          error: 'bank_code, transaction_date, and amount are required',
+        });
+        return;
+      }
+      const result = await unignoreTransactionByMatch(appDb, bankCode, tx, amt);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Unignore (by match) failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
