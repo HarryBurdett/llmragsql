@@ -54,6 +54,7 @@ import {
   handlePartnerCallback,
   partnerCallbackHtml,
 } from './services/partner.js';
+import { archiveGocardlessEmail } from './services/archive-email.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -383,6 +384,50 @@ export function createRouter(ctx: AppContext): Router {
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
+
+  /**
+   * POST /api/gocardless/archive-email
+   *
+   * Mark a GoCardless email as already-in-Opera and (when SAM's email
+   * service exposes the capability) move it to an archive folder.
+   * Faithful port of archive_gocardless_email (routes.py:3503-3574).
+   *
+   * Query params:
+   *   - email_id (required)
+   *   - archive_folder (default 'Archive/GoCardless')
+   *
+   * NB: SAM's emailIngest service doesn't currently expose moveEmail.
+   * The DB tracking happens regardless; the move reports
+   * 'provider_not_available' until that capability lands. The
+   * tracking row alone is enough to keep the email out of future
+   * scans (which is the primary purpose).
+   */
+  router.post(
+    '/api/gocardless/archive-email',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const emailId = Number(req.query.email_id);
+        const archiveFolder = String(
+          req.query.archive_folder ?? 'Archive/GoCardless',
+        );
+        const result = await archiveGocardlessEmail(
+          appDb,
+          { emailId, archiveFolder },
+          ctx.emailIngest ?? null,
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Archive email failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
 
   /**
    * GET /api/gocardless/test-data

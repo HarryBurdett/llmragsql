@@ -36,7 +36,7 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 33 of ~124 endpoints (155 tests)
+**gocardless:** 34 of ~124 endpoints (160 tests)
 **bank-reconcile:** 28 of ~127 endpoints (140 tests)
 **suppliers:** 27 endpoints (greenfield TS work — 92 tests)
 **Calendar week of project:** 1
@@ -105,7 +105,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       SL-only and top 10 NL-only when count > 50; current port returns
       all items. Cosmetic; doesn't affect totals.
 
-### gocardless (in progress — 33 of ~124 endpoints)
+### gocardless (in progress — 34 of ~124 endpoints)
 
 #### Foundation
 - [x] Directory scaffolded: `apps-sam/gocardless/`
@@ -143,6 +143,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `GET /api/gocardless/test-data` — hardcoded sample payout dataset
 - [x] `POST /api/gocardless/partner/initiate-signup` — start OAuth Connect; insert pending signup with state token
 - [x] `GET /api/gocardless/partner/callback` — OAuth callback; CSRF-validate state, exchange code for token, fetch creditor, update signup, render HTML
+- [x] `POST /api/gocardless/archive-email` — record email as already-in-Opera (move-folder reports provider_not_available until SAM exposes that capability)
 - [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
 - [ ] `GET /api/gocardless/scan-emails` — scan SAM mailbox for payout emails
 - [x] `GET /api/gocardless/api-payouts` — query GoCardless API directly (slim port; enrichment deferred)
