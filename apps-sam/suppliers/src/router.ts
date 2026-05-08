@@ -41,6 +41,12 @@ import {
   listRemittanceLog,
   recordRemittance,
 } from './services/remittance-log.js';
+import {
+  listCommunications,
+  recordCommunication,
+  deleteCommunication,
+  type CommunicationChannel,
+} from './services/communications.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -583,6 +589,102 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Record remittance failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/communications
+   *
+   * List entries from supplier_communications, optionally filtered by
+   * supplier_code, channel ('email'|'phone'|'portal'), and date range.
+   */
+  router.get('/api/suppliers/communications', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const result = await listCommunications(appDb, {
+        supplierCode:
+          typeof req.query.supplier_code === 'string'
+            ? req.query.supplier_code
+            : null,
+        channel:
+          typeof req.query.channel === 'string'
+            ? (req.query.channel as CommunicationChannel)
+            : null,
+        fromDate:
+          typeof req.query.from_date === 'string'
+            ? req.query.from_date
+            : null,
+        toDate:
+          typeof req.query.to_date === 'string' ? req.query.to_date : null,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List communications failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/:code/communications
+   *
+   * Record a new entry in supplier_communications. Body:
+   *   { channel: 'email'|'phone'|'portal', subject?: string,
+   *     content?: string, sent_at?: string }
+   */
+  router.post('/api/suppliers/:code/communications', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const body = (req.body ?? {}) as {
+        channel?: string;
+        subject?: string;
+        content?: string;
+        sent_at?: string;
+      };
+      const result = await recordCommunication(appDb, {
+        supplier_code: code,
+        channel: String(body.channel ?? ''),
+        subject: body.subject,
+        content: body.content,
+        sent_at: body.sent_at,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Record communication failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * DELETE /api/suppliers/communications/:id
+   *
+   * Remove a single entry from supplier_communications by id.
+   */
+  router.delete('/api/suppliers/communications/:id', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      const result = await deleteCommunication(appDb, id);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Delete communication failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
