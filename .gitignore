@@ -71,9 +71,12 @@ interrogate_sql.py
 !requirements.txt
 scripts/
 
-# NPM (puppeteer for screenshots)
-package.json
-package-lock.json
+# NPM (puppeteer for screenshots — root-level only)
+/package.json
+/package-lock.json
+# apps-sam workspace package files ARE tracked
+!/apps-sam/package.json
+!/apps-sam/*/package.json
 
 # Pension snapshots (debug/test files)
 pension_snapshot*.json

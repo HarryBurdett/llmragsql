@@ -1,0 +1,27 @@
+{
+  "name": "@sqlrag/sam-shared",
+  "version": "1.0.0",
+  "description": "Shared utilities for SQL RAG SAM plugins (Opera SQL helpers, posting primitives, types).",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./opera": "./dist/opera/index.js",
+    "./posting": "./dist/posting/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "knex": "^3.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}

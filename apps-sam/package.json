@@ -1,0 +1,24 @@
+{
+  "name": "@sqlrag/sam-plugins",
+  "version": "1.0.0",
+  "description": "TypeScript SAM plugins — rewrite of the four Python apps to native SAM compatibility.",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "balance-check",
+    "gocardless",
+    "bank-reconcile",
+    "suppliers"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}

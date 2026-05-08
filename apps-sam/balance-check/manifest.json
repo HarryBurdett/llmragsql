@@ -1,0 +1,28 @@
+{
+  "id": "balance-check",
+  "name": "Balance Check",
+  "description": "Internal Opera balance reconciliation: cashbook, debtors, creditors, VAT, trial balance. Read-only against Opera SQL.",
+  "version": "1.0.0",
+  "author": "IntSys",
+  "category": "finance",
+  "type": "full-stack",
+  "minSamVersion": "1.0.0",
+  "frontend": {
+    "entryComponent": "BalanceCheck",
+    "basePath": "/balance-check",
+    "navLabel": "Balance Check",
+    "navIcon": "Scale",
+    "requiredSharedDeps": ["react", "react-dom", "react-router-dom"]
+  },
+  "backend": {
+    "routePrefix": "/api/apps/balance-check",
+    "requiresDatabase": true,
+    "databaseType": "opera-se",
+    "separateDatabase": false,
+    "internalApiPrefix": "/api"
+  },
+  "permissions": [
+    "opera:read",
+    "sam:config:read"
+  ]
+}
