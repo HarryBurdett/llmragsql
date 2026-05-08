@@ -47,6 +47,7 @@ import {
   deleteCommunication,
   type CommunicationChannel,
 } from './services/communications.js';
+import { listChangeAudit, recordChange } from './services/change-audit.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -685,6 +686,82 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Delete communication failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/change-audit
+   *
+   * List entries from supplier_change_audit, optionally filtered by
+   * supplier_code, changed_field, and date range.
+   */
+  router.get('/api/suppliers/change-audit', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const result = await listChangeAudit(appDb, {
+        supplierCode:
+          typeof req.query.supplier_code === 'string'
+            ? req.query.supplier_code
+            : null,
+        changedField:
+          typeof req.query.changed_field === 'string'
+            ? req.query.changed_field
+            : null,
+        fromDate:
+          typeof req.query.from_date === 'string' ? req.query.from_date : null,
+        toDate:
+          typeof req.query.to_date === 'string' ? req.query.to_date : null,
+        limit: req.query.limit ? Number(req.query.limit) : undefined,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List change-audit failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/:code/change-audit
+   *
+   * Manually record a change-audit entry. Body:
+   *   { changed_field: string, old_value?: any, new_value?: any,
+   *     changed_by?: string }
+   *
+   * NB: most write services (automation-config, onboarding, etc.)
+   * SHOULD call recordChange()/recordChangeIfDifferent() internally.
+   * This endpoint exists for ad-hoc manual annotations.
+   */
+  router.post('/api/suppliers/:code/change-audit', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const body = (req.body ?? {}) as {
+        changed_field?: string;
+        old_value?: unknown;
+        new_value?: unknown;
+        changed_by?: string;
+      };
+      const result = await recordChange(appDb, {
+        supplier_code: code,
+        changed_field: String(body.changed_field ?? ''),
+        old_value: body.old_value,
+        new_value: body.new_value,
+        changed_by: body.changed_by ?? req.user?.userId,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Record change-audit failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
