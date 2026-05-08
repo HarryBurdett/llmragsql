@@ -55,6 +55,7 @@ import {
   partnerCallbackHtml,
 } from './services/partner.js';
 import { archiveGocardlessEmail } from './services/archive-email.js';
+import { listPaymentRequests } from './services/payment-requests.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -737,6 +738,36 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Revalidate batches failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/payment-requests
+   *
+   * List payment requests, optionally filtered by status + opera_account.
+   * Faithful port of list_payment_requests (routes.py:8217-8246).
+   * Each row enriched with customer_name from the mandate.
+   */
+  router.get(
+    '/api/gocardless/payment-requests',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await listPaymentRequests(appDb, {
+          status:
+            typeof req.query.status === 'string' ? req.query.status : null,
+          operaAccount:
+            typeof req.query.opera_account === 'string'
+              ? req.query.opera_account
+              : null,
+          limit: req.query.limit ? Number(req.query.limit) : undefined,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List payment requests failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
