@@ -37,7 +37,7 @@ default factory, and passes a context our types already match.
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 38 of ~124 endpoints (190 tests)
-**bank-reconcile:** 35 of ~127 endpoints (178 tests)
+**bank-reconcile:** 36 of ~127 endpoints (181 tests)
 **suppliers:** 38 endpoints (greenfield TS work — 128 tests)
 **Calendar week of project:** 1
 **Sessions logged:** 1 (extended session — 33 substantive commits)

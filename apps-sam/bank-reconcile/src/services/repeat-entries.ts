@@ -45,6 +45,140 @@ export interface UpdateRepeatEntryDateResponse {
   error?: string;
 }
 
+// ---------------------------------------------------------------------
+// listRepeatEntries — read-only debug list
+// ---------------------------------------------------------------------
+
+export interface RepeatEntry {
+  entry_ref: string;
+  description: string;
+  next_post_date: string | null;
+  frequency: string;
+  every: number;
+  posted_count: number;
+  total_posts: number;
+  status: 'Active' | 'Completed';
+  amount_pence: number;
+  amount_pounds: number;
+  account: string;
+  cb_type: string;
+}
+
+export interface ListRepeatEntriesResponse {
+  success: boolean;
+  bank_code: string;
+  repeat_entries: RepeatEntry[];
+  count: number;
+  message?: string;
+  error?: string;
+}
+
+export async function listRepeatEntries(
+  operaDb: Knex,
+  bankCode: string,
+): Promise<ListRepeatEntriesResponse> {
+  let bc: string;
+  try {
+    bc = validateBankCode(bankCode);
+  } catch (e) {
+    if (e instanceof SqlInputValidationError) {
+      return {
+        success: false,
+        bank_code: bankCode,
+        repeat_entries: [],
+        count: 0,
+        error: e.message,
+      };
+    }
+    throw e;
+  }
+
+  try {
+    const rows = (await operaDb.raw(
+      `SELECT
+         h.ae_entry, h.ae_desc, h.ae_nxtpost, h.ae_freq, h.ae_every,
+         h.ae_posted, h.ae_topost, h.ae_type,
+         l.at_value, l.at_account, l.at_cbtype, l.at_comment,
+         CASE WHEN h.ae_topost = 0 OR h.ae_posted < h.ae_topost
+              THEN 'Active'
+              ELSE 'Completed'
+         END AS status
+       FROM arhead h WITH (NOLOCK)
+       JOIN arline l WITH (NOLOCK)
+         ON h.ae_entry = l.at_entry AND h.ae_acnt = l.at_acnt
+       WHERE RTRIM(h.ae_acnt) = ?
+       ORDER BY h.ae_nxtpost DESC`,
+      [bc],
+    )) as unknown as Array<{
+      ae_entry: string | null;
+      ae_desc: string | null;
+      ae_nxtpost: Date | string | null;
+      ae_freq: string | null;
+      ae_every: number | null;
+      ae_posted: number | null;
+      ae_topost: number | null;
+      at_value: number | null;
+      at_account: string | null;
+      at_cbtype: string | null;
+      at_comment: string | null;
+      status: string;
+    }>;
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return {
+        success: true,
+        bank_code: bc,
+        repeat_entries: [],
+        count: 0,
+        message: `No repeat entries found for bank ${bc}`,
+      };
+    }
+
+    const entries: RepeatEntry[] = rows.map((r) => {
+      const amountPence = Number(r.at_value ?? 0);
+      const status: 'Active' | 'Completed' =
+        r.status === 'Completed' ? 'Completed' : 'Active';
+      const nextPost =
+        r.ae_nxtpost instanceof Date
+          ? r.ae_nxtpost.toISOString().slice(0, 10)
+          : r.ae_nxtpost
+            ? String(r.ae_nxtpost).slice(0, 10)
+            : null;
+      return {
+        entry_ref: (r.ae_entry ?? '').toString().trim(),
+        description:
+          (r.ae_desc ?? '').toString().trim() ||
+          (r.at_comment ?? '').toString().trim(),
+        next_post_date: nextPost,
+        frequency: r.ae_freq ?? '',
+        every: Number(r.ae_every ?? 1),
+        posted_count: Number(r.ae_posted ?? 0),
+        total_posts: Number(r.ae_topost ?? 0),
+        status,
+        amount_pence: amountPence,
+        amount_pounds: Math.abs(amountPence) / 100,
+        account: (r.at_account ?? '').toString().trim(),
+        cb_type: (r.at_cbtype ?? '').toString().trim(),
+      };
+    });
+
+    return {
+      success: true,
+      bank_code: bc,
+      repeat_entries: entries,
+      count: entries.length,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      bank_code: bc,
+      repeat_entries: [],
+      count: 0,
+      error: err?.message ?? String(err),
+    };
+  }
+}
+
 export async function updateRepeatEntryDate(
   appDb: Knex,
   operaDb: Knex,

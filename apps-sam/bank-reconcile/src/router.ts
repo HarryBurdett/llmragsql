@@ -65,7 +65,10 @@ import {
   confirmStatementMatches,
   type ConfirmMatchInput,
 } from './services/confirm-matches.js';
-import { updateRepeatEntryDate } from './services/repeat-entries.js';
+import {
+  updateRepeatEntryDate,
+  listRepeatEntries,
+} from './services/repeat-entries.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1214,6 +1217,36 @@ export function createRouter(ctx: AppContext): Router {
           'been removed to stop callers silently receiving zero results.',
         statements_found: [],
       });
+    },
+  );
+
+  /**
+   * GET /api/bank-import/repeat-entries?bank_code=...
+   *
+   * List active repeat entries for a bank — debug + UI listing.
+   * Faithful port of list_repeat_entries (routes.py:5425-5495).
+   * Joins arhead + arline so each entry includes its first line's
+   * amount/account/cbtype/comment for display purposes.
+   */
+  router.get(
+    '/api/bank-import/repeat-entries',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const result = await listRepeatEntries(
+          operaDb,
+          String(req.query.bank_code ?? ''),
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List repeat entries failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
     },
   );
 

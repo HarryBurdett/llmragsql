@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { updateRepeatEntryDate } from '../src/services/repeat-entries.js';
+import {
+  updateRepeatEntryDate,
+  listRepeatEntries,
+} from '../src/services/repeat-entries.js';
 
 interface AppLockRow {
   id: number;
@@ -126,10 +129,21 @@ interface OperaState {
   capturedSql: string[];
 }
 
-function makeOperaDb(state: OperaState): any {
+function makeOperaDb(
+  state: OperaState,
+  joinRows?: Array<Record<string, unknown>>,
+): any {
   return {
     raw: (sql: string, params?: unknown[]) => {
       state.capturedSql.push(sql);
+      // listRepeatEntries — joins arhead + arline
+      if (sql.includes('JOIN arline')) {
+        const bank = String((params ?? [])[0]);
+        const matched = (joinRows ?? []).filter(
+          (r) => String(r.ae_acnt ?? '').trim() === bank.trim(),
+        );
+        return Promise.resolve(matched);
+      }
       if (sql.includes('FROM arhead')) {
         const entry = String((params ?? [])[0]);
         const bank = String((params ?? [])[1]);
@@ -348,5 +362,71 @@ describe('updateRepeatEntryDate - locking', () => {
     );
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/being imported/);
+  });
+});
+
+describe('listRepeatEntries', () => {
+  it('returns rows with status, amount conversion + description fallback', async () => {
+    const opera = makeOperaDb(
+      { arhead: [], capturedSql: [] },
+      [
+        {
+          ae_entry: 'PR00000534',
+          ae_acnt: 'BC010',
+          ae_desc: 'Office Rent',
+          ae_nxtpost: '2026-04-15',
+          ae_freq: 'M',
+          ae_every: 1,
+          ae_posted: 5,
+          ae_topost: 12,
+          at_value: 50000,
+          at_account: 'NL_RENT',
+          at_cbtype: 'NP',
+          at_comment: 'fallback comment',
+          status: 'Active',
+        },
+        {
+          ae_entry: 'PR99999999',
+          ae_acnt: 'BC010',
+          ae_desc: '', // fallback to at_comment
+          ae_nxtpost: null,
+          ae_freq: 'A',
+          ae_every: 1,
+          ae_posted: 1,
+          ae_topost: 1,
+          at_value: 100000,
+          at_account: 'NL_INS',
+          at_cbtype: 'NP',
+          at_comment: 'Insurance Premium',
+          status: 'Completed',
+        },
+      ],
+    );
+    const result = await listRepeatEntries(opera, 'BC010');
+    expect(result.success).toBe(true);
+    expect(result.count).toBe(2);
+    expect(result.repeat_entries[0]?.description).toBe('Office Rent');
+    expect(result.repeat_entries[0]?.amount_pounds).toBe(500);
+    expect(result.repeat_entries[1]?.description).toBe('Insurance Premium');
+    expect(result.repeat_entries[1]?.status).toBe('Completed');
+  });
+
+  it('returns empty list with message when no entries', async () => {
+    const opera = makeOperaDb(
+      { arhead: [], capturedSql: [] },
+      [],
+    );
+    const result = await listRepeatEntries(opera, 'BC010');
+    expect(result.success).toBe(true);
+    expect(result.count).toBe(0);
+    expect(result.message).toMatch(/No repeat entries/);
+  });
+
+  it('rejects bad bank_code', async () => {
+    const result = await listRepeatEntries(
+      makeOperaDb({ arhead: [], capturedSql: [] }, []),
+      "BC';--",
+    );
+    expect(result.success).toBe(false);
   });
 });
