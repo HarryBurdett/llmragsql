@@ -27,6 +27,10 @@ import { getImportHistory } from './services/import-history.js';
 import { skipPayout } from './services/skip-payout.js';
 import { createClientFromSettings } from './services/gocardless-api.js';
 import { searchReceipts } from './services/receipt-search.js';
+import {
+  clearImportHistory,
+  deleteImportRecord,
+} from './services/import-history-delete.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -388,6 +392,60 @@ export function createRouter(ctx: AppContext): Router {
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
+
+  /**
+   * DELETE /api/gocardless/import-history
+   *
+   * Bulk-delete import history records within an optional date range.
+   * If no dates supplied, clears ALL records — caller responsible for
+   * confirmation. Faithful port of `clear_gocardless_import_history`.
+   */
+  router.delete('/api/gocardless/import-history', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const fromDate =
+        typeof req.query.from_date === 'string' ? req.query.from_date : null;
+      const toDate =
+        typeof req.query.to_date === 'string' ? req.query.to_date : null;
+      const result = await clearImportHistory(appDb, { fromDate, toDate });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Clear import history failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * DELETE /api/gocardless/import-history/:record_id
+   *
+   * Delete a single import record so the payout can be re-imported.
+   * Does NOT touch Opera. Faithful port of
+   * `delete_gocardless_import_record`.
+   */
+  router.delete(
+    '/api/gocardless/import-history/:record_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const id = Number(req.params.record_id);
+        if (!Number.isFinite(id)) {
+          res.status(400).json({ success: false, error: 'Invalid record_id' });
+          return;
+        }
+        const result = await deleteImportRecord(appDb, id);
+        if (!result.success && result.error === 'Record not found') {
+          res.status(404).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Delete import record failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
 
   // Many more endpoints to port from apps/gocardless/api/routes.py:
   //   /api/gocardless/setup-status       — wizard / onboarding state
