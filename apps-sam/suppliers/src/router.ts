@@ -31,6 +31,12 @@ import {
   getAutomationConfig,
   saveAutomationConfig,
 } from './services/automation-config.js';
+import {
+  getOnboardingState,
+  listOnboardingStates,
+  updateOnboardingState,
+  type OnboardingStage,
+} from './services/onboarding.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -440,6 +446,80 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Save automation-config failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/onboarding — list onboarding states across
+   * all suppliers, optionally filtered by stage.
+   *
+   * Mounted at /api/suppliers/onboarding (not /:code/onboarding) so
+   * the catch-all /:code route doesn't shadow it.
+   */
+  router.get('/api/suppliers/onboarding', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const stage =
+        typeof req.query.stage === 'string'
+          ? (req.query.stage as OnboardingStage)
+          : undefined;
+      const result = await listOnboardingStates(appDb, { stage });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List onboarding states failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/:code/onboarding — get onboarding state for
+   * one supplier (returns defaults when no row exists).
+   */
+  router.get('/api/suppliers/:code/onboarding', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const result = await getOnboardingState(appDb, code);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get onboarding state failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * PUT /api/suppliers/:code/onboarding — update onboarding state
+   * for one supplier (partial-merge of stage and notes).
+   */
+  router.put('/api/suppliers/:code/onboarding', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await updateOnboardingState(appDb, {
+        supplier_code: code,
+        stage: typeof body.stage === 'string' ? body.stage : undefined,
+        notes: typeof body.notes === 'string' ? body.notes : undefined,
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Update onboarding state failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
