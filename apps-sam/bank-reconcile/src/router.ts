@@ -55,6 +55,10 @@ import {
   markEntriesReconciled,
   type ReconcileEntryInput,
 } from './services/mark-reconciled.js';
+import {
+  recordCorrection,
+  listCorrections,
+} from './services/alias-corrections.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -947,6 +951,85 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Mark reconciled failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/bank-import/correction
+   *
+   * Record an operator correction to the bank-name → Opera-account
+   * matching. Faithful port of record_correction (routes.py:2845-2895)
+   * + BankAliasManager.record_correction (bank_aliases.py:728-790).
+   *
+   * Three side-effects in one transaction:
+   *   1. Audit row in alias_corrections
+   *   2. Upsert positive alias in bank_import_aliases (confidence=1.0)
+   *   3. INSERT-OR-IGNORE negative example in negative_aliases so
+   *      future matches avoid the bad mapping
+   *
+   * Query params:
+   *   - bank_name        (required)
+   *   - wrong_account    (required)
+   *   - correct_account  (required)
+   *   - ledger_type      (required: 'S' supplier | 'C' customer)
+   *   - account_name     (optional — currently informational)
+   */
+  router.post(
+    '/api/bank-import/correction',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const q = req.query;
+        const result = await recordCorrection(appDb, {
+          bank_name: String(q.bank_name ?? ''),
+          wrong_account: String(q.wrong_account ?? ''),
+          correct_account: String(q.correct_account ?? ''),
+          ledger_type: String(q.ledger_type ?? ''),
+          account_name: typeof q.account_name === 'string' ? q.account_name : null,
+          corrected_by: req.user?.userId ?? 'USER',
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Record correction failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/bank-import/corrections
+   *
+   * List recorded alias corrections (audit trail UI).
+   */
+  router.get(
+    '/api/bank-import/corrections',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await listCorrections(appDb, {
+          bankName:
+            typeof req.query.bank_name === 'string' ? req.query.bank_name : null,
+          correctAccount:
+            typeof req.query.correct_account === 'string'
+              ? req.query.correct_account
+              : null,
+          limit: req.query.limit ? Number(req.query.limit) : undefined,
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List corrections failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
