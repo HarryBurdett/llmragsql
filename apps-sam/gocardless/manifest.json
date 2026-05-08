@@ -24,8 +24,10 @@
   "permissions": [
     "opera:read",
     "opera:write",
-    "sam:config:read",
-    "sam:email:read",
-    "sam:email:send"
-  ]
+    "sam:config:read"
+  ],
+  "consumes": {
+    "email-ingest": true,
+    "llm": true
+  }
 }

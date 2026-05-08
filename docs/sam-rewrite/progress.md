@@ -2,6 +2,36 @@
 
 Live tracker. Each session updates this file before committing.
 
+## SAM contract alignment (verified 2026-05-08)
+
+Examined the real SAM at `~/opera-knowledge-ref/`:
+- `packages/backend/src/plugins/loader.ts` (lines 338-398) — runtime
+  context shape SAM injects into a plugin factory
+- `packages/backend/src/plugins/context.ts` — SAM's published interface
+  (leaner than what loader actually injects)
+- `packages/backend/src/middleware/company.ts` — `X-Opera-Company` →
+  `req.operaCompany` middleware
+- `packages/shared/src/types/manifest.ts` — `SapManifest` schema
+- `docs/plugin-authoring.md` — full plugin contract
+
+Aligned all 4 plugins with the runtime contract:
+- AppContext: dropped `eventBus` (not in loader), added optional
+  services SAM actually passes (`createAIService`, `email`, `llm`,
+  `emailIngest`, `graph`, `setSyncTrigger`) — see
+  `apps-sam/<app>/src/app-context.ts` for the canonical shape with
+  full type signatures from real SAM source.
+- Manifests: dropped invalid `sam:email:read`/`sam:email:send`
+  permissions (not in `AppPermission` union); added
+  `consumes: { email-ingest: true, llm: true }` for plugins that scan
+  mailboxes / use AI extraction (gocardless, bank-reconcile, suppliers).
+- Express request typing: now matches SAM's `req.user` shape
+  (userType, appRole, permissions[]) and the `req.operaCompany`
+  resolver injection.
+
+This means the merge into SAM should be a drop-in: SAM's loader runs
+each plugin's migrations from `<dist>/db/migrations`, imports the
+default factory, and passes a context our types already match.
+
 ## Status
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
