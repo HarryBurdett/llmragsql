@@ -308,9 +308,24 @@ slot with:
 
 - `DATABASE_SERVER`, `DATABASE_PORT`, `DATABASE_DATABASE`,
   `DATABASE_USERNAME`, `DATABASE_PASSWORD` — Opera SQL credentials
-- `EMAIL_IMAP_SERVER`, `EMAIL_IMAP_USERNAME`, `EMAIL_IMAP_PASSWORD` — IMAP
-- `EMAIL_SMTP_SERVER`, `EMAIL_SMTP_USERNAME`, `EMAIL_SMTP_PASSWORD`,
-  `EMAIL_FROM_ADDRESS` — SMTP (suppliers + gocardless need this)
+- **Email — central per customer:**
+  - `EMAIL_PROVIDER` — `microsoft` (MS Graph, preferred) or `imap`
+  - If `microsoft`: `EMAIL_MICROSOFT_TENANT_ID`,
+    `EMAIL_MICROSOFT_CLIENT_ID`, `EMAIL_MICROSOFT_CLIENT_SECRET`
+  - If `imap`: `EMAIL_IMAP_SERVER`, `EMAIL_IMAP_USERNAME`,
+    `EMAIL_IMAP_PASSWORD`
+  - `EMAIL_SMTP_SERVER`, `EMAIL_SMTP_USERNAME`, `EMAIL_SMTP_PASSWORD`
+    (suppliers + gocardless send remittance emails)
+- **Email — per-app mailbox identity** (set per app/container, not per
+  customer):
+  - `EMAIL_MAILBOX` — the inbox this app reads from / sends as.
+    A customer may have one inbox for everything (set the same value
+    for every app) or separate inboxes per workflow (e.g.
+    `banking@customer.com` for bank-reconcile,
+    `payments@customer.com` for gocardless,
+    `ap@customer.com` for suppliers). The credentials above are
+    shared; only `EMAIL_MAILBOX` differs per app.
+  - `EMAIL_FROM_ADDRESS` — optional; defaults to `EMAIL_MAILBOX`
 - `GEMINI_API_KEY` — AI extraction
 - For GoCardless customers: `GOCARDLESS_ACCESS_TOKEN`,
   `GOCARDLESS_WEBHOOK_SECRET`

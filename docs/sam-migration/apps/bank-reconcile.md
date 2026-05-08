@@ -19,7 +19,15 @@ descriptions.
 
 **Always:**
 - `DATABASE_*` — Opera SQL connection
-- `EMAIL_IMAP_*` — inbox to scan for statements
+- `EMAIL_PROVIDER` — `microsoft` (MS Graph) or `imap`
+- `EMAIL_MAILBOX` — **the inbox this app reads bank statements from**
+  (e.g. `banking@customer.com`, or the customer's shared
+  `accounts@customer.com` if they only use one inbox)
+- If `EMAIL_PROVIDER=microsoft`: `EMAIL_MICROSOFT_TENANT_ID`,
+  `EMAIL_MICROSOFT_CLIENT_ID`, `EMAIL_MICROSOFT_CLIENT_SECRET`
+  (central, shared with all apps for the same customer)
+- If `EMAIL_PROVIDER=imap`: `EMAIL_IMAP_SERVER`, `EMAIL_IMAP_USERNAME`,
+  `EMAIL_IMAP_PASSWORD`
 - `GEMINI_API_KEY`, `GEMINI_MODEL` — AI extraction
 - `OPERA_VERSION` — `SE` or `3`
 - `COMPANY_DATA_BASE_PATH` — per-company SQLite root

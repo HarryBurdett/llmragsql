@@ -889,7 +889,7 @@ export function GoCardlessSettings() {
           env vars today, from SAM after migration. Shown for
           per-app diagnostic visibility. */}
       <div className="mt-6">
-        <SystemConnectionPanel />
+        <SystemConnectionPanel appLabel="GoCardless" />
       </div>
     </div>
   );

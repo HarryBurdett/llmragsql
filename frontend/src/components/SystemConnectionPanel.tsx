@@ -24,7 +24,7 @@
  */
 import { useQuery } from '@tanstack/react-query';
 import {
-  Activity, AlertCircle, CheckCircle2, Database, Mail, Send,
+  Activity, AlertCircle, CheckCircle2, Database, Inbox, Mail, Send,
   Brain, Building2, Server, ShieldAlert,
 } from 'lucide-react';
 import { authFetch } from '../api/client';
@@ -49,6 +49,16 @@ interface ConnectionInfo {
     write_agent_url: string;
     applies_when: string;
   };
+  email_provider?: {
+    provider: string;
+    microsoft_tenant_id_configured: boolean;
+    microsoft_client_id_configured: boolean;
+    microsoft_client_secret_configured: boolean;
+  };
+  email_mailbox?: {
+    mailbox: string;
+    source: string;
+  };
   email_imap: {
     enabled: boolean;
     server: string;
@@ -62,6 +72,7 @@ interface ConnectionInfo {
     port: string;
     username: string;
     from_address: string;
+    from_address_source?: string;
     password_configured: boolean;
   };
   ai_provider: {
@@ -80,7 +91,20 @@ interface ConnectionInfo {
   };
 }
 
-export function SystemConnectionPanel() {
+interface SystemConnectionPanelProps {
+  /**
+   * Display label for the app this panel is being rendered inside —
+   * e.g. "Bank Reconciliation", "GoCardless", "Suppliers".
+   *
+   * Used to label the active mailbox so the operator can see exactly
+   * which inbox THIS app reads from — important when a customer has
+   * separate inboxes per workflow (banking@, payments@, ap@) but one
+   * shared set of MS Graph credentials.
+   */
+  appLabel?: string;
+}
+
+export function SystemConnectionPanel({ appLabel }: SystemConnectionPanelProps = {}) {
   const { data, isLoading, error } = useQuery<ConnectionInfo>({
     queryKey: ['system-connection-info'],
     queryFn: async () => {
@@ -152,20 +176,63 @@ export function SystemConnectionPanel() {
           </Section>
         )}
 
-        {/* Email IMAP */}
-        <Section icon={Mail} label="Email IMAP (receive)">
-          <Row k="Status" v={data.email_imap.enabled ? 'enabled' : 'disabled'} />
-          <Row k="Server" v={`${data.email_imap.server}:${data.email_imap.port}` || '—'} />
-          <Row k="Username" v={data.email_imap.username || '—'} />
-          <SecretRow k="Password" configured={data.email_imap.password_configured} />
-          <Row k="SSL" v={data.email_imap.use_ssl ? 'yes' : 'no'} />
+        {/* Email Mailbox — per-app identity (NEW) */}
+        <Section
+          icon={Inbox}
+          label={appLabel ? `Mailbox (${appLabel})` : 'Mailbox (this app)'}
+        >
+          <Row
+            k="Address"
+            v={data.email_mailbox?.mailbox || '—'}
+          />
+          <Row
+            k="Configured via"
+            v={data.email_mailbox?.source || 'EMAIL_MAILBOX (per app)'}
+          />
         </Section>
+
+        {/* Email Provider — central per customer */}
+        {data.email_provider && (
+          <Section icon={Mail} label="Email Provider (central)">
+            <Row k="Provider" v={data.email_provider.provider || 'imap'} />
+            {data.email_provider.provider === 'microsoft' && (
+              <>
+                <SecretRow
+                  k="MS tenant ID"
+                  configured={data.email_provider.microsoft_tenant_id_configured}
+                />
+                <SecretRow
+                  k="MS client ID"
+                  configured={data.email_provider.microsoft_client_id_configured}
+                />
+                <SecretRow
+                  k="MS client secret"
+                  configured={data.email_provider.microsoft_client_secret_configured}
+                />
+              </>
+            )}
+          </Section>
+        )}
+
+        {/* Email IMAP — only when provider is IMAP */}
+        {(!data.email_provider || data.email_provider.provider === 'imap') && (
+          <Section icon={Mail} label="Email IMAP (receive)">
+            <Row k="Status" v={data.email_imap.enabled ? 'enabled' : 'disabled'} />
+            <Row k="Server" v={`${data.email_imap.server}:${data.email_imap.port}` || '—'} />
+            <Row k="Username" v={data.email_imap.username || '—'} />
+            <SecretRow k="Password" configured={data.email_imap.password_configured} />
+            <Row k="SSL" v={data.email_imap.use_ssl ? 'yes' : 'no'} />
+          </Section>
+        )}
 
         {/* Email SMTP */}
         <Section icon={Send} label="Email SMTP (send)">
           <Row k="Server" v={`${data.email_smtp.server}:${data.email_smtp.port}` || '—'} />
           <Row k="Username" v={data.email_smtp.username || '—'} />
           <Row k="From" v={data.email_smtp.from_address || '—'} />
+          {data.email_smtp.from_address_source && (
+            <Row k="From source" v={data.email_smtp.from_address_source} />
+          )}
           <SecretRow k="Password" configured={data.email_smtp.password_configured} />
         </Section>
 

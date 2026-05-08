@@ -54,7 +54,40 @@ Optional alternative AI providers (set the matching key + change `MODELS_PROVIDE
 
 ## Required for email-using apps (bank-reconcile, gocardless, suppliers)
 
-### IMAP (receiving)
+### Per-app mailbox identity (NEW — required for every email-using app)
+
+Each app may need a **different inbox**. Common scenario: bank statements
+land in `accounts@customer.com`, supplier statements in
+`ap@customer.com`, GoCardless payouts in `payments@customer.com`.
+Equally common: a customer just uses **one** inbox for everything — in
+which case set the same value for every app.
+
+| Env var | Type | Default | Description |
+|---|---|---|---|
+| `EMAIL_MAILBOX` | string | (falls back to `EMAIL_IMAP_USERNAME`) | The mailbox identity this app instance reads from / sends as. Set **per app** (per container). On Microsoft Graph this is the `userPrincipalName` (e.g. `payments@customer.com`); on classic IMAP/SMTP this matches the login. |
+
+The MS Graph / IMAP / SMTP **credentials** are centralised — one set
+per customer (see below). The mailbox identity is the only per-app
+difference.
+
+### Microsoft Graph (preferred for Microsoft 365 customers — central)
+
+| Env var | Type | Default | Description |
+|---|---|---|---|
+| `EMAIL_PROVIDER` | string | imap | `imap` (default), `microsoft` (MS Graph), or `gmail` |
+| `EMAIL_MICROSOFT_TENANT_ID` | string | — | Azure AD / Entra ID tenant ID — **central**, one per customer |
+| `EMAIL_MICROSOFT_CLIENT_ID` | string | — | Application (client) ID of the registered app — **central** |
+| `EMAIL_MICROSOFT_CLIENT_SECRET` | string | — | Client secret — **central**; SAM populates per customer |
+
+When `EMAIL_PROVIDER=microsoft`, the app uses the central Graph
+credentials to authenticate, then accesses `EMAIL_MAILBOX` via the
+`/users/{mailbox}/...` Graph endpoint. The app-registration must be
+granted `Mail.Read`, `Mail.Send`, and (for suppliers) `Mail.ReadWrite`
+on the `Application` permission set, with admin consent.
+
+### IMAP (classic — receiving)
+
+Used when `EMAIL_PROVIDER=imap` (or unset).
 
 | Env var | Type | Default | Description |
 |---|---|---|---|
@@ -62,7 +95,7 @@ Optional alternative AI providers (set the matching key + change `MODELS_PROVIDE
 | `EMAIL_IMAP_SERVER` | string | — | IMAP hostname |
 | `EMAIL_IMAP_PORT` | int | 993 | IMAP port |
 | `EMAIL_IMAP_USE_SSL` | bool | true | Use TLS |
-| `EMAIL_IMAP_USERNAME` | string | — | IMAP login |
+| `EMAIL_IMAP_USERNAME` | string | — | IMAP login (used as `EMAIL_MAILBOX` fallback) |
 | `EMAIL_IMAP_PASSWORD` | string | — | IMAP password / app password |
 
 ### SMTP (sending — gocardless remittance, suppliers remittance)
@@ -73,7 +106,7 @@ Optional alternative AI providers (set the matching key + change `MODELS_PROVIDE
 | `EMAIL_SMTP_PORT` | int | 587 | SMTP port |
 | `EMAIL_SMTP_USERNAME` | string | — | SMTP login |
 | `EMAIL_SMTP_PASSWORD` | string | — | SMTP password |
-| `EMAIL_FROM_ADDRESS` | string | — | Default From: header |
+| `EMAIL_FROM_ADDRESS` | string | (falls back to `EMAIL_MAILBOX`) | Default From: header. Most installs leave this unset and let it default to the per-app mailbox. |
 
 ## Required for Opera 3 deployments
 
@@ -148,13 +181,35 @@ detail page for its specific dependencies.
 
 | App | Always required | Conditional |
 |---|---|---|
-| bank-reconcile | `DATABASE_*`, `EMAIL_IMAP_*`, `GEMINI_API_KEY`, `OPERA_VERSION` | `OPERA3_AGENT_URL` if Opera 3 |
-| gocardless | `DATABASE_*`, `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, `GEMINI_API_KEY`, `GOCARDLESS_ACCESS_TOKEN` | `OPERA3_AGENT_URL` if Opera 3 |
-| suppliers | `DATABASE_*`, `EMAIL_IMAP_*`, `EMAIL_SMTP_*`, `GEMINI_API_KEY` | `OPERA3_AGENT_URL` if Opera 3 |
+| bank-reconcile | `DATABASE_*`, `EMAIL_MAILBOX`, `EMAIL_*` (provider-specific), `GEMINI_API_KEY`, `OPERA_VERSION` | `OPERA3_AGENT_URL` if Opera 3 |
+| gocardless | `DATABASE_*`, `EMAIL_MAILBOX`, `EMAIL_*` (provider-specific), `EMAIL_SMTP_*`, `GEMINI_API_KEY`, `GOCARDLESS_ACCESS_TOKEN` | `OPERA3_AGENT_URL` if Opera 3 |
+| suppliers | `DATABASE_*`, `EMAIL_MAILBOX`, `EMAIL_*` (provider-specific), `EMAIL_SMTP_*`, `GEMINI_API_KEY` | `OPERA3_AGENT_URL` if Opera 3 |
 | balance-check | `DATABASE_*` | `OPERA3_AGENT_URL` if Opera 3 |
-| core-email | `EMAIL_IMAP_*` | — |
+| core-email | `EMAIL_MAILBOX`, `EMAIL_*` (provider-specific) | — |
 | core-opera-se | `DATABASE_*` | — |
 | ~~core-opera3~~ | *(no longer needed — SAM hosts the Opera 3 Agent)* | — |
+
+**`EMAIL_*` (provider-specific)** means: when `EMAIL_PROVIDER=microsoft`,
+the central Graph creds (`EMAIL_MICROSOFT_TENANT_ID/CLIENT_ID/CLIENT_SECRET`).
+When `EMAIL_PROVIDER=imap` (default), the classic creds
+(`EMAIL_IMAP_SERVER/PORT/USERNAME/PASSWORD`).
+
+**Per-app mailbox examples**:
+```bash
+# Single shared mailbox — same value everywhere
+bank-reconcile:    EMAIL_MAILBOX=accounts@customer.com
+gocardless:        EMAIL_MAILBOX=accounts@customer.com
+suppliers:         EMAIL_MAILBOX=accounts@customer.com
+
+# Separate mailboxes per workflow
+bank-reconcile:    EMAIL_MAILBOX=banking@customer.com
+gocardless:        EMAIL_MAILBOX=payments@customer.com
+suppliers:         EMAIL_MAILBOX=ap@customer.com
+```
+
+The credentials block (`EMAIL_MICROSOFT_*` or `EMAIL_IMAP_PASSWORD`) is
+identical across all three apps for the same customer — only
+`EMAIL_MAILBOX` differs.
 
 ## Migration to SAM
 

@@ -17,8 +17,17 @@ APP_NAME=suppliers
 
 **Always:**
 - `DATABASE_*` — Opera SQL connection
-- `EMAIL_IMAP_*` — inbox for statements
-- `EMAIL_SMTP_*`, `EMAIL_FROM_ADDRESS` — remittance + contact email
+- `EMAIL_PROVIDER` — `microsoft` (MS Graph) or `imap`
+- `EMAIL_MAILBOX` — **the inbox supplier statements arrive in**
+  (e.g. `ap@customer.com`, or the shared `accounts@customer.com` if
+  the customer uses one inbox for everything)
+- If `EMAIL_PROVIDER=microsoft`: `EMAIL_MICROSOFT_TENANT_ID`,
+  `EMAIL_MICROSOFT_CLIENT_ID`, `EMAIL_MICROSOFT_CLIENT_SECRET`
+  (central, shared with all apps for the same customer)
+- If `EMAIL_PROVIDER=imap`: `EMAIL_IMAP_SERVER`, `EMAIL_IMAP_USERNAME`,
+  `EMAIL_IMAP_PASSWORD`
+- `EMAIL_SMTP_*`, `EMAIL_FROM_ADDRESS` (optional — defaults to
+  `EMAIL_MAILBOX`) — remittance + contact email
 - `GEMINI_API_KEY` — AI extraction
 - `OPERA_VERSION` — `SE` or `3`
 

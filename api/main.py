@@ -1416,6 +1416,33 @@ async def get_system_connection_info(request: Request):
             "write_agent_url": env_str('OPERA3_WRITE_AGENT_URL', '') or '',
             "applies_when": "OPERA_VERSION=3",
         },
+        "email_provider": {
+            # Active provider: 'microsoft' (Graph), 'imap', 'gmail'.
+            # Per-customer central setting; same for every app the
+            # customer runs.
+            "provider": (env_str('EMAIL_PROVIDER', '') or _opt('email', 'provider', 'imap') or 'imap').lower(),
+            # Microsoft Graph / Entra ID — central per customer
+            "microsoft_tenant_id_configured": bool(env_str('EMAIL_MICROSOFT_TENANT_ID', '') or _opt('email_microsoft', 'tenant_id', '')),
+            "microsoft_client_id_configured": bool(env_str('EMAIL_MICROSOFT_CLIENT_ID', '') or _opt('email_microsoft', 'client_id', '')),
+            "microsoft_client_secret_configured": bool(env_str('EMAIL_MICROSOFT_CLIENT_SECRET', '') or _opt('email_microsoft', 'client_secret', '')),
+        },
+        "email_mailbox": {
+            # Per-app mailbox identity. This is what differs between
+            # bank-reconcile / gocardless / suppliers when a customer
+            # has separate inboxes per workflow.
+            #
+            # Resolution order:
+            #   1. EMAIL_MAILBOX (preferred — explicit per-app)
+            #   2. EMAIL_IMAP_USERNAME (legacy fallback for single-inbox setups)
+            #
+            # On MS Graph this is the userPrincipalName
+            # (e.g. payments@customer.com); on classic IMAP/SMTP this
+            # matches the login.
+            "mailbox": env_str('EMAIL_MAILBOX', '') or _opt('email_imap', 'username', ''),
+            "source": "EMAIL_MAILBOX" if env_str('EMAIL_MAILBOX', '') else (
+                "EMAIL_IMAP_USERNAME (fallback)" if _opt('email_imap', 'username', '') else "(unset)"
+            ),
+        },
         "email_imap": {
             "enabled": _opt('email_imap', 'enabled', 'true').lower() in ('true', '1', 'yes'),
             "server": _opt('email_imap', 'server'),
@@ -1428,7 +1455,16 @@ async def get_system_connection_info(request: Request):
             "server": _opt('email', 'smtp_server'),
             "port": _opt('email', 'smtp_port', '587'),
             "username": _opt('email', 'smtp_username'),
-            "from_address": _opt('email', 'from_address'),
+            "from_address": (
+                _opt('email', 'from_address')
+                or env_str('EMAIL_MAILBOX', '')
+                or ''
+            ),
+            "from_address_source": (
+                "EMAIL_FROM_ADDRESS" if _opt('email', 'from_address', '')
+                else "EMAIL_MAILBOX (fallback)" if env_str('EMAIL_MAILBOX', '')
+                else "(unset)"
+            ),
             "password_configured": _has('email', 'smtp_password'),
         },
         "ai_provider": {
