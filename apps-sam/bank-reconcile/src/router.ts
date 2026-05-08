@@ -61,6 +61,10 @@ import {
 } from './services/alias-corrections.js';
 import { completeBatch } from './services/complete-batch.js';
 import { persistImportDecisions } from './services/persist-decisions.js';
+import {
+  confirmStatementMatches,
+  type ConfirmMatchInput,
+} from './services/confirm-matches.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1131,6 +1135,57 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Persist decisions failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/confirm-matches
+   *
+   * Confirm matched transactions and reconcile them. Faithful port of
+   * confirm_statement_matches (routes.py:1935-2035). Thin wrapper
+   * around mark-reconciled that:
+   *   - reads the next statement_number from nbank.nk_lststno + 1
+   *     (per CLAUDE.md never use MAX+1 — comes from Opera's stored
+   *     counter)
+   *   - assigns statement_line numbers in 10s (Opera convention)
+   *   - delegates the actual write to markEntriesReconciled (which
+   *     has the bank lock + UPDLOCK + ROWLOCK + transaction)
+   *
+   * Body:
+   *   {
+   *     matches: [{ ae_entry } | { opera_entry: { ae_entry }}, ...],
+   *     statement_balance: number  (pounds — flows to nk_reccfwd),
+   *     statement_date: 'YYYY-MM-DD'
+   *   }
+   */
+  router.post(
+    '/api/reconcile/bank/:bank_code/confirm-matches',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as {
+          matches?: ConfirmMatchInput[];
+          statement_balance?: number;
+          statement_date?: string;
+        };
+        const result = await confirmStatementMatches(appDb, operaDb, {
+          bankCode: String(req.params.bank_code ?? ''),
+          matches: Array.isArray(body.matches) ? body.matches : [],
+          statementBalance: Number(body.statement_balance ?? 0),
+          statementDate: String(body.statement_date ?? ''),
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Confirm matches failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
