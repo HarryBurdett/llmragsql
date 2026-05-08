@@ -4,12 +4,13 @@ Live tracker. Each session updates this file before committing.
 
 ## Status
 
-**Status:** All 4 plugin foundations in place; 1 fully ported; 1 in progress.
-**Active app:** `gocardless` (foundation + 10 of ~124 endpoints ported)
-**Foundations also in place for:** `bank-reconcile`, `suppliers`
-**Complete:** `balance-check` ✅ BACKEND COMPLETE
+**Status:** All 4 plugin foundations in place; 1 fully ported; 2 in progress.
+**balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
+**gocardless:** 10 of ~124 endpoints (29 tests)
+**bank-reconcile:** 3 of ~127 endpoints (8 tests)
+**suppliers:** Foundation only (greenfield TS work)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 9 substantive commits)
+**Sessions logged:** 1 (long session — 11 substantive commits)
 
 ## Per-app progress
 
@@ -131,8 +132,16 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       bank_import_patterns + extraction_cache + import_locks +
       deferred_transactions + bank_statement_imports tables (mirrors
       Python SQLite schemas)
+- [x] `src/services/banks.ts` — port of `get_bank_accounts`
+- [x] `src/services/health-check.ts` — port of bank-reconcile health check
+      (aliases / patterns / statement-import history / Opera connection sanity)
+- [x] `src/router.ts` — mounts:
+  - GET /api/bank-reconcile/status
+  - GET /api/reconcile/banks
+  - GET /api/bank-import/health-check
 - [x] TypeScript builds cleanly
-- [ ] Endpoints: 0 of ~80+ ported. Future-session priorities:
+- [x] 8 tests passing (4 banks + 4 health-check)
+- [ ] Endpoints: 3 of ~127 ported. Future-session priorities:
   - `/api/bank-import/scan-emails` (via SAM email service)
   - `/api/bank-import/preview-from-pdf`
   - `/api/bank-import/preview-from-email`
@@ -184,9 +193,11 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/gocardless/tests/settings.test.ts` | 12 | ✅ passing |
 | `apps-sam/gocardless/tests/health-check.test.ts` | 5 | ✅ passing |
 | `apps-sam/gocardless/tests/lookups.test.ts` | 12 | ✅ passing |
-| **Total TypeScript tests** | **69** | ✅ all passing |
+| `apps-sam/bank-reconcile/tests/banks.test.ts` | 4 | ✅ passing |
+| `apps-sam/bank-reconcile/tests/health-check.test.ts` | 4 | ✅ passing |
+| **Total TypeScript tests** | **77** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **673** | ✅ |
+| **Grand total** | **681** | ✅ |
 
 ## Open questions / blockers
 
