@@ -9,9 +9,25 @@ import { Router, type Request, type Response } from 'express';
 import type { AppContext } from './app-context.js';
 import { listSuppliers, getSupplier } from './services/supplier-list.js';
 import { getAgedDebtSummary, getAgedDebtBySupplier } from './services/aged-debt.js';
+import {
+  listContacts,
+  addContact,
+  deleteContact,
+} from './services/contacts.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
+
+  function getAppDb(req: Request, res: Response): import('knex').Knex | null {
+    if (!ctx.db.app) {
+      res.status(503).json({
+        success: false,
+        error: 'suppliers per-app database not provisioned for this tenant.',
+      });
+      return null;
+    }
+    return ctx.db.app;
+  }
 
   function getOperaDb(req: Request, res: Response): import('knex').Knex | null {
     const company = req.operaCompany;
@@ -91,8 +107,91 @@ export function createRouter(ctx: AppContext): Router {
   });
 
   /**
+   * GET /api/suppliers/:code/contacts — list extended contacts for
+   * a supplier. Mounted before /api/suppliers/:code so the more
+   * specific path matches first.
+   */
+  router.get('/api/suppliers/:code/contacts', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      if (!code) {
+        res.status(400).json({ success: false, error: 'Missing supplier code' });
+        return;
+      }
+      const result = await listContacts(appDb, code);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List contacts failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/:code/contacts — add an extended contact.
+   *
+   * Body: { contact_email: string, contact_name?: string, contact_role?: string }
+   */
+  router.post('/api/suppliers/:code/contacts', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const code = String(req.params.code ?? '').trim();
+      if (!code) {
+        res.status(400).json({ success: false, error: 'Missing supplier code' });
+        return;
+      }
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await addContact(appDb, {
+        supplier_code: code,
+        contact_email: typeof body.contact_email === 'string' ? body.contact_email : '',
+        contact_name: typeof body.contact_name === 'string' ? body.contact_name : '',
+        contact_role: typeof body.contact_role === 'string' ? body.contact_role : '',
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Add contact failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * DELETE /api/suppliers/contacts/:contact_id — delete a contact by id.
+   *
+   * Mounted on /api/suppliers/contacts/:contact_id (NOT /:code/contacts/:id)
+   * because the contact id is globally unique and the supplier code
+   * isn't needed for the delete.
+   */
+  router.delete('/api/suppliers/contacts/:contact_id', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.contact_id);
+      if (!Number.isFinite(id)) {
+        res.status(400).json({ success: false, error: 'Invalid contact_id' });
+        return;
+      }
+      const result = await deleteContact(appDb, id);
+      if (!result.success && result.error === 'Contact not found') {
+        res.status(404).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Delete contact failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
    * GET /api/suppliers/:code — single supplier detail. Mounted LAST
-   * so specific paths above (status, aged-debt, etc.) match first.
+   * so specific paths above (status, aged-debt, contacts, etc.)
+   * match first.
    */
   router.get('/api/suppliers/:code', async (req, res) => {
     const operaDb = getOperaDb(req, res);
