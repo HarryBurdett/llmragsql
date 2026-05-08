@@ -55,7 +55,11 @@ import {
   partnerCallbackHtml,
 } from './services/partner.js';
 import { archiveGocardlessEmail } from './services/archive-email.js';
-import { listPaymentRequests } from './services/payment-requests.js';
+import {
+  listPaymentRequests,
+  getPaymentRequest,
+  cancelPaymentRequest,
+} from './services/payment-requests.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -768,6 +772,76 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List payment requests failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/payment-requests/:request_id
+   *
+   * Single-payment-request detail. Faithful port of get_payment_request
+   * (routes.py:8489-8506). Includes customer_name from the linked
+   * mandate when available.
+   */
+  router.get(
+    '/api/gocardless/payment-requests/:request_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const id = Number(req.params.request_id);
+        const result = await getPaymentRequest(appDb, id);
+        if (!result.success) {
+          res
+            .status(result.error === 'Payment request not found' ? 404 : 400)
+            .json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get payment request failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/payment-requests/:request_id/cancel
+   *
+   * Cancel a pending payment request. Faithful port of
+   * cancel_payment_request (routes.py:8509-8553).
+   *   - Refuses cancellation when status isn't pending/pending_*
+   *   - Best-effort GoCardless API cancel via the saved access token
+   *     — failure is reported as remote_warning but local cancel
+   *     proceeds (matches Python's "log + continue")
+   *   - Local row marked status='cancelled' with error_message
+   */
+  router.post(
+    '/api/gocardless/payment-requests/:request_id/cancel',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const id = Number(req.params.request_id);
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        const cancelRemote = client
+          ? async (paymentId: string) => {
+              const r = await client.cancelPayment(paymentId);
+              return { success: r.success, error: r.error };
+            }
+          : undefined;
+        const result = await cancelPaymentRequest(appDb, id, cancelRemote);
+        if (!result.success) {
+          res
+            .status(result.error === 'Payment request not found' ? 404 : 400)
+            .json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Cancel payment request failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

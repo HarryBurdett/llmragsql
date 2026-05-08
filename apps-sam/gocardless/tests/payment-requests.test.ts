@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { listPaymentRequests } from '../src/services/payment-requests.js';
+import {
+  listPaymentRequests,
+  getPaymentRequest,
+  cancelPaymentRequest,
+} from '../src/services/payment-requests.js';
 
 interface RequestRow {
   id: number;
@@ -52,6 +56,24 @@ function makeAppDb(state: MockState): any {
           limitN = n;
           return builder;
         },
+        first: () => {
+          const found = state.requests.find((r) =>
+            Object.entries(conds).every(([k, v]) => (r as any)[k] === v),
+          );
+          return Promise.resolve(found);
+        },
+        update: (data: Record<string, unknown>) => {
+          let count = 0;
+          for (const r of state.requests) {
+            if (
+              Object.entries(conds).every(([k, v]) => (r as any)[k] === v)
+            ) {
+              Object.assign(r, data);
+              count++;
+            }
+          }
+          return Promise.resolve(count);
+        },
         then: (cb: (rows: RequestRow[]) => unknown) => {
           let rows = state.requests.filter((r) =>
             Object.entries(conds).every(([k, v]) => (r as any)[k] === v),
@@ -75,6 +97,16 @@ function makeAppDb(state: MockState): any {
           inCol = col;
           inVals = vals;
           return builder;
+        },
+        where: (cond: Record<string, unknown>) => {
+          Object.assign(conds, cond);
+          return builder;
+        },
+        first: () => {
+          const found = state.mandates.find((m) =>
+            Object.entries(conds).every(([k, v]) => (m as any)[k] === v),
+          );
+          return Promise.resolve(found);
         },
         select: (...cols: string[]) => {
           selectedCols = cols;
@@ -194,5 +226,127 @@ describe('listPaymentRequests', () => {
     };
     const result = await listPaymentRequests(makeAppDb(state));
     expect(result.requests[0]?.customer_name).toBe('CUST01');
+  });
+});
+
+describe('getPaymentRequest', () => {
+  it('returns the row with mandate-derived customer_name', async () => {
+    const state: MockState = {
+      requests: [emptyRequest({ id: 7, opera_account: 'CUST01' })],
+      mandates: [{ opera_account: 'CUST01', opera_name: 'Acme Ltd' }],
+    };
+    const result = await getPaymentRequest(makeAppDb(state), 7);
+    expect(result.success).toBe(true);
+    expect(result.payment_request?.id).toBe(7);
+    expect(result.payment_request?.customer_name).toBe('Acme Ltd');
+  });
+
+  it('returns 404 when not found', async () => {
+    const state: MockState = { requests: [], mandates: [] };
+    const result = await getPaymentRequest(makeAppDb(state), 999);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/);
+  });
+
+  it('rejects bad request_id', async () => {
+    const state: MockState = { requests: [], mandates: [] };
+    const result = await getPaymentRequest(makeAppDb(state), 0);
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('cancelPaymentRequest', () => {
+  it('cancels a pending request — local + remote attempt', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({
+          id: 1,
+          status: 'pending',
+          payment_id: 'PR_X',
+        }),
+      ],
+      mandates: [],
+    };
+    let remoteCalledWith: string | null = null;
+    const cancelRemote = async (paymentId: string) => {
+      remoteCalledWith = paymentId;
+      return { success: true };
+    };
+    const result = await cancelPaymentRequest(
+      makeAppDb(state),
+      1,
+      cancelRemote,
+    );
+    expect(result.success).toBe(true);
+    expect(result.local_cancelled).toBe(true);
+    expect(remoteCalledWith).toBe('PR_X');
+    expect(state.requests[0]?.status).toBe('cancelled');
+  });
+
+  it('proceeds with local cancel even when remote fails (logs warning)', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({
+          id: 1,
+          status: 'pending_submission',
+          payment_id: 'PR_Y',
+        }),
+      ],
+      mandates: [],
+    };
+    const cancelRemote = async () => ({
+      success: false,
+      error: 'GoCardless rejected',
+    });
+    const result = await cancelPaymentRequest(
+      makeAppDb(state),
+      1,
+      cancelRemote,
+    );
+    expect(result.success).toBe(true);
+    expect(result.local_cancelled).toBe(true);
+    expect(result.remote_warning).toMatch(/GoCardless rejected/);
+    expect(state.requests[0]?.status).toBe('cancelled');
+  });
+
+  it('refuses cancellation when status is final', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({ id: 1, status: 'paid_out', payment_id: 'PR_Z' }),
+      ],
+      mandates: [],
+    };
+    const result = await cancelPaymentRequest(makeAppDb(state), 1);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Cannot cancel/);
+  });
+
+  it('returns not-found when id missing', async () => {
+    const state: MockState = { requests: [], mandates: [] };
+    const result = await cancelPaymentRequest(makeAppDb(state), 999);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/);
+  });
+
+  it('skips remote cancel when payment_id is empty', async () => {
+    const state: MockState = {
+      requests: [
+        emptyRequest({ id: 1, status: 'pending', payment_id: '' }),
+      ],
+      mandates: [],
+    };
+    let remoteCalled = false;
+    const cancelRemote = async () => {
+      remoteCalled = true;
+      return { success: true };
+    };
+    const result = await cancelPaymentRequest(
+      makeAppDb(state),
+      1,
+      cancelRemote,
+    );
+    expect(result.success).toBe(true);
+    expect(remoteCalled).toBe(false);
+    expect(state.requests[0]?.status).toBe('cancelled');
   });
 });

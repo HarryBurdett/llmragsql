@@ -53,6 +53,157 @@ function dateToIso(d: Date | string | null): string {
   return String(d);
 }
 
+// ---------------------------------------------------------------------
+// get one
+// ---------------------------------------------------------------------
+
+export interface GetPaymentRequestResponse {
+  success: boolean;
+  payment_request?: PaymentRequest;
+  error?: string;
+}
+
+export async function getPaymentRequest(
+  appDb: Knex,
+  requestId: number,
+): Promise<GetPaymentRequestResponse> {
+  if (!Number.isFinite(requestId) || requestId <= 0) {
+    return { success: false, error: 'request_id must be a positive number' };
+  }
+  try {
+    const row = (await appDb('gocardless_payment_requests')
+      .where({ id: requestId })
+      .first()) as
+      | (Record<string, unknown> & {
+          id: number;
+          opera_account: string | null;
+        })
+      | undefined;
+    if (!row) {
+      return { success: false, error: 'Payment request not found' };
+    }
+    const acct = (row.opera_account ?? '').toString().trim();
+    let customerName = acct;
+    if (acct) {
+      try {
+        const mand = (await appDb('gocardless_mandates')
+          .where({ opera_account: acct })
+          .first()) as { opera_name: string | null } | undefined;
+        if (mand?.opera_name) customerName = mand.opera_name.trim() || acct;
+      } catch {
+        // best-effort
+      }
+    }
+    const charge_date = row.charge_date as Date | string | null;
+    const created_at = row.created_at as Date | string | null;
+    const updated_at = row.updated_at as Date | string | null;
+    const pr: PaymentRequest = {
+      id: row.id,
+      payment_id: (row.payment_id as string) ?? '',
+      mandate_id: (row.mandate_id as string) ?? '',
+      opera_account: acct,
+      amount: Number(row.amount ?? 0),
+      amount_pence:
+        row.amount_pence != null ? Number(row.amount_pence) : null,
+      currency: (row.currency as string) ?? 'GBP',
+      status: (row.status as string) ?? '',
+      reference: (row.reference as string) ?? '',
+      charge_date: dateToIso(charge_date),
+      payout_id: (row.payout_id as string) ?? '',
+      invoice_refs: (row.invoice_refs as string) ?? '',
+      opera_receipt_ref: (row.opera_receipt_ref as string) ?? '',
+      error_message: (row.error_message as string) ?? '',
+      created_at: dateToIso(created_at),
+      updated_at: dateToIso(updated_at),
+      customer_name: customerName,
+    };
+    return { success: true, payment_request: pr };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
+// cancel
+// ---------------------------------------------------------------------
+
+const CANCELLABLE_STATUSES = new Set([
+  'pending',
+  'pending_submission',
+  'pending_customer_approval',
+]);
+
+export interface CancelPaymentRequestResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  /** True when local row was marked cancelled (whether or not the
+   *  GoCardless API also accepted the cancel). */
+  local_cancelled?: boolean;
+  /** Set when the GoCardless API call returned an error message —
+   *  local cancel still proceeds. Matches Python's "log + continue"
+   *  behaviour. */
+  remote_warning?: string;
+}
+
+export async function cancelPaymentRequest(
+  appDb: Knex,
+  requestId: number,
+  cancelRemote?: (paymentId: string) => Promise<{ success: boolean; error?: string }>,
+): Promise<CancelPaymentRequestResponse> {
+  if (!Number.isFinite(requestId) || requestId <= 0) {
+    return { success: false, error: 'request_id must be a positive number' };
+  }
+  try {
+    const row = (await appDb('gocardless_payment_requests')
+      .where({ id: requestId })
+      .first()) as
+      | { id: number; status: string | null; payment_id: string | null }
+      | undefined;
+    if (!row) {
+      return { success: false, error: 'Payment request not found' };
+    }
+    const status = (row.status ?? '').trim();
+    if (!CANCELLABLE_STATUSES.has(status)) {
+      return {
+        success: false,
+        error: `Cannot cancel payment with status '${status}'`,
+      };
+    }
+
+    // Best-effort GoCardless API cancel
+    let remoteWarning: string | undefined;
+    const paymentId = (row.payment_id ?? '').trim();
+    if (paymentId && cancelRemote) {
+      try {
+        const r = await cancelRemote(paymentId);
+        if (!r.success) {
+          remoteWarning = r.error ?? 'Remote cancel failed';
+        }
+      } catch (e: any) {
+        remoteWarning = e?.message ?? String(e);
+      }
+    }
+
+    // Always mark local as cancelled
+    await appDb('gocardless_payment_requests').where({ id: requestId }).update({
+      status: 'cancelled',
+      error_message: 'Cancelled by user',
+      updated_at: appDb.fn.now(),
+    });
+
+    const result: CancelPaymentRequestResponse = {
+      success: true,
+      message: `Payment request ${requestId} cancelled`,
+      local_cancelled: true,
+    };
+    if (remoteWarning) result.remote_warning = remoteWarning;
+    return result;
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
 export async function listPaymentRequests(
   appDb: Knex,
   opts: ListPaymentRequestsOptions = {},
