@@ -5,7 +5,8 @@
  *
  * Phases (matches Python exactly):
  *   1. Quarter detection (most-recent zvtran/nvat date → calendar quarter)
- *   2. VAT-codes-with-rates fetch (ztax + date-based rate selection)
+ *   2. VAT-codes-with-rates fetch (ztax + date-based rate selection) —
+ *      now lives in @sqlrag/sam-shared so gocardless can reuse it
  *   3. VAT-by-code aggregation, repeated four times:
  *        - zvtran uncommitted output (va_done=0, va_vattype='S')
  *        - zvtran uncommitted input  (va_done=0, va_vattype='P')
@@ -15,6 +16,9 @@
  *   5. Variance computation + reporting (stays inline in the endpoint)
  */
 import type { Knex } from 'knex';
+import {
+  fetchVatCodesWithRates as sharedFetchVatCodesWithRates,
+} from '@sqlrag/sam-shared';
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -121,6 +125,9 @@ export function getVatQuarterDates(referenceDate: Date | null = null): QuarterIn
 
 // ====================================================================
 // Phase 2 — VAT codes + applicable rate
+// (Implementation moved to @sqlrag/sam-shared for reuse by gocardless.
+//  This module re-exports under the original snake_case shape that
+//  the rest of the balance-check code depends on.)
 // ====================================================================
 
 export interface VatCode {
@@ -138,100 +145,19 @@ export interface VatCodesResult {
 }
 
 /**
- * Choose the most recent effective rate <= refDate.
- * Faithful port of `_pick_applicable_rate`.
- */
-function pickApplicableRate(
-  rate1: number,
-  rate2: number,
-  date1: Date | null,
-  date2: Date | null,
-  refDate: Date,
-): number {
-  if (date1 && date2) {
-    if (date2 <= refDate && date1 <= refDate) {
-      return date2 > date1 ? rate2 : rate1;
-    }
-    if (date2 <= refDate) return rate2;
-    if (date1 <= refDate) return rate1;
-    return rate1;
-  }
-  if (date2 && date2 <= refDate) return rate2;
-  return rate1;
-}
-
-function coerceDate(d: unknown): Date | null {
-  if (d === null || d === undefined) return null;
-  if (d instanceof Date) {
-    if (Number.isNaN(d.getTime())) return null;
-    return d;
-  }
-  if (typeof d === 'string' && d) {
-    const parsed = new Date(d);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-  return null;
-}
-
-/**
- * Read ztax (Home country VAT codes) and compute the applicable rate
- * for `refDate`. Faithful port of `fetch_vat_codes_with_rates`.
+ * Read ztax and compute the applicable rate for `refDate`.
+ * Thin wrapper over the shared helper that maps to balance-check's
+ * existing snake_case shape so the rest of the module is unchanged.
  */
 export async function fetchVatCodesWithRates(
   db: Knex,
   refDate: Date,
 ): Promise<VatCodesResult> {
-  const sql = `
-    SELECT tx_code, tx_desc, tx_rate1, tx_rate1dy, tx_rate2, tx_rate2dy, tx_trantyp, tx_nominal
-    FROM ztax WITH (NOLOCK)
-    WHERE tx_ctrytyp = 'H'
-    ORDER BY tx_trantyp, tx_code
-  `;
-  const rows = (await db.raw(sql)) as unknown as Array<{
-    tx_code: string | null;
-    tx_desc: string | null;
-    tx_rate1: number | null;
-    tx_rate1dy: Date | string | null;
-    tx_rate2: number | null;
-    tx_rate2dy: Date | string | null;
-    tx_trantyp: string | null;
-    tx_nominal: string | null;
-  }>;
-
-  const vatCodes: VatCode[] = [];
-  const outputNominals = new Set<string>();
-  const inputNominals = new Set<string>();
-
-  for (const row of Array.isArray(rows) ? rows : []) {
-    const code = row.tx_code ? String(row.tx_code).trim() : '';
-    const nominal = row.tx_nominal ? String(row.tx_nominal).trim() : '';
-    const vatType = row.tx_trantyp ? String(row.tx_trantyp).trim() : '';
-
-    const rate1 = Number(row.tx_rate1 ?? 0);
-    const rate2 = Number(row.tx_rate2 ?? 0);
-    const date1 = coerceDate(row.tx_rate1dy);
-    const date2 = coerceDate(row.tx_rate2dy);
-
-    const applicableRate = pickApplicableRate(rate1, rate2, date1, date2, refDate);
-
-    vatCodes.push({
-      code,
-      description: row.tx_desc ? String(row.tx_desc).trim() : '',
-      rate: applicableRate,
-      type: vatType,
-      nominal_account: nominal,
-    });
-
-    if (nominal) {
-      if (vatType === 'S') outputNominals.add(nominal);
-      else if (vatType === 'P') inputNominals.add(nominal);
-    }
-  }
-
+  const result = await sharedFetchVatCodesWithRates(db, refDate);
   return {
-    vat_codes: vatCodes,
-    output_nominal_accounts: outputNominals,
-    input_nominal_accounts: inputNominals,
+    vat_codes: result.vatCodes,
+    output_nominal_accounts: result.outputNominalAccounts,
+    input_nominal_accounts: result.inputNominalAccounts,
   };
 }
 

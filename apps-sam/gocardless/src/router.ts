@@ -14,6 +14,13 @@ import {
   type GoCardlessSettings,
 } from './services/settings.js';
 import { runHealthCheck } from './services/health-check.js';
+import {
+  getBatchTypes,
+  getNominalAccounts,
+  getPaymentTypes,
+  getVatCodes,
+  getSetupStatus,
+} from './services/lookups.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -121,6 +128,96 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('GoCardless health-check failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/setup-status
+   *
+   * Reports whether GoCardless is configured (api_access_token > 10 chars).
+   * Used by the launcher to decide whether to redirect to signup.
+   */
+  router.get('/api/gocardless/setup-status', async (_req: Request, res: Response) => {
+    try {
+      const result = await getSetupStatus(ctx.db.app);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Setup status failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/batch-types
+   *
+   * Returns the available batched receipt types from Opera (atype where
+   * ay_type='R' AND ay_batched=1). Recommends the first one with
+   * 'gocardless' in its description.
+   */
+  router.get('/api/gocardless/batch-types', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await getBatchTypes(operaDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Batch types fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/nominal-accounts
+   *
+   * Returns the nominal accounts dropdown list from nacnt (excluding
+   * Z-prefixed system accounts).
+   */
+  router.get('/api/gocardless/nominal-accounts', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await getNominalAccounts(operaDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Nominal accounts fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/payment-types
+   *
+   * Returns nominal payment types (atype where ay_type='P' AND not batched).
+   */
+  router.get('/api/gocardless/payment-types', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await getPaymentTypes(operaDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Payment types fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/vat-codes
+   *
+   * Returns the VAT codes from ztax with applicable rates for the given
+   * date. Used for the fees-VAT split.
+   */
+  router.get('/api/gocardless/vat-codes', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const asOfDate =
+        typeof req.query.as_of_date === 'string' ? req.query.as_of_date : null;
+      const result = await getVatCodes(operaDb, asOfDate);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('VAT codes fetch failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

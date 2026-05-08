@@ -4,10 +4,10 @@ Live tracker. Each session updates this file before committing.
 
 ## Status
 
-**Active app:** `gocardless` (foundation laid, 3 of ~124 endpoints ported)
+**Active app:** `gocardless` (foundation + 8 of ~124 endpoints ported)
 **Other apps:** `balance-check` ✅ BACKEND COMPLETE
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 6 substantive commits)
+**Sessions logged:** 1 (long session — 7 substantive commits)
 
 ## Per-app progress
 
@@ -84,7 +84,12 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `GET /api/gocardless/settings` — load + mask response
 - [x] `POST /api/gocardless/settings` — merge update with token preservation
 - [x] `GET /api/gocardless/health-check` — data-integrity check (settings + payment history vs Opera)
-- [ ] `GET /api/gocardless/setup-status`
+- [x] `GET /api/gocardless/setup-status` — configured? pending signup?
+- [x] `GET /api/gocardless/batch-types` — Opera atype receipt types
+- [x] `GET /api/gocardless/nominal-accounts` — Opera nacnt list
+- [x] `GET /api/gocardless/payment-types` — Opera atype payment types
+- [x] `GET /api/gocardless/vat-codes` — ztax VAT codes with date-applicable rates
+- [ ] `POST /api/gocardless/setup-status (placeholder)`
 - [ ] `POST /api/gocardless/parse` — extract payments from email content
 - [ ] `POST /api/gocardless/match-customers` — fuzzy match payments to Opera customers
 - [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
@@ -104,6 +109,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 #### Helpers
 - [x] `src/services/settings.ts` — settings load/save/mask/merge
 - [x] `src/services/health-check.ts` — health check
+- [x] `src/services/lookups.ts` — batch types / nominal accounts / payment types / VAT codes / setup status
 - [ ] `src/services/email-scan.ts` — scan SAM mailbox for GC payouts
 - [ ] `src/services/payment-extract.ts` — Gemini AI extraction
 - [ ] `src/services/customer-match.ts` — fuzzy match payments to Opera customers
@@ -138,9 +144,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/balance-check/tests/vat-helpers.test.ts` | 13 | ✅ passing |
 | `apps-sam/gocardless/tests/settings.test.ts` | 12 | ✅ passing |
 | `apps-sam/gocardless/tests/health-check.test.ts` | 5 | ✅ passing |
-| **Total TypeScript tests** | **57** | ✅ all passing |
+| `apps-sam/gocardless/tests/lookups.test.ts` | 9 | ✅ passing |
+| **Total TypeScript tests** | **66** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **661** | ✅ |
+| **Grand total** | **670** | ✅ |
 
 ## Open questions / blockers
 
