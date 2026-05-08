@@ -13,7 +13,7 @@
  * schema stores them as DECIMAL (already in pounds). The query layer
  * is adapted accordingly — output shape preserved exactly.
  *
- * Reads `gocardless_mandates.status` and `gocardless_payment_requests`
+ * Reads `gocardless_mandates.mandate_status` and `gocardless_payment_requests`
  * tables provisioned by migration 001_initial_schema.ts.
  */
 import type { Knex } from 'knex';
@@ -78,7 +78,7 @@ export async function getPaymentStats(
   try {
     // Active mandates count
     const mandRow = (await appDb('gocardless_mandates')
-      .where({ status: 'active' })
+      .where({ mandate_status: 'active' })
       .count<{ count: number | string }[]>('* as count')) as Array<{
       count: number | string;
     }>;

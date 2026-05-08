@@ -34,6 +34,10 @@ import {
 import { updateSubscriptionTags } from './services/subscription-tags.js';
 import { getPaymentStats } from './services/payment-stats.js';
 import {
+  matchCustomersWithDuplicateCheck,
+  type PaymentInput,
+} from './services/match-customers.js';
+import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
 } from '@sqlrag/sam-shared';
@@ -529,6 +533,60 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Delete import record failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/match-customers
+   *
+   * Match a list of GoCardless payments to Opera customer accounts.
+   * Faithful port of `match_gocardless_customers` (apps/gocardless/api/
+   * routes.py:497-575). Strategy priority:
+   *   0. metadata.opera_account → exact account if customer exists
+   *   1. mandate_id → linked Opera account
+   *   2. gocardless_customer_id → linked Opera account
+   *   3. customer_name → mandate names (normalised, exact then contains)
+   *   4. customer_name → Opera sname.sn_name (normalised, exact then contains)
+   *
+   * After matching, scans Opera cashbook (atran at_type=1) for receipts
+   * with the same value (1p tolerance) and tags possible_duplicate=true.
+   *
+   * Body: array of payment objects with customer_name, description,
+   * amount, mandate_id, customer_id, metadata, gc_payment_id.
+   */
+  router.post(
+    '/api/gocardless/match-customers',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = req.body as PaymentInput[] | { payments?: PaymentInput[] };
+        const payments = Array.isArray(body)
+          ? body
+          : Array.isArray(body?.payments)
+            ? body.payments
+            : null;
+        if (!payments) {
+          res.status(400).json({
+            success: false,
+            error: 'Body must be an array of payments',
+          });
+          return;
+        }
+        const settings = await loadSettings(appDb);
+        const result = await matchCustomersWithDuplicateCheck(
+          appDb,
+          operaDb,
+          payments,
+          { defaultBatchType: settings.default_batch_type ?? null },
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Match customers failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

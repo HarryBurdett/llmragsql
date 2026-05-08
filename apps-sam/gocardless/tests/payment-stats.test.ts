@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { getPaymentStats } from '../src/services/payment-stats.js';
 
 interface Mandate {
-  status: string;
+  mandate_status: string;
 }
 interface PaymentRequest {
   status: string;
@@ -21,12 +21,12 @@ function makeAppDb(state: MockState): any {
       let statusEq: string | null = null;
       const builder: any = {
         where: (cond: Record<string, unknown>) => {
-          if ('status' in cond) statusEq = String(cond.status);
+          if ('mandate_status' in cond) statusEq = String(cond.mandate_status);
           return builder;
         },
         count: () => {
           const filtered = state.mandates.filter(
-            (m) => statusEq === null || m.status === statusEq,
+            (m) => statusEq === null || m.mandate_status === statusEq,
           );
           return Promise.resolve([{ count: filtered.length }]);
         },
@@ -81,10 +81,10 @@ describe('getPaymentStats', () => {
   it('counts active mandates only', async () => {
     const state: MockState = {
       mandates: [
-        { status: 'active' },
-        { status: 'active' },
-        { status: 'cancelled' },
-        { status: 'expired' },
+        { mandate_status: 'active' },
+        { mandate_status: 'active' },
+        { mandate_status: 'cancelled' },
+        { mandate_status: 'expired' },
       ],
       requests: [],
     };
