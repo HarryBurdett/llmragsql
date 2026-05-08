@@ -1191,6 +1191,31 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  /**
+   * GET /api/reconcile/bank/:bank_code/scan-emails (legacy/deprecated)
+   *
+   * Returns the deprecated-redirect payload pointing callers at the
+   * real /api/bank-import/scan-emails endpoint. Faithful port of
+   * scan_emails_for_statements_legacy (routes.py:2041-2062). Older
+   * frontend builds still bind to this URL — we preserve the URL
+   * shape but make it explicit that the data is empty.
+   */
+  router.get(
+    '/api/reconcile/bank/:bank_code/scan-emails',
+    (_req: Request, res: Response) => {
+      res.json({
+        success: false,
+        deprecated: true,
+        redirect_to: '/api/bank-import/scan-emails',
+        message:
+          "This endpoint is deprecated — use /api/bank-import/scan-emails " +
+          "instead. The legacy URL preserved an empty placeholder; that's " +
+          'been removed to stop callers silently receiving zero results.',
+        statements_found: [],
+      });
+    },
+  );
+
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
   //   - GET  /api/reconcile/bank/{bank_code} — full reconcile (~600 LOC)
