@@ -4,9 +4,9 @@ Live tracker. Each session updates this file before committing.
 
 ## Status
 
-**Active app:** `balance-check` (3 of 8 endpoints ported, 5 remaining)
+**Active app:** `balance-check` (4 of 7 endpoints ported, 3 remaining — all VAT-related)
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 2 substantive commits)
+**Sessions logged:** 1 (long session — 3 substantive commits)
 
 ## Per-app progress
 
@@ -36,11 +36,13 @@ Live tracker. Each session updates this file before committing.
 - [x] `/api/reconcile/summary` (read-only — first port)
 - [x] `/api/reconcile/creditors` — full port including variance analysis + aged + top suppliers
 - [x] `/api/reconcile/debtors` — full port including variance analysis + aged + top customers
+- [x] `/api/reconcile/trial-balance` — NL-wide debits=credits check across B/F + current + closing
 - [ ] `/api/reconcile/vat`
-- [ ] `/api/reconcile/cashbook`
-- [ ] `/api/reconcile/trial-balance`
 - [ ] `/api/reconcile/vat/diagnostic`
 - [ ] `/api/reconcile/vat/variance-drilldown`
+
+NB: `/api/reconcile/cashbook` does NOT exist as a separate endpoint in
+the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 
 #### Helpers (extracted to mirror Python organisation)
 - [x] `src/services/sub-ledger-reconcile.ts` — port of `apps/balance_check/logic/sub_ledger_reconcile.py`
@@ -49,6 +51,7 @@ Live tracker. Each session updates this file before committing.
 - [x] `src/services/reconcile-summary.ts` — `/api/reconcile/summary` business logic
 - [x] `src/services/reconcile-creditors.ts` — `/api/reconcile/creditors` business logic
 - [x] `src/services/reconcile-debtors.ts` — `/api/reconcile/debtors` business logic
+- [x] `src/services/reconcile-trial-balance.ts` — `/api/reconcile/trial-balance` business logic
 - [ ] Port `apps/balance_check/logic/vat_reconcile.py` (next session)
 
 #### Known follow-ups (parity refinements)
@@ -86,9 +89,10 @@ Live tracker. Each session updates this file before committing.
 | `apps-sam/shared/tests/control-accounts.test.ts` | 8 | ✅ passing |
 | `apps-sam/balance-check/tests/reconcile-summary.test.ts` | 9 | ✅ passing |
 | `apps-sam/balance-check/tests/reconcile-creditors.test.ts` | 3 | ✅ passing |
-| **Total TypeScript tests** | **20** | ✅ all passing |
+| `apps-sam/balance-check/tests/reconcile-trial-balance.test.ts` | 4 | ✅ passing |
+| **Total TypeScript tests** | **24** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **624** | ✅ |
+| **Grand total** | **628** | ✅ |
 
 ## Open questions / blockers
 

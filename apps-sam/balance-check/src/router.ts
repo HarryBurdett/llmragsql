@@ -13,6 +13,7 @@ import type { AppContext } from './app-context.js';
 import { reconcileSummary } from './services/reconcile-summary.js';
 import { reconcileCreditors } from './services/reconcile-creditors.js';
 import { reconcileDebtors } from './services/reconcile-debtors.js';
+import { reconcileTrialBalance } from './services/reconcile-trial-balance.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -95,10 +96,27 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
+  /**
+   * GET /api/reconcile/trial-balance
+   *
+   * Faithful port of `reconcile_trial_balance()`. Verifies the nominal
+   * ledger as a whole balances (debits = credits). Returns all nominal
+   * accounts with B/F, current movements, and closing balances.
+   */
+  router.get('/api/reconcile/trial-balance', async (req: Request, res: Response) => {
+    const db = resolveCompanyDb(req, res);
+    if (!db) return;
+    try {
+      const result = await reconcileTrialBalance(db);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Trial balance check failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
   // Future endpoints (port next):
   //   GET /api/reconcile/vat
-  //   GET /api/reconcile/cashbook
-  //   GET /api/reconcile/trial-balance
   //   GET /api/reconcile/vat/diagnostic
   //   GET /api/reconcile/vat/variance-drilldown
 
