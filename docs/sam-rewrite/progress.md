@@ -4,10 +4,10 @@ Live tracker. Each session updates this file before committing.
 
 ## Status
 
-**Active app:** `balance-check` ✅ **BACKEND COMPLETE — all 7 endpoints ported.**
-                 Frontend repackaging next, then `gocardless`.
+**Active app:** `gocardless` (foundation laid, 3 of ~124 endpoints ported)
+**Other apps:** `balance-check` ✅ BACKEND COMPLETE
 **Calendar week of project:** 1
-**Sessions logged:** 1 (long session — 5 substantive commits)
+**Sessions logged:** 1 (long session — 6 substantive commits)
 
 ## Per-app progress
 
@@ -67,9 +67,49 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       SL-only and top 10 NL-only when count > 50; current port returns
       all items. Cosmetic; doesn't affect totals.
 
-### gocardless
+### gocardless (in progress — 3 of ~124 endpoints)
 
-- [ ] (queued — starts after balance-check)
+#### Foundation
+- [x] Directory scaffolded: `apps-sam/gocardless/`
+- [x] `manifest.json` — full-stack plugin, separateDatabase=true
+- [x] `package.json`, `tsconfig.json`, `vitest.config.ts`
+- [x] `src/app-context.ts` — AppContext shape with `db.app` for the per-app MSSQL DB
+- [x] `src/index.ts` — factory function (default export)
+- [x] `src/router.ts` — Express router
+- [x] `db/migrations/001_initial_schema.ts` — settings + mandates + payment_requests + subscriptions + partner_signups + mandate_setup_requests tables (mirrors the Python SQLite schema)
+- [x] TypeScript builds cleanly
+- [x] Vitest passes (17 tests)
+
+#### Endpoints (3 ported)
+- [x] `GET /api/gocardless/settings` — load + mask response
+- [x] `POST /api/gocardless/settings` — merge update with token preservation
+- [x] `GET /api/gocardless/health-check` — data-integrity check (settings + payment history vs Opera)
+- [ ] `GET /api/gocardless/setup-status`
+- [ ] `POST /api/gocardless/parse` — extract payments from email content
+- [ ] `POST /api/gocardless/match-customers` — fuzzy match payments to Opera customers
+- [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
+- [ ] `GET /api/gocardless/scan-emails` — scan SAM mailbox for payout emails
+- [ ] `GET /api/gocardless/api-payouts` — query GoCardless API directly
+- [ ] `GET /api/gocardless/import-history` — past imports
+- [ ] `POST /api/gocardless/remittance/*` — generate / send remittance emails
+- [ ] `*` /api/gocardless/partner/*` — partner portal flow (~10 endpoints)
+- [ ] `POST /api/gocardless/update-subscription-tags` — Opera repeat-doc tagging
+- [ ] `GET /api/gocardless/nominal-accounts`
+- [ ] `GET /api/gocardless/vat-codes`
+- [ ] `POST /api/gocardless/test-api`
+- [ ] `*` Mandate setup endpoints
+- [ ] `*` Subscription endpoints
+- [ ] `*` ~110 more endpoints
+
+#### Helpers
+- [x] `src/services/settings.ts` — settings load/save/mask/merge
+- [x] `src/services/health-check.ts` — health check
+- [ ] `src/services/email-scan.ts` — scan SAM mailbox for GC payouts
+- [ ] `src/services/payment-extract.ts` — Gemini AI extraction
+- [ ] `src/services/customer-match.ts` — fuzzy match payments to Opera customers
+- [ ] `src/services/import.ts` — post sales receipts (the big one)
+- [ ] `src/services/gocardless-api.ts` — wrap the GoCardless REST API
+- [ ] `src/services/remittance.ts` — generate + send remittance via SAM email
 
 ### bank-reconcile
 
@@ -96,9 +136,11 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/balance-check/tests/reconcile-trial-balance.test.ts` | 4 | ✅ passing |
 | `apps-sam/balance-check/tests/vat-diagnostic.test.ts` | 3 | ✅ passing |
 | `apps-sam/balance-check/tests/vat-helpers.test.ts` | 13 | ✅ passing |
-| **Total TypeScript tests** | **40** | ✅ all passing |
+| `apps-sam/gocardless/tests/settings.test.ts` | 12 | ✅ passing |
+| `apps-sam/gocardless/tests/health-check.test.ts` | 5 | ✅ passing |
+| **Total TypeScript tests** | **57** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **644** | ✅ |
+| **Grand total** | **661** | ✅ |
 
 ## Open questions / blockers
 

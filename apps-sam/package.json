@@ -7,9 +7,7 @@
   "workspaces": [
     "shared",
     "balance-check",
-    "gocardless",
-    "bank-reconcile",
-    "suppliers"
+    "gocardless"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
