@@ -60,6 +60,7 @@ import {
   getPaymentRequest,
   cancelPaymentRequest,
 } from './services/payment-requests.js';
+import { listSubscriptions } from './services/subscriptions.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -742,6 +743,40 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Revalidate batches failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/subscriptions
+   *
+   * List GoCardless subscriptions stored in the per-app DB. SAM-side
+   * read endpoint; the Python source has only the Opera 3 variant
+   * which adds Opera-side mismatch detection (deferred until full
+   * Opera SE ihead/itran reads land).
+   *
+   * Filters: status, opera_account. Default limit 200. Each row
+   * enriched with customer_name from the matching mandate.
+   */
+  router.get(
+    '/api/gocardless/subscriptions',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await listSubscriptions(appDb, {
+          status:
+            typeof req.query.status === 'string' ? req.query.status : null,
+          operaAccount:
+            typeof req.query.opera_account === 'string'
+              ? req.query.opera_account
+              : null,
+          limit: req.query.limit ? Number(req.query.limit) : undefined,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List subscriptions failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
