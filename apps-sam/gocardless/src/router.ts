@@ -47,6 +47,9 @@ import {
   getAllMerchantSignups,
   partnerAdminAuth,
   setPartnerAdminPassword,
+  updateMerchantAppUrl,
+  activateMerchant,
+  deployToken,
 } from './services/partner.js';
 import {
   validatePostingPeriod,
@@ -895,6 +898,83 @@ export function createRouter(ctx: AppContext): Router {
       }
     },
   );
+
+  /**
+   * PUT /api/gocardless/partner/merchant-app-url
+   *
+   * Save the deployment URL for a merchant. Faithful port of
+   * set_merchant_app_url (routes.py:1372-1388). Strips trailing slash.
+   */
+  router.put(
+    '/api/gocardless/partner/merchant-app-url',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as { signup_id?: number; app_url?: string };
+        const signupId = Number(body.signup_id ?? 0);
+        const result = await updateMerchantAppUrl(appDb, {
+          signupId,
+          appUrl: String(body.app_url ?? ''),
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Set merchant app URL failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/partner/activate-merchant
+   *
+   * Push a merchant's GoCardless access token to their app.
+   * Faithful port of activate_gocardless_merchant (routes.py:1391-1463).
+   *
+   * Local-host (localhost / 127.0.0.1 / 0.0.0.0) → write directly to
+   * our own settings.api_access_token. Otherwise PUT the token via
+   * fetch to {app_url}/api/gocardless/deploy-token (15s timeout). On
+   * success, marks signup status='activated'.
+   */
+  router.post(
+    '/api/gocardless/partner/activate-merchant',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as { signup_id?: number };
+        const signupId = Number(body.signup_id ?? 0);
+        const result = await activateMerchant(appDb, { signupId });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Activate merchant failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * PUT /api/gocardless/deploy-token
+   *
+   * Receive a GoCardless access token (the activate-merchant flow's
+   * remote target). Faithful port of deploy_gocardless_token
+   * (routes.py:1466-1484). Saves to settings.api_access_token.
+   */
+  router.put('/api/gocardless/deploy-token', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const body = (req.body ?? {}) as {
+        access_token?: string;
+        company_name?: string;
+      };
+      const result = await deployToken(appDb, body);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Deploy token failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
 
   // Many more endpoints to port from apps/gocardless/api/routes.py:
   //   /api/gocardless/scan-emails        — IMAP/Graph scan via SAM email service

@@ -5,6 +5,9 @@ import {
   getAllMerchantSignups,
   partnerAdminAuth,
   setPartnerAdminPassword,
+  updateMerchantAppUrl,
+  activateMerchant,
+  deployToken,
 } from '../src/services/partner.js';
 
 interface SignupRow {
@@ -77,8 +80,26 @@ function makeAppDb(state: MockState): any {
         },
         first: () => {
           let rows = [...state.signups];
+          if (where) {
+            rows = rows.filter((r) =>
+              Object.entries(where!).every(([k, v]) => (r as any)[k] === v),
+            );
+          }
           rows.sort((a, b) => (orderDir === 'desc' ? b.id - a.id : a.id - b.id));
           return Promise.resolve(rows[0]);
+        },
+        update: (data: Record<string, unknown>) => {
+          let count = 0;
+          for (const r of state.signups) {
+            const matches = where
+              ? Object.entries(where).every(([k, v]) => (r as any)[k] === v)
+              : false;
+            if (matches) {
+              Object.assign(r, data);
+              count++;
+            }
+          }
+          return Promise.resolve(count);
         },
         then: (cb: (rows: SignupRow[]) => unknown) => {
           let rows = [...state.signups];
@@ -386,6 +407,216 @@ describe('partnerAdminAuth', () => {
     const result = await partnerAdminAuth(db, 'sekret');
     expect(result.success).toBe(true);
     expect(result.first_time).toBeUndefined();
+  });
+});
+
+describe('updateMerchantAppUrl', () => {
+  it('rejects missing signupId', async () => {
+    const db = makeAppDb({ settings: {}, signups: [] });
+    const result = await updateMerchantAppUrl(db, { signupId: 0, appUrl: 'x' });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No signup ID/);
+  });
+
+  it('strips trailing slash from app URL', async () => {
+    const state: MockState = {
+      settings: {},
+      signups: [
+        {
+          id: 1, company_name: null, company_email: null,
+          billing_request_id: null, billing_request_flow_id: null,
+          authorisation_url: null, status: 'pending', status_detail: null,
+          access_token_obtained: 0, merchant_access_token: null,
+          merchant_organisation_id: null, merchant_creditor_name: null,
+          merchant_app_url: null, partner_referral_id: null,
+          created_at: '2026-04-15', completed_at: null, updated_at: null,
+        },
+      ],
+    };
+    const db = makeAppDb(state);
+    const result = await updateMerchantAppUrl(db, {
+      signupId: 1,
+      appUrl: 'https://x.com/app/',
+    });
+    expect(result.success).toBe(true);
+    expect(state.signups[0]?.merchant_app_url).toBe('https://x.com/app');
+  });
+
+  it('returns "Signup record not found" when no row updated', async () => {
+    const db = makeAppDb({ settings: {}, signups: [] });
+    const result = await updateMerchantAppUrl(db, {
+      signupId: 999,
+      appUrl: 'https://x.com',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/);
+  });
+});
+
+describe('activateMerchant', () => {
+  function makeSignup(over: Partial<SignupRow> = {}): SignupRow {
+    return {
+      id: 1, company_name: 'Acme', company_email: null,
+      billing_request_id: null, billing_request_flow_id: null,
+      authorisation_url: null, status: 'completed', status_detail: null,
+      access_token_obtained: 1, merchant_access_token: 'TKN-123',
+      merchant_organisation_id: null, merchant_creditor_name: 'Acme Ltd',
+      merchant_app_url: 'https://merchant.example.com',
+      partner_referral_id: null,
+      created_at: '2026-04-10', completed_at: null, updated_at: null,
+      ...over,
+    };
+  }
+
+  it('rejects missing signupId', async () => {
+    const db = makeAppDb({ settings: {}, signups: [] });
+    const result = await activateMerchant(db, { signupId: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it('returns "Signup record not found" when row missing', async () => {
+    const db = makeAppDb({ settings: {}, signups: [] });
+    const result = await activateMerchant(db, { signupId: 99 });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/);
+  });
+
+  it('rejects when no merchant_access_token', async () => {
+    const db = makeAppDb({
+      settings: {},
+      signups: [makeSignup({ merchant_access_token: null })],
+    });
+    const result = await activateMerchant(db, { signupId: 1 });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No access token/);
+  });
+
+  it('rejects when no app URL configured', async () => {
+    const db = makeAppDb({
+      settings: {},
+      signups: [makeSignup({ merchant_app_url: '' })],
+    });
+    const result = await activateMerchant(db, { signupId: 1 });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No app URL/);
+  });
+
+  it('local URL: writes token to local settings', async () => {
+    const state: MockState = {
+      settings: {},
+      signups: [makeSignup({ merchant_app_url: 'http://localhost:3000' })],
+    };
+    const db = makeAppDb(state);
+    const result = await activateMerchant(db, { signupId: 1 });
+    expect(result.success).toBe(true);
+    expect((state.settings as any).api_access_token).toBe('TKN-123');
+    expect(state.signups[0]?.status).toBe('activated');
+  });
+
+  it('remote URL: pushes token via fetch and marks activated', async () => {
+    const state: MockState = {
+      settings: {},
+      signups: [
+        makeSignup({ merchant_app_url: 'https://merchant.example.com' }),
+      ],
+    };
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fakeFetch = (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return Promise.resolve({
+        status: 200,
+        ok: true,
+        json: async () => ({ success: true }),
+        text: async () => '',
+      } as Response);
+    };
+    const db = makeAppDb(state);
+    const result = await activateMerchant(
+      db,
+      { signupId: 1 },
+      fakeFetch as any,
+    );
+    expect(result.success).toBe(true);
+    expect(calls[0]?.url).toBe(
+      'https://merchant.example.com/api/gocardless/deploy-token',
+    );
+    expect(calls[0]?.init?.method).toBe('PUT');
+    const body = JSON.parse(String(calls[0]?.init?.body ?? '{}'));
+    expect(body.access_token).toBe('TKN-123');
+    expect(body.company_name).toBe('Acme Ltd');
+    expect(state.signups[0]?.status).toBe('activated');
+  });
+
+  it('remote URL non-200 → returns error', async () => {
+    const state: MockState = {
+      settings: {},
+      signups: [makeSignup({ merchant_app_url: 'https://x.com' })],
+    };
+    const fakeFetch = () =>
+      Promise.resolve({
+        status: 500,
+        ok: false,
+        json: async () => ({}),
+        text: async () => 'broken',
+      } as Response);
+    const result = await activateMerchant(
+      makeAppDb(state),
+      { signupId: 1 },
+      fakeFetch as any,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Remote app returned 500/);
+  });
+
+  it('remote URL: success=false → returns error', async () => {
+    const state: MockState = {
+      settings: {},
+      signups: [makeSignup({ merchant_app_url: 'https://x.com' })],
+    };
+    const fakeFetch = () =>
+      Promise.resolve({
+        status: 200,
+        ok: true,
+        json: async () => ({ success: false, error: 'duplicate token' }),
+        text: async () => '',
+      } as Response);
+    const result = await activateMerchant(
+      makeAppDb(state),
+      { signupId: 1 },
+      fakeFetch as any,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/duplicate token/);
+  });
+
+  it('rejects malformed app URL', async () => {
+    const db = makeAppDb({
+      settings: {},
+      signups: [makeSignup({ merchant_app_url: 'not a url' })],
+    });
+    const result = await activateMerchant(db, { signupId: 1 });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Invalid app URL/);
+  });
+});
+
+describe('deployToken', () => {
+  it('rejects missing token', async () => {
+    const db = makeAppDb({ settings: {}, signups: [] });
+    const result = await deployToken(db, { access_token: '' });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No token/);
+  });
+
+  it('saves token to settings.api_access_token', async () => {
+    const state: MockState = { settings: {}, signups: [] };
+    const result = await deployToken(makeAppDb(state), {
+      access_token: 'NEW-TOKEN',
+      company_name: 'Acme Ltd',
+    });
+    expect(result.success).toBe(true);
+    expect(result.message).toMatch(/Acme Ltd/);
+    expect((state.settings as any).api_access_token).toBe('NEW-TOKEN');
   });
 });
 

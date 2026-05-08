@@ -242,6 +242,218 @@ export async function partnerAdminAuth(
 }
 
 // ---------------------------------------------------------------------
+// PUT /api/gocardless/partner/merchant-app-url
+// ---------------------------------------------------------------------
+
+export interface UpdateMerchantAppUrlInput {
+  signupId: number;
+  appUrl: string;
+}
+
+export interface UpdateMerchantAppUrlResponse {
+  success: boolean;
+  error?: string;
+}
+
+export async function updateMerchantAppUrl(
+  appDb: Knex,
+  input: UpdateMerchantAppUrlInput,
+): Promise<UpdateMerchantAppUrlResponse> {
+  if (!input.signupId) {
+    return { success: false, error: 'No signup ID provided' };
+  }
+  // Match Python's strip + trailing-slash strip
+  const appUrl = (input.appUrl ?? '').trim().replace(/\/+$/, '');
+  try {
+    const updated = await appDb('gocardless_partner_signups')
+      .where({ id: input.signupId })
+      .update({
+        merchant_app_url: appUrl,
+        updated_at: appDb.fn.now(),
+      });
+    if (!Number(updated)) {
+      return { success: false, error: 'Signup record not found' };
+    }
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
+// POST /api/gocardless/partner/activate-merchant
+// ---------------------------------------------------------------------
+
+export interface ActivateMerchantInput {
+  signupId: number;
+}
+
+export interface ActivateMerchantResponse {
+  success: boolean;
+  company_name?: string;
+  app_url?: string;
+  message?: string;
+  error?: string;
+}
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0']);
+
+export async function activateMerchant(
+  appDb: Knex,
+  input: ActivateMerchantInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ActivateMerchantResponse> {
+  if (!input.signupId) {
+    return { success: false, error: 'No signup ID provided' };
+  }
+
+  try {
+    const signupRow = (await appDb('gocardless_partner_signups')
+      .where({ id: input.signupId })
+      .first()) as SignupRow | undefined;
+
+    if (!signupRow) {
+      return { success: false, error: 'Signup record not found' };
+    }
+
+    const token = (signupRow.merchant_access_token ?? '').trim();
+    if (!token) {
+      return {
+        success: false,
+        error: 'No access token for this merchant — signup may not be complete',
+      };
+    }
+
+    const appUrl = (signupRow.merchant_app_url ?? '').trim().replace(/\/+$/, '');
+    if (!appUrl) {
+      return {
+        success: false,
+        error: 'No app URL configured for this merchant',
+      };
+    }
+
+    const companyName =
+      (signupRow.merchant_creditor_name ?? '').trim() ||
+      (signupRow.company_name ?? '').trim();
+
+    let parsed: URL;
+    try {
+      parsed = new URL(appUrl);
+    } catch {
+      return { success: false, error: `Invalid app URL: ${appUrl}` };
+    }
+    const isLocal = LOCAL_HOSTS.has(parsed.hostname);
+
+    if (isLocal) {
+      // Deploy locally — write to our own settings (api_access_token)
+      const existingSettings = await loadSettings(appDb);
+      const merged: GoCardlessSettings = {
+        ...existingSettings,
+        api_access_token: token,
+      };
+      const ok = await saveSettings(appDb, merged);
+      if (!ok) return { success: false, error: 'Failed to save local settings' };
+    } else {
+      // Deploy remotely — push token to merchant's deploy-token endpoint
+      try {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 15000);
+        let resp: Response;
+        try {
+          resp = await fetchImpl(`${appUrl}/api/gocardless/deploy-token`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              access_token: token,
+              company_name: companyName,
+            }),
+            signal: ac.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        if (resp.status !== 200) {
+          const text = (await resp.text().catch(() => '')).slice(0, 200);
+          return {
+            success: false,
+            error: `Remote app returned ${resp.status}: ${text}`,
+          };
+        }
+        const data = (await resp.json().catch(() => ({}))) as {
+          success?: boolean;
+          error?: string;
+        };
+        if (!data.success) {
+          return {
+            success: false,
+            error: data.error ?? 'Remote app rejected the token',
+          };
+        }
+      } catch (e: any) {
+        return {
+          success: false,
+          error: `Cannot reach merchant app at ${appUrl}: ${e?.message ?? String(e)}`,
+        };
+      }
+    }
+
+    // Mark as activated
+    await appDb('gocardless_partner_signups')
+      .where({ id: input.signupId })
+      .update({ status: 'activated', updated_at: appDb.fn.now() });
+
+    return {
+      success: true,
+      company_name: companyName,
+      app_url: appUrl,
+      message: `Token deployed for ${companyName}`,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
+// PUT /api/gocardless/deploy-token (receive a token from partner portal)
+// ---------------------------------------------------------------------
+
+export interface DeployTokenInput {
+  access_token?: string;
+  company_name?: string;
+}
+
+export interface DeployTokenResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+export async function deployToken(
+  appDb: Knex,
+  input: DeployTokenInput,
+): Promise<DeployTokenResponse> {
+  const token = (input.access_token ?? '').trim();
+  if (!token) {
+    return { success: false, error: 'No token provided' };
+  }
+  try {
+    const existing = await loadSettings(appDb);
+    const merged: GoCardlessSettings = {
+      ...existing,
+      api_access_token: token,
+    };
+    const ok = await saveSettings(appDb, merged);
+    if (!ok) return { success: false, error: 'Failed to save settings' };
+    return {
+      success: true,
+      message: `Token deployed for ${(input.company_name ?? '').trim()}`,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
 // PUT /api/gocardless/partner/admin-password
 // ---------------------------------------------------------------------
 
