@@ -38,6 +38,10 @@ import {
   type PaymentInput,
 } from './services/match-customers.js';
 import {
+  revalidateBatches,
+  type BatchInput,
+} from './services/revalidate-batches.js';
+import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
 } from '@sqlrag/sam-shared';
@@ -587,6 +591,51 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Match customers failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/revalidate-batches
+   *
+   * Refresh validation status for previously-fetched batches without
+   * re-hitting the GoCardless API. Faithful port of
+   * revalidate_gocardless_batches (routes.py:2530-2702). Per batch:
+   *   - parse payment_date
+   *   - detect foreign currency vs Opera home currency
+   *   - run validatePostingPeriod (SL ledger)
+   *   - duplicate scan against atran/aentry:
+   *       foreign currency → ref-only (suffix LIKE)
+   *       GBP             → ref + amount (£1 tolerance), then amount
+   *                         alone within 14 days (1p tolerance)
+   *
+   * Body: array of batch objects (originals preserved through the
+   * pipeline like Python's **batch spread).
+   */
+  router.post(
+    '/api/gocardless/revalidate-batches',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const body = req.body as BatchInput[] | { batches?: BatchInput[] };
+        const batches = Array.isArray(body)
+          ? body
+          : Array.isArray(body?.batches)
+            ? body.batches
+            : null;
+        if (!batches) {
+          res.status(400).json({
+            success: false,
+            error: 'Body must be an array of batches',
+          });
+          return;
+        }
+        const result = await revalidateBatches(operaDb, batches);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Revalidate batches failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

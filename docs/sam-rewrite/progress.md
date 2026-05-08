@@ -36,7 +36,7 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 21 of ~124 endpoints (95 tests)
+**gocardless:** 22 of ~124 endpoints (102 tests)
 **bank-reconcile:** 18 of ~127 endpoints (50 tests)
 **suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
@@ -53,6 +53,8 @@ default factory, and passes a context our types already match.
       `getPeriodForDate`, `getCurrentPeriodInfo`, `getPeriodStatus`,
       `isOpenPeriodAccountingEnabled`, `isRealTimeUpdateEnabled`,
       `validatePostingPeriod`, `getLedgerTypeForTransaction`. 27 tests.
+- [x] Home currency helper (port from `sql_rag/opera_sql_import.py`):
+      `getHomeCurrency` — zxchg lookup with GBP fallback + per-DB cache. 6 tests.
 - [ ] Opera 3 Agent client (HTTP wrapper)
 - [ ] Common posting primitives (id allocation, VAT tracking — populated as gocardless/bank-rec rewrites progress)
 
@@ -103,7 +105,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       SL-only and top 10 NL-only when count > 50; current port returns
       all items. Cosmetic; doesn't affect totals.
 
-### gocardless (in progress — 21 of ~124 endpoints)
+### gocardless (in progress — 22 of ~124 endpoints)
 
 #### Foundation
 - [x] Directory scaffolded: `apps-sam/gocardless/`
@@ -129,6 +131,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `GET /api/gocardless/import-config` — consolidated batch_types + nominal + VAT
 - [ ] `POST /api/gocardless/parse` — extract payments from email content
 - [x] `POST /api/gocardless/match-customers` — match payments via metadata + mandates + sname (5 priorities + 1p-tolerance duplicate check + customer-id backfill)
+- [x] `POST /api/gocardless/revalidate-batches` — refresh period_valid + possible_duplicate against current Opera state (foreign-currency aware, ref + amount duplicate detection, 14-day fallback)
 - [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
 - [ ] `GET /api/gocardless/scan-emails` — scan SAM mailbox for payout emails
 - [x] `GET /api/gocardless/api-payouts` — query GoCardless API directly (slim port; enrichment deferred)

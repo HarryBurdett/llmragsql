@@ -20,6 +20,9 @@ export {
   validatePostingPeriod,
   getLedgerTypeForTransaction,
 } from './period-validation.js';
+
+export { getHomeCurrency, clearHomeCurrencyCache } from './home-currency.js';
+export type { HomeCurrency } from './home-currency.js';
 export type {
   LedgerType,
   PeriodInfo,
