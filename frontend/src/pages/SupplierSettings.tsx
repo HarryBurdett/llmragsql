@@ -8,6 +8,7 @@ import { authFetch } from '../api/client';
 import { PageHeader, Card, Alert } from '../components/ui';
 import { HelpPanel } from '../components/HelpPanel';
 import { useHelp } from '../hooks/useHelp';
+import { SystemConnectionPanel } from '../components/SystemConnectionPanel';
 import type { LucideIcon } from 'lucide-react';
 
 interface SettingConfig {
@@ -623,6 +624,13 @@ export default function SupplierSettings() {
           <li><strong>Email Templates:</strong> Write plain text with merge fields like {'{supplier_name}'} — click Preview to see exactly what the email will look like.</li>
         </ul>
       </Alert>
+
+      {/* Read-only system connection panel — sourced centrally from
+          env vars today, from SAM after migration. Shown for
+          per-app diagnostic visibility. */}
+      <div className="mt-6">
+        <SystemConnectionPanel />
+      </div>
     </div>
   );
 }

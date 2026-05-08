@@ -5,6 +5,7 @@ import { authFetch } from '../api/client';
 import { PageHeader } from '../components/ui';
 import { HelpPanel } from '../components/HelpPanel';
 import { useHelp } from '../hooks/useHelp';
+import { SystemConnectionPanel } from '../components/SystemConnectionPanel';
 
 type OperaVersion = 'opera-sql' | 'opera3';
 
@@ -882,6 +883,13 @@ export function GoCardlessSettings() {
             {isSavingSettings ? 'Saving...' : 'Save Settings'}
           </button>
         </div>
+      </div>
+
+      {/* Read-only system connection panel — sourced centrally from
+          env vars today, from SAM after migration. Shown for
+          per-app diagnostic visibility. */}
+      <div className="mt-6">
+        <SystemConnectionPanel />
       </div>
     </div>
   );

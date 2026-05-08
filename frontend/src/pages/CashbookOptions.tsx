@@ -4,6 +4,7 @@ import { authFetch } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
 import { HelpPanel } from '../components/HelpPanel';
 import { useHelp } from '../hooks/useHelp';
+import { SystemConnectionPanel } from '../components/SystemConnectionPanel';
 
 // Recurring Entries Settings
 function RecurringEntriesSettings() {
@@ -205,6 +206,7 @@ export default function CashbookOptions() {
       <div className="space-y-6 mt-6">
         <StatementFolderSettings />
         <RecurringEntriesSettings />
+        <SystemConnectionPanel />
       </div>
     </div>
   );

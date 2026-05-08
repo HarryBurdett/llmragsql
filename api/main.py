@@ -1345,6 +1345,108 @@ async def get_status():
         "config_loaded": config is not None
     }
 
+
+@app.get("/api/system/connection-info")
+async def get_system_connection_info(request: Request):
+    """Read-only summary of the centralised parameters this app
+    instance is wired up to (Opera SQL, IMAP, SMTP, AI provider,
+    active company, Opera version).
+
+    Used by the per-app Settings pages' "System Connection" panel
+    so operators can see exactly which backends are configured
+    without leaving the app.
+
+    SECRETS ARE NEVER RETURNED. Passwords, API keys, and tokens
+    are reported as `configured: true|false` only. The panel
+    shows hostnames, ports, usernames, and "configured"
+    indicators.
+
+    SAM-day: this endpoint's response shape stays the same — only
+    the source of values changes (env vars today, SAM-provided
+    secrets tomorrow). The frontend panel doesn't change.
+    """
+    user = getattr(request.state, 'user', None)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # Read centralised config via the env-var loader (Phase A).
+    # Same source whether populated by .env, docker-compose, or SAM.
+    from apps.core.env_config import get_config, env_str
+
+    cfg = get_config()
+
+    def _opt(section: str, key: str, default: str = '') -> str:
+        try:
+            return cfg.get(section, key, fallback=default)
+        except Exception:
+            return default
+
+    def _has(section: str, key: str) -> bool:
+        return bool(_opt(section, key, '').strip())
+
+    # Active company / system context
+    active_company_name = ''
+    active_company_id = ''
+    try:
+        if current_company:
+            active_company_id = current_company.get('id') or ''
+            active_company_name = current_company.get('name') or ''
+    except Exception:
+        pass
+
+    opera_version = env_str('OPERA_VERSION', 'SE') or 'SE'
+
+    return {
+        "active_company": {
+            "id": active_company_id,
+            "name": active_company_name,
+            "opera_version": opera_version,
+        },
+        "opera_sql": {
+            "server": _opt('database', 'server'),
+            "port": _opt('database', 'port', '1433'),
+            "database": _opt('database', 'database'),
+            "username": _opt('database', 'username'),
+            "use_windows_auth": _opt('database', 'use_windows_auth', 'False').lower() in ('true', '1', 'yes'),
+            "ssl": _opt('database', 'ssl', 'False').lower() in ('true', '1', 'yes'),
+            "password_configured": _has('database', 'password'),
+        },
+        "opera3": {
+            "data_path": env_str('OPERA3_DATA_PATH', '') or '',
+            "write_agent_url": env_str('OPERA3_WRITE_AGENT_URL', '') or '',
+            "applies_when": "OPERA_VERSION=3",
+        },
+        "email_imap": {
+            "enabled": _opt('email_imap', 'enabled', 'true').lower() in ('true', '1', 'yes'),
+            "server": _opt('email_imap', 'server'),
+            "port": _opt('email_imap', 'port', '993'),
+            "username": _opt('email_imap', 'username'),
+            "use_ssl": _opt('email_imap', 'use_ssl', 'true').lower() in ('true', '1', 'yes'),
+            "password_configured": _has('email_imap', 'password'),
+        },
+        "email_smtp": {
+            "server": _opt('email', 'smtp_server'),
+            "port": _opt('email', 'smtp_port', '587'),
+            "username": _opt('email', 'smtp_username'),
+            "from_address": _opt('email', 'from_address'),
+            "password_configured": _has('email', 'smtp_password'),
+        },
+        "ai_provider": {
+            "provider": _opt('models', 'provider', 'gemini'),
+            "embedding_model": _opt('models', 'embedding_model', 'all-MiniLM-L6-v2'),
+            "gemini_model": _opt('gemini', 'model', 'gemini-2.0-flash'),
+            "gemini_configured": _has('gemini', 'api_key'),
+            "openai_configured": _has('openai', 'api_key'),
+            "anthropic_configured": _has('anthropic', 'api_key'),
+            "groq_configured": _has('groq', 'api_key'),
+        },
+        "deployment": {
+            "app_name": env_str('APP_NAME', 'monolith') or 'monolith',
+            "installed_apps": env_str('INSTALLED_APPS', '') or 'all',
+            "sam_enabled": (env_str('SAM_ENABLED', 'false') or 'false').lower() in ('true', '1', 'yes'),
+        },
+    }
+
 # ============ Authentication Endpoints ============
 
 @app.post("/api/auth/login", response_model=LoginResponse)
