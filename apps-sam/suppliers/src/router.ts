@@ -23,6 +23,10 @@ import {
   getSupplierConfig,
   saveSupplierConfig,
 } from './services/supplier-config.js';
+import {
+  listStatements,
+  getStatement,
+} from './services/supplier-statements.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -321,6 +325,62 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Save supplier config failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/statements — list supplier statements with
+   * optional supplier_code / from_date / to_date filters.
+   *
+   * Mounted at /api/suppliers/statements (not /:code/statements) so
+   * the catch-all /:code route doesn't shadow it.
+   */
+  router.get('/api/suppliers/statements', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const supplierCode =
+        typeof req.query.supplier_code === 'string' ? req.query.supplier_code : null;
+      const fromDate =
+        typeof req.query.from_date === 'string' ? req.query.from_date : null;
+      const toDate =
+        typeof req.query.to_date === 'string' ? req.query.to_date : null;
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      const result = await listStatements(appDb, {
+        supplierCode,
+        fromDate,
+        toDate,
+        limit,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List statements failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/statements/:id — full statement detail
+   * (header + lines + opera-only items).
+   */
+  router.get('/api/suppliers/statements/:id', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        res.status(400).json({ success: false, error: 'Invalid statement id' });
+        return;
+      }
+      const result = await getStatement(appDb, id);
+      if (!result.success) {
+        res.status(404).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get statement failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
