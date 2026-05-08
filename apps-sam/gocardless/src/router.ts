@@ -32,6 +32,10 @@ import {
   deleteImportRecord,
 } from './services/import-history-delete.js';
 import { updateSubscriptionTags } from './services/subscription-tags.js';
+import {
+  validatePostingPeriod,
+  getCurrentPeriodInfo,
+} from '@sqlrag/sam-shared';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -528,6 +532,65 @@ export function createRouter(ctx: AppContext): Router {
       }
     },
   );
+
+  /**
+   * GET /api/gocardless/validate-date?post_date=YYYY-MM-DD
+   *
+   * Validate that a posting date is allowed in Opera, based on Open
+   * Period Accounting / nclndd / nparm. Faithful port of
+   * `validate_gocardless_date` (apps/gocardless/api/routes.py:578-618).
+   *
+   * Returns:
+   *   - valid:                bool
+   *   - error:                string when invalid
+   *   - year/period:          mapped from nclndd
+   *   - current_year/current_period: from nparm
+   *   - open_period_accounting: bool
+   */
+  router.get('/api/gocardless/validate-date', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const postDate = String(req.query.post_date ?? '').trim();
+      if (!postDate) {
+        res.json({
+          success: false,
+          valid: false,
+          error: 'post_date is required',
+        });
+        return;
+      }
+      let result;
+      try {
+        result = await validatePostingPeriod(operaDb, postDate, 'SL');
+      } catch (parseErr: any) {
+        res.json({
+          success: false,
+          valid: false,
+          error: parseErr?.message ?? String(parseErr),
+        });
+        return;
+      }
+      const current = await getCurrentPeriodInfo(operaDb);
+      res.json({
+        success: true,
+        valid: result.is_valid,
+        error: result.is_valid ? null : result.error_message,
+        year: result.year,
+        period: result.period,
+        current_year: current.np_year,
+        current_period: current.np_perno,
+        open_period_accounting: result.open_period_accounting,
+      });
+    } catch (err: any) {
+      ctx.logger.error('Validate-date failed', err);
+      res.status(500).json({
+        success: false,
+        valid: false,
+        error: err?.message ?? String(err),
+      });
+    }
+  });
 
   /**
    * POST /api/gocardless/update-subscription-tags

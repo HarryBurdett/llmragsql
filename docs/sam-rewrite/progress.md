@@ -6,7 +6,7 @@ Live tracker. Each session updates this file before committing.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 18 of ~124 endpoints (70 tests)
+**gocardless:** 19 of ~124 endpoints (70 tests)
 **bank-reconcile:** 18 of ~127 endpoints (50 tests)
 **suppliers:** 22 endpoints (greenfield TS work — 69 tests)
 **Calendar week of project:** 1
@@ -19,7 +19,10 @@ Live tracker. Each session updates this file before committing.
 - [x] `package.json`, `tsconfig.json`, workspace setup
 - [x] Opera SQL control-accounts lookup (`getControlAccounts` — port of `sql_rag/opera_config.py`)
 - [x] Tests for control-accounts (8 passing)
-- [ ] Period status helpers (port from `sql_rag/opera_config.py`)
+- [x] Period validation primitives (port from `sql_rag/opera_config.py`):
+      `getPeriodForDate`, `getCurrentPeriodInfo`, `getPeriodStatus`,
+      `isOpenPeriodAccountingEnabled`, `isRealTimeUpdateEnabled`,
+      `validatePostingPeriod`, `getLedgerTypeForTransaction`. 27 tests.
 - [ ] Opera 3 Agent client (HTTP wrapper)
 - [ ] Common posting primitives (id allocation, VAT tracking — populated as gocardless/bank-rec rewrites progress)
 
@@ -70,7 +73,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
       SL-only and top 10 NL-only when count > 50; current port returns
       all items. Cosmetic; doesn't affect totals.
 
-### gocardless (in progress — 18 of ~124 endpoints)
+### gocardless (in progress — 19 of ~124 endpoints)
 
 #### Foundation
 - [x] Directory scaffolded: `apps-sam/gocardless/`
@@ -105,6 +108,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [ ] `POST /api/gocardless/remittance/*` — generate / send remittance emails
 - [ ] `*` /api/gocardless/partner/*` — partner portal flow (~10 endpoints)
 - [x] `POST /api/gocardless/update-subscription-tags` — Opera repeat-doc tagging (preview + apply, ROWLOCK)
+- [x] `GET /api/gocardless/validate-date` — Opera period validation (OPA-aware, NL master gate, sub-ledger check)
 - [ ] `GET /api/gocardless/nominal-accounts`
 - [ ] `GET /api/gocardless/vat-codes`
 - [ ] `POST /api/gocardless/test-api`
