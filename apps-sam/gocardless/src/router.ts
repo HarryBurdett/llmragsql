@@ -19,6 +19,8 @@ import {
   getNominalAccounts,
   getPaymentTypes,
   getVatCodes,
+  getBankAccounts,
+  getImportConfig,
   getSetupStatus,
 } from './services/lookups.js';
 
@@ -218,6 +220,44 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('VAT codes fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/bank-accounts
+   *
+   * Returns Opera bank accounts for dropdown selection.
+   */
+  router.get('/api/gocardless/bank-accounts', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await getBankAccounts(operaDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Bank accounts fetch failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/gocardless/import-config
+   *
+   * Consolidated endpoint returning batch_types + nominal_accounts +
+   * vat_codes in a single response. Faithful port of
+   * `get_gocardless_import_config`.
+   */
+  router.get('/api/gocardless/import-config', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const asOfDate =
+        typeof req.query.as_of_date === 'string' ? req.query.as_of_date : null;
+      const result = await getImportConfig(operaDb, asOfDate);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Import config fetch failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

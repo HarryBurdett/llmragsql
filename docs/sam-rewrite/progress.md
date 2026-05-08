@@ -89,7 +89,8 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `GET /api/gocardless/nominal-accounts` — Opera nacnt list
 - [x] `GET /api/gocardless/payment-types` — Opera atype payment types
 - [x] `GET /api/gocardless/vat-codes` — ztax VAT codes with date-applicable rates
-- [ ] `POST /api/gocardless/setup-status (placeholder)`
+- [x] `GET /api/gocardless/bank-accounts` — nbank list
+- [x] `GET /api/gocardless/import-config` — consolidated batch_types + nominal + VAT
 - [ ] `POST /api/gocardless/parse` — extract payments from email content
 - [ ] `POST /api/gocardless/match-customers` — fuzzy match payments to Opera customers
 - [ ] `POST /api/gocardless/import` — post sales receipts to Opera (the main posting flow)
@@ -144,10 +145,10 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 | `apps-sam/balance-check/tests/vat-helpers.test.ts` | 13 | ✅ passing |
 | `apps-sam/gocardless/tests/settings.test.ts` | 12 | ✅ passing |
 | `apps-sam/gocardless/tests/health-check.test.ts` | 5 | ✅ passing |
-| `apps-sam/gocardless/tests/lookups.test.ts` | 9 | ✅ passing |
-| **Total TypeScript tests** | **66** | ✅ all passing |
+| `apps-sam/gocardless/tests/lookups.test.ts` | 12 | ✅ passing |
+| **Total TypeScript tests** | **69** | ✅ all passing |
 | Python tests (existing, kept alive as reference) | 604 | ✅ all passing |
-| **Grand total** | **670** | ✅ |
+| **Grand total** | **673** | ✅ |
 
 ## Open questions / blockers
 

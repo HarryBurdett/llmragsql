@@ -215,6 +215,91 @@ export async function getVatCodes(
 }
 
 // =====================================================================
+// Bank accounts — nbank list
+// =====================================================================
+
+export interface BankAccount {
+  code: string;
+  description: string;
+}
+
+export interface BankAccountsResponse {
+  success: boolean;
+  accounts: BankAccount[];
+  error?: string;
+}
+
+export async function getBankAccounts(operaDb: Knex): Promise<BankAccountsResponse> {
+  try {
+    const rows = (await operaDb.raw(`
+      SELECT nk_acnt, nk_desc
+      FROM nbank WITH (NOLOCK)
+      ORDER BY nk_acnt
+    `)) as unknown as Array<{ nk_acnt: string | null; nk_desc: string | null }>;
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return { success: true, accounts: [] };
+    }
+    const accounts: BankAccount[] = rows.map((row) => ({
+      code: row.nk_acnt ? String(row.nk_acnt).trim() : '',
+      description: row.nk_desc ? String(row.nk_desc).trim() : '',
+    }));
+    return { success: true, accounts };
+  } catch (err: any) {
+    return { success: false, accounts: [], error: err?.message ?? String(err) };
+  }
+}
+
+// =====================================================================
+// Consolidated import-config — batch types + nominal accounts + VAT codes
+// =====================================================================
+
+export interface ImportConfigResponse {
+  success: boolean;
+  batch_types: BatchType[];
+  batch_types_recommended: BatchType | null;
+  nominal_accounts: NominalAccount[];
+  vat_codes: GcVatCode[];
+  error?: string;
+}
+
+/**
+ * Consolidated endpoint returning batch_types, nominal_accounts, and
+ * vat_codes in a single response to reduce frontend round-trips.
+ *
+ * Faithful port of `get_gocardless_import_config`.
+ */
+export async function getImportConfig(
+  operaDb: Knex,
+  asOfDate: string | null = null,
+): Promise<ImportConfigResponse> {
+  try {
+    const [batches, accounts, vat] = await Promise.all([
+      getBatchTypes(operaDb),
+      getNominalAccounts(operaDb),
+      getVatCodes(operaDb, asOfDate),
+    ]);
+
+    return {
+      success: true,
+      batch_types: batches.batch_types,
+      batch_types_recommended: batches.recommended ?? null,
+      nominal_accounts: accounts.accounts,
+      vat_codes: vat.vat_codes,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      batch_types: [],
+      batch_types_recommended: null,
+      nominal_accounts: [],
+      vat_codes: [],
+      error: err?.message ?? String(err),
+    };
+  }
+}
+
+// =====================================================================
 // Setup status — has GoCardless been configured?
 // =====================================================================
 

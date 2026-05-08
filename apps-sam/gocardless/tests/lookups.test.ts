@@ -6,6 +6,8 @@ import {
   getBatchTypes,
   getNominalAccounts,
   getPaymentTypes,
+  getBankAccounts,
+  getImportConfig,
   getSetupStatus,
 } from '../src/services/lookups.js';
 
@@ -70,6 +72,73 @@ describe('getPaymentTypes', () => {
     const result = await getPaymentTypes(db);
     expect(result.success).toBe(true);
     expect(result.types).toEqual([]);
+  });
+});
+
+describe('getBankAccounts', () => {
+  it('returns Opera bank accounts trimmed', async () => {
+    const db = makeMockOpera([
+      { nk_acnt: 'BC010', nk_desc: 'Barclays Current  ' },
+      { nk_acnt: 'BC020', nk_desc: 'Barclays Savings' },
+    ]);
+    const result = await getBankAccounts(db);
+    expect(result.success).toBe(true);
+    expect(result.accounts).toHaveLength(2);
+    expect(result.accounts[0]?.code).toBe('BC010');
+    expect(result.accounts[0]?.description).toBe('Barclays Current');
+  });
+
+  it('returns empty list when no bank accounts', async () => {
+    const db = makeMockOpera([]);
+    const result = await getBankAccounts(db);
+    expect(result.accounts).toEqual([]);
+  });
+});
+
+describe('getImportConfig', () => {
+  it('aggregates batch types + nominal accounts + VAT codes', async () => {
+    // Use a smarter mock that returns different rows based on SQL keyword
+    const db: any = () => ({});
+    db.raw = async (sql: string) => {
+      if (sql.includes('atype') && sql.includes("ay_type = 'R'")) {
+        return [{ ay_cbtype: 'GC', ay_desc: 'GoCardless', ay_batched: 1 }];
+      }
+      if (sql.includes('nacnt')) {
+        return [
+          {
+            na_acnt: '7800',
+            na_desc: 'Bank Charges',
+            na_allwprj: 0,
+            na_allwjob: 0,
+            na_project: '',
+            na_job: '',
+          },
+        ];
+      }
+      if (sql.includes('ztax')) {
+        return [
+          {
+            tx_code: '1',
+            tx_desc: 'Standard',
+            tx_rate1: 20,
+            tx_rate1dy: null,
+            tx_rate2: null,
+            tx_rate2dy: null,
+            tx_trantyp: 'P',
+            tx_nominal: '7800',
+          },
+        ];
+      }
+      return [];
+    };
+
+    const result = await getImportConfig(db);
+    expect(result.success).toBe(true);
+    expect(result.batch_types).toHaveLength(1);
+    expect(result.batch_types_recommended?.code).toBe('GC');
+    expect(result.nominal_accounts).toHaveLength(1);
+    expect(result.vat_codes).toHaveLength(1);
+    expect(result.vat_codes[0]?.rate).toBe(20);
   });
 });
 
