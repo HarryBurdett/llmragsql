@@ -5,6 +5,11 @@ hosted, what they consume, and what they provide. It exists so the
 SAM platform integration team can plug the apps into SAM without
 having to read application source code.
 
+> **👉 Start here when you're ready to merge:**
+> [`sam-team-handover.md`](./sam-team-handover.md) — the step-by-step
+> runbook for the SAM team. Self-contained, links to the deeper
+> references in this directory.
+
 ## Status
 
 **Phase A (in progress)**: applications run as one process today;
@@ -32,11 +37,19 @@ via env vars. No app code changes — only what populates env vars.
 
 ## Documents
 
+**Top of the stack — read first:**
+- [`sam-team-handover.md`](./sam-team-handover.md) — **the canonical handover
+  document for the SAM team. Step-by-step merge instructions.**
+
+**Reference (linked from the handover):**
 - [`env-var-contract.md`](./env-var-contract.md) — every env var the apps consume, what it's for, who needs it
+- [`sam-integration-pattern.md`](./sam-integration-pattern.md) — adapter architecture + code skeletons
 - [`dependency-graph.md`](./dependency-graph.md) — which app depends on which other (apps + core services)
 - [`health-checks.md`](./health-checks.md) — health/readiness endpoint per app
 - [`deployment-shapes.md`](./deployment-shapes.md) — single-tenant on-prem, multi-tenant SaaS, SAM-hosted
 - [`migration-checklist.md`](./migration-checklist.md) — per-app checklist for the SAM merge
+- [`phase-b-status.md`](./phase-b-status.md) — what's already built (ports/adapters)
+- [`QUICKSTART.md`](./QUICKSTART.md) — local dev guide (useful for SAM team to validate apps before merge)
 - [`apps/`](./apps/) — per-app details
 
 ## Migration philosophy
