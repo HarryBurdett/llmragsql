@@ -89,6 +89,7 @@ import {
 import { getEligibleCustomers } from './services/eligible-customers.js';
 import { getCustomerEmail } from './services/customer-email.js';
 import { getRepeatDocuments } from './services/repeat-documents.js';
+import { getCollectableInvoices } from './services/collectable-invoices.js';
 import {
   requestPayment,
   requestBulkPayments,
@@ -1286,6 +1287,44 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Request bulk payments failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/collectable-invoices
+   *
+   * List outstanding sales-ledger invoices that can be collected via
+   * GoCardless Direct Debit. Faithful port of get_collectable_invoices
+   * (apps/gocardless/api/routes.py:7721-7894). Decorates each invoice
+   * with mandate status, days-overdue, and whether a payment request
+   * already covers it.
+   *
+   * Query params:
+   *   - overdue_only (default false)
+   *   - min_amount (default 0)
+   */
+  router.get(
+    '/api/gocardless/collectable-invoices',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const overdueOnly =
+          req.query.overdue_only === 'true' || req.query.overdue_only === '1';
+        const minAmount = req.query.min_amount
+          ? Number(req.query.min_amount)
+          : 0;
+        const result = await getCollectableInvoices(operaDb, appDb, {
+          overdueOnly,
+          minAmount,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get collectable invoices failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
