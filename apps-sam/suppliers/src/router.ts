@@ -8,6 +8,7 @@
 import { Router, type Request, type Response } from 'express';
 import type { AppContext } from './app-context.js';
 import { listSuppliers, getSupplier } from './services/supplier-list.js';
+import { runSuppliersHealthCheck } from './services/health-check.js';
 import { getAgedDebtSummary, getAgedDebtBySupplier } from './services/aged-debt.js';
 import {
   listContacts,
@@ -111,6 +112,28 @@ export function createRouter(ctx: AppContext): Router {
       opera_type: ctx.operaType,
       message: 'In development. See docs/sam-rewrite/progress.md for status.',
     });
+  });
+
+  /**
+   * GET /api/suppliers/health-check
+   *
+   * Per-app data-integrity health check. Verifies supplier codes
+   * referenced in our local data still exist in Opera pname.
+   * Faithful port of `apps/suppliers/api/routes.py:135-156`.
+   */
+  router.get('/api/suppliers/health-check', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await runSuppliersHealthCheck({
+        operaDb,
+        appDb: ctx.db.app ?? null,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Suppliers health-check failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
   });
 
   /** GET /api/suppliers — list active suppliers from Opera pname. */
