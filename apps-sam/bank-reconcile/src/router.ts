@@ -179,6 +179,7 @@ import { defaultMultiformatParser } from './services/default-multiformat-parser.
 import { createDefaultFileStorage } from './services/default-file-storage.js';
 import { createDefaultPdfContentReader } from './services/default-pdf-content-reader.js';
 import { createDefaultBankPdfExtractor } from './services/default-bank-pdf-extractor.js';
+import { createDefaultEmailIngestAdapter } from './services/default-email-ingest.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -198,6 +199,20 @@ export function createRouter(ctx: AppContext): Router {
     : createDefaultPdfContentReader({});
   const builtinPdfExtractor: PdfExtractor | null = ctx.llm
     ? createDefaultBankPdfExtractor({ llm: ctx.llm })
+    : null;
+
+  // Default email-ingest adapter — instantiated once per plugin
+  // lifecycle. Activates when ctx.emailIngest is wired AND the tenant
+  // has configured at least one mailbox in ctx.config.mailboxes.
+  const mailboxesCfg = Array.isArray(cfg.mailboxes)
+    ? (cfg.mailboxes as unknown[]).filter((s): s is string => typeof s === 'string')
+    : [];
+  const builtinEmailIngest = ctx.emailIngest
+    ? createDefaultEmailIngestAdapter({
+        emailIngest: ctx.emailIngest,
+        mailboxes: mailboxesCfg,
+        logger: ctx.logger,
+      })
     : null;
 
   // Opera-3 mirror routes: every Python endpoint under /api/opera3/*
@@ -2029,7 +2044,9 @@ export function createRouter(ctx: AppContext): Router {
         bankMailboxAdapter?: BankMailboxAdapter;
         bankReconciledKeyStore?: ReconciledKeyStore;
       });
-      if (!adapter.bankMailboxAdapter || !adapter.bankReconciledKeyStore) {
+      const mailbox =
+        adapter.bankMailboxAdapter ?? builtinEmailIngest?.mailbox;
+      if (!mailbox || !adapter.bankReconciledKeyStore) {
         res.status(503).json({
           success: false,
           error:
@@ -2058,7 +2075,7 @@ export function createRouter(ctx: AppContext): Router {
         const result = await scanEmailsForBankStatements(
           operaDb,
           appDb,
-          adapter.bankMailboxAdapter,
+          mailbox,
           adapter.bankReconciledKeyStore,
           {
             bankCode,
@@ -2866,7 +2883,7 @@ export function createRouter(ctx: AppContext): Router {
       .multiformatParser ?? defaultMultiformatParser;
   const getEmailAttachments = () =>
     (ctx as unknown as { bankEmailAttachments?: EmailAttachmentProvider })
-      .bankEmailAttachments ?? null;
+      .bankEmailAttachments ?? builtinEmailIngest?.attachments ?? null;
 
   router.get('/api/bank-import/list-csv', async (_req, res) => {
     res.json(await listCsvFiles(getFileStorage()));
