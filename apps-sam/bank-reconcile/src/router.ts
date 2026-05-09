@@ -175,6 +175,7 @@ import {
   importBankStatementFromEmail,
   type BankImportFromEmailInput,
 } from './services/bank-import-from-email.js';
+import { defaultMultiformatParser } from './services/default-multiformat-parser.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2820,7 +2821,7 @@ export function createRouter(ctx: AppContext): Router {
     (ctx as unknown as { pdfContentReader?: PdfContentReader }).pdfContentReader ?? null;
   const getMultiformatParser = () =>
     (ctx as unknown as { multiformatParser?: MultiformatParser })
-      .multiformatParser ?? null;
+      .multiformatParser ?? defaultMultiformatParser;
   const getEmailAttachments = () =>
     (ctx as unknown as { bankEmailAttachments?: EmailAttachmentProvider })
       .bankEmailAttachments ?? null;
