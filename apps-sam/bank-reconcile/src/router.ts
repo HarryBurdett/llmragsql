@@ -90,6 +90,13 @@ import {
   type BankMailboxAdapter,
   type ReconciledKeyStore,
 } from './services/scan-emails.js';
+import {
+  importBankStatementFromPdf,
+  type PdfExtractor,
+  type ImportPostingExecutor,
+  type ImportLockAdapter,
+  type PeriodOverlapChecker,
+} from './services/import-from-pdf.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1932,11 +1939,109 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  /**
+   * POST /api/bank-import/import-from-pdf
+   *
+   * Import a bank statement from a PDF and post the transactions to
+   * Opera. Faithful port of the route-level orchestration in
+   * `import_bank_statement_from_pdf` (routes.py:4031-4787).
+   *
+   * The actual PDF→transactions extraction (ctx.llm) and the posting
+   * body (~750 LOC) are delegated to executor adapters the SAM team
+   * attaches at construction time. The validation, overlap check,
+   * lock acquisition, and audit-row write are deterministic and
+   * exercised by import-from-pdf.test.ts.
+   *
+   * Body / query:
+   *   - file_path (required)
+   *   - bank_code (required)
+   *   - auto_allocate ('1'/'true' to auto-allocate to invoices)
+   *   - auto_reconcile ('1'/'true' to auto-reconcile after import)
+   *   - resume_import_id (optional resume key)
+   *   - body: { overrides, selected_rows, date_overrides,
+   *            rejected_refund_rows, skip_overlap_check }
+   */
+  router.post(
+    '/api/bank-import/import-from-pdf',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const adapter = ctx as unknown as {
+        bankPdfExtractor?: PdfExtractor;
+        bankImportExecutor?: ImportPostingExecutor;
+        bankImportLock?: ImportLockAdapter;
+        bankPeriodOverlapChecker?: PeriodOverlapChecker;
+      };
+      if (
+        !adapter.bankPdfExtractor ||
+        !adapter.bankImportExecutor ||
+        !adapter.bankImportLock ||
+        !adapter.bankPeriodOverlapChecker
+      ) {
+        res.status(503).json({
+          success: false,
+          error:
+            'PDF extractor / posting executor / import lock / overlap checker not configured. SAM team wiring required.',
+        });
+        return;
+      }
+      try {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const result = await importBankStatementFromPdf(
+          operaDb,
+          appDb,
+          {
+            filePath: String(req.query.file_path ?? body.file_path ?? ''),
+            bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
+            filename: (body.filename as string) ?? undefined,
+            autoAllocate:
+              req.query.auto_allocate === '1' ||
+              req.query.auto_allocate === 'true',
+            autoReconcile:
+              req.query.auto_reconcile === '1' ||
+              req.query.auto_reconcile === 'true',
+            resumeImportId: req.query.resume_import_id
+              ? Number(req.query.resume_import_id)
+              : null,
+            overrides: Array.isArray(body.overrides) ? body.overrides : [],
+            selectedRows: Array.isArray(body.selected_rows)
+              ? (body.selected_rows as number[])
+              : null,
+            dateOverrides: Array.isArray(body.date_overrides)
+              ? body.date_overrides
+              : [],
+            rejectedRefundRows: Array.isArray(body.rejected_refund_rows)
+              ? (body.rejected_refund_rows as number[])
+              : [],
+            skipOverlapCheck: body.skip_overlap_check === true,
+          },
+          adapter.bankPdfExtractor,
+          adapter.bankImportExecutor,
+          adapter.bankImportLock,
+          adapter.bankPeriodOverlapChecker,
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('import-from-pdf failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
   //   - GET  /api/reconcile/bank/{bank_code} — full reconcile (~600 LOC)
   //   - POST /api/bank-import/preview-from-pdf (Claude extraction)
-  //   - POST /api/bank-import/import (the big posting flow)
+  //   - POST /api/bank-import/import-from-email (similar shape; email source)
   //   - ~120 more
 
   return router;
