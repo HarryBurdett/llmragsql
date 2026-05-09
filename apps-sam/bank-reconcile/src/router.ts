@@ -118,6 +118,10 @@ import {
   previewBankImportFromPdf,
   type LlmService,
 } from './services/preview-from-pdf.js';
+import {
+  previewBankImportFromEmail,
+  type EmailAttachmentProvider,
+} from './services/preview-from-email.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2238,6 +2242,55 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('preview-from-pdf failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /api/bank-import/preview-from-email
+   *
+   * Same as preview-from-pdf, but the PDF is downloaded from an
+   * email attachment first. Faithful port of
+   * preview_bank_import_from_email (routes.py:8645-8870).
+   */
+  router.post(
+    '/api/bank-import/preview-from-email',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const llm = (ctx.llm as LlmService | undefined) ?? null;
+      const attachments = (ctx as unknown as {
+        bankEmailAttachments?: EmailAttachmentProvider;
+      }).bankEmailAttachments;
+      if (!llm || !attachments) {
+        res.status(503).json({
+          success: false,
+          error:
+            'ctx.llm and ctx.bankEmailAttachments must both be configured. SAM team must enable the LLM and email-attachment fetcher.',
+        });
+        return;
+      }
+      try {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const result = await previewBankImportFromEmail(
+          operaDb,
+          llm,
+          attachments,
+          {
+            emailId: Number(req.query.email_id ?? body.email_id ?? 0),
+            attachmentId: String(
+              req.query.attachment_id ?? body.attachment_id ?? '',
+            ),
+            bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
+          },
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('preview-from-email failed', err);
         res.status(500).json({
           success: false,
           error: err?.message ?? String(err),
