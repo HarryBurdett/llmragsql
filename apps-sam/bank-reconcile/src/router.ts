@@ -65,6 +65,7 @@ import {
   matchStatementToCashbook,
   type StatementTransaction,
 } from './services/match-statement.js';
+import { reconcileBank } from './services/reconcile-bank.js';
 import {
   markEntriesReconciled,
   type ReconcileEntryInput,
@@ -1548,6 +1549,46 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Save folder settings failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/reconcile/bank/:bank_code
+   *
+   * Three-way bank-balance reconciliation: cashbook (atran) vs
+   * bank master (nbank.nk_curbal) vs nominal ledger (ntran). Faithful
+   * port of `reconcile_bank` (apps/bank_reconcile/api/routes.py
+   * :320-704).
+   *
+   * Returns full diagnostic payload: bank info, cashbook section
+   * (current year movements + B/F + transfer-file pending),
+   * bank-master balance, NL section, three pairwise variances,
+   * summary + RECONCILED / UNRECONCILED status with a human-readable
+   * message describing each mismatch.
+   *
+   * NB: route is GET /api/reconcile/bank/:bank_code, NOT under
+   * /api/bank-reconciliation. Matches the legacy URL the frontend
+   * already calls.
+   */
+  router.get(
+    '/api/reconcile/bank/:bank_code',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const bankCode = String(req.params.bank_code ?? '').trim();
+        const result = await reconcileBank(operaDb, bankCode);
+        if (!result.success) {
+          res
+            .status(/not found/i.test(result.error ?? '') ? 404 : 400)
+            .json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Reconcile bank failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
