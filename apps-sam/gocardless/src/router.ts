@@ -149,16 +149,13 @@ export function createRouter(ctx: AppContext): Router {
   });
 
   // Default email-ingest adapter — instantiated once per plugin
-  // lifecycle. Activates when ctx.emailIngest is wired AND the tenant
-  // has configured at least one mailbox in ctx.config.mailboxes.
-  const cfg = (ctx.config ?? {}) as Record<string, unknown>;
-  const mailboxesCfg = Array.isArray(cfg.mailboxes)
-    ? (cfg.mailboxes as unknown[]).filter((s): s is string => typeof s === 'string')
-    : [];
+  // lifecycle. Activates whenever ctx.emailIngest is wired; bootstraps
+  // by calling ctx.emailIngest.listMyMailboxes() and reacts to
+  // ownership changes pushed from SAM Admin.
   const builtinEmailIngest = ctx.emailIngest
     ? createDefaultEmailIngestAdapter({
         emailIngest: ctx.emailIngest,
-        mailboxes: mailboxesCfg,
+        appId: ctx.appId,
         logger: ctx.logger,
       })
     : null;

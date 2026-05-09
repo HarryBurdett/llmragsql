@@ -176,41 +176,41 @@ import {
   type BankImportFromEmailInput,
 } from './services/bank-import-from-email.js';
 import { defaultMultiformatParser } from './services/default-multiformat-parser.js';
-import { createDefaultFileStorage } from './services/default-file-storage.js';
-import { createDefaultPdfContentReader } from './services/default-pdf-content-reader.js';
 import { createDefaultBankPdfExtractor } from './services/default-bank-pdf-extractor.js';
 import { createDefaultEmailIngestAdapter } from './services/default-email-ingest.js';
+import {
+  createFolderBackedFileStorage,
+  createFolderBackedPdfContentReader,
+} from './services/folder-backed-storage.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
 
-  // Built-in fallback adapters — used when SAM hasn't wired a custom
-  // implementation onto ctx. The filesystem adapters key off
-  // `ctx.config.bankStatementRoot`; the PDF extractor activates when
-  // `ctx.llm` is available.
-  const cfg = (ctx.config ?? {}) as Record<string, unknown>;
-  const bankStatementRoot =
-    typeof cfg.bankStatementRoot === 'string' ? cfg.bankStatementRoot : null;
-  const builtinFileStorage: FileStorageAdapter | null = bankStatementRoot
-    ? createDefaultFileStorage({ rootDir: bankStatementRoot, flatLayout: true })
-    : null;
-  const builtinPdfReader: PdfContentReader | null = bankStatementRoot
-    ? createDefaultPdfContentReader({ rootDir: bankStatementRoot })
-    : createDefaultPdfContentReader({});
+  // Built-in fallback adapters — used when SAM hasn't wired custom
+  // implementations onto ctx.
+  //
+  // The filesystem adapters resolve their rootDir lazily from the
+  // per-app `folder_settings.base_folder` row (managed by the plugin's
+  // own Settings UI). The PDF extractor activates whenever `ctx.llm`
+  // is available — no per-tenant config needed.
+  const builtinFileStorage: FileStorageAdapter = createFolderBackedFileStorage(
+    () => ctx.db.app,
+  );
+  const builtinPdfReader: PdfContentReader = createFolderBackedPdfContentReader(
+    () => ctx.db.app,
+  );
   const builtinPdfExtractor: PdfExtractor | null = ctx.llm
     ? createDefaultBankPdfExtractor({ llm: ctx.llm })
     : null;
 
   // Default email-ingest adapter — instantiated once per plugin
-  // lifecycle. Activates when ctx.emailIngest is wired AND the tenant
-  // has configured at least one mailbox in ctx.config.mailboxes.
-  const mailboxesCfg = Array.isArray(cfg.mailboxes)
-    ? (cfg.mailboxes as unknown[]).filter((s): s is string => typeof s === 'string')
-    : [];
+  // lifecycle. Activates whenever ctx.emailIngest is wired; bootstraps
+  // by calling ctx.emailIngest.listMyMailboxes() and reacts to
+  // ownership changes pushed from SAM Admin.
   const builtinEmailIngest = ctx.emailIngest
     ? createDefaultEmailIngestAdapter({
         emailIngest: ctx.emailIngest,
-        mailboxes: mailboxesCfg,
+        appId: ctx.appId,
         logger: ctx.logger,
       })
     : null;

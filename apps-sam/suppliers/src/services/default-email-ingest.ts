@@ -38,7 +38,15 @@ export interface SupplierEmailAttachmentsAdapter {
 
 interface IngestOptions {
   emailIngest: SamEmailIngestService;
-  mailboxes?: string[];
+  /**
+   * App ID. Used only to filter `onOwnershipChange` events.
+   */
+  appId: string;
+  /**
+   * Optional starter mailbox list. When omitted (the production
+   * path), the adapter calls `listMyMailboxes()` itself.
+   */
+  initialMailboxes?: Array<{ id: string; email_address?: string | null }>;
   cacheSize?: number;
   logger?: {
     info: (m: string, ...a: unknown[]) => void;
@@ -95,8 +103,10 @@ export function createDefaultEmailIngestAdapter(
   const cache = new Map<number, CachedMessage>();
   const byGraphId = new Map<string, number>();
   let nextId = 1;
-  const detachers: Array<() => void> = [];
-  const claimed: string[] = [];
+  /** mailboxId → detach function returned by registerHandler */
+  const handlers = new Map<string, () => void>();
+  /** detach functions for ownership/activity subscriptions */
+  const eventDetachers: Array<() => void> = [];
 
   function evictIfFull() {
     while (cache.size > cap) {
@@ -128,32 +138,91 @@ export function createDefaultEmailIngestAdapter(
     return msg;
   }
 
-  Promise.all(
-    (options.mailboxes ?? []).map(async (mailboxEmail) => {
+  function attachHandler(mailboxId: string): void {
+    if (handlers.has(mailboxId)) return;
+    const detach = options.emailIngest.registerHandler(
+      mailboxId,
+      (...args: unknown[]) => {
+        ingest(args[0]);
+        return undefined;
+      },
+    );
+    handlers.set(mailboxId, detach);
+  }
+
+  function detachHandler(mailboxId: string): void {
+    const d = handlers.get(mailboxId);
+    if (d) {
       try {
-        const claim = await options.emailIngest.claimMailbox({ mailboxEmail });
-        claimed.push(mailboxEmail);
-        const mailboxId =
-          pickField<string>(claim, 'mailboxId', 'mailbox_id', 'id') ??
-          mailboxEmail;
-        const detach = options.emailIngest.registerHandler(
-          mailboxId,
-          (...args: unknown[]) => {
-            ingest(args[0]);
-            return undefined;
-          },
+        d();
+      } catch {
+        // ignore
+      }
+      handlers.delete(mailboxId);
+    }
+  }
+
+  function applyMailboxList(
+    rows: Array<{ id?: string; email_address?: string | null }>,
+  ): void {
+    for (const r of rows) {
+      const id = typeof r.id === 'string' ? r.id : null;
+      if (!id) continue;
+      attachHandler(id);
+    }
+    log.info?.(
+      `[suppliers email-ingest] attached to ${handlers.size} mailbox(es)`,
+    );
+  }
+
+  if (options.initialMailboxes) {
+    applyMailboxList(options.initialMailboxes);
+  } else {
+    Promise.resolve(options.emailIngest.listMyMailboxes())
+      .then((rows) => {
+        applyMailboxList(
+          (rows as Array<Record<string, unknown>>).map((r) => ({
+            id: typeof r.id === 'string' ? r.id : undefined,
+            email_address:
+              typeof r.email_address === 'string' ? r.email_address : null,
+          })),
         );
-        detachers.push(detach);
-        log.info?.(`[suppliers email-ingest] claimed ${mailboxEmail}`);
-      } catch (err) {
+      })
+      .catch((err: unknown) => {
         log.warn?.(
-          `[suppliers email-ingest] failed to claim ${mailboxEmail}: ${
+          `[suppliers email-ingest] listMyMailboxes failed: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
-      }
-    }),
-  ).catch(() => undefined);
+      });
+  }
+
+  try {
+    const detachOwnership = options.emailIngest.onOwnershipChange(
+      async (event: unknown) => {
+        const e = event as {
+          mailboxId?: string;
+          previousOwnerAppId?: string | null;
+          newOwnerAppId?: string | null;
+        };
+        if (!e?.mailboxId) return;
+        if (
+          e.newOwnerAppId === options.appId &&
+          e.previousOwnerAppId !== options.appId
+        ) {
+          attachHandler(e.mailboxId);
+        } else if (
+          e.previousOwnerAppId === options.appId &&
+          e.newOwnerAppId !== options.appId
+        ) {
+          detachHandler(e.mailboxId);
+        }
+      },
+    );
+    eventDetachers.push(detachOwnership);
+  } catch {
+    // optional in some SAM versions
+  }
 
   const attachments: SupplierEmailAttachmentsAdapter = {
     async fetchAttachment({ emailId, attachmentId }) {
@@ -180,20 +249,21 @@ export function createDefaultEmailIngestAdapter(
   };
 
   async function shutdown() {
-    for (const d of detachers.splice(0)) {
+    for (const d of eventDetachers.splice(0)) {
       try {
         d();
       } catch {
         // ignore
       }
     }
-    for (const mb of claimed.splice(0)) {
+    for (const [, d] of handlers) {
       try {
-        await options.emailIngest.releaseMailbox({ mailboxEmail: mb });
+        d();
       } catch {
         // ignore
       }
     }
+    handlers.clear();
     cache.clear();
     byGraphId.clear();
   }

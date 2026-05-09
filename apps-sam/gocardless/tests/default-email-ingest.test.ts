@@ -1,60 +1,78 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createDefaultEmailIngestAdapter } from '../src/services/default-email-ingest.js';
 import type { SamEmailIngestService } from '../src/app-context.js';
 
 interface FakeIngest extends SamEmailIngestService {
-  push: (msg: unknown) => void;
+  push: (msg: unknown, mailboxId?: string) => void;
+  fireOwnership: (event: {
+    mailboxId: string;
+    previousOwnerAppId?: string | null;
+    newOwnerAppId?: string | null;
+  }) => Promise<void>;
 }
 
-function makeIngest(): FakeIngest {
-  let handler: ((msg: unknown) => unknown) | null = null;
+function makeIngest(opts: {
+  myMailboxes?: Array<{ id: string; email_address: string }>;
+} = {}): FakeIngest {
+  const handlersByMailbox = new Map<string, (msg: unknown) => unknown>();
+  const ownershipListeners: Array<(event: unknown) => Promise<void>> = [];
   return {
     async claimMailbox() {
-      return { mailboxId: 'mb1' };
+      return { mailboxId: 'mb-claim' };
     },
     async releaseMailbox() {},
     async listMyMailboxes() {
-      return [];
+      return opts.myMailboxes ?? [];
     },
-    registerHandler(_id: string, fn) {
-      handler = fn as (msg: unknown) => unknown;
-      return () => {
-        handler = null;
-      };
+    registerHandler(id: string, fn) {
+      handlersByMailbox.set(id, fn as (msg: unknown) => unknown);
+      return () => handlersByMailbox.delete(id);
     },
-    async fetchAttachment() {
-      return { bytes: Buffer.from(''), name: 'x', contentType: 'application/pdf' };
-    },
+    fetchAttachment: vi.fn(async () => ({
+      bytes: Buffer.from(''),
+      name: 'x',
+      contentType: 'application/pdf',
+    })),
     async getAttachmentText() {
       return { name: 'x', contentType: 'text/plain', text: '', truncated: false };
     },
-    onOwnershipChange() {
+    onOwnershipChange(fn) {
+      ownershipListeners.push(fn as (event: unknown) => Promise<void>);
       return () => undefined;
     },
     onActivityChange() {
       return () => undefined;
     },
-    push(msg) {
-      if (handler) handler(msg);
+    push(msg, mailboxId = 'mb1') {
+      const h = handlersByMailbox.get(mailboxId);
+      if (h) h(msg);
+    },
+    async fireOwnership(event) {
+      for (const l of ownershipListeners) await l(event);
     },
   } as FakeIngest;
 }
 
 describe('createDefaultEmailIngestAdapter (gocardless)', () => {
-  it('lists ingested messages with body_text extracted from Graph body', async () => {
-    const ingest = makeIngest();
+  it('bootstraps from listMyMailboxes — production path', async () => {
+    const ingest = makeIngest({
+      myMailboxes: [{ id: 'mb1', email_address: 'ops@example.com' }],
+    });
     const a = createDefaultEmailIngestAdapter({
       emailIngest: ingest,
-      mailboxes: ['ops@example.com'],
+      appId: 'gocardless',
     });
     await new Promise((r) => setTimeout(r, 5));
-    ingest.push({
-      id: 'g1',
-      subject: 'GoCardless payout £1,234.56',
-      receivedDateTime: '2026-04-15T09:00:00Z',
-      body: { contentType: 'Text', content: 'Net amount: £1,234.56' },
-      from: { emailAddress: { address: 'noreply@gocardless.com' } },
-    });
+    ingest.push(
+      {
+        id: 'g1',
+        subject: 'GoCardless payout £1,234.56',
+        receivedDateTime: '2026-04-15T09:00:00Z',
+        body: { contentType: 'Text', content: 'Net amount: £1,234.56' },
+        from: { emailAddress: { address: 'noreply@gocardless.com' } },
+      },
+      'mb1',
+    );
     const r = await a.mailbox.list({
       search: '',
       fromDate: new Date('2026-01-01'),
@@ -66,25 +84,78 @@ describe('createDefaultEmailIngestAdapter (gocardless)', () => {
     await a.shutdown();
   });
 
-  it('filters by search keyword in subject + body', async () => {
+  it('attaches when SAM Admin assigns a mailbox', async () => {
     const ingest = makeIngest();
     const a = createDefaultEmailIngestAdapter({
       emailIngest: ingest,
-      mailboxes: ['ops@example.com'],
+      appId: 'gocardless',
     });
     await new Promise((r) => setTimeout(r, 5));
-    ingest.push({
-      id: 'g1',
-      subject: 'GoCardless payout',
-      receivedDateTime: '2026-04-15T09:00:00Z',
-      body_text: 'gross amount 100',
+    await ingest.fireOwnership({
+      mailboxId: 'mb-new',
+      previousOwnerAppId: null,
+      newOwnerAppId: 'gocardless',
     });
-    ingest.push({
-      id: 'g2',
-      subject: 'Random newsletter',
-      receivedDateTime: '2026-04-15T09:00:00Z',
-      body_text: 'unrelated',
+    ingest.push(
+      { id: 'g1', subject: 'After', receivedDateTime: '2026-04-15' },
+      'mb-new',
+    );
+    const r = await a.mailbox.list({
+      search: '',
+      fromDate: new Date('2026-01-01'),
+      pageSize: 10,
     });
+    expect(r.emails.length).toBe(1);
+  });
+
+  it('test-path initialMailboxes bypasses listMyMailboxes', async () => {
+    const ingest = makeIngest();
+    const listSpy = vi.spyOn(ingest, 'listMyMailboxes');
+    const a = createDefaultEmailIngestAdapter({
+      emailIngest: ingest,
+      appId: 'gocardless',
+      initialMailboxes: [{ id: 'mb-test', email_address: 'test@x' }],
+    });
+    expect(listSpy).not.toHaveBeenCalled();
+    ingest.push(
+      { id: 'g1', subject: 'X', receivedDateTime: '2026-04-15' },
+      'mb-test',
+    );
+    const r = await a.mailbox.list({
+      search: '',
+      fromDate: new Date('2026-01-01'),
+      pageSize: 5,
+    });
+    expect(r.emails.length).toBe(1);
+  });
+
+  it('filters by search keyword in subject + body', async () => {
+    const ingest = makeIngest({
+      myMailboxes: [{ id: 'mb1', email_address: 'ops@example.com' }],
+    });
+    const a = createDefaultEmailIngestAdapter({
+      emailIngest: ingest,
+      appId: 'gocardless',
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    ingest.push(
+      {
+        id: 'g1',
+        subject: 'GoCardless payout',
+        receivedDateTime: '2026-04-15T09:00:00Z',
+        body_text: 'gross amount 100',
+      },
+      'mb1',
+    );
+    ingest.push(
+      {
+        id: 'g2',
+        subject: 'Random newsletter',
+        receivedDateTime: '2026-04-15T09:00:00Z',
+        body_text: 'unrelated',
+      },
+      'mb1',
+    );
     const r = await a.mailbox.list({
       search: 'payout',
       fromDate: new Date('2026-01-01'),
@@ -95,14 +166,16 @@ describe('createDefaultEmailIngestAdapter (gocardless)', () => {
   });
 
   it('filters by toDate', async () => {
-    const ingest = makeIngest();
+    const ingest = makeIngest({
+      myMailboxes: [{ id: 'mb1', email_address: 'ops@example.com' }],
+    });
     const a = createDefaultEmailIngestAdapter({
       emailIngest: ingest,
-      mailboxes: ['ops@example.com'],
+      appId: 'gocardless',
     });
     await new Promise((r) => setTimeout(r, 5));
-    ingest.push({ id: 'g1', subject: 'A', receivedDateTime: '2026-04-15' });
-    ingest.push({ id: 'g2', subject: 'B', receivedDateTime: '2026-06-15' });
+    ingest.push({ id: 'g1', subject: 'A', receivedDateTime: '2026-04-15' }, 'mb1');
+    ingest.push({ id: 'g2', subject: 'B', receivedDateTime: '2026-06-15' }, 'mb1');
     const r = await a.mailbox.list({
       search: '',
       fromDate: new Date('2026-01-01'),
@@ -113,14 +186,16 @@ describe('createDefaultEmailIngestAdapter (gocardless)', () => {
   });
 
   it('dedupes by graph message id', async () => {
-    const ingest = makeIngest();
+    const ingest = makeIngest({
+      myMailboxes: [{ id: 'mb1', email_address: 'ops@example.com' }],
+    });
     const a = createDefaultEmailIngestAdapter({
       emailIngest: ingest,
-      mailboxes: ['ops@example.com'],
+      appId: 'gocardless',
     });
     await new Promise((r) => setTimeout(r, 5));
-    ingest.push({ id: 'g1', subject: 'A', receivedDateTime: '2026-04-15' });
-    ingest.push({ id: 'g1', subject: 'A', receivedDateTime: '2026-04-15' });
+    ingest.push({ id: 'g1', subject: 'A', receivedDateTime: '2026-04-15' }, 'mb1');
+    ingest.push({ id: 'g1', subject: 'A', receivedDateTime: '2026-04-15' }, 'mb1');
     const r = await a.mailbox.list({
       search: '',
       fromDate: new Date('2026-01-01'),
@@ -130,18 +205,19 @@ describe('createDefaultEmailIngestAdapter (gocardless)', () => {
   });
 
   it('honours pageSize', async () => {
-    const ingest = makeIngest();
+    const ingest = makeIngest({
+      myMailboxes: [{ id: 'mb1', email_address: 'ops@example.com' }],
+    });
     const a = createDefaultEmailIngestAdapter({
       emailIngest: ingest,
-      mailboxes: ['ops@example.com'],
+      appId: 'gocardless',
     });
     await new Promise((r) => setTimeout(r, 5));
     for (let i = 0; i < 5; i++) {
-      ingest.push({
-        id: `g${i}`,
-        subject: `S${i}`,
-        receivedDateTime: `2026-04-1${i}`,
-      });
+      ingest.push(
+        { id: `g${i}`, subject: `S${i}`, receivedDateTime: `2026-04-1${i}` },
+        'mb1',
+      );
     }
     const r = await a.mailbox.list({
       search: '',

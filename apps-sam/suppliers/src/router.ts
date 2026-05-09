@@ -143,16 +143,13 @@ export function createRouter(ctx: AppContext): Router {
 
   // Default email-ingest adapter — instantiated once per plugin
   // lifecycle. Wraps ctx.emailIngest as a `supplierEmailAttachments`
-  // adapter (single fetchAttachment method). Activates when
-  // ctx.emailIngest is wired AND ctx.config.mailboxes is non-empty.
-  const cfg = (ctx.config ?? {}) as Record<string, unknown>;
-  const mailboxesCfg = Array.isArray(cfg.mailboxes)
-    ? (cfg.mailboxes as unknown[]).filter((s): s is string => typeof s === 'string')
-    : [];
+  // adapter (single fetchAttachment method). Activates whenever
+  // ctx.emailIngest is wired; bootstraps from listMyMailboxes() and
+  // reacts to ownership changes pushed from SAM Admin.
   const builtinEmailIngest = ctx.emailIngest
     ? createDefaultEmailIngestAdapter({
         emailIngest: ctx.emailIngest,
-        mailboxes: mailboxesCfg,
+        appId: ctx.appId,
         logger: ctx.logger,
       })
     : null;

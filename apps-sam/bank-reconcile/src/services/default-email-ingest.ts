@@ -41,8 +41,19 @@ interface CachedMessage {
 
 interface IngestOptions {
   emailIngest: SamEmailIngestService;
-  /** Mailbox email address(es) to claim and listen on. */
-  mailboxes?: string[];
+  /**
+   * App ID. Used only to filter `onOwnershipChange` events — the
+   * subscription delivers events for any app, but we only care
+   * about ones where this plugin gains or loses ownership.
+   */
+  appId: string;
+  /**
+   * Optional starter mailbox list. When omitted (the production
+   * path), the adapter calls `listMyMailboxes()` itself. Tests
+   * supply this to bypass the SAM lookup and inject pre-claimed
+   * mailboxes directly.
+   */
+  initialMailboxes?: Array<{ id: string; email_address?: string | null }>;
   /** Maximum cached messages (FIFO). Default 1,000. */
   cacheSize?: number;
   /**
@@ -139,8 +150,10 @@ export function createDefaultEmailIngestAdapter(
   const cache = new Map<number, CachedMessage>();
   const byGraphId = new Map<string, number>();
   let nextId = 1;
-  const detachers: Array<() => void> = [];
-  const claimed: string[] = [];
+  /** mailboxId → detach function returned by registerHandler */
+  const handlers = new Map<string, () => void>();
+  /** detach functions for ownership/activity subscriptions */
+  const eventDetachers: Array<() => void> = [];
 
   function evictIfFull() {
     while (cache.size > cap) {
@@ -167,40 +180,100 @@ export function createDefaultEmailIngestAdapter(
     return msg;
   }
 
-  // Hook up listeners for each requested mailbox. We do this lazily
-  // because claimMailbox is async; failures are logged but don't
-  // abort adapter creation (the adapter still works for messages
-  // pushed in via test code).
-  const mailboxesToClaim = options.mailboxes ?? [];
-  Promise.all(
-    mailboxesToClaim.map(async (mailboxEmail) => {
+  // Bootstrap: SAM Admin sets `email_mailboxes.owner_app_id` to grant
+  // a mailbox to a plugin. listMyMailboxes() returns those rows. We
+  // register a handler per mailbox — no claimMailbox; that's an
+  // operator action, not a plugin action.
+  function attachHandler(mailboxId: string): void {
+    if (handlers.has(mailboxId)) return; // already attached
+    const detach = options.emailIngest.registerHandler(
+      mailboxId,
+      (...args: unknown[]) => {
+        ingest(args[0]);
+        return undefined;
+      },
+    );
+    handlers.set(mailboxId, detach);
+  }
+
+  function detachHandler(mailboxId: string): void {
+    const d = handlers.get(mailboxId);
+    if (d) {
       try {
-        const claim = await options.emailIngest.claimMailbox({
-          mailboxEmail,
-        });
-        claimed.push(mailboxEmail);
-        const mailboxId =
-          pickField<string>(claim, 'mailboxId', 'mailbox_id', 'id') ??
-          mailboxEmail;
-        const detach = options.emailIngest.registerHandler(
-          mailboxId,
-          (...args: unknown[]) => {
-            const msg = args[0] as unknown;
-            ingest(msg);
-            return undefined;
-          },
+        d();
+      } catch {
+        // ignore
+      }
+      handlers.delete(mailboxId);
+    }
+  }
+
+  function applyMailboxList(
+    rows: Array<{ id?: string; email_address?: string | null }>,
+  ): void {
+    for (const r of rows) {
+      const id = typeof r.id === 'string' ? r.id : null;
+      if (!id) continue;
+      attachHandler(id);
+    }
+    log.info?.(
+      `[bank-reconcile email-ingest] attached to ${handlers.size} mailbox(es)`,
+    );
+  }
+
+  if (options.initialMailboxes) {
+    // Test path: skip listMyMailboxes()
+    applyMailboxList(options.initialMailboxes);
+  } else {
+    // Production path: ask SAM what's already assigned to us.
+    Promise.resolve(options.emailIngest.listMyMailboxes())
+      .then((rows) => {
+        applyMailboxList(
+          (rows as Array<Record<string, unknown>>).map((r) => ({
+            id: typeof r.id === 'string' ? r.id : undefined,
+            email_address:
+              typeof r.email_address === 'string' ? r.email_address : null,
+          })),
         );
-        detachers.push(detach);
-        log.info?.(`[email-ingest] claimed ${mailboxEmail}`);
-      } catch (err) {
+      })
+      .catch((err: unknown) => {
         log.warn?.(
-          `[email-ingest] failed to claim ${mailboxEmail}: ${
+          `[bank-reconcile email-ingest] listMyMailboxes failed: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
-      }
-    }),
-  ).catch(() => undefined);
+      });
+  }
+
+  // Subscribe to ownership changes — operator-driven (SAM Admin UI).
+  // When a mailbox is granted to us, attach a handler. When taken
+  // away, detach.
+  try {
+    const detachOwnership = options.emailIngest.onOwnershipChange(
+      async (event: unknown) => {
+        const e = event as {
+          mailboxId?: string;
+          previousOwnerAppId?: string | null;
+          newOwnerAppId?: string | null;
+        };
+        if (!e?.mailboxId) return;
+        if (
+          e.newOwnerAppId === options.appId &&
+          e.previousOwnerAppId !== options.appId
+        ) {
+          attachHandler(e.mailboxId);
+        } else if (
+          e.previousOwnerAppId === options.appId &&
+          e.newOwnerAppId !== options.appId
+        ) {
+          detachHandler(e.mailboxId);
+        }
+      },
+    );
+    eventDetachers.push(detachOwnership);
+  } catch {
+    // onOwnershipChange optional in some SAM versions
+  }
 
   const mailbox: BankMailboxAdapter = {
     async sync() {
@@ -277,20 +350,21 @@ export function createDefaultEmailIngestAdapter(
   };
 
   async function shutdown() {
-    for (const d of detachers.splice(0)) {
+    for (const d of eventDetachers.splice(0)) {
       try {
         d();
       } catch {
         // ignore
       }
     }
-    for (const mb of claimed.splice(0)) {
+    for (const [, d] of handlers) {
       try {
-        await options.emailIngest.releaseMailbox({ mailboxEmail: mb });
+        d();
       } catch {
         // ignore
       }
     }
+    handlers.clear();
     cache.clear();
     byGraphId.clear();
   }
