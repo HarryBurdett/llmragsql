@@ -101,6 +101,10 @@ import {
   checkBatch as checkDuplicateBatch,
   type CheckTransactionInput,
 } from './services/duplicate-detection.js';
+import {
+  refreshMatches,
+  type RefreshTransactionInput,
+} from './services/refresh-matches.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2089,14 +2093,63 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  /**
+   * POST /api/reconcile/refresh-matches
+   *
+   * Re-check a list of transactions against Opera. Used after the
+   * operator enters / posts something in Opera and wants the import
+   * preview to update without a full re-extract. Faithful port of
+   * `refresh_statement_matches` (routes.py:1647-1716).
+   *
+   * Reuses the all-six-strategy `findDuplicates` from duplicate-
+   * detection. A candidate at confidence ≥ 0.85 is treated as
+   * already-posted; the row's `action` is set to `skip` and
+   * `skip_reason` is populated with the matching table+id+strategy.
+   *
+   * The Python implementation has additional type-aware logic
+   * (CASHBOOK_DUPLICATE vs LEDGER_ALLOCATION_TARGET — see
+   * `sql_rag/duplicate_check.py`); that's a follow-up port for the
+   * SAM team if the threshold-based approach surfaces too many
+   * false positives in production.
+   */
+  router.post(
+    '/api/reconcile/refresh-matches',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const bankCode = String(req.query.bank_code ?? '');
+        if (!bankCode) {
+          res
+            .status(400)
+            .json({ success: false, error: 'bank_code is required' });
+          return;
+        }
+        const body = (req.body ?? {}) as {
+          transactions?: RefreshTransactionInput[];
+          posted_threshold?: number;
+        };
+        const txns = Array.isArray(body.transactions) ? body.transactions : [];
+        const result = await refreshMatches(operaDb, bankCode, txns, {
+          posted_threshold: body.posted_threshold,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('refresh-matches failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
   //   - GET  /api/reconcile/bank/{bank_code} — full reconcile (~600 LOC)
   //   - POST /api/bank-import/preview-from-pdf (Claude extraction)
-  //   - POST /api/bank-import/import-from-email (similar shape; email source)
-  //   - Remaining 4 duplicate strategies (fit_id, fuzzy_amount,
-  //     reference, cross_period, bank_amount) — see duplicate-detection.ts
-  //   - ~120 more
+  //   - POST /api/reconcile/process-statement (Claude extraction + matching)
+  //   - POST /api/archive/* (filesystem-bound — needs storage adapter)
 
   return router;
 }
