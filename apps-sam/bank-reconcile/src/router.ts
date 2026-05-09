@@ -60,6 +60,7 @@ import {
   getFolderSettings,
   saveFolderSettings,
 } from './services/folder-settings.js';
+import { validateStatementForReconciliation } from './services/validate-statement.js';
 import {
   markEntriesReconciled,
   type ReconcileEntryInput,
@@ -1544,6 +1545,54 @@ export function createRouter(ctx: AppContext): Router {
       } catch (err: any) {
         ctx.logger.error('Save folder settings failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/bank-reconciliation/validate-statement
+   *
+   * Validate that a bank statement is ready for reconciliation by
+   * comparing its opening balance to Opera's `nbank.nk_recbal`.
+   * Faithful port of validate_statement_for_reconciliation
+   * (apps/bank_reconcile/api/routes.py:10198-10238).
+   *
+   * Query params:
+   *   - bank_code (required)
+   *   - opening_balance (required, pounds)
+   *   - closing_balance (required, pounds)
+   *   - statement_number (optional)
+   *   - statement_date (required, YYYY-MM-DD)
+   */
+  router.post(
+    '/api/bank-reconciliation/validate-statement',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const bankCode = String(req.query.bank_code ?? '').trim();
+        const openingBalance = Number(req.query.opening_balance);
+        const closingBalance = Number(req.query.closing_balance);
+        const statementNumber =
+          req.query.statement_number !== undefined &&
+          req.query.statement_number !== ''
+            ? Number(req.query.statement_number)
+            : null;
+        const statementDate =
+          typeof req.query.statement_date === 'string'
+            ? req.query.statement_date
+            : null;
+        const result = await validateStatementForReconciliation(operaDb, {
+          bankAccount: bankCode,
+          openingBalance,
+          closingBalance,
+          statementNumber,
+          statementDate,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Validate statement failed', err);
+        res.status(500).json({ valid: false, error_message: err?.message ?? String(err) });
       }
     },
   );
