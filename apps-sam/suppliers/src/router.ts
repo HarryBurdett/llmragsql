@@ -9,6 +9,10 @@ import { Router, type Request, type Response } from 'express';
 import type { AppContext } from './app-context.js';
 import { listSuppliers, getSupplier } from './services/supplier-list.js';
 import { runSuppliersHealthCheck } from './services/health-check.js';
+import {
+  getGlobalSupplierSettings,
+  updateGlobalSupplierSettings,
+} from './services/global-settings.js';
 import { getAgedDebtSummary, getAgedDebtBySupplier } from './services/aged-debt.js';
 import {
   listContacts,
@@ -112,6 +116,67 @@ export function createRouter(ctx: AppContext): Router {
       opera_type: ctx.operaType,
       message: 'In development. See docs/sam-rewrite/progress.md for status.',
     });
+  });
+
+  /**
+   * GET /api/suppliers/settings
+   *
+   * Read global supplier-automation settings (per-tenant). Faithful
+   * port of get_supplier_settings (apps/suppliers/api/routes.py
+   * :2167-2210). Returns the full known-key set with defaults applied
+   * to any unset values.
+   */
+  router.get('/api/suppliers/settings', async (_req, res) => {
+    const appDb = ctx.db.app;
+    if (!appDb) {
+      res.status(503).json({
+        success: false,
+        error: 'suppliers per-app database not provisioned for this tenant.',
+      });
+      return;
+    }
+    try {
+      const result = await getGlobalSupplierSettings(appDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get supplier settings failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/settings
+   *
+   * Update global supplier-automation settings. Faithful port of
+   * update_supplier_settings (apps/suppliers/api/routes.py
+   * :2213-2278). Validates that follow_up_reminder_days exceeds
+   * query_response_days (loads the missing value from the existing
+   * settings when only one of the pair is supplied). Unknown keys
+   * are skipped silently.
+   *
+   * Body: arbitrary key/value object; values are coerced to strings.
+   */
+  router.post('/api/suppliers/settings', async (req, res) => {
+    const appDb = ctx.db.app;
+    if (!appDb) {
+      res.status(503).json({
+        success: false,
+        error: 'suppliers per-app database not provisioned for this tenant.',
+      });
+      return;
+    }
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await updateGlobalSupplierSettings(appDb, body as any);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Update supplier settings failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
   });
 
   /**
