@@ -61,7 +61,16 @@ import {
   cancelPaymentRequest,
   syncPaymentStatuses,
 } from './services/payment-requests.js';
-import { listSubscriptions } from './services/subscriptions.js';
+import {
+  listSubscriptions,
+  getSubscription,
+  pauseSubscription,
+  resumeSubscription,
+  cancelSubscription,
+  updateSubscriptionDetails,
+  linkSubscriptionToDocument,
+  unlinkSubscriptionFromDocument,
+} from './services/subscriptions.js';
 import {
   listMandates,
   listUnlinkedMandates,
@@ -998,6 +1007,301 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List subscriptions failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/subscriptions/link
+   *
+   * Link an Opera repeat document (ih_doc) to a GoCardless subscription.
+   * Faithful port of link_subscription_to_document
+   * (apps/gocardless/api/routes.py:8788-8832). Multiple docs per
+   * subscription supported; rejects when the doc is already linked
+   * to a different subscription.
+   *
+   * NB: this route MUST be defined before /subscriptions/:id so Express
+   * doesn't mis-route 'link' as a path parameter.
+   */
+  router.post(
+    '/api/gocardless/subscriptions/link',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as {
+          subscription_id?: string;
+          source_doc?: string;
+        };
+        const result = await linkSubscriptionToDocument(appDb, {
+          subscriptionId: String(body.subscription_id ?? ''),
+          sourceDoc: String(body.source_doc ?? ''),
+        });
+        if (!result.success) {
+          const isMissing =
+            typeof result.error === 'string' &&
+            /not found locally/i.test(result.error);
+          res.status(isMissing ? 404 : 400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Link subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/subscriptions/unlink
+   *
+   * Remove the link between a subscription and an Opera repeat document.
+   * Faithful port of unlink_subscription_from_document
+   * (apps/gocardless/api/routes.py:8835-8874). When source_doc is
+   * omitted, all document links for the subscription are removed.
+   */
+  router.post(
+    '/api/gocardless/subscriptions/unlink',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as {
+          subscription_id?: string;
+          source_doc?: string;
+        };
+        const result = await unlinkSubscriptionFromDocument(appDb, {
+          subscriptionId: String(body.subscription_id ?? ''),
+          sourceDoc:
+            typeof body.source_doc === 'string' && body.source_doc
+              ? body.source_doc
+              : null,
+        });
+        if (!result.success) {
+          const isMissing =
+            typeof result.error === 'string' && /not found/i.test(result.error);
+          res.status(isMissing ? 404 : 400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Unlink subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/subscriptions/:subscription_id
+   *
+   * Read a single subscription with its linked source_docs and Opera
+   * customer name enrichment. Faithful port of
+   * get_gocardless_subscription (apps/gocardless/api/routes.py:9157-9169).
+   */
+  router.get(
+    '/api/gocardless/subscriptions/:subscription_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await getSubscription(
+          appDb,
+          String(req.params.subscription_id ?? ''),
+        );
+        if (!result.success) {
+          const isMissing =
+            typeof result.error === 'string' && /not found/i.test(result.error);
+          res.status(isMissing ? 404 : 400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * PUT /api/gocardless/subscriptions/:subscription_id
+   *
+   * Update name / amount on a GoCardless subscription, then mirror the
+   * change locally. Faithful port of update_gocardless_subscription
+   * (apps/gocardless/api/routes.py:9248-9291). Returns the fresh
+   * subscription with source_docs.
+   */
+  router.put(
+    '/api/gocardless/subscriptions/:subscription_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const body = (req.body ?? {}) as {
+          name?: string | null;
+          amount_pence?: number | string | null;
+        };
+        const subscriptionId = String(req.params.subscription_id ?? '');
+        const amount =
+          body.amount_pence === undefined || body.amount_pence === null
+            ? null
+            : Number(body.amount_pence);
+        const remote = async (
+          id: string,
+          opts: { name?: string | null; amountPence?: number | null },
+        ) =>
+          client.updateSubscription(id, {
+            name: opts.name ?? null,
+            amountPence: opts.amountPence ?? null,
+          });
+        const result = await updateSubscriptionDetails(
+          appDb,
+          subscriptionId,
+          {
+            name: typeof body.name === 'string' ? body.name : null,
+            amountPence: Number.isFinite(amount as number) ? (amount as number) : null,
+          },
+          remote,
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Update subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/subscriptions/:subscription_id/pause
+   *
+   * Pause an active subscription via GoCardless API + mirror locally.
+   * Faithful port of pause_gocardless_subscription
+   * (apps/gocardless/api/routes.py:9294-9318).
+   */
+  router.post(
+    '/api/gocardless/subscriptions/:subscription_id/pause',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const result = await pauseSubscription(
+          appDb,
+          String(req.params.subscription_id ?? ''),
+          (id) => client.pauseSubscription(id),
+        );
+        if (!result.success) {
+          const isMissing =
+            typeof result.error === 'string' && /not found/i.test(result.error);
+          res.status(isMissing ? 404 : 400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Pause subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/subscriptions/:subscription_id/resume
+   *
+   * Resume a paused subscription. Faithful port of
+   * resume_gocardless_subscription (apps/gocardless/api/routes.py
+   * :9321-9345).
+   */
+  router.post(
+    '/api/gocardless/subscriptions/:subscription_id/resume',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const result = await resumeSubscription(
+          appDb,
+          String(req.params.subscription_id ?? ''),
+          (id) => client.resumeSubscription(id),
+        );
+        if (!result.success) {
+          const isMissing =
+            typeof result.error === 'string' && /not found/i.test(result.error);
+          res.status(isMissing ? 404 : 400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Resume subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/subscriptions/:subscription_id/cancel
+   *
+   * Cancel a subscription (cannot be undone in GoCardless). Faithful
+   * port of cancel_gocardless_subscription (apps/gocardless/api/
+   * routes.py:9348-9372).
+   */
+  router.post(
+    '/api/gocardless/subscriptions/:subscription_id/cancel',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const result = await cancelSubscription(
+          appDb,
+          String(req.params.subscription_id ?? ''),
+          (id) => client.cancelSubscription(id),
+        );
+        if (!result.success) {
+          const isMissing =
+            typeof result.error === 'string' && /not found/i.test(result.error);
+          res.status(isMissing ? 404 : 400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Cancel subscription failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

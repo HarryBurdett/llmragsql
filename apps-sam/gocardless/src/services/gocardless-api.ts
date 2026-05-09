@@ -253,6 +253,197 @@ export class GoCardlessClient {
   }
 
   /**
+   * GET /subscriptions/:id — fetch a subscription's current state.
+   *
+   * Faithful port of `GoCardlessClient.get_subscription`
+   * (sql_rag/gocardless_api.py:529-532). Returns the raw GoCardless
+   * subscription object inside `{success, subscription}`.
+   */
+  async getSubscription(
+    subscriptionId: string,
+  ): Promise<{
+    success: boolean;
+    subscription?: Record<string, unknown>;
+    error?: string;
+  }> {
+    if (!subscriptionId) return { success: false, error: 'subscriptionId required' };
+    try {
+      const res = await this.request(
+        'GET',
+        `/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        subscriptions?: Record<string, unknown>;
+      };
+      return { success: true, subscription: data.subscriptions ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
+   * PUT /subscriptions/:id — update name / amount / metadata.
+   *
+   * Faithful port of `GoCardlessClient.update_subscription`
+   * (sql_rag/gocardless_api.py:534-564). Only fields that are non-null/
+   * non-undefined are sent to GoCardless (matches Python's `is not None`
+   * gate).
+   */
+  async updateSubscription(
+    subscriptionId: string,
+    opts: {
+      name?: string | null;
+      amountPence?: number | null;
+      metadata?: Record<string, string> | null;
+    } = {},
+  ): Promise<{
+    success: boolean;
+    subscription?: Record<string, unknown>;
+    error?: string;
+  }> {
+    if (!subscriptionId)
+      return { success: false, error: 'subscriptionId required' };
+    const subData: Record<string, unknown> = {};
+    if (opts.name !== undefined && opts.name !== null) subData.name = opts.name;
+    if (opts.amountPence !== undefined && opts.amountPence !== null)
+      subData.amount = opts.amountPence;
+    if (opts.metadata !== undefined && opts.metadata !== null)
+      subData.metadata = opts.metadata;
+    try {
+      const res = await this.request(
+        'PUT',
+        `/subscriptions/${encodeURIComponent(subscriptionId)}`,
+        { subscriptions: subData },
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        subscriptions?: Record<string, unknown>;
+      };
+      return { success: true, subscription: data.subscriptions ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
+   * POST /subscriptions/:id/actions/pause — pause an active subscription.
+   *
+   * Faithful port of `GoCardlessClient.pause_subscription`.
+   */
+  async pauseSubscription(
+    subscriptionId: string,
+  ): Promise<{
+    success: boolean;
+    subscription?: Record<string, unknown>;
+    error?: string;
+  }> {
+    return this._subscriptionAction(subscriptionId, 'pause');
+  }
+
+  /**
+   * POST /subscriptions/:id/actions/resume — resume a paused subscription.
+   *
+   * Faithful port of `GoCardlessClient.resume_subscription`.
+   */
+  async resumeSubscription(
+    subscriptionId: string,
+  ): Promise<{
+    success: boolean;
+    subscription?: Record<string, unknown>;
+    error?: string;
+  }> {
+    return this._subscriptionAction(subscriptionId, 'resume');
+  }
+
+  /**
+   * POST /subscriptions/:id/actions/cancel — cancel a subscription.
+   *
+   * Faithful port of `GoCardlessClient.cancel_subscription`. Cannot
+   * be undone (per GoCardless API).
+   */
+  async cancelSubscription(
+    subscriptionId: string,
+  ): Promise<{
+    success: boolean;
+    subscription?: Record<string, unknown>;
+    error?: string;
+  }> {
+    return this._subscriptionAction(subscriptionId, 'cancel');
+  }
+
+  private async _subscriptionAction(
+    subscriptionId: string,
+    action: 'pause' | 'resume' | 'cancel',
+  ): Promise<{
+    success: boolean;
+    subscription?: Record<string, unknown>;
+    error?: string;
+  }> {
+    if (!subscriptionId)
+      return { success: false, error: 'subscriptionId required' };
+    try {
+      const res = await this.request(
+        'POST',
+        `/subscriptions/${encodeURIComponent(subscriptionId)}/actions/${action}`,
+        {},
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        subscriptions?: Record<string, unknown>;
+      };
+      return { success: true, subscription: data.subscriptions ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * Test the API token by hitting GET /creditors.
    *
    * Returns success + organisation name on a 200, or a friendly error

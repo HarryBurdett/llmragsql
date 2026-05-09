@@ -36,14 +36,14 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 46 of ~124 endpoints (219 tests)
+**gocardless:** 53 of ~124 endpoints (261 tests)
 **bank-reconcile:** 36 of ~127 endpoints (181 tests)
 **suppliers:** 38 endpoints (greenfield TS work — 128 tests)
 **shared:** 11 utility modules covering all foundational primitives (92 tests)
-**Total TS tests across all packages:** 648 (all passing, all builds clean)
-**Endpoint coverage of Python source (3 porting apps):** 86 of ~258 = ~33%
+**Total TS tests across all packages:** 694 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** 93 of ~258 = ~36%
 **Calendar week of project:** 1
-**Sessions logged:** 1 (extended autonomous session — 60+ commits)
+**Sessions logged:** 2 (extended autonomous sessions)
 
 ### Foundational primitives in @sqlrag/sam-shared
 All primitives needed for finance-write endpoints are now in place:
@@ -206,12 +206,14 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `POST /api/gocardless/update-subscription-tags` — Opera repeat-doc tagging (preview + apply, ROWLOCK)
 - [x] `GET /api/gocardless/validate-date` — Opera period validation (OPA-aware, NL master gate, sub-ledger check)
 - [x] `GET /api/gocardless/payment-requests/stats` — dashboard stats (mandates active, pending count+amount, MTD paid-out, 30d failed)
-- [ ] `GET /api/gocardless/nominal-accounts`
-- [ ] `GET /api/gocardless/vat-codes`
-- [ ] `POST /api/gocardless/test-api`
-- [ ] `*` Mandate setup endpoints
-- [ ] `*` Subscription endpoints
-- [ ] `*` ~110 more endpoints
+- [x] `GET /api/gocardless/subscriptions/:id` — single subscription detail with linked source_docs (migration 007 aligned schema with Python: amount_pence, interval_unit, junction table)
+- [x] `PUT /api/gocardless/subscriptions/:id` — update name/amount via GoCardless API + mirror locally
+- [x] `POST /api/gocardless/subscriptions/:id/pause` — remote pause + local status mirror
+- [x] `POST /api/gocardless/subscriptions/:id/resume` — remote resume + local status mirror
+- [x] `POST /api/gocardless/subscriptions/:id/cancel` — remote cancel + local status mirror
+- [x] `POST /api/gocardless/subscriptions/link` — link Opera repeat-doc to subscription
+- [x] `POST /api/gocardless/subscriptions/unlink` — remove specific or all doc links
+- [ ] `*` ~70 more endpoints
 
 #### Helpers
 - [x] `src/services/settings.ts` — settings load/save/mask/merge
