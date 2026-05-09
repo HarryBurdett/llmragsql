@@ -97,6 +97,10 @@ import {
   type ImportLockAdapter,
   type PeriodOverlapChecker,
 } from './services/import-from-pdf.js';
+import {
+  checkBatch as checkDuplicateBatch,
+  type CheckTransactionInput,
+} from './services/duplicate-detection.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2037,11 +2041,61 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  /**
+   * POST /api/bank-import/check-duplicates
+   *
+   * Check a batch of bank transactions against Opera (atran/stran/ptran)
+   * for already-imported duplicates. Faithful port of `check_duplicates`
+   * (apps/bank_reconcile/api/routes.py:2901-2955).
+   *
+   * Currently covers two of six strategies:
+   *   - fingerprint  (BKIMP:* in at_refer/st_trref/pt_trref) — definitive
+   *   - exact        (date + amount + account)               — 0.90
+   *
+   * The remaining four strategies (fit_id, fuzzy_amount, reference,
+   * cross_period, bank_amount) are TODO'd in the service file with
+   * pointers to the Python source line numbers.
+   *
+   * Body shape:
+   *   { transactions: [{ name, amount, date, account?, fit_id?, reference? }] }
+   */
+  router.post(
+    '/api/bank-import/check-duplicates',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const body = (req.body ?? {}) as {
+          transactions?: CheckTransactionInput[];
+        };
+        const txns = Array.isArray(body.transactions) ? body.transactions : [];
+        if (txns.length === 0) {
+          res.status(400).json({
+            success: false,
+            error: 'transactions array is required',
+          });
+          return;
+        }
+        const bankCode = (req.query.bank_code as string) ?? null;
+        const result = await checkDuplicateBatch(operaDb, txns, bankCode);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('check-duplicates failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
   //   - GET  /api/reconcile/bank/{bank_code} — full reconcile (~600 LOC)
   //   - POST /api/bank-import/preview-from-pdf (Claude extraction)
   //   - POST /api/bank-import/import-from-email (similar shape; email source)
+  //   - Remaining 4 duplicate strategies (fit_id, fuzzy_amount,
+  //     reference, cross_period, bank_amount) — see duplicate-detection.ts
   //   - ~120 more
 
   return router;
