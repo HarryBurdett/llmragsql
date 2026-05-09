@@ -128,6 +128,8 @@ import {
   importGocardlessBatchFromEmail,
   type EmailArchiveAdapter,
 } from './services/import-from-email.js';
+import { gocardlessBatchPostingExecutor } from './services/batch-posting-executor.js';
+import { inMemoryImportLock } from './services/import-lock.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -3282,14 +3284,8 @@ export function createRouter(ctx: AppContext): Router {
         gocardlessBatchExecutor?: BatchPostingExecutor;
         gocardlessImportLock?: ImportLockAdapter;
       };
-      if (!adapter.gocardlessBatchExecutor || !adapter.gocardlessImportLock) {
-        res.status(503).json({
-          success: false,
-          error:
-            'Posting executor or import-lock adapter not configured. SAM team wiring required for the gocardless/import flow.',
-        });
-        return;
-      }
+      const executor = adapter.gocardlessBatchExecutor ?? gocardlessBatchPostingExecutor;
+      const lock = adapter.gocardlessImportLock ?? inMemoryImportLock;
       try {
         const body = (req.body ?? {}) as Record<string, unknown>;
         const payments = Array.isArray(body.payments)
@@ -3355,8 +3351,8 @@ export function createRouter(ctx: AppContext): Router {
             }).gocardless_transfer_cbtype ?? null,
           },
           known,
-          adapter.gocardlessBatchExecutor,
-          adapter.gocardlessImportLock,
+          executor,
+          lock,
         );
         if (!result.success) {
           res.status(400).json(result);
@@ -3396,14 +3392,8 @@ export function createRouter(ctx: AppContext): Router {
         gocardlessImportLock?: ImportLockAdapter;
         gocardlessEmailArchive?: EmailArchiveAdapter;
       };
-      if (!adapter.gocardlessBatchExecutor || !adapter.gocardlessImportLock) {
-        res.status(503).json({
-          success: false,
-          error:
-            'Posting executor or import-lock adapter not configured. SAM team wiring required.',
-        });
-        return;
-      }
+      const executor = adapter.gocardlessBatchExecutor ?? gocardlessBatchPostingExecutor;
+      const lock = adapter.gocardlessImportLock ?? inMemoryImportLock;
       try {
         const body = (req.body ?? {}) as Record<string, unknown>;
         const payments = Array.isArray(body.payments)
@@ -3469,8 +3459,8 @@ export function createRouter(ctx: AppContext): Router {
             }).gocardless_transfer_cbtype ?? null,
           },
           known,
-          adapter.gocardlessBatchExecutor,
-          adapter.gocardlessImportLock,
+          executor,
+          lock,
           adapter.gocardlessEmailArchive ?? null,
         );
         if (!result.success) {
