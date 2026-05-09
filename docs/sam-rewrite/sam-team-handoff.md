@@ -16,7 +16,7 @@ the plugin code never branches on `ctx.operaType`.
 | Plugin | Backend tests | Backend endpoints | Frontend bundle |
 |---|---|---|---|
 | `gocardless` | 34 files / 495 tests | ~46 endpoints ported | UMD `__SAM_APPS__["gocardless"]` |
-| `bank-reconcile` | 40 files / 350 tests | ~55 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
+| `bank-reconcile` | 40 files / 351 tests | ~55 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
 | `suppliers` | 21 files / 184 tests | ~58 endpoints ported | UMD `__SAM_APPS__["suppliers"]` |
 | `balance-check` | TBC tests | 7 endpoints ported | UMD `__SAM_APPS__["balance-check"]` |
 
@@ -31,24 +31,35 @@ the dominant happy path. The SAM team can override any adapter via
 `AppContext` for production deployments.
 
 ### gocardless/import (POST /api/gocardless/import)
-- **Default**: `gocardlessBatchPostingExecutor` — ports the inner
-  posting body of `OperaSQLImport.import_gocardless_batch`. Posts
-  aentry header + atran/stran per payment + ntran/anoml/njmemo
-  pairs (when completeBatch) + sname/nbank/nacnt updates.
-  Fees split + bank-transfer auto-leg are TODO'd as warnings (not
-  yet ported — operator posts manually until the SAM team layers
-  them on).
+- **Default**: `gocardlessBatchPostingExecutor` — ports the full
+  inner posting body of `OperaSQLImport.import_gocardless_batch`:
+  - Receipts: aentry header + atran/stran per payment +
+    ntran/anoml/njmemo pairs (when completeBatch) + sname/nbank/
+    nacnt updates.
+  - **Fees split**: SEPARATE cashbook entry, DR fees expense + DR
+    VAT input + CR bank, with split atran lines (net + VAT) when
+    VAT > 0. VAT nominal looked up from ztax via
+    `fetchVatCodesWithRates`.
+  - **Bank-transfer auto-leg**: when `destinationBank` is set,
+    posts paired aentry/atran from postingBank → destinationBank
+    for the net amount.
 - **Default**: `inMemoryImportLock` — bank-level lock with
   5-minute stale TTL. Single-process semantics; SAM team can swap
   for Redis-backed.
 
 ### bank-reconcile/import-from-pdf (POST /api/bank-import/import-from-pdf)
-- **Default**: `bankImportPostingExecutor` — handles
-  sales_receipt / purchase_payment / sales_refund / purchase_refund
-  (~90% of bank-reconcile activity). Each row posts in its own DB
-  transaction so a single failure doesn't roll back the batch.
-  nominal_payment / nominal_receipt / bank_transfer emit a per-row
-  warning and skip — TODO follow-up.
+- **Default**: `bankImportPostingExecutor` — handles all 7
+  transaction types end-to-end:
+  - sales_receipt / purchase_payment / sales_refund /
+    purchase_refund — full ledger flow with stran/ptran +
+    sname/pname balance updates.
+  - **nominal_payment / nominal_receipt** — direct to nominal
+    account (no ledger row, no party balance) via
+    `postNominalEntry`.
+  - **bank_transfer** — paired aentry/atran on source + dest
+    banks via `postBankTransfer`.
+  - Each row posts in its own DB transaction so a single failure
+    doesn't roll back the batch.
 - **Default**: `inMemoryImportLock`
 - **Default**: `bankStatementImportsOverlapChecker` — reads the
   per-app `bank_statement_imports` table for prior period overlap.
@@ -194,15 +205,22 @@ addressed:
 - **`/api/bank-import/import-with-overrides`** — alias for
   import-from-pdf.
 
+## Most recent additions (this stretch)
+
+- **bank-reconcile executor: nominal entries + bank transfers** —
+  postNominalEntry handles at_type=1/2 (no ledger / no party
+  balance); postBankTransfer handles at_type=8 with paired aentry/
+  atran on source + dest banks, both nbank/nacnt sides updated.
+- **gocardless executor: fees split + bank-transfer auto-leg** —
+  fees post as a SEPARATE cashbook entry with DR fees expense +
+  DR VAT input + CR bank; destinationBank auto-leg posts a paired
+  net-amount transfer.
+
 ## Known follow-ups
 
-- Frontend full-UI port of the four legacy React pages.
+- Frontend full-UI port of the four legacy React pages (SAM team).
 - Email ingestion glue (per-plugin or SAM-host cache).
 - Write Agent — Opera 3 FoxPro write service, in development.
-- gocardless executor: fees-split + bank-transfer auto-leg
-  (warnings now, port pending).
-- bank-reconcile executor: nominal_payment / nominal_receipt /
-  bank_transfer transaction types (skip with warning now).
 - Remaining ~80 small bank-reconcile utility / drilldown / Opera-3
   mirror endpoints — each ports independently using the patterns
   established in this codebase.
