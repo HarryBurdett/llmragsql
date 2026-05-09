@@ -85,6 +85,11 @@ import {
   updateRepeatEntryDate,
   listRepeatEntries,
 } from './services/repeat-entries.js';
+import {
+  scanEmailsForBankStatements,
+  type BankMailboxAdapter,
+  type ReconciledKeyStore,
+} from './services/scan-emails.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1841,14 +1846,96 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  /**
+   * GET /api/bank-import/scan-emails
+   *
+   * Scan the connected mailbox for bank statement attachments.
+   * Faithful port of `scan_emails_for_bank_statements`
+   * (apps/bank_reconcile/api/routes.py:6043-6800), deterministic
+   * core only. PDF balance validation is deferred — statements are
+   * returned with `validation_status: 'pending'` until a separate
+   * validate-from-pdf pass runs.
+   *
+   * Requires the SAM team to attach a `bankMailboxAdapter` and a
+   * `bankReconciledKeyStore` to the runtime context (returns 503
+   * until then). The adapters wrap whatever email-ingest +
+   * reconciled-state strategy SAM settles on; everything else here
+   * is engine-agnostic and exercised by scan-emails.test.ts.
+   *
+   * Query params:
+   *   - bank_code        (required)
+   *   - days_back        (default 30)
+   *   - include_processed ('1'/'true' to include already-reconciled)
+   *   - validate_balances ('false' to skip pending-validation flag)
+   */
+  router.get(
+    '/api/bank-import/scan-emails',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const adapter = (ctx as unknown as {
+        bankMailboxAdapter?: BankMailboxAdapter;
+        bankReconciledKeyStore?: ReconciledKeyStore;
+      });
+      if (!adapter.bankMailboxAdapter || !adapter.bankReconciledKeyStore) {
+        res.status(503).json({
+          success: false,
+          error:
+            'Mailbox adapter or reconciled-key store not configured. SAM email-ingest wiring required.',
+        });
+        return;
+      }
+      try {
+        const bankCode = String(req.query.bank_code ?? '').trim();
+        if (!bankCode) {
+          res
+            .status(400)
+            .json({ success: false, error: 'bank_code is required' });
+          return;
+        }
+        const daysBack = req.query.days_back
+          ? Number(req.query.days_back)
+          : 30;
+        const includeProcessed =
+          req.query.include_processed === '1' ||
+          req.query.include_processed === 'true';
+        const validateBalances = !(
+          req.query.validate_balances === 'false' ||
+          req.query.validate_balances === '0'
+        );
+        const result = await scanEmailsForBankStatements(
+          operaDb,
+          appDb,
+          adapter.bankMailboxAdapter,
+          adapter.bankReconciledKeyStore,
+          {
+            bankCode,
+            daysBack,
+            includeProcessed,
+            validateBalances,
+          },
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('scan-emails failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
   //   - GET  /api/reconcile/bank/{bank_code} — full reconcile (~600 LOC)
-  //   - GET  /api/reconcile/bank/{bank_code}/status
-  //   - GET  /api/reconcile/bank/{bank_code}/unreconciled
-  //   - POST /api/reconcile/bank/{bank_code}/mark-reconciled
-  //   - POST /api/bank-import/scan-emails (via SAM email service)
-  //   - POST /api/bank-import/preview-from-pdf (Gemini extraction)
+  //   - POST /api/bank-import/preview-from-pdf (Claude extraction)
   //   - POST /api/bank-import/import (the big posting flow)
   //   - ~120 more
 
