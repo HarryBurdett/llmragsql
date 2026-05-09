@@ -3,6 +3,7 @@ import {
   listMandateSetups,
   cancelMandateSetup,
   createMandateSetup,
+  checkPendingMandateSetups,
 } from '../src/services/mandate-setups.js';
 
 interface SetupRow {
@@ -357,5 +358,194 @@ describe('createMandateSetup', () => {
     expect(result.email_sent).toBe(false);
     expect(result.email_error).toMatch(/No email sender/);
     expect(state.rows[0]?.status).toBe('pending');
+  });
+});
+
+describe('checkPendingMandateSetups', () => {
+  it('returns "No pending setups" message when nothing pending', async () => {
+    const state: MockState = {
+      rows: [
+        emptySetup({
+          id: 1,
+          status: 'completed',
+          billing_request_id: 'BR1',
+        }),
+      ],
+    };
+    const remote = {
+      getBillingRequest: async () => ({ success: true }),
+      getMandate: async () => ({ success: true }),
+    };
+    const result = await checkPendingMandateSetups(makeAppDb(state), remote);
+    expect(result.success).toBe(true);
+    expect(result.updates).toHaveLength(0);
+    expect(result.message).toMatch(/No pending/);
+  });
+
+  it('marks setup completed + invokes completeSetup when mandate active', async () => {
+    const state: MockState = {
+      rows: [
+        emptySetup({
+          id: 1,
+          status: 'email_sent',
+          billing_request_id: 'BR1',
+          opera_account: 'CUST01',
+          opera_name: 'Acme Ltd',
+        }),
+      ],
+    };
+    let completeCalled: any = null;
+    const remote = {
+      getBillingRequest: async () => ({
+        success: true,
+        status: 'fulfilled',
+        mandateId: 'MD_NEW',
+        customerId: 'CU1',
+      }),
+      getMandate: async () => ({ success: true, status: 'active' }),
+    };
+    const completeSetup = async (input: any) => {
+      completeCalled = input;
+      return { success: true };
+    };
+    const result = await checkPendingMandateSetups(
+      makeAppDb(state),
+      remote,
+      completeSetup,
+    );
+    expect(result.success).toBe(true);
+    expect(state.rows[0]?.status).toBe('completed');
+    expect(state.rows[0]?.mandate_id).toBe('MD_NEW');
+    expect(state.rows[0]?.gocardless_customer_id).toBe('CU1');
+    expect(completeCalled?.mandateId).toBe('MD_NEW');
+    expect(result.updates[0]?.new_status).toBe('completed');
+  });
+
+  it('marks mandate_created when mandate is pending_customer_approval', async () => {
+    const state: MockState = {
+      rows: [emptySetup({ id: 1, status: 'email_sent', billing_request_id: 'BR1' })],
+    };
+    const remote = {
+      getBillingRequest: async () => ({
+        success: true,
+        status: 'fulfilled',
+        mandateId: 'MD1',
+      }),
+      getMandate: async () => ({
+        success: true,
+        status: 'pending_customer_approval',
+      }),
+    };
+    const result = await checkPendingMandateSetups(makeAppDb(state), remote);
+    expect(state.rows[0]?.status).toBe('mandate_created');
+    expect(result.updates[0]?.new_status).toBe('mandate_created');
+  });
+
+  it('marks failed when mandate is cancelled/expired/failed', async () => {
+    const state: MockState = {
+      rows: [emptySetup({ id: 1, status: 'email_sent', billing_request_id: 'BR1' })],
+    };
+    const remote = {
+      getBillingRequest: async () => ({
+        success: true,
+        status: 'fulfilled',
+        mandateId: 'MD1',
+      }),
+      getMandate: async () => ({ success: true, status: 'expired' }),
+    };
+    const result = await checkPendingMandateSetups(makeAppDb(state), remote);
+    expect(state.rows[0]?.status).toBe('failed');
+    expect(result.updates[0]?.new_status).toBe('failed');
+  });
+
+  it('moves email_sent → authorisation_pending when brq still pending', async () => {
+    const state: MockState = {
+      rows: [emptySetup({ id: 1, status: 'email_sent', billing_request_id: 'BR1' })],
+    };
+    const remote = {
+      getBillingRequest: async () => ({ success: true, status: 'pending' }),
+      getMandate: async () => ({ success: true }),
+    };
+    const result = await checkPendingMandateSetups(makeAppDb(state), remote);
+    expect(state.rows[0]?.status).toBe('authorisation_pending');
+    expect(result.updates[0]?.new_status).toBe('authorisation_pending');
+  });
+
+  it('marks cancelled when brq itself was cancelled', async () => {
+    const state: MockState = {
+      rows: [emptySetup({ id: 1, status: 'email_sent', billing_request_id: 'BR1' })],
+    };
+    const remote = {
+      getBillingRequest: async () => ({ success: true, status: 'cancelled' }),
+      getMandate: async () => ({ success: true }),
+    };
+    const result = await checkPendingMandateSetups(makeAppDb(state), remote);
+    expect(state.rows[0]?.status).toBe('cancelled');
+  });
+
+  it('reports per-row error without aborting the run', async () => {
+    const state: MockState = {
+      rows: [
+        emptySetup({ id: 1, status: 'email_sent', billing_request_id: 'BR1' }),
+        emptySetup({ id: 2, status: 'email_sent', billing_request_id: 'BR2' }),
+      ],
+    };
+    let n = 0;
+    const remote = {
+      getBillingRequest: async () => {
+        n++;
+        if (n === 1) {
+          return { success: false, error: 'GC API down' };
+        }
+        return { success: true, status: 'cancelled' };
+      },
+      getMandate: async () => ({ success: true }),
+    };
+    const result = await checkPendingMandateSetups(makeAppDb(state), remote);
+    expect(result.success).toBe(true);
+    expect(result.updates).toHaveLength(2);
+    expect(result.updates[0]?.error).toMatch(/GC API down/);
+    expect(result.updates[1]?.new_status).toBe('cancelled');
+  });
+
+  it('does not call completeSetup when remote completion fails (best-effort)', async () => {
+    const state: MockState = {
+      rows: [emptySetup({ id: 1, status: 'email_sent', billing_request_id: 'BR1' })],
+    };
+    const remote = {
+      getBillingRequest: async () => ({
+        success: true,
+        status: 'fulfilled',
+        mandateId: 'MD1',
+      }),
+      getMandate: async () => ({ success: true, status: 'active' }),
+    };
+    const completeSetup = async () => {
+      throw new Error('Opera unreachable');
+    };
+    const result = await checkPendingMandateSetups(
+      makeAppDb(state),
+      remote,
+      completeSetup,
+    );
+    // Status still marked completed even though Opera link failed
+    expect(state.rows[0]?.status).toBe('completed');
+    expect(result.success).toBe(true);
+  });
+
+  it('skips rows without a billing_request_id', async () => {
+    const state: MockState = {
+      rows: [emptySetup({ id: 1, status: 'pending', billing_request_id: '' })],
+    };
+    let called = 0;
+    const remote = {
+      getBillingRequest: async () => {
+        called++;
+        return { success: true };
+      },
+      getMandate: async () => ({ success: true }),
+    };
+    await checkPendingMandateSetups(makeAppDb(state), remote);
+    expect(called).toBe(0);
   });
 });

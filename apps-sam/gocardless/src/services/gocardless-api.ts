@@ -205,6 +205,52 @@ export class GoCardlessClient {
   }
 
   /**
+   * GET /billing_requests/:id — fetch a billing request's current state.
+   *
+   * Used by the check-setups poll endpoint to detect when a customer
+   * has completed their authorisation and a mandate has been minted.
+   */
+  async getBillingRequest(
+    billingRequestId: string,
+  ): Promise<{
+    success: boolean;
+    billingRequest?: Record<string, unknown>;
+    error?: string;
+  }> {
+    if (!billingRequestId) {
+      return { success: false, error: 'billingRequestId required' };
+    }
+    try {
+      const res = await this.request(
+        'GET',
+        `/billing_requests/${encodeURIComponent(billingRequestId)}`,
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        billing_requests?: Record<string, unknown>;
+      };
+      return { success: true, billingRequest: data.billing_requests ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * POST /billing_requests — create a new billing request.
    *
    * Faithful port of GoCardlessClient.create_billing_request — used

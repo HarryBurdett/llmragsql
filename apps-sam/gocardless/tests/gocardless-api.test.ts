@@ -242,6 +242,37 @@ describe('createClientFromSettings', () => {
   });
 });
 
+describe('GoCardlessClient.getBillingRequest', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('returns the billing request on 200', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        billing_requests: { id: 'BR1', status: 'fulfilled' },
+      }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getBillingRequest('BR1');
+    expect(result.success).toBe(true);
+    expect(result.billingRequest?.status).toBe('fulfilled');
+    const url = (global.fetch as any).mock.calls[0][0] as string;
+    expect(url).toMatch(/\/billing_requests\/BR1$/);
+  });
+
+  it('refuses empty id', async () => {
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getBillingRequest('');
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('GoCardlessClient.createBillingRequest / createBillingRequestFlow', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

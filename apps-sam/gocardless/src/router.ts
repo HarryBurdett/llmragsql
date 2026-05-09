@@ -86,6 +86,7 @@ import {
   listMandateSetups,
   cancelMandateSetup,
   createMandateSetup,
+  checkPendingMandateSetups,
 } from './services/mandate-setups.js';
 import { getEligibleCustomers } from './services/eligible-customers.js';
 import { getCustomerEmail } from './services/customer-email.js';
@@ -1639,6 +1640,145 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Create mandate setup failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/mandates/check-setups
+   *
+   * Poll GoCardless for status updates on every pending mandate
+   * setup row. Faithful port of check_mandate_setups
+   * (apps/gocardless/api/routes.py:7070-7186).
+   *
+   * For each pending row:
+   *   - Fetch the billing request → status, mandate id, customer id
+   *   - When mandate created and active → mark setup completed,
+   *     link mandate to Opera customer (gocardless_mandates upsert),
+   *     and ROWLOCK-update sname.sn_analsys='GC' on the Opera customer
+   *   - Otherwise map brq.status to the appropriate local status
+   *
+   * Per-row failures are reported in updates[] but never abort the
+   * batch.
+   */
+  router.post(
+    '/api/gocardless/mandates/check-setups',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API access token not configured',
+          });
+          return;
+        }
+        const remote = {
+          getBillingRequest: async (id: string) => {
+            const r = await client.getBillingRequest(id);
+            const brq = r.billingRequest as Record<string, any> | undefined;
+            return {
+              success: r.success,
+              status: (brq?.status as string | undefined) ?? undefined,
+              mandateId:
+                ((brq?.links?.mandate_request_mandate as string | undefined) ??
+                  (brq?.links?.mandate as string | undefined)) ||
+                null,
+              customerId: (brq?.links?.customer as string | undefined) ?? null,
+              error: r.error,
+            };
+          },
+          getMandate: async (id: string) => {
+            const r = await client.getMandate(id);
+            const m = r.mandate as Record<string, any> | undefined;
+            return {
+              success: r.success,
+              status: (m?.status as string | undefined) ?? undefined,
+              error: r.error,
+            };
+          },
+        };
+        const completeSetup = async (input: {
+          setup: { opera_account: string; opera_name: string; customer_email: string };
+          mandateId: string;
+          gocardlessCustomerId: string | null;
+        }) => {
+          // 1. Look up GC customer for name + email enrichment
+          let gcName: string | null = null;
+          let email: string | null = input.setup.customer_email || null;
+          if (input.gocardlessCustomerId) {
+            try {
+              const cust = await client.getCustomer(input.gocardlessCustomerId);
+              if (cust.success && cust.customer) {
+                const c = cust.customer as Record<string, any>;
+                gcName =
+                  (c.company_name as string | undefined) ||
+                  `${c.given_name ?? ''} ${c.family_name ?? ''}`.trim() ||
+                  null;
+                if (!email && c.email) email = c.email as string;
+              }
+            } catch {
+              // best-effort
+            }
+          }
+          // 2. Fetch mandate scheme (default bacs)
+          let scheme = 'bacs';
+          try {
+            const m = await client.getMandate(input.mandateId);
+            if (m.success && m.mandate) {
+              const md = m.mandate as Record<string, any>;
+              if (md.scheme) scheme = md.scheme as string;
+            }
+          } catch {
+            // best-effort
+          }
+          // 3. Local link
+          const linkResult = await linkMandate(appDb, {
+            operaAccount: input.setup.opera_account,
+            mandateId: input.mandateId,
+            operaName: input.setup.opera_name || null,
+            gocardlessName: gcName,
+            gocardlessCustomerId: input.gocardlessCustomerId,
+            mandateStatus: 'active',
+            scheme,
+            email,
+            confirm: true,
+          });
+          if (!linkResult.success) {
+            return { success: false, error: linkResult.error };
+          }
+          // 4. Set sn_analsys='GC' on the Opera customer
+          try {
+            await operaDb('sname')
+              .whereRaw('LTRIM(RTRIM(sn_account)) = ?', [
+                input.setup.opera_account,
+              ])
+              .andWhereRaw(
+                "(sn_analsys IS NULL OR LTRIM(RTRIM(sn_analsys)) = '' OR LTRIM(RTRIM(UPPER(sn_analsys))) != 'GC')",
+              )
+              .update({ sn_analsys: 'GC' });
+          } catch (sqlErr: any) {
+            ctx.logger.warn?.(
+              `Could not set sn_analsys='GC' for ${input.setup.opera_account}`,
+              sqlErr,
+            );
+          }
+          return { success: true };
+        };
+        const result = await checkPendingMandateSetups(
+          appDb,
+          remote,
+          completeSetup,
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Check mandate setups failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

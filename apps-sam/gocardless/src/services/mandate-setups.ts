@@ -358,6 +358,234 @@ export async function createMandateSetup(
 }
 
 // ---------------------------------------------------------------------
+// poll pending setups — auto-link when mandate becomes active
+// ---------------------------------------------------------------------
+
+export interface CheckSetupsRemote {
+  /** GET /billing_requests/:id */
+  getBillingRequest: (id: string) => Promise<{
+    success: boolean;
+    /** Billing request status: 'fulfilled' | 'pending' | 'action_required' | 'cancelled' | ... */
+    status?: string;
+    /** mandate_request_mandate or mandate */
+    mandateId?: string | null;
+    customerId?: string | null;
+    error?: string;
+  }>;
+  /** GET /mandates/:id */
+  getMandate: (id: string) => Promise<{
+    success: boolean;
+    /** Mandate status: 'active' | 'pending_*' | 'submitted' | 'cancelled' | 'expired' | 'failed' | ... */
+    status?: string;
+    error?: string;
+  }>;
+}
+
+export interface CheckSetupsLinkResult {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Called when a mandate setup completes. Links the mandate to its
+ * Opera customer in `gocardless_mandates` and sets `sn_analsys='GC'`
+ * on the Opera customer. The router supplies this via the existing
+ * `linkMandate` service + a ROWLOCK Opera write.
+ */
+export type CompleteMandateSetupFn = (input: {
+  setup: MandateSetup;
+  mandateId: string;
+  gocardlessCustomerId: string | null;
+}) => Promise<CheckSetupsLinkResult>;
+
+export interface CheckSetupsUpdate {
+  setup_id: number;
+  opera_account: string;
+  opera_name: string;
+  old_status: string;
+  new_status?: string;
+  mandate_id?: string | null;
+  error?: string;
+}
+
+export interface CheckSetupsResponse {
+  success: boolean;
+  message?: string;
+  updates: CheckSetupsUpdate[];
+  error?: string;
+}
+
+/**
+ * Faithful port of check_mandate_setups
+ * (apps/gocardless/api/routes.py:7070-7186).
+ *
+ * For each pending mandate setup row:
+ *   1. Fetch the billing_request status via the remote callback
+ *   2. Map brq.status + mandate.status to a local status:
+ *        brq=fulfilled  + mandate=active                 → completed
+ *        brq=fulfilled  + mandate=pending_*              → mandate_created
+ *        brq=fulfilled  + mandate=cancelled/expired/failed → failed
+ *        brq=pending|action_required + setup=email_sent → authorisation_pending
+ *        brq=cancelled                                   → cancelled
+ *   3. Persist any non-null update_fields to the local row
+ *   4. If the new status is 'completed' AND we have a mandate_id,
+ *      call completeSetup which links the mandate + sets
+ *      sn_analsys='GC' on the Opera customer
+ *
+ * Per-row failures are reported in updates[] but never abort the run.
+ */
+export async function checkPendingMandateSetups(
+  appDb: Knex,
+  remote: CheckSetupsRemote,
+  completeSetup?: CompleteMandateSetupFn,
+): Promise<CheckSetupsResponse> {
+  try {
+    const rows = (await appDb('mandate_setup_requests').orderBy(
+      'id',
+      'desc',
+    )) as unknown as SetupRow[];
+    const pending = rows.filter(
+      (r) => !FINAL_STATUSES.has((r.status ?? '').trim()),
+    );
+    if (pending.length === 0) {
+      return {
+        success: true,
+        message: 'No pending setups to check',
+        updates: [],
+      };
+    }
+
+    const updates: CheckSetupsUpdate[] = [];
+
+    for (const row of pending) {
+      const setup = rowToSetup(row);
+      if (!setup.billing_request_id) continue;
+      try {
+        const brq = await remote.getBillingRequest(setup.billing_request_id);
+        if (!brq.success) {
+          updates.push({
+            setup_id: setup.id,
+            opera_account: setup.opera_account,
+            opera_name: setup.opera_name,
+            old_status: setup.status,
+            error: brq.error ?? 'Billing request lookup failed',
+          });
+          continue;
+        }
+        const brqStatus = brq.status ?? '';
+        const mandateId = brq.mandateId ?? null;
+        const customerId = brq.customerId ?? null;
+
+        const updateFields: Record<string, unknown> = {};
+        if (customerId && customerId !== setup.gocardless_customer_id) {
+          updateFields.gocardless_customer_id = customerId;
+        }
+        if (mandateId && mandateId !== setup.mandate_id) {
+          updateFields.mandate_id = mandateId;
+        }
+
+        let newStatusForLink: 'completed' | null = null;
+        if (brqStatus === 'fulfilled' && mandateId) {
+          // Resolve mandate status — best-effort, default to mandate_created
+          let mandateStatus = '';
+          try {
+            const m = await remote.getMandate(mandateId);
+            if (m.success) mandateStatus = m.status ?? '';
+          } catch {
+            // best-effort
+          }
+          if (mandateStatus === 'active') {
+            updateFields.status = 'completed';
+            updateFields.mandate_active_at = appDb.fn.now();
+            updateFields.status_detail = `Mandate ${mandateId} is active`;
+            newStatusForLink = 'completed';
+          } else if (
+            mandateStatus === 'pending_customer_approval' ||
+            mandateStatus === 'pending_submission' ||
+            mandateStatus === 'submitted'
+          ) {
+            updateFields.status = 'mandate_created';
+            updateFields.status_detail = `Mandate ${mandateId} status: ${mandateStatus}`;
+          } else if (
+            mandateStatus === 'cancelled' ||
+            mandateStatus === 'expired' ||
+            mandateStatus === 'failed'
+          ) {
+            updateFields.status = 'failed';
+            updateFields.status_detail = `Mandate ${mandateId} ${mandateStatus}`;
+          } else {
+            updateFields.status = 'mandate_created';
+            updateFields.status_detail = mandateStatus
+              ? `Mandate ${mandateId} status: ${mandateStatus}`
+              : `Mandate ${mandateId} created (status check failed)`;
+          }
+        } else if (brqStatus === 'pending' || brqStatus === 'action_required') {
+          if (setup.status === 'email_sent') {
+            updateFields.status = 'authorisation_pending';
+            updateFields.status_detail =
+              'Awaiting customer to complete authorisation';
+          }
+        } else if (brqStatus === 'cancelled') {
+          updateFields.status = 'cancelled';
+          updateFields.status_detail = 'Billing request was cancelled';
+        }
+
+        if (Object.keys(updateFields).length > 0) {
+          updateFields.updated_at = appDb.fn.now();
+          await appDb('mandate_setup_requests')
+            .where({ id: setup.id })
+            .update(updateFields);
+
+          if (newStatusForLink === 'completed' && mandateId && completeSetup) {
+            try {
+              await completeSetup({
+                setup,
+                mandateId,
+                gocardlessCustomerId: customerId,
+              });
+            } catch {
+              // best-effort — Python logs and continues
+            }
+          }
+
+          const fresh = (await appDb('mandate_setup_requests')
+            .where({ id: setup.id })
+            .first()) as unknown as SetupRow | undefined;
+          updates.push({
+            setup_id: setup.id,
+            opera_account: setup.opera_account,
+            opera_name: setup.opera_name,
+            old_status: setup.status,
+            new_status: fresh?.status ?? (updateFields.status as string | undefined),
+            mandate_id: mandateId,
+          });
+        }
+      } catch (err: any) {
+        updates.push({
+          setup_id: setup.id,
+          opera_account: setup.opera_account,
+          opera_name: setup.opera_name,
+          old_status: setup.status,
+          error: err?.message ?? String(err),
+        });
+      }
+    }
+
+    return {
+      success: true,
+      message: `Checked ${pending.length} pending setups, ${updates.length} updated`,
+      updates,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      updates: [],
+      error: err?.message ?? String(err),
+    };
+  }
+}
+
+// ---------------------------------------------------------------------
 // cancel a setup
 // ---------------------------------------------------------------------
 
