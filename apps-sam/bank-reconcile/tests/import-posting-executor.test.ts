@@ -197,7 +197,7 @@ describe('bankImportPostingExecutor', () => {
     expect(tables.has('stran')).toBe(false);
   });
 
-  it('skips skip/defer/nominal/transfer rows with warnings', async () => {
+  it('skips skip/defer rows; posts nominal entries', async () => {
     const state: State = { calls: [] };
     const result = await bankImportPostingExecutor.postBankImport({
       operaDb: makeOperaDb(state),
@@ -216,8 +216,8 @@ describe('bankImportPostingExecutor', () => {
           date: '2026-04-15',
           name: 'B',
           memo: '',
-          amount: 50,
-          type: 'credit',
+          amount: -50,
+          type: 'debit',
           ...({ action: 'nominal_payment', matched_account: 'NL5000' } as Record<
             string,
             unknown
@@ -229,9 +229,40 @@ describe('bankImportPostingExecutor', () => {
       autoAllocate: false,
       autoReconcile: false,
     });
-    expect(result.skipped_count).toBe(2);
-    expect(result.records_imported).toBe(0);
-    expect(result.warnings.some((w) => w.includes('nominal_payment'))).toBe(true);
+    expect(result.skipped_count).toBe(1); // skip
+    expect(result.records_imported).toBe(1); // nominal posted
+  });
+
+  it('posts a bank_transfer (paired source+dest aentry/atran)', async () => {
+    const state: State = { calls: [] };
+    const result = await bankImportPostingExecutor.postBankImport({
+      operaDb: makeOperaDb(state),
+      bankCode: 'BC010',
+      statementInfo: SAMPLE_STATEMENT,
+      transactions: [
+        {
+          date: '2026-04-15',
+          name: 'Transfer',
+          memo: 'Transfer to savings',
+          amount: -1000, // money OUT
+          type: 'debit',
+          ...({ action: 'bank_transfer', matched_account: 'BC020' } as Record<
+            string,
+            unknown
+          >),
+        },
+      ],
+      overrides: [],
+      selectedRows: null,
+      autoAllocate: false,
+      autoReconcile: false,
+    });
+    expect(result.success).toBe(true);
+    expect(result.records_imported).toBe(1);
+    const aentryInserts = state.calls.filter((c) =>
+      /insert into aentry/i.test(c.sql),
+    );
+    expect(aentryInserts.length).toBe(2); // source + dest
   });
 
   it('per-row error does not roll back other rows', async () => {
