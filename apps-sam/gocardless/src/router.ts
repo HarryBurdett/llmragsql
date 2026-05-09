@@ -91,6 +91,10 @@ import { getCustomerEmail } from './services/customer-email.js';
 import { getRepeatDocuments } from './services/repeat-documents.js';
 import { getCollectableInvoices } from './services/collectable-invoices.js';
 import {
+  getDueInvoices,
+  type PaymentRequestInfo,
+} from './services/due-invoices.js';
+import {
   requestPayment,
   requestBulkPayments,
   type OperaSnapshot,
@@ -1329,6 +1333,62 @@ export function createRouter(ctx: AppContext): Router {
       }
     },
   );
+
+  /**
+   * GET /api/gocardless/due-invoices
+   *
+   * List outstanding invoices due for GoCardless collection,
+   * grouped by customer. Faithful port of get_gocardless_due_invoices
+   * (apps/gocardless/api/routes.py:7897-8214).
+   *
+   * Only returns invoices for customers with an active mandate.
+   * Each invoice is decorated with mandate, payment-request, and
+   * subscription info. Customers carry an unallocated-credit
+   * warning when a credit balance exists on their account.
+   *
+   * Query params:
+   *   - advance_date (default = today, YYYY-MM-DD)
+   *   - include_future (default true)
+   *
+   * The Python source optionally enriches payment_requested via the
+   * GoCardless list_payments API (catches payments made via the GC
+   * dashboard). We currently skip that enrichment to keep the
+   * endpoint snappy — local payment_requests already covers the
+   * main case. Will be wired through once list_payments lands.
+   */
+  router.get(
+    '/api/gocardless/due-invoices',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const advanceDate =
+          typeof req.query.advance_date === 'string' ? req.query.advance_date : null;
+        const includeFuture =
+          req.query.include_future === undefined
+            ? true
+            : !(
+                req.query.include_future === 'false' ||
+                req.query.include_future === '0'
+              );
+        const result = await getDueInvoices(operaDb, appDb, {
+          advanceDate,
+          includeFuture,
+          subscriptionTag: settings.subscription_tag ?? 'SUB',
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get due invoices failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+  // Suppress unused-import warning when due-invoices types only flow through
+  // the body of this endpoint at runtime.
+  void (null as unknown as PaymentRequestInfo);
 
   /**
    * GET /api/gocardless/repeat-documents
