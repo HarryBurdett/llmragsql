@@ -36,14 +36,14 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 60 of ~124 endpoints (334 tests)
-**bank-reconcile:** 36 of ~127 endpoints (181 tests)
+**gocardless:** 61 of ~124 endpoints (349 tests)
+**bank-reconcile:** 40 of ~127 endpoints (208 tests)
 **suppliers:** 38 endpoints (greenfield TS work — 128 tests)
 **shared:** 11 utility modules covering all foundational primitives (92 tests)
-**Total TS tests across all packages:** 767 (all passing, all builds clean)
-**Endpoint coverage of Python source (3 porting apps):** 100 of ~258 = ~39%
+**Total TS tests across all packages:** 809 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** 105 of ~258 = ~41%
 **Calendar week of project:** 1
-**Sessions logged:** 2 (extended autonomous sessions)
+**Sessions logged:** 3 (extended autonomous sessions)
 
 ### Foundational primitives in @sqlrag/sam-shared
 All primitives needed for finance-write endpoints are now in place:
@@ -220,6 +220,7 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `POST /api/gocardless/request-payment` — single-payment request (dup guard, mandate lookup, Opera safety check, GC create, persist)
 - [x] `POST /api/gocardless/payment-requests/bulk` — bulk wrapper for request-payment
 - [x] `POST /api/gocardless/mandates/link` — link mandate to Opera customer (re-link confirm + ROWLOCK sn_analsys flag move)
+- [x] `POST /api/gocardless/mandates/sync` — pull every mandate from GC API + auto-link to GC-tagged Opera customers by normalised name match
 - [ ] `*` ~60 more endpoints
 
 #### Helpers
@@ -284,6 +285,13 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
   - GET /api/bank-import/accounts/suppliers (dormant-filtered)
   - POST /api/reconcile/bank/:bank_code/unreconcile **(first finance-write port — bank lock + ROWLOCK + transaction)**
   - POST /api/reconcile/bank/:bank_code/mark-reconciled **(full + partial — UPDLOCK on read, ROWLOCK on writes, fresh-bank auto-recovery)**
+  - GET    /api/bank-import/import-history (list with bank_code/date filter; default target_system=opera_se)
+  - GET    /api/bank-import/email-import-history (legacy alias, no target_system filter)
+  - DELETE /api/bank-import/import-history/:record_id (single)
+  - DELETE /api/bank-import/import-history (bulk by filters)
+  - GET    /api/bank-import/folder-settings (per-tenant base + archive paths)
+  - POST   /api/bank-import/folder-settings (upsert)
+  - POST   /api/bank-reconciliation/validate-statement (opening balance vs nbank.nk_recbal, 1p tolerance)
 - [x] TypeScript builds cleanly
 - [x] 8 tests passing (4 banks + 4 health-check)
 - [ ] Endpoints: 3 of ~127 ported. Future-session priorities:
