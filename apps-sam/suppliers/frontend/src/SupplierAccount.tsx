@@ -1,0 +1,1342 @@
+import { useState, useEffect, useRef } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams, useNavigate } from './router-shim';
+import {
+  Building,
+  RefreshCw,
+  Search,
+  ArrowLeft,
+  X,
+  Plus,
+  Pencil,
+  Trash2,
+  CheckCircle,
+  XCircle,
+  HelpCircle,
+} from 'lucide-react';
+import { authFetch } from './api-shim';
+import { PageHeader, LoadingState, EmptyState, Alert } from './ui-shim';
+import { HelpPanel } from './HelpPanel';
+import { useHelp } from './useHelp';
+
+interface SupplierDetails {
+  account: string;
+  company_name: string;
+  address1: string | null;
+  address2: string | null;
+  address3: string | null;
+  address4: string | null;
+  postcode: string | null;
+  ac_contact: string | null;
+  email: string | null;
+  telephone: string | null;
+  facsimile?: string | null;
+  current_balance: number;
+  order_balance: number;
+  turnover: number;
+  credit_limit?: number;
+  avg_creditor_days?: number;
+  first_created?: string | null;
+  last_modified?: string | null;
+  last_invoice: string | null;
+  last_payment: string | null;
+}
+
+interface Transaction {
+  date: string;
+  type: string;
+  ref1: string;
+  ref2: string | null;
+  stat: string;
+  debit: number | null;
+  credit: number | null;
+  balance: number;
+  currency: string | null;
+  fc_curr: string | null;
+  fc_rate: number | null;
+  fc_debit: number | null;
+  fc_credit: number | null;
+  fc_balance: number | null;
+  due_date: string | null;
+  last_payment: string | null;
+  unique_id: string;
+  raw_type: string;
+}
+
+interface AgingAnalysis {
+  '150_plus': number;
+  '120_days': number;
+  '90_days': number;
+  '60_days': number;
+  '30_days': number;
+  current: number;
+  total: number;
+  unallocated: number;
+}
+
+interface SupplierAccountResponse {
+  success: boolean;
+  supplier: SupplierDetails;
+  transactions: Transaction[];
+  aging: AgingAnalysis;
+  count: number;
+  error?: string;
+}
+
+type TabType = 'general' | 'memo' | 'view' | 'contacts';
+
+interface SupplierContact {
+  id: number;
+  account: string;
+  name: string;
+  title: string | null;
+  role: string | null;
+  department: string | null;
+  email: string | null;
+  phone: string | null;
+  mobile: string | null;
+  fax: string | null;
+  statement_contact: boolean;
+  payment_contact: boolean;
+  query_contact: boolean;
+  verified: boolean;
+  security_clearance: string;
+  verification_phone: string | null;
+}
+
+interface ContactFormData {
+  name: string;
+  title: string;
+  role: string;
+  department: string;
+  email: string;
+  phone: string;
+  mobile: string;
+  fax: string;
+  statement_contact: boolean;
+  payment_contact: boolean;
+  query_contact: boolean;
+  verified: boolean;
+  security_clearance: string;
+  verification_phone: string;
+}
+
+const emptyContactForm: ContactFormData = {
+  name: '',
+  title: '',
+  role: '',
+  department: '',
+  email: '',
+  phone: '',
+  mobile: '',
+  fax: '',
+  statement_contact: false,
+  payment_contact: false,
+  query_contact: false,
+  verified: false,
+  security_clearance: 'standard',
+  verification_phone: '',
+};
+
+// Searchable supplier dropdown — exact same pattern as GoCardless CustomerAccountSearch
+async function fetchSupplierSearch(search: string): Promise<Array<{account: string; name: string; balance: number}>> {
+  const res = await authFetch(`/api/creditors/search?query=${encodeURIComponent(search)}&limit=20`);
+  if (!res.ok) throw new Error('Failed to fetch suppliers');
+  const data = await res.json();
+  return (data.suppliers || []).map((s: Record<string, unknown>) => ({
+    account: String(s.account || ''),
+    name: String(s.supplier_name || s.name || ''),
+    balance: Number(s.balance || 0),
+  }));
+}
+
+function SupplierAccountSearch({
+  value,
+  valueName,
+  onChange,
+}: {
+  value: string;
+  valueName?: string;
+  onChange: (account: string, name: string) => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [selectedName, setSelectedName] = useState(valueName || '');
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (valueName) setSelectedName(valueName);
+  }, [valueName]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
+        setDebouncedSearch('');
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const { data: results = [], isLoading } = useQuery({
+    queryKey: ['supplier-search-account', debouncedSearch],
+    queryFn: () => fetchSupplierSearch(debouncedSearch),
+    enabled: debouncedSearch.length >= 2 && !value,
+    staleTime: 30000,
+    gcTime: 60000,
+  });
+
+  const [highlightIndex, setHighlightIndex] = useState(0);
+
+  // Reset highlight when results change
+  useEffect(() => { setHighlightIndex(0); }, [results]);
+
+  const handleSelect = (s: {account: string; name: string}) => {
+    onChange(s.account, s.name);
+    setSelectedName(s.name);
+    setSearch('');
+    setDebouncedSearch('');
+  };
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      {value ? (
+        <div className="flex items-center gap-2 px-3 py-2 border border-blue-300 bg-blue-50 rounded-lg text-sm w-80">
+          <span className="font-medium">{value}</span>
+          <span className="text-gray-500 truncate flex-1">{selectedName}</span>
+          <button
+            type="button"
+            onClick={() => { onChange('', ''); setSelectedName(''); setSearch(''); setDebouncedSearch(''); }}
+            className="text-gray-400 hover:text-red-500"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      ) : (
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            className="w-80 pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-blue-500 focus:border-blue-500"
+            placeholder="Type to search suppliers..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (results.length === 0 && search.length >= 2) {
+                  // Force search if not yet triggered
+                  setDebouncedSearch(search);
+                } else if (results.length > 0) {
+                  setHighlightIndex(prev => prev < results.length - 1 ? prev + 1 : prev);
+                }
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setHighlightIndex(prev => prev > 0 ? prev - 1 : 0);
+              } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (results.length > 0) {
+                  const idx = Math.min(highlightIndex, results.length - 1);
+                  handleSelect(results[idx]);
+                } else if (search.trim()) {
+                  // Direct account code entry
+                  onChange(search.trim().toUpperCase(), '');
+                  setSearch('');
+                  setDebouncedSearch('');
+                }
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setSearch('');
+                setDebouncedSearch('');
+              }
+            }}
+          />
+          {isLoading && (
+            <RefreshCw className="w-4 h-4 absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 animate-spin" />
+          )}
+        </div>
+      )}
+      {results.length > 0 && !value && (
+        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+          {results.map((s, idx) => (
+            <button
+              key={s.account}
+              type="button"
+              className={`w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-b-0 ${
+                idx === highlightIndex ? 'bg-blue-100 text-blue-900' : 'hover:bg-blue-50'
+              }`}
+              onClick={() => handleSelect(s)}
+              onMouseEnter={() => setHighlightIndex(idx)}
+            >
+              <div className="font-medium">{s.name}</div>
+              <div className="text-sm text-gray-500">{s.account} • {s.balance.toLocaleString('en-GB', {minimumFractionDigits: 2})}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContactForm({
+  form,
+  setForm,
+  onSave,
+  onCancel,
+  saving,
+  title,
+}: {
+  form: ContactFormData;
+  setForm: (f: ContactFormData) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  title: string;
+}) {
+  return (
+    <div className="border border-blue-200 bg-blue-50 rounded-lg p-4 mb-4">
+      <h4 className="text-sm font-semibold text-gray-800 mb-3">{title}</h4>
+      <div className="grid grid-cols-4 gap-3 mb-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Name *</label>
+          <input
+            type="text"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Title</label>
+          <input
+            type="text"
+            value={form.title}
+            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Role</label>
+          <input
+            type="text"
+            value={form.role}
+            onChange={(e) => setForm({ ...form, role: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Department</label>
+          <input
+            type="text"
+            value={form.department}
+            onChange={(e) => setForm({ ...form, department: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-4 gap-3 mb-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+          <input
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
+          <input
+            type="text"
+            value={form.phone}
+            onChange={(e) => setForm({ ...form, phone: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Mobile</label>
+          <input
+            type="text"
+            value={form.mobile}
+            onChange={(e) => setForm({ ...form, mobile: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Fax</label>
+          <input
+            type="text"
+            value={form.fax}
+            onChange={(e) => setForm({ ...form, fax: e.target.value })}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+          />
+        </div>
+      </div>
+      <div className="flex items-center gap-6 mb-3">
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={form.statement_contact}
+            onChange={(e) => setForm({ ...form, statement_contact: e.target.checked })}
+            className="rounded border-gray-300"
+          />
+          Statement Contact
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={form.payment_contact}
+            onChange={(e) => setForm({ ...form, payment_contact: e.target.checked })}
+            className="rounded border-gray-300"
+          />
+          Payment Contact
+        </label>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={form.query_contact}
+            onChange={(e) => setForm({ ...form, query_contact: e.target.checked })}
+            className="rounded border-gray-300"
+          />
+          Query Contact
+        </label>
+      </div>
+      <div className="border-t border-blue-200 pt-3 mt-3">
+        <h5 className="text-xs font-semibold text-gray-700 mb-2">Security</h5>
+        <div className="grid grid-cols-3 gap-3">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.verified}
+              onChange={(e) => setForm({ ...form, verified: e.target.checked })}
+              className="rounded border-gray-300"
+            />
+            Verified Sender
+          </label>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Security Clearance</label>
+            <select
+              value={form.security_clearance}
+              onChange={(e) => setForm({ ...form, security_clearance: e.target.value })}
+              className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="standard">Standard</option>
+              <option value="elevated">Elevated</option>
+              <option value="director">Director</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Verification Phone</label>
+            <input
+              type="text"
+              value={form.verification_phone}
+              onChange={(e) => setForm({ ...form, verification_phone: e.target.value })}
+              className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 mt-3">
+        <button
+          onClick={onCancel}
+          className="px-4 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-50 text-sm font-medium text-gray-700"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onSave}
+          disabled={saving || !form.name.trim()}
+          className="px-4 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm font-medium disabled:opacity-50"
+        >
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ContactsTab({ account }: { account: string }) {
+  const queryClient = useQueryClient();
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [addForm, setAddForm] = useState<ContactFormData>({ ...emptyContactForm });
+  const [editForm, setEditForm] = useState<ContactFormData>({ ...emptyContactForm });
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const contactsQuery = useQuery<SupplierContact[]>({
+    queryKey: ['supplier-contacts', account],
+    queryFn: async () => {
+      const res = await authFetch(`/api/supplier-contacts/${account}`);
+      if (!res.ok) throw new Error('Failed to load contacts');
+      const data = await res.json();
+      return data.contacts || [];
+    },
+    enabled: !!account,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const addMutation = useMutation({
+    mutationFn: async (data: ContactFormData) => {
+      const res = await authFetch(`/api/supplier-contacts/${account}/opera`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Failed to add contact');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supplier-contacts', account] });
+      setShowAddForm(false);
+      setAddForm({ ...emptyContactForm });
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const editMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: ContactFormData }) => {
+      const res = await authFetch(`/api/supplier-contacts/${account}/opera/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Failed to update contact');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supplier-contacts', account] });
+      setEditingId(null);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await authFetch(`/api/supplier-contacts/${account}/opera/${id}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Failed to delete contact');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supplier-contacts', account] });
+      setDeleteConfirmId(null);
+      setError(null);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const startEdit = (contact: SupplierContact) => {
+    setEditingId(contact.id);
+    setEditForm({
+      name: contact.name || '',
+      title: contact.title || '',
+      role: contact.role || '',
+      department: contact.department || '',
+      email: contact.email || '',
+      phone: contact.phone || '',
+      mobile: contact.mobile || '',
+      fax: contact.fax || '',
+      statement_contact: contact.statement_contact,
+      payment_contact: contact.payment_contact,
+      query_contact: contact.query_contact,
+      verified: contact.verified,
+      security_clearance: contact.security_clearance || 'standard',
+      verification_phone: contact.verification_phone || '',
+    });
+    setShowAddForm(false);
+  };
+
+  const contacts = contactsQuery.data || [];
+
+  return (
+    <div className="p-4">
+      {/* Error Display */}
+      {error && (
+        <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+          <span className="text-red-500 mt-0.5">!</span>
+          <div className="flex-1">
+            <p className="text-sm text-red-800">{error}</p>
+          </div>
+          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 text-lg leading-none">&times;</button>
+        </div>
+      )}
+
+      {/* Add Contact Button */}
+      {!showAddForm && editingId === null && (
+        <div className="mb-3">
+          <button
+            onClick={() => { setShowAddForm(true); setAddForm({ ...emptyContactForm }); }}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+          >
+            <Plus className="h-4 w-4" />
+            Add Contact
+          </button>
+        </div>
+      )}
+
+      {/* Add Contact Form */}
+      {showAddForm && (
+        <ContactForm
+          form={addForm}
+          setForm={setAddForm}
+          onSave={() => addMutation.mutate(addForm)}
+          onCancel={() => { setShowAddForm(false); setError(null); }}
+          saving={addMutation.isPending}
+          title="Add New Contact"
+        />
+      )}
+
+      {/* Loading */}
+      {contactsQuery.isLoading && (
+        <div className="py-8 text-center text-gray-500 text-sm">Loading contacts...</div>
+      )}
+
+      {/* Contacts Table */}
+      {!contactsQuery.isLoading && (
+        <div className="border border-gray-300 rounded overflow-hidden">
+          <div className="max-h-[400px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-100 sticky top-0">
+                <tr>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Name</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Title</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Role</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Email</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Phone</th>
+                  <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Mobile</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Stmt</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Pay</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Query</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Verified</th>
+                  <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {contacts.length === 0 ? (
+                  <tr>
+                    <td colSpan={11} className="py-8 text-center text-gray-400">
+                      No contacts recorded for this supplier
+                    </td>
+                  </tr>
+                ) : (
+                  contacts.map((contact, idx) => (
+                    <tr key={contact.id}>
+                      {/* Inline Edit Row */}
+                      {editingId === contact.id ? (
+                        <td colSpan={11} className="p-0">
+                          <ContactForm
+                            form={editForm}
+                            setForm={setEditForm}
+                            onSave={() => editMutation.mutate({ id: contact.id, data: editForm })}
+                            onCancel={() => { setEditingId(null); setError(null); }}
+                            saving={editMutation.isPending}
+                            title={`Edit Contact: ${contact.name}`}
+                          />
+                        </td>
+                      ) : (
+                        <>
+                          <td className={`py-1.5 px-3 text-gray-700 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.name}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.title || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.role || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.email || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.phone || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-gray-600 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.mobile || ''}
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            <input type="checkbox" checked={contact.statement_contact} readOnly className="rounded border-gray-300" />
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            <input type="checkbox" checked={contact.payment_contact} readOnly className="rounded border-gray-300" />
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            <input type="checkbox" checked={contact.query_contact} readOnly className="rounded border-gray-300" />
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            {contact.verified ? (
+                              <CheckCircle className="h-4 w-4 text-green-500 inline" />
+                            ) : (
+                              <XCircle className="h-4 w-4 text-red-400 inline" />
+                            )}
+                          </td>
+                          <td className={`py-1.5 px-3 text-center ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}>
+                            <div className="flex items-center justify-center gap-1">
+                              <button
+                                onClick={() => startEdit(contact)}
+                                className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                                title="Edit"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              {deleteConfirmId === contact.id ? (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => deleteMutation.mutate(contact.id)}
+                                    disabled={deleteMutation.isPending}
+                                    className="px-2 py-0.5 bg-red-600 text-white rounded text-xs hover:bg-red-700 disabled:opacity-50"
+                                  >
+                                    {deleteMutation.isPending ? '...' : 'Yes'}
+                                  </button>
+                                  <button
+                                    onClick={() => setDeleteConfirmId(null)}
+                                    className="px-2 py-0.5 bg-gray-200 text-gray-700 rounded text-xs hover:bg-gray-300"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setDeleteConfirmId(contact.id)}
+                                  className="p-1 text-red-500 hover:bg-red-50 rounded"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SupplierAccount() {
+  const { showHelp, setShowHelp } = useHelp();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const accountCode = searchParams.get('account') || '';
+  // searchQuery state removed — SupplierAccountSearch component manages its own state
+  const [activeAccount, setActiveAccount] = useState(accountCode);
+  const [activeTab, setActiveTab] = useState<TabType>('general');
+  const [viewFilter, setViewFilter] = useState<'outstanding' | 'all'>('outstanding');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+
+  // Sync activeAccount when URL changes (e.g., after navigate)
+  useEffect(() => {
+    if (accountCode && accountCode !== activeAccount) {
+      setActiveAccount(accountCode);
+    }
+  }, [accountCode]);
+
+  // No auto-load — page starts empty, user searches for a supplier
+
+  // (Supplier search handled by SupplierAccountSearch component)
+
+  // Supplier account details - cached for 5 minutes
+  const accountQuery = useQuery<SupplierAccountResponse>({
+    queryKey: ['supplierAccount', activeAccount, viewFilter, dateFrom, dateTo],
+    queryFn: async () => {
+      const params = new URLSearchParams({ view: viewFilter });
+      if (dateFrom) params.set('date_from', dateFrom);
+      if (dateTo) params.set('date_to', dateTo);
+      const response = await authFetch(`/api/supplier/account/${activeAccount}?${params.toString()}`);
+      if (!response.ok) throw new Error(`Failed to load supplier: ${response.statusText}`);
+      return response.json();
+    },
+    enabled: !!activeAccount,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  });
+
+  // (Search handled by SupplierAccountSearch component)
+
+  const selectSupplier = (account: string) => {
+    if (!account) {
+      setActiveAccount('');
+      navigate('/supplier/account');
+    } else {
+      setActiveAccount(account);
+      navigate(`/supplier/account?account=${account}`);
+    }
+  };
+
+  const formatDate = (dateStr: string | null): string => {
+    if (!dateStr) return '';
+    try {
+      const date = new Date(dateStr);
+      return date.toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      });
+    } catch {
+      return dateStr;
+    }
+  };
+
+  const formatCurrency = (value: number | null): string => {
+    if (value === null || value === undefined) return '';
+    return value.toLocaleString('en-GB', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
+
+  const supplier = accountQuery.data?.supplier;
+  const transactions = accountQuery.data?.transactions || [];
+  const aging = accountQuery.data?.aging;
+
+  return (
+    <div className="space-y-4">
+      {/* Header with Search */}
+      <PageHeader
+        icon={Building}
+        title={`Purchase Processing${supplier ? ` : ${activeAccount} - ${supplier.company_name}` : ''}`}
+        subtitle="Supplier account view"
+      >
+        <button
+          onClick={() => navigate('/supplier/directory')}
+          className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+        >
+          <ArrowLeft className="h-5 w-5 text-gray-600" />
+        </button>
+        <button
+          onClick={() => setShowHelp(prev => !prev)}
+          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors ${
+            showHelp ? 'bg-blue-600 text-white' : 'text-gray-600 bg-white border border-gray-200 hover:bg-gray-50'
+          }`}
+          title="Toggle help (F1)"
+        >
+          <HelpCircle className="h-4 w-4" />
+          Help
+        </button>
+        <div className="flex items-center gap-2">
+          <SupplierAccountSearch
+            value={activeAccount}
+            valueName={supplier?.company_name}
+            onChange={(account, _name) => {
+              selectSupplier(account);
+            }}
+          />
+          <button
+            onClick={() => accountQuery.refetch()}
+            disabled={accountQuery.isFetching}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+          >
+            <RefreshCw className={`h-4 w-4 ${accountQuery.isFetching ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
+      </PageHeader>
+
+      <HelpPanel
+        isOpen={showHelp}
+        onClose={() => setShowHelp(false)}
+        sections={[
+          { title: 'Account Lookup', content: 'Search for any supplier by name or account code using the search box in the header.' },
+          { title: 'General Tab', content: 'Supplier details from Opera including name, address, current balance, credit limit, and key dates.' },
+          { title: 'View Tab', content: 'Transaction list with filter options (All or Outstanding only) and date range. Shows invoices, credit notes, and payments.' },
+          { title: 'Contacts Tab', content: 'Manage supplier contacts. Contacts are synced with Opera zcontacts table.' },
+        ]}
+      />
+
+      {/* No Account Selected */}
+      {!activeAccount && (
+        <EmptyState icon={Search} title="Enter Supplier Account" message="Enter a supplier account code above to view their details" />
+      )}
+
+      {/* Loading */}
+      {activeAccount && accountQuery.isLoading && (
+        <LoadingState message="Loading supplier account..." size="lg" />
+      )}
+
+      {/* Error */}
+      {accountQuery.isError && (
+        <Alert variant="error" title="Error">
+          Supplier not found or error loading data
+        </Alert>
+      )}
+
+      {/* Main Content - Opera Style Window */}
+      {supplier && (
+        <div className="bg-gray-100 rounded-xl shadow-lg border border-gray-300 overflow-hidden">
+          {/* Tabs */}
+          <div className="bg-gray-200 border-b border-gray-300 px-2 pt-2">
+            <div className="flex gap-1">
+              {(['general', 'memo', 'view', 'contacts'] as TabType[]).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-4 py-2 text-sm font-medium rounded-t-lg border border-b-0 transition-colors ${
+                    activeTab === tab
+                      ? 'bg-white border-gray-300 text-gray-900'
+                      : 'bg-gray-100 border-transparent text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Tab Content */}
+          <div className="bg-white">
+            {/* General Tab */}
+            {activeTab === 'general' && (
+              <div className="p-6">
+                <div className="grid grid-cols-2 gap-8">
+                  {/* Left Column - Contact Details */}
+                  <div className="space-y-4">
+                    {/* Company Name */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-32 text-sm font-medium text-gray-600">Company Name:</label>
+                      <div className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-gray-900">
+                        {supplier.company_name}
+                      </div>
+                    </div>
+
+                    {/* Address */}
+                    <div className="flex items-start gap-3">
+                      <label className="w-32 text-sm font-medium text-gray-600 pt-2">Address:</label>
+                      <div className="flex-1 space-y-1">
+                        {[supplier.address1, supplier.address2, supplier.address3, supplier.address4]
+                          .filter(Boolean)
+                          .map((line, i) => (
+                            <div
+                              key={i}
+                              className="px-3 py-2 bg-gray-50 border border-gray-200 rounded text-gray-900"
+                            >
+                              {line}
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+
+                    {/* Post Code */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-32 text-sm font-medium text-gray-600">Post Code:</label>
+                      <div className="w-32 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-gray-900">
+                        {supplier.postcode || ''}
+                      </div>
+                    </div>
+
+                    {/* A/C Contact */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-32 text-sm font-medium text-gray-600">A/C Contact:</label>
+                      <div className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-gray-900">
+                        {supplier.ac_contact || ''}
+                      </div>
+                    </div>
+
+                    {/* E-Mail Address */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-32 text-sm font-medium text-gray-600">E-Mail Address:</label>
+                      <div className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-gray-900">
+                        {supplier.email || ''}
+                      </div>
+                    </div>
+
+                    {/* Web Site */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-32 text-sm font-medium text-gray-600">Web Site:</label>
+                      <div className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-gray-900">
+                        &nbsp;
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right Column - Balances & Stats */}
+                  <div className="space-y-4">
+                    {/* Current Balance */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-36 text-sm font-medium text-gray-600">Current Balance:</label>
+                      <div className="flex items-center gap-2">
+                        <button className="p-1 bg-gray-100 border border-gray-200 rounded hover:bg-gray-200">
+                          <Search className="h-4 w-4 text-gray-500" />
+                        </button>
+                        <div className="w-28 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-right font-mono text-gray-900">
+                          {formatCurrency(supplier.current_balance)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Avg Creditor Days */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-36 text-sm font-medium text-gray-600">Avg Creditor Days:</label>
+                      <div className="flex items-center gap-2">
+                        <button className="p-1 bg-gray-100 border border-gray-200 rounded hover:bg-gray-200">
+                          <Search className="h-4 w-4 text-gray-500" />
+                        </button>
+                        <div className="w-28 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-right font-mono text-gray-900">
+                          {supplier.avg_creditor_days?.toFixed(1) || '0.0'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Order Balance */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-36 text-sm font-medium text-gray-600">Order Balance:</label>
+                      <div className="w-28 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-right font-mono text-gray-900 ml-8">
+                        {formatCurrency(supplier.order_balance)}
+                      </div>
+                    </div>
+
+                    {/* Turnover */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-36 text-sm font-medium text-gray-600">Turnover:</label>
+                      <div className="flex items-center gap-2">
+                        <button className="p-1 bg-gray-100 border border-gray-200 rounded hover:bg-gray-200">
+                          <Search className="h-4 w-4 text-gray-500" />
+                        </button>
+                        <div className="w-28 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-right font-mono text-gray-900">
+                          {formatCurrency(supplier.turnover)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Credit Limit */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-36 text-sm font-medium text-gray-600">Credit Limit:</label>
+                      <div className="w-28 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-right font-mono text-gray-900 ml-8">
+                        {formatCurrency(supplier.credit_limit ?? 0)}
+                      </div>
+                    </div>
+
+                    {/* Telephone */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-36 text-sm font-medium text-gray-600">Telephone:</label>
+                      <div className="w-40 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-gray-900 ml-8">
+                        {supplier.telephone || ''}
+                      </div>
+                    </div>
+
+                    {/* Facsimile */}
+                    <div className="flex items-center gap-3">
+                      <label className="w-36 text-sm font-medium text-gray-600">Facsimile:</label>
+                      <div className="w-40 px-3 py-2 bg-gray-50 border border-gray-200 rounded text-gray-900 ml-8">
+                        {supplier.facsimile || ''}
+                      </div>
+                    </div>
+
+                    {/* Dates */}
+                    <div className="space-y-2 pt-2 border-t border-gray-200">
+                      <div className="flex items-center gap-3">
+                        <label className="w-36 text-sm font-medium text-gray-600">First Created:</label>
+                        <div className="w-28 px-3 py-1.5 bg-gray-100 border border-gray-200 rounded text-gray-600 text-sm ml-8">
+                          {formatDate(supplier.first_created ?? null)}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="w-36 text-sm font-medium text-gray-600">Last Modified:</label>
+                        <div className="w-28 px-3 py-1.5 bg-gray-100 border border-gray-200 rounded text-gray-600 text-sm ml-8">
+                          {formatDate(supplier.last_modified ?? null)}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="w-36 text-sm font-medium text-gray-600">Last Invoice:</label>
+                        <div className="w-28 px-3 py-1.5 bg-gray-100 border border-gray-200 rounded text-gray-600 text-sm ml-8">
+                          {formatDate(supplier.last_invoice)}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="w-36 text-sm font-medium text-gray-600">Last Payment:</label>
+                        <div className="w-28 px-3 py-1.5 bg-gray-100 border border-gray-200 rounded text-gray-600 text-sm ml-8">
+                          {formatDate(supplier.last_payment)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Memo Tab */}
+            {activeTab === 'memo' && (
+              <div className="p-6">
+                <div className="bg-gray-50 border border-gray-200 rounded p-4 min-h-[300px]">
+                  <p className="text-gray-400 text-sm">No memo recorded for this supplier.</p>
+                </div>
+              </div>
+            )}
+
+            {/* List Tab - Outstanding Transactions */}
+            {activeTab === 'view' && (
+              <div className="p-4">
+                {/* View Filters — matches Opera's "View Account Transactions" dialog */}
+                <div className="flex items-center gap-4 mb-3 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-600">View:</span>
+                    <select
+                      value={viewFilter}
+                      onChange={(e) => setViewFilter(e.target.value as 'outstanding' | 'all')}
+                      className="border border-gray-300 rounded px-2 py-1 text-sm"
+                    >
+                      <option value="outstanding">Outstanding</option>
+                      <option value="all">All</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-600">From:</span>
+                    <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+                      className="border border-gray-300 rounded px-2 py-1 text-sm" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-600">To:</span>
+                    <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+                      className="border border-gray-300 rounded px-2 py-1 text-sm" />
+                  </div>
+                  {(dateFrom || dateTo) && (
+                    <button onClick={() => { setDateFrom(''); setDateTo(''); }}
+                      className="text-xs text-blue-600 hover:underline">Clear dates</button>
+                  )}
+                </div>
+
+                {/* Transactions Table */}
+                <div className="border border-gray-300 rounded overflow-hidden mb-4">
+                  <div className="max-h-[400px] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-100 sticky top-0">
+                        <tr>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Date
+                          </th>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Type
+                          </th>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Ref 1
+                          </th>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Ref 2
+                          </th>
+                          <th className="text-center py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Stat
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Debit
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Credit
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Balance
+                          </th>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Currency
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            FC Debit
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            FC Credit
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            FC Balance
+                          </th>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Due Date
+                          </th>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Last Payment
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {transactions.length === 0 ? (
+                          <tr>
+                            <td colSpan={13} className="py-8 text-center text-gray-400">
+                              No outstanding transactions
+                            </td>
+                          </tr>
+                        ) : (
+                          transactions.map((txn, idx) => (
+                            <tr
+                              key={txn.unique_id || idx}
+                              className={`${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'} hover:bg-blue-50`}
+                            >
+                              <td className="py-1.5 px-3 text-gray-700">{formatDate(txn.date)}</td>
+                              <td className="py-1.5 px-3 text-gray-700">{txn.type}</td>
+                              <td className="py-1.5 px-3 text-gray-700 font-mono text-xs">
+                                {txn.ref1}
+                              </td>
+                              <td className="py-1.5 px-3 text-gray-600">{txn.ref2 || ''}</td>
+                              <td className="py-1.5 px-3 text-center text-gray-600">{txn.stat}</td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                                {txn.debit ? formatCurrency(txn.debit) : ''}
+                              </td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                                {txn.credit ? formatCurrency(txn.credit) : ''}
+                              </td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-900 font-medium">
+                                {formatCurrency(txn.balance)}
+                              </td>
+                              <td className="py-1.5 px-3 text-gray-600 text-xs">{txn.fc_curr || ''}</td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                                {txn.fc_debit ? formatCurrency(txn.fc_debit) : ''}
+                              </td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                                {txn.fc_credit ? formatCurrency(txn.fc_credit) : ''}
+                              </td>
+                              <td className="py-1.5 px-3 text-right font-mono text-gray-900">
+                                {txn.fc_balance ? formatCurrency(txn.fc_balance) : ''}
+                              </td>
+                              <td className="py-1.5 px-3 text-gray-700">{formatDate(txn.due_date)}</td>
+                              <td className="py-1.5 px-3 text-gray-700">{formatDate(txn.last_payment)}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Aging Analysis */}
+                {aging && (
+                  <div className="border border-gray-300 rounded overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-100">
+                        <tr>
+                          <th className="text-left py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Description
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            150 Days+
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            120 Days
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            90 Days
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            60 Days
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            30 Days
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Current
+                          </th>
+                          <th className="text-right py-2 px-3 font-semibold text-gray-700 border-b border-gray-300">
+                            Total
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr className="bg-white">
+                          <td className="py-1.5 px-3 text-gray-700"></td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(aging['150_plus'])}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(aging['120_days'])}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(aging['90_days'])}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(aging['60_days'])}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(aging['30_days'])}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(aging.current)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-900 font-semibold">
+                            {formatCurrency(aging.total)}
+                          </td>
+                        </tr>
+                        <tr className="bg-gray-50">
+                          <td className="py-1.5 px-3 text-gray-700">Unallocated</td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(0)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(0)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(0)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(0)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(0)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(0)}
+                          </td>
+                          <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                            {formatCurrency(aging.unallocated)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Contacts Tab */}
+            {activeTab === 'contacts' && (
+              <ContactsTab account={activeAccount} />
+            )}
+          </div>
+
+          {/* Footer Buttons */}
+          <div className="bg-gray-200 border-t border-gray-300 p-3 flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <button className="px-4 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-50 text-sm font-medium text-gray-700">
+                Action
+              </button>
+              <button className="p-1.5 bg-blue-500 rounded-full hover:bg-blue-600">
+                <span className="text-white text-lg font-bold">?</span>
+              </button>
+            </div>
+            <button
+              onClick={() => navigate('/supplier/directory')}
+              className="px-6 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-50 text-sm font-medium text-gray-700"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default SupplierAccount;

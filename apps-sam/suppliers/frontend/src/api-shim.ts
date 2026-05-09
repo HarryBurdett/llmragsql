@@ -41,7 +41,7 @@ function buildUrl(path: string, params?: Record<string, unknown>): string {
   return tail ? `${path}${path.includes('?') ? '&' : '?'}${tail}` : path;
 }
 
-async function call<T>(
+async function call<T = any>(
   method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: unknown,
@@ -67,15 +67,74 @@ async function call<T>(
 }
 
 const apiClient = {
-  get: <T = unknown>(path: string, opts?: { params?: Record<string, unknown> }) =>
+  get: <T = any>(path: string, opts?: { params?: Record<string, unknown> }) =>
     call<T>('GET', path, undefined, opts?.params),
-  post: <T = unknown>(path: string, body?: unknown, opts?: { params?: Record<string, unknown> }) =>
+  post: <T = any>(path: string, body?: unknown, opts?: { params?: Record<string, unknown> }) =>
     call<T>('POST', path, body, opts?.params),
-  put: <T = unknown>(path: string, body?: unknown, opts?: { params?: Record<string, unknown> }) =>
+  put: <T = any>(path: string, body?: unknown, opts?: { params?: Record<string, unknown> }) =>
     call<T>('PUT', path, body, opts?.params),
-  delete: <T = unknown>(path: string, opts?: { params?: Record<string, unknown> }) =>
+  delete: <T = any>(path: string, opts?: { params?: Record<string, unknown> }) =>
     call<T>('DELETE', path, undefined, opts?.params),
+
+  // Higher-level helpers ported from frontend/src/api/client.ts. The
+  // canonical paths are the SAM router's, so the prefix here is /api.
+  reconcileBanks: () => call<any>('GET', '/api/reconcile/banks'),
+  getBankReconciliationStatus: (bankCode: string, currentFilename?: string) => {
+    const tail = currentFilename
+      ? `?current_filename=${encodeURIComponent(currentFilename)}`
+      : '';
+    return call<any>('GET', `/api/reconcile/bank/${bankCode}/status${tail}`);
+  },
+  getUnreconciledEntries: (bankCode: string) =>
+    call<any>('GET', `/api/reconcile/bank/${bankCode}/unreconciled`),
+  markEntriesReconciled: (bankCode: string, data: unknown) =>
+    call<any>('POST', `/api/reconcile/bank/${bankCode}/mark-reconciled`, data),
+  unreconcileEntries: (bankCode: string, entryNumbers: string[]) =>
+    call<any>('POST', `/api/reconcile/bank/${bankCode}/unreconcile`, entryNumbers),
+  getArchiveHistory: (importType?: string, limit?: number) =>
+    call<any>('GET', '/api/archive/history', undefined, {
+      import_type: importType,
+      limit,
+    }),
+  restoreArchivedFile: (archivePath: string) =>
+    call<any>('POST', '/api/archive/restore', null, {
+      archive_path: archivePath,
+    }),
+
+  // Supplier-specific helpers ported from
+  // frontend/src/api/client.ts:1190-1220.
+  supplierStatementReconciliations: () =>
+    call<any>('GET', '/api/supplier-statements/reconciliations'),
+  supplierStatementApprove: (statementId: number, approvedBy?: string) =>
+    call<any>(
+      'POST',
+      `/api/supplier-statements/${statementId}/approve`,
+      null,
+      approvedBy ? { approved_by: approvedBy } : undefined,
+    ),
+  supplierStatementProcess: (statementId: number) =>
+    call<any>('POST', `/api/supplier-statements/${statementId}/process`),
+  supplierStatementExtractFromEmail: (
+    emailId: number,
+    attachmentId?: string,
+  ) =>
+    call<any>(
+      'POST',
+      `/api/supplier-statements/extract-from-email/${emailId}`,
+      null,
+      attachmentId ? { attachment_id: attachmentId } : undefined,
+    ),
+  supplierStatementHistory: (days = 90) =>
+    call<any>('GET', '/api/supplier-statements/history', undefined, { days }),
 };
+
+// Loose type used by SupplierReconciliations and elsewhere — the
+// legacy types are too strict and over-constrain the queue payload.
+export interface SupplierStatementQueueResponse {
+  statements?: any[];
+  count?: number;
+  [key: string]: any;
+}
 
 /** Direct fetch shim for the small number of legacy callers that
  *  bypass apiClient. Returns a Response-like object that supports
@@ -83,7 +142,7 @@ const apiClient = {
 export async function authFetch(
   path: string,
   init: RequestInit = {},
-): Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }> {
+): Promise<{ ok: boolean; status: number; statusText: string; json: () => Promise<any> }> {
   if (!samApi) {
     throw new Error('SAM API not initialised — call setSamApi(context.api) first.');
   }
@@ -93,11 +152,12 @@ export async function authFetch(
   };
   try {
     const data = await samApi.fetch<unknown>(path, { ...init, headers });
-    return { ok: true, status: 200, json: async () => data };
+    return { ok: true, status: 200, statusText: 'OK', json: async () => data };
   } catch (err) {
     return {
       ok: false,
       status: 500,
+      statusText: err instanceof Error ? err.message : String(err),
       json: async () => ({ error: err instanceof Error ? err.message : String(err) }),
     };
   }
