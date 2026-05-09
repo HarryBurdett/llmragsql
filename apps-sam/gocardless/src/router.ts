@@ -84,6 +84,7 @@ import {
 } from './services/mandate-setups.js';
 import { getEligibleCustomers } from './services/eligible-customers.js';
 import { getCustomerEmail } from './services/customer-email.js';
+import { getRepeatDocuments } from './services/repeat-documents.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -848,6 +849,46 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Eligible customers failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/repeat-documents
+   *
+   * List Opera repeat documents (ih_docstat='U') suitable for
+   * GoCardless subscriptions, cross-referenced with the per-app
+   * mandates + subscriptions tables. Faithful port of
+   * get_gocardless_repeat_documents
+   * (apps/gocardless/api/routes.py:8619-8785).
+   *
+   * Query params:
+   *   - require_mandate (default true): when true, only show docs
+   *     for customers with an active mandate. Set false to show all
+   *     active customers (used by the link-existing-sub UI).
+   */
+  router.get(
+    '/api/gocardless/repeat-documents',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const requireMandateRaw = req.query.require_mandate;
+        const requireMandate =
+          requireMandateRaw === undefined
+            ? true
+            : !(requireMandateRaw === 'false' || requireMandateRaw === '0');
+        const result = await getRepeatDocuments(operaDb, appDb, {
+          requireMandate,
+          subscriptionTag: settings.subscription_tag ?? 'SUB',
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get repeat documents failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
