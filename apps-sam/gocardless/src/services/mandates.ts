@@ -130,6 +130,172 @@ export async function listMandates(
 }
 
 // ---------------------------------------------------------------------
+// link — upsert (opera_account, mandate_id) row
+// ---------------------------------------------------------------------
+
+export interface LinkMandateInput {
+  operaAccount: string;
+  mandateId: string;
+  operaName?: string | null;
+  gocardlessName?: string | null;
+  gocardlessCustomerId?: string | null;
+  mandateStatus?: string;
+  scheme?: string;
+  email?: string | null;
+}
+
+export interface LinkMandateResult {
+  success: boolean;
+  /** Set when re-linking — caller should also clear sn_analsys on this account. */
+  oldOperaAccount?: string | null;
+  /** GC's stored opera_name when this mandate was previously linked. */
+  gcMandateName?: string | null;
+  /** True when caller didn't pass `confirm=true` and a re-link was detected. */
+  needsConfirm?: boolean;
+  /** Local DB row after the upsert. */
+  mandate?: Mandate;
+  message?: string;
+  error?: string;
+}
+
+async function detectRelink(
+  appDb: Knex,
+  mandateId: string,
+  newOperaAccount: string,
+): Promise<{ oldAccount: string | null; gcName: string | null }> {
+  const rows = (await appDb('gocardless_mandates')
+    .where({ mandate_id: mandateId })
+    .select('opera_account', 'opera_name')) as unknown as Array<{
+    opera_account: string | null;
+    opera_name: string | null;
+  }>;
+  let oldAccount: string | null = null;
+  let gcName: string | null = null;
+  for (const r of rows ?? []) {
+    const acct = (r.opera_account ?? '').trim();
+    const nm = (r.opera_name ?? '').trim();
+    if (nm) gcName = nm;
+    if (acct && acct !== '__UNLINKED__' && acct !== newOperaAccount) {
+      oldAccount = acct;
+    }
+  }
+  return { oldAccount, gcName };
+}
+
+/**
+ * Upsert a (opera_account, mandate_id) link in `gocardless_mandates`.
+ * Faithful port of payments_db.link_mandate
+ * (sql_rag/gocardless_payments.py:415-482) plus the route-side
+ * relink confirmation guard from
+ * apps/gocardless/api/routes.py:6657-6792.
+ *
+ * Behaviour:
+ *   - When the same mandate is currently linked to a *different*
+ *     non-__UNLINKED__ account, requires `confirm=true` to proceed.
+ *   - On confirmed relink, removes the old row first, then upserts.
+ *   - Always removes any __UNLINKED__ placeholder for this mandate.
+ *   - Updates an existing (account, mandate) row if one exists; else
+ *     inserts. COALESCE-style: optional fields preserved when not
+ *     supplied.
+ */
+export async function linkMandate(
+  appDb: Knex,
+  input: LinkMandateInput & { confirm?: boolean },
+): Promise<LinkMandateResult> {
+  const operaAccount = (input.operaAccount ?? '').trim();
+  const mandateId = (input.mandateId ?? '').trim();
+  if (!operaAccount || !mandateId) {
+    return { success: false, error: 'opera_account and mandate_id are required' };
+  }
+
+  // 1. Detect re-link
+  const { oldAccount, gcName } = await detectRelink(appDb, mandateId, operaAccount);
+  if (oldAccount && !input.confirm) {
+    return {
+      success: false,
+      needsConfirm: true,
+      oldOperaAccount: oldAccount,
+      gcMandateName: gcName,
+      error:
+        `This mandate is currently linked to ${oldAccount}. ` +
+        `Are you sure you want to reassign it to ${operaAccount}?`,
+    };
+  }
+
+  try {
+    // 2. Drop the old (different-account) row when re-linking
+    if (oldAccount) {
+      await appDb('gocardless_mandates')
+        .where({ mandate_id: mandateId, opera_account: oldAccount })
+        .delete();
+    }
+
+    // 3. Remove __UNLINKED__ placeholder for this mandate
+    if (operaAccount !== '__UNLINKED__') {
+      await appDb('gocardless_mandates')
+        .where({ mandate_id: mandateId, opera_account: '__UNLINKED__' })
+        .delete();
+    }
+
+    // 4. Upsert (opera_account, mandate_id)
+    const existing = (await appDb('gocardless_mandates')
+      .where({ opera_account: operaAccount, mandate_id: mandateId })
+      .first()) as unknown as { id: number | null } | undefined;
+
+    const baseFields: Record<string, unknown> = {
+      mandate_status: input.mandateStatus ?? 'active',
+      scheme: input.scheme ?? 'bacs',
+      updated_at: appDb.fn.now(),
+    };
+    if (input.operaName !== undefined && input.operaName !== null) {
+      baseFields.opera_name = input.operaName;
+    }
+    if (input.gocardlessName !== undefined && input.gocardlessName !== null) {
+      baseFields.gocardless_name = input.gocardlessName;
+    }
+    if (
+      input.gocardlessCustomerId !== undefined &&
+      input.gocardlessCustomerId !== null
+    ) {
+      baseFields.gocardless_customer_id = input.gocardlessCustomerId;
+    }
+    if (input.email !== undefined && input.email !== null) {
+      baseFields.email = input.email;
+    }
+
+    if (existing) {
+      await appDb('gocardless_mandates')
+        .where({ id: existing.id })
+        .update(baseFields);
+    } else {
+      await appDb('gocardless_mandates').insert({
+        opera_account: operaAccount,
+        mandate_id: mandateId,
+        opera_name: input.operaName ?? null,
+        gocardless_name: input.gocardlessName ?? null,
+        gocardless_customer_id: input.gocardlessCustomerId ?? null,
+        mandate_status: input.mandateStatus ?? 'active',
+        scheme: input.scheme ?? 'bacs',
+        email: input.email ?? null,
+      });
+    }
+
+    const fresh = (await appDb('gocardless_mandates')
+      .where({ opera_account: operaAccount, mandate_id: mandateId })
+      .first()) as unknown as MandateRow | undefined;
+    return {
+      success: true,
+      oldOperaAccount: oldAccount,
+      gcMandateName: gcName,
+      message: `Mandate ${mandateId} linked to Opera customer ${operaAccount}`,
+      mandate: fresh ? rowToMandate(fresh) : undefined,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
 // cancel — GoCardless API + local status update
 // ---------------------------------------------------------------------
 

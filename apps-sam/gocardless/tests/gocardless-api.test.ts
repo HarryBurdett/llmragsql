@@ -242,6 +242,71 @@ describe('createClientFromSettings', () => {
   });
 });
 
+describe('GoCardlessClient.getMandate / getCustomer', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('getMandate returns the mandate on 200', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        mandates: { id: 'MD1', status: 'active', scheme: 'bacs' },
+      }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getMandate('MD1');
+    expect(result.success).toBe(true);
+    expect(result.mandate?.status).toBe('active');
+    const url = (global.fetch as any).mock.calls[0][0] as string;
+    expect(url).toMatch(/\/mandates\/MD1$/);
+  });
+
+  it('getMandate returns 404-friendly error on bad status', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () => 'not found',
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getMandate('MISSING');
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/404/);
+  });
+
+  it('getMandate refuses empty id', async () => {
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getMandate('');
+    expect(result.success).toBe(false);
+  });
+
+  it('getCustomer returns the customer on 200', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        customers: { id: 'CU1', email: 'a@b.com', given_name: 'Jane' },
+      }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getCustomer('CU1');
+    expect(result.success).toBe(true);
+    expect(result.customer?.email).toBe('a@b.com');
+    const url = (global.fetch as any).mock.calls[0][0] as string;
+    expect(url).toMatch(/\/customers\/CU1$/);
+  });
+
+  it('getCustomer refuses empty id', async () => {
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.getCustomer('');
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('GoCardlessClient.createPayment', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

@@ -4,6 +4,7 @@ import {
   listUnlinkedMandates,
   cancelMandate,
   unlinkMandate,
+  linkMandate,
 } from '../src/services/mandates.js';
 
 interface MandateRow {
@@ -31,35 +32,57 @@ function makeAppDb(state: MockState): any {
     }
     let conds: Record<string, unknown> = {};
     let neqConds: Array<{ col: string; val: unknown }> = [];
+    const matches = () =>
+      state.rows.filter(
+        (r) =>
+          Object.entries(conds).every(([k, v]) => (r as any)[k] === v) &&
+          neqConds.every((nc) => (r as any)[nc.col] !== nc.val),
+      );
     const builder: any = {
       where: (cond: Record<string, unknown>) => {
         Object.assign(conds, cond);
         return builder;
       },
       andWhere: (col: string, op: string, val: unknown) => {
-        if (op === '!=') {
-          neqConds.push({ col, val });
-        }
+        if (op === '!=') neqConds.push({ col, val });
         return builder;
       },
+      select: async (..._cols: string[]) => matches(),
+      first: async () => matches()[0],
       then: (cb: (rows: MandateRow[]) => unknown) => {
-        const rows = state.rows.filter((r) =>
-          Object.entries(conds).every(([k, v]) => (r as any)[k] === v),
-        );
-        return Promise.resolve(cb(rows));
+        return Promise.resolve(cb(matches()));
       },
-      update: (data: Record<string, unknown>) => {
+      update: async (data: Record<string, unknown>) => {
         let count = 0;
-        for (const r of state.rows) {
-          if (
-            Object.entries(conds).every(([k, v]) => (r as any)[k] === v) &&
-            neqConds.every((nc) => (r as any)[nc.col] !== nc.val)
-          ) {
-            Object.assign(r, data);
-            count++;
-          }
+        for (const r of matches()) {
+          Object.assign(r, data);
+          count++;
         }
-        return Promise.resolve(count);
+        return count;
+      },
+      delete: async () => {
+        const targets = matches();
+        const before = state.rows.length;
+        state.rows = state.rows.filter((r) => !targets.includes(r));
+        return before - state.rows.length;
+      },
+      insert: async (row: Record<string, unknown>) => {
+        const id = (state.rows[state.rows.length - 1]?.id ?? 0) + 1;
+        state.rows.push({
+          id,
+          mandate_id: '',
+          opera_account: '',
+          opera_name: '',
+          gocardless_name: '',
+          gocardless_customer_id: '',
+          mandate_status: 'active',
+          scheme: 'bacs',
+          email: '',
+          created_at: '2026-04-15',
+          updated_at: '2026-04-15',
+          ...(row as Partial<MandateRow>),
+        });
+        return [id];
       },
     };
     return builder;
@@ -257,5 +280,129 @@ describe('unlinkMandate', () => {
   it('rejects empty mandate_id', async () => {
     const result = await unlinkMandate(makeAppDb({ rows: [] }), '');
     expect(result.success).toBe(false);
+  });
+});
+
+describe('linkMandate', () => {
+  it('inserts a new (account, mandate) row', async () => {
+    const state: MockState = { rows: [] };
+    const result = await linkMandate(makeAppDb(state), {
+      operaAccount: 'CUST01',
+      mandateId: 'MD_NEW',
+      operaName: 'Acme Ltd',
+      gocardlessCustomerId: 'CU1',
+      email: 'a@b.com',
+    });
+    expect(result.success).toBe(true);
+    expect(result.mandate?.opera_account).toBe('CUST01');
+    expect(result.mandate?.mandate_id).toBe('MD_NEW');
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]?.email).toBe('a@b.com');
+  });
+
+  it('updates an existing (account, mandate) row instead of duplicating', async () => {
+    const state: MockState = {
+      rows: [
+        emptyMandate({
+          id: 1,
+          mandate_id: 'MD1',
+          opera_account: 'CUST01',
+          mandate_status: 'pending_submission',
+          email: 'old@b.com',
+        }),
+      ],
+    };
+    const result = await linkMandate(makeAppDb(state), {
+      operaAccount: 'CUST01',
+      mandateId: 'MD1',
+      mandateStatus: 'active',
+      email: 'new@b.com',
+    });
+    expect(result.success).toBe(true);
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]?.mandate_status).toBe('active');
+    expect(state.rows[0]?.email).toBe('new@b.com');
+  });
+
+  it('removes __UNLINKED__ placeholder when linking the same mandate to a real account', async () => {
+    const state: MockState = {
+      rows: [
+        emptyMandate({
+          id: 1,
+          mandate_id: 'MD1',
+          opera_account: '__UNLINKED__',
+          opera_name: '',
+        }),
+      ],
+    };
+    const result = await linkMandate(makeAppDb(state), {
+      operaAccount: 'CUST01',
+      mandateId: 'MD1',
+      operaName: 'Acme Ltd',
+    });
+    expect(result.success).toBe(true);
+    expect(
+      state.rows.find((r) => r.opera_account === '__UNLINKED__'),
+    ).toBeUndefined();
+    expect(state.rows.find((r) => r.opera_account === 'CUST01')).toBeDefined();
+  });
+
+  it('refuses re-link to a different account without confirm=true', async () => {
+    const state: MockState = {
+      rows: [
+        emptyMandate({
+          id: 1,
+          mandate_id: 'MD1',
+          opera_account: 'OLD_ACCT',
+          opera_name: 'Old Inc',
+        }),
+      ],
+    };
+    const result = await linkMandate(makeAppDb(state), {
+      operaAccount: 'CUST01',
+      mandateId: 'MD1',
+    });
+    expect(result.success).toBe(false);
+    expect(result.needsConfirm).toBe(true);
+    expect(result.oldOperaAccount).toBe('OLD_ACCT');
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]?.opera_account).toBe('OLD_ACCT');
+  });
+
+  it('proceeds with re-link when confirm=true (drops old row)', async () => {
+    const state: MockState = {
+      rows: [
+        emptyMandate({
+          id: 1,
+          mandate_id: 'MD1',
+          opera_account: 'OLD_ACCT',
+        }),
+      ],
+    };
+    const result = await linkMandate(makeAppDb(state), {
+      operaAccount: 'CUST01',
+      mandateId: 'MD1',
+      confirm: true,
+    });
+    expect(result.success).toBe(true);
+    expect(result.oldOperaAccount).toBe('OLD_ACCT');
+    expect(
+      state.rows.find((r) => r.opera_account === 'OLD_ACCT'),
+    ).toBeUndefined();
+    expect(state.rows.find((r) => r.opera_account === 'CUST01')).toBeDefined();
+  });
+
+  it('rejects empty inputs', async () => {
+    const state: MockState = { rows: [] };
+    const result = await linkMandate(makeAppDb(state), {
+      operaAccount: '',
+      mandateId: 'X',
+    });
+    expect(result.success).toBe(false);
+    const result2 = await linkMandate(makeAppDb(state), {
+      operaAccount: 'CUST01',
+      mandateId: '',
+    });
+    expect(result2.success).toBe(false);
   });
 });

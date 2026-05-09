@@ -77,6 +77,7 @@ import {
   listUnlinkedMandates,
   cancelMandate,
   unlinkMandate,
+  linkMandate,
 } from './services/mandates.js';
 import {
   listMandateSetups,
@@ -825,6 +826,138 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List unlinked mandates failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/mandates/link
+   *
+   * Link a GoCardless mandate to an Opera customer. Faithful port of
+   * link_gocardless_mandate (apps/gocardless/api/routes.py
+   * :6657-6792). Pipeline:
+   *   1. Best-effort GoCardless API verify (mandate.status, scheme,
+   *      linked customer.email) when an access token is configured.
+   *      Falls back to defaults on any API error — operator workflow
+   *      should not be blocked by transient API issues.
+   *   2. Local upsert of (opera_account, mandate_id), with
+   *      __UNLINKED__ placeholder cleanup.
+   *   3. Re-link confirmation guard: when the same mandate currently
+   *      points at a different non-__UNLINKED__ account, the call
+   *      returns 409 + needs_confirm=true unless confirm=true.
+   *   4. Opera write: ROWLOCK update of sname.sn_analsys = 'GC' on
+   *      the new account; clears 'GC' on the old account when re-
+   *      linking. Failures are reported per-side in the response
+   *      (matches Python's "log + continue" behaviour).
+   */
+  router.post(
+    '/api/gocardless/mandates/link',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const body = (req.body ?? {}) as {
+          opera_account?: string;
+          mandate_id?: string;
+          opera_name?: string | null;
+          confirm?: boolean;
+        };
+        const operaAccount = String(body.opera_account ?? '').trim();
+        const mandateId = String(body.mandate_id ?? '').trim();
+        const operaName =
+          typeof body.opera_name === 'string' ? body.opera_name : null;
+        const confirm = !!body.confirm;
+        if (!operaAccount || !mandateId) {
+          res.status(400).json({
+            success: false,
+            error: 'opera_account and mandate_id are required',
+          });
+          return;
+        }
+        // 1. Best-effort GoCardless verify
+        let mandateStatus = 'active';
+        let scheme = 'bacs';
+        let customerId: string | null = null;
+        let email: string | null = null;
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (client) {
+          const m = await client.getMandate(mandateId);
+          if (m.success && m.mandate) {
+            const md = m.mandate as Record<string, any>;
+            mandateStatus = (md.status as string | undefined) ?? 'active';
+            scheme = (md.scheme as string | undefined) ?? 'bacs';
+            customerId =
+              (md.links?.customer as string | undefined | null) ?? null;
+            if (customerId) {
+              const c = await client.getCustomer(customerId);
+              if (c.success && c.customer) {
+                const cd = c.customer as Record<string, any>;
+                email = (cd.email as string | undefined) ?? null;
+              }
+            }
+          }
+        }
+        // 2. Local upsert
+        const linkResult = await linkMandate(appDb, {
+          operaAccount,
+          mandateId,
+          operaName,
+          gocardlessCustomerId: customerId,
+          mandateStatus,
+          scheme,
+          email,
+          confirm,
+        });
+        if (!linkResult.success && linkResult.needsConfirm) {
+          res.status(409).json({
+            success: false,
+            needs_confirm: true,
+            error: linkResult.error,
+            old_account: linkResult.oldOperaAccount,
+          });
+          return;
+        }
+        if (!linkResult.success) {
+          res.status(400).json(linkResult);
+          return;
+        }
+        // 3. Opera sn_analsys flag move
+        const gcFlag: Record<string, unknown> = {};
+        try {
+          if (linkResult.oldOperaAccount) {
+            const removed = await operaDb('sname')
+              .whereRaw('LTRIM(RTRIM(sn_account)) = ?', [
+                linkResult.oldOperaAccount,
+              ])
+              .andWhereRaw("LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'")
+              .update({ sn_analsys: '' });
+            gcFlag.gc_removed_from = linkResult.oldOperaAccount;
+            gcFlag.gc_removed_rows = Number(removed);
+          }
+          const set = await operaDb('sname')
+            .whereRaw('LTRIM(RTRIM(sn_account)) = ?', [operaAccount])
+            .andWhereRaw(
+              "(sn_analsys IS NULL OR LTRIM(RTRIM(sn_analsys)) = '' OR LTRIM(RTRIM(UPPER(sn_analsys))) != 'GC')",
+            )
+            .update({ sn_analsys: 'GC' });
+          gcFlag.gc_set_on = operaAccount;
+          gcFlag.gc_set_rows = Number(set);
+        } catch (sqlErr: any) {
+          gcFlag.gc_error = sqlErr?.message ?? String(sqlErr);
+          ctx.logger.warn?.('sn_analsys flag move failed', sqlErr);
+        }
+        res.json({
+          success: true,
+          message: linkResult.message,
+          mandate: linkResult.mandate,
+          gc_flag: gcFlag,
+        });
+      } catch (err: any) {
+        ctx.logger.error('Link mandate failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

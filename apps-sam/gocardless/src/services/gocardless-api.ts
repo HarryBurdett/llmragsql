@@ -205,6 +205,84 @@ export class GoCardlessClient {
   }
 
   /**
+   * GET /mandates/:id — fetch a mandate's current state.
+   *
+   * Faithful port of GoCardlessClient.get_mandate
+   * (sql_rag/gocardless_api.py). Returns the raw GoCardless mandate
+   * object. 404s and errors are surfaced as success=false with a
+   * friendly message; callers can fall back to local data.
+   */
+  async getMandate(
+    mandateId: string,
+  ): Promise<{ success: boolean; mandate?: Record<string, unknown>; error?: string }> {
+    if (!mandateId) return { success: false, error: 'mandateId required' };
+    try {
+      const res = await this.request(
+        'GET',
+        `/mandates/${encodeURIComponent(mandateId)}`,
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as { mandates?: Record<string, unknown> };
+      return { success: true, mandate: data.mandates ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
+   * GET /customers/:id — fetch a customer's contact details.
+   *
+   * Faithful port of GoCardlessClient.get_customer. Used during
+   * mandate-link to harvest the customer email.
+   */
+  async getCustomer(
+    customerId: string,
+  ): Promise<{ success: boolean; customer?: Record<string, unknown>; error?: string }> {
+    if (!customerId) return { success: false, error: 'customerId required' };
+    try {
+      const res = await this.request(
+        'GET',
+        `/customers/${encodeURIComponent(customerId)}`,
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as { customers?: Record<string, unknown> };
+      return { success: true, customer: data.customers ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * POST /mandates/:id/actions/cancel — cancel a mandate.
    *
    * Faithful port of the cancel call wrapped by
