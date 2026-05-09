@@ -123,6 +123,14 @@ import {
   type EmailAttachmentProvider,
 } from './services/preview-from-email.js';
 import { reconcileBankDashboard } from './services/reconcile-dashboard.js';
+import {
+  archiveFile,
+  getArchiveHistory,
+  restoreArchivedFile,
+  getPendingFiles,
+  type FileStorageAdapter,
+  type ImportType,
+} from './services/archive.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2329,11 +2337,133 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  // ---------------------------------------------------------------
+  // Archive endpoints — file lifecycle management
+  // ---------------------------------------------------------------
+
+  router.post('/api/archive/file', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const storage = (ctx as unknown as { fileStorage?: FileStorageAdapter })
+      .fileStorage;
+    if (!storage) {
+      res.status(503).json({
+        success: false,
+        error:
+          'ctx.fileStorage adapter not configured. SAM team must wire a storage adapter.',
+      });
+      return;
+    }
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const importType =
+        (req.query.import_type as ImportType | undefined) ??
+        (body.import_type as ImportType);
+      const result = await archiveFile(appDb, storage, {
+        filePath: String(req.query.file_path ?? body.file_path ?? ''),
+        importType,
+        transactionsExtracted: req.query.transactions_extracted
+          ? Number(req.query.transactions_extracted)
+          : (body.transactions_extracted as number | undefined),
+        transactionsMatched: req.query.transactions_matched
+          ? Number(req.query.transactions_matched)
+          : (body.transactions_matched as number | undefined),
+        transactionsReconciled: req.query.transactions_reconciled
+          ? Number(req.query.transactions_reconciled)
+          : (body.transactions_reconciled as number | undefined),
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('archive file failed', err);
+      res.status(500).json({
+        success: false,
+        error: err?.message ?? String(err),
+      });
+    }
+  });
+
+  router.get('/api/archive/history', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const importType = (req.query.import_type as ImportType | undefined) ?? null;
+      const limit = req.query.limit ? Number(req.query.limit) : 50;
+      const result = await getArchiveHistory(appDb, importType, limit);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('archive history failed', err);
+      res.status(500).json({
+        success: false,
+        error: err?.message ?? String(err),
+      });
+    }
+  });
+
+  router.post('/api/archive/restore', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const storage = (ctx as unknown as { fileStorage?: FileStorageAdapter })
+      .fileStorage;
+    if (!storage) {
+      res.status(503).json({
+        success: false,
+        error: 'ctx.fileStorage adapter not configured.',
+      });
+      return;
+    }
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const archivePath = String(
+        req.query.archive_path ?? body.archive_path ?? '',
+      );
+      const result = await restoreArchivedFile(appDb, storage, archivePath);
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('archive restore failed', err);
+      res.status(500).json({
+        success: false,
+        error: err?.message ?? String(err),
+      });
+    }
+  });
+
+  router.get('/api/archive/pending', async (req: Request, res: Response) => {
+    const storage = (ctx as unknown as { fileStorage?: FileStorageAdapter })
+      .fileStorage;
+    if (!storage) {
+      res.status(503).json({
+        success: false,
+        error: 'ctx.fileStorage adapter not configured.',
+        files: [],
+      });
+      return;
+    }
+    try {
+      const importType = String(req.query.import_type ?? '') as ImportType;
+      const result = await getPendingFiles(storage, importType);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('archive pending failed', err);
+      res.status(500).json({
+        success: false,
+        error: err?.message ?? String(err),
+        files: [],
+      });
+    }
+  });
+
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
-  //   - GET  /api/reconcile/bank/{bank_code} — full reconcile (~600 LOC)
   //   - POST /api/reconcile/process-statement (Claude extraction + matching)
-  //   - POST /api/archive/* (filesystem-bound — needs storage adapter)
+  //   - POST /api/bank-import/import-with-overrides
 
   return router;
 }
