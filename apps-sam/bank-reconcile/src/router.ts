@@ -122,6 +122,7 @@ import {
   previewBankImportFromEmail,
   type EmailAttachmentProvider,
 } from './services/preview-from-email.js';
+import { reconcileBankDashboard } from './services/reconcile-dashboard.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -253,6 +254,35 @@ export function createRouter(ctx: AppContext): Router {
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
+
+  /**
+   * GET /api/reconcile/bank/:bank_code — three-way reconciliation
+   * dashboard for a single bank account. Returns cashbook /
+   * bank-master / nominal-ledger totals plus the variance summary.
+   * Faithful port of `reconcile_bank` (routes.py:320-720).
+   */
+  router.get(
+    '/api/reconcile/bank/:bank_code',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const bankCode = String(req.params.bank_code ?? '').trim();
+        const result = await reconcileBankDashboard(operaDb, bankCode);
+        if (!result.success) {
+          res.status(404).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('reconcile dashboard failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
 
   /**
    * GET /api/reconcile/bank/:bank_code/unreconciled — list unreconciled
