@@ -117,6 +117,13 @@ import {
 import {
   parseGocardlessEmail as parseEmailContent,
 } from './services/parser.js';
+import {
+  importGocardlessBatch,
+  type BatchPostingExecutor,
+  type ImportLockAdapter,
+  type IncomingPayment,
+  type MandateLink,
+} from './services/import-batch.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -3238,9 +3245,132 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  /**
+   * POST /api/gocardless/import
+   *
+   * Import a GoCardless payout as a batch sales-receipt in Opera.
+   * Faithful port of `import_gocardless_batch`
+   * (apps/gocardless/api/routes.py:622-949) for the validation,
+   * idempotency, period gate, mandate verification, destination-bank
+   * resolution, and import-history audit trail.
+   *
+   * The actual aentry/atran/stran/ntran/anoml posting body is
+   * delegated to a `BatchPostingExecutor` the SAM team attaches to
+   * runtime context (returns 503 until then). The executor receives
+   * the fully validated request and performs the SQL writes against
+   * the unified Knex client (Opera SE on SQL Server, Opera 3 via the
+   * Write Agent — both engines see the same posting code).
+   *
+   * Body / params (subset; full list in import-batch.ts):
+   *   - bank_code, post_date, payments[], reference, complete_batch,
+   *     gocardless_fees, vat_on_fees, fees_nominal_account,
+   *     fees_vat_code, currency, payout_id, source,
+   *     dest_bank_account, dest_bank_sort_code
+   */
+  router.post(
+    '/api/gocardless/import',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const adapter = ctx as unknown as {
+        gocardlessBatchExecutor?: BatchPostingExecutor;
+        gocardlessImportLock?: ImportLockAdapter;
+      };
+      if (!adapter.gocardlessBatchExecutor || !adapter.gocardlessImportLock) {
+        res.status(503).json({
+          success: false,
+          error:
+            'Posting executor or import-lock adapter not configured. SAM team wiring required for the gocardless/import flow.',
+        });
+        return;
+      }
+      try {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const payments = Array.isArray(body.payments)
+          ? (body.payments as IncomingPayment[])
+          : [];
+        const settings = await loadSettings(appDb);
+        const known = (await appDb('gocardless_mandates')
+          .select(
+            'mandate_id',
+            'opera_account',
+          )) as unknown as MandateLink[];
+        const result = await importGocardlessBatch(
+          operaDb,
+          appDb,
+          {
+            bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
+            postDate: String(req.query.post_date ?? body.post_date ?? ''),
+            reference:
+              String(req.query.reference ?? body.reference ?? '') || 'GoCardless',
+            completeBatch:
+              req.query.complete_batch === 'true' ||
+              body.complete_batch === true,
+            cbtype: (req.query.cbtype ?? body.cbtype ?? null) as string | null,
+            goCardlessFees: Number(
+              req.query.gocardless_fees ?? body.gocardless_fees ?? 0,
+            ),
+            vatOnFees: Number(
+              req.query.vat_on_fees ?? body.vat_on_fees ?? 0,
+            ),
+            feesNominalAccount: (req.query.fees_nominal_account ??
+              body.fees_nominal_account ??
+              null) as string | null,
+            feesVatCode: String(
+              req.query.fees_vat_code ?? body.fees_vat_code ?? '2',
+            ),
+            feesPaymentType: (req.query.fees_payment_type ??
+              body.fees_payment_type ??
+              null) as string | null,
+            currency: (req.query.currency ?? body.currency ?? null) as
+              | string
+              | null,
+            payoutId: (req.query.payout_id ?? body.payout_id ?? null) as
+              | string
+              | null,
+            source:
+              (req.query.source ?? body.source ?? 'api') === 'email'
+                ? 'email'
+                : 'api',
+            destBankAccount: (req.query.dest_bank_account ??
+              body.dest_bank_account ??
+              null) as string | null,
+            destBankSortCode: (req.query.dest_bank_sort_code ??
+              body.dest_bank_sort_code ??
+              null) as string | null,
+            payments,
+          },
+          {
+            gocardless_bank_code: (settings as unknown as {
+              gocardless_bank_code?: string;
+            }).gocardless_bank_code ?? null,
+            gocardless_transfer_cbtype: (settings as unknown as {
+              gocardless_transfer_cbtype?: string;
+            }).gocardless_transfer_cbtype ?? null,
+          },
+          known,
+          adapter.gocardlessBatchExecutor,
+          adapter.gocardlessImportLock,
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('gocardless/import failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Many more endpoints to port from apps/gocardless/api/routes.py:
   //   /api/gocardless/preview-batch      — match payments to Opera customers
-  //   /api/gocardless/import             — post sales receipts to Opera
   //   /api/gocardless/remittance/*       — generate / send remittance emails
   //   /api/gocardless/partner/*          — partner portal flows
   //   /api/gocardless/update-subscription-tags
