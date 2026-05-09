@@ -188,11 +188,12 @@ describe('gocardlessBatchPostingExecutor', () => {
     expect(tables).toContain('njmemo');
   });
 
-  it('warns about fees without rolling back the import', async () => {
+  it('posts a separate cashbook entry for fees', async () => {
     const state: State = { calls: [], responses: {} };
     const req: ValidatedRequest = {
       ...SAMPLE_REQUEST,
       goCardlessFees: 5.5,
+      vatOnFees: 0,
       feesNominalAccount: 'GA400',
     };
     const result = await gocardlessBatchPostingExecutor.postBatch(
@@ -200,10 +201,14 @@ describe('gocardlessBatchPostingExecutor', () => {
       req,
     );
     expect(result.success).toBe(true);
-    expect(result.warnings.some((w) => w.includes('fees'))).toBe(true);
+    // Two aentry inserts: receipts batch + separate fees entry
+    const aentryInserts = state.calls.filter((c) =>
+      /insert into aentry/i.test(c.sql),
+    );
+    expect(aentryInserts.length).toBe(2);
   });
 
-  it('warns about destination-bank without rolling back', async () => {
+  it('posts paired transfer when destinationBank is set', async () => {
     const state: State = { calls: [], responses: {} };
     const req: ValidatedRequest = {
       ...SAMPLE_REQUEST,
@@ -214,7 +219,11 @@ describe('gocardlessBatchPostingExecutor', () => {
       req,
     );
     expect(result.success).toBe(true);
-    expect(result.warnings.some((w) => w.includes('Destination-bank'))).toBe(true);
+    // Receipts aentry + source-side transfer aentry + dest-side transfer aentry
+    const aentryInserts = state.calls.filter((c) =>
+      /insert into aentry/i.test(c.sql),
+    );
+    expect(aentryInserts.length).toBe(3);
   });
 
   it('returns error when control accounts not configured', async () => {
