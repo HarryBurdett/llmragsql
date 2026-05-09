@@ -36,14 +36,40 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 67 of ~124 endpoints (427 tests)
+**gocardless:** 68 of ~124 endpoints (440 tests)
 **bank-reconcile:** 42 of ~127 endpoints (229 tests)
 **suppliers:** 42 endpoints (greenfield TS + ports — 154 tests)
 **shared:** 11 utility modules covering all foundational primitives (92 tests)
-**Total TS tests across all packages:** 934 (all passing, all builds clean)
-**Endpoint coverage of Python source (3 porting apps):** 119 of ~258 = ~46%
+**Total TS tests across all packages:** 947 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** 120 of ~258 = ~47%
 **Calendar week of project:** 1
 **Sessions logged:** 3 (extended autonomous sessions)
+
+## Architecture clarification
+
+The Python codebase has duplicated `*_opera3.py` files because each
+side talks directly to its engine (MSSQL via pyodbc for SE, FoxPro
+via dbfread for Opera 3). CLAUDE.md mandates same-commit parity in
+that world.
+
+**The TS rewrite does not inherit that duplication.** SAM provides
+a unified Knex interface for both Opera SE and Opera 3 — the plugin
+calls `operaDb('pname').select(...)` and SAM resolves the underlying
+engine (MSSQL vs FoxPro DBF). Same TS code, same Knex calls, same
+table/column names (Pegasus Opera schema is consistent across
+versions). The differences are confined to SAM's data adapter layer.
+
+Implications:
+  - No `*_opera3.ts` siblings; every endpoint = one file
+  - Plugin code is single-source, dual-target by construction
+  - Parity worry is at SAM/data-adapter boundary, not at endpoint level
+  - When Opera 3 testing surfaces a real schema divergence, handle
+    it with a small `if (ctx.operaType === 'opera-3')` branch on
+    the specific query; don't pre-emptively refactor
+
+Validation status: SE-presumed-compatible. Opera 3 snapshot needs
+to be captured (see `scripts/opera_snapshot.json` for the SE one)
+to identify any column/table differences that need targeted fixes.
 
 ### Foundational primitives in @sqlrag/sam-shared
 All primitives needed for finance-write endpoints are now in place:
@@ -227,7 +253,8 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `POST /api/gocardless/mandates/setup` — create billing request + flow + send authorisation email via SAM email service
 - [x] `POST /api/gocardless/mandates/check-setups` — poll pending setups, auto-link mandate + ROWLOCK sn_analsys flag when active
 - [x] `GET /api/gocardless/mandates/suggest-match` — fuzzy-match GC name to Opera customer (Ratcliff/Obershelp ratio port of difflib.SequenceMatcher)
-- [ ] `*` ~53 more endpoints
+- [x] `POST /api/gocardless/subscriptions` — create from one or more Opera repeat documents (validates same-customer, sums itran totals, links via junction table)
+- [ ] `*` ~52 more endpoints
 
 #### Helpers
 - [x] `src/services/settings.ts` — settings load/save/mask/merge
