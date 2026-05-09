@@ -205,6 +205,68 @@ export class GoCardlessClient {
   }
 
   /**
+   * GET /mandates — list mandates.
+   *
+   * Faithful port of GoCardlessClient.list_mandates. Returns a page
+   * of raw mandate objects + the next-page cursor. Used by the
+   * mandate-sync flow to walk every mandate in the GoCardless org.
+   */
+  async listMandates(opts: {
+    customerId?: string;
+    status?: string;
+    limit?: number;
+    cursor?: string;
+  } = {}): Promise<{
+    success: boolean;
+    mandates: Array<Record<string, unknown>>;
+    after: string | null;
+    error?: string;
+  }> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.customerId) params.set('customer', opts.customerId);
+      if (opts.status) params.set('status', opts.status);
+      params.set('limit', String(Math.min(opts.limit ?? 100, 500)));
+      if (opts.cursor) params.set('after', opts.cursor);
+      const path = `/mandates?${params.toString()}`;
+      const res = await this.request('GET', path);
+      if (res.status === 401) {
+        return {
+          success: false,
+          mandates: [],
+          after: null,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          mandates: [],
+          after: null,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        mandates?: Array<Record<string, unknown>>;
+        meta?: { cursors?: { after?: string | null } };
+      };
+      return {
+        success: true,
+        mandates: Array.isArray(data.mandates) ? data.mandates : [],
+        after: data.meta?.cursors?.after ?? null,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        mandates: [],
+        after: null,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * GET /mandates/:id — fetch a mandate's current state.
    *
    * Faithful port of GoCardlessClient.get_mandate

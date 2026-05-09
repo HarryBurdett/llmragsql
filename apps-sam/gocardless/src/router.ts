@@ -79,6 +79,8 @@ import {
   cancelMandate,
   unlinkMandate,
   linkMandate,
+  syncMandatesFromGocardless,
+  type OperaGcCustomer,
 } from './services/mandates.js';
 import {
   listMandateSetups,
@@ -827,6 +829,91 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List unlinked mandates failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/mandates/sync
+   *
+   * Pull every active mandate from the GoCardless API and upsert
+   * the local row, auto-linking to GC-tagged Opera customers
+   * (`sn_analsys = 'GC'`) by normalised name match. Faithful port
+   * of sync_gocardless_mandates (apps/gocardless/api/routes.py
+   * :6450-6654). Returns counters for synced / new / updated /
+   * auto_linked + a human-readable message.
+   *
+   * NB: must be defined before /mandates/:mandate_id paths so
+   * Express doesn't mis-route 'sync' as a path parameter.
+   */
+  router.post(
+    '/api/gocardless/mandates/sync',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'No API access token configured',
+          });
+          return;
+        }
+        // Fetch GC-tagged Opera customers for auto-match
+        const operaCustomers: OperaGcCustomer[] = (await operaDb('sname')
+          .whereRaw("LTRIM(RTRIM(UPPER(sn_analsys))) = 'GC'")
+          .select('sn_account', 'sn_name', 'sn_email')) as unknown as Array<any>;
+        const customers: OperaGcCustomer[] = operaCustomers.map((r: any) => ({
+          account: String(r.sn_account ?? '').trim(),
+          name: String(r.sn_name ?? '').trim(),
+          email: r.sn_email ? String(r.sn_email).trim() : null,
+        }));
+        const fetchPage = async (cursor: string | null) => {
+          const r = await client.listMandates({
+            status: 'active',
+            limit: 100,
+            cursor: cursor ?? undefined,
+          });
+          if (!r.success) throw new Error(r.error ?? 'Mandate list failed');
+          return { mandates: r.mandates as any[], after: r.after };
+        };
+        const customerCache = new Map<string, any | null>();
+        const fetchCustomer = async (customerId: string) => {
+          if (customerCache.has(customerId)) {
+            return customerCache.get(customerId) ?? null;
+          }
+          const r = await client.getCustomer(customerId);
+          const cust =
+            r.success && r.customer
+              ? {
+                  company_name:
+                    (r.customer as any).company_name ?? undefined,
+                  given_name: (r.customer as any).given_name ?? undefined,
+                  family_name: (r.customer as any).family_name ?? undefined,
+                  email: (r.customer as any).email ?? undefined,
+                }
+              : null;
+          customerCache.set(customerId, cust);
+          return cust;
+        };
+        const result = await syncMandatesFromGocardless(
+          appDb,
+          fetchPage,
+          fetchCustomer,
+          customers,
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Sync mandates failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

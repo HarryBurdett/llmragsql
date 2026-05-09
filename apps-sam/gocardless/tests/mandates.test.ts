@@ -5,6 +5,9 @@ import {
   cancelMandate,
   unlinkMandate,
   linkMandate,
+  syncMandatesFromGocardless,
+  normaliseCompanyName,
+  findOperaCustomerMatch,
 } from '../src/services/mandates.js';
 
 interface MandateRow {
@@ -404,5 +407,253 @@ describe('linkMandate', () => {
       mandateId: '',
     });
     expect(result2.success).toBe(false);
+  });
+});
+
+describe('normaliseCompanyName', () => {
+  it('strips common company suffixes', () => {
+    expect(normaliseCompanyName('Acme Ltd')).toBe('ACME');
+    expect(normaliseCompanyName('Acme Limited')).toBe('ACME');
+    expect(normaliseCompanyName('Beta PLC')).toBe('BETA');
+    expect(normaliseCompanyName('Gamma Inc')).toBe('GAMMA');
+    expect(normaliseCompanyName('Delta Co')).toBe('DELTA');
+  });
+  it('handles empty / null safely', () => {
+    expect(normaliseCompanyName('')).toBe('');
+    expect(normaliseCompanyName(null)).toBe('');
+    expect(normaliseCompanyName(undefined)).toBe('');
+  });
+  it('uppercases and trims', () => {
+    expect(normaliseCompanyName('  acme inc  ')).toBe('ACME');
+  });
+});
+
+describe('findOperaCustomerMatch', () => {
+  const customers = [
+    { account: 'CUST01', name: 'Acme Ltd' },
+    { account: 'CUST02', name: 'Beta Trading PLC' },
+    { account: 'CUST03', name: 'Gamma' },
+  ];
+
+  it('matches exactly after normalisation', () => {
+    expect(findOperaCustomerMatch('ACME LIMITED', customers)?.account).toBe(
+      'CUST01',
+    );
+  });
+
+  it('matches partial when one name contains the other', () => {
+    expect(findOperaCustomerMatch('Beta', customers)?.account).toBe('CUST02');
+    expect(findOperaCustomerMatch('Gamma Solutions', customers)?.account).toBe(
+      'CUST03',
+    );
+  });
+
+  it('returns null when no match found', () => {
+    expect(findOperaCustomerMatch('Unknown Co', customers)).toBeNull();
+  });
+
+  it('returns null for empty input', () => {
+    expect(findOperaCustomerMatch('', customers)).toBeNull();
+  });
+});
+
+describe('syncMandatesFromGocardless', () => {
+  it('inserts new mandates with __UNLINKED__ when no Opera match', async () => {
+    const state: MockState = { rows: [] };
+    const fetchPage = async () => ({
+      mandates: [{ id: 'MD1', status: 'active', links: { customer: 'CU1' } }],
+      after: null,
+    });
+    const fetchCustomer = async () => ({
+      company_name: 'Unknown Co',
+      email: 'u@u.com',
+    });
+    const result = await syncMandatesFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      fetchCustomer,
+      [],
+    );
+    expect(result.success).toBe(true);
+    expect(result.synced_count).toBe(1);
+    expect(result.new_count).toBe(1);
+    expect(result.auto_linked_count).toBe(0);
+    expect(state.rows[0]?.opera_account).toBe('__UNLINKED__');
+    expect(state.rows[0]?.email).toBe('u@u.com');
+  });
+
+  it('auto-links new mandates when Opera customer matches by name', async () => {
+    const state: MockState = { rows: [] };
+    const fetchPage = async () => ({
+      mandates: [{ id: 'MD1', status: 'active', links: { customer: 'CU1' } }],
+      after: null,
+    });
+    const fetchCustomer = async () => ({ company_name: 'Acme Limited' });
+    const result = await syncMandatesFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      fetchCustomer,
+      [{ account: 'CUST01', name: 'Acme Ltd' }],
+    );
+    expect(result.success).toBe(true);
+    expect(result.auto_linked_count).toBe(1);
+    expect(result.new_count).toBe(1);
+    expect(state.rows[0]?.opera_account).toBe('CUST01');
+  });
+
+  it('updates existing linked mandate metadata without changing account', async () => {
+    const state: MockState = {
+      rows: [
+        emptyMandate({
+          id: 1,
+          mandate_id: 'MD1',
+          opera_account: 'CUST01',
+          mandate_status: 'pending_submission',
+        }),
+      ],
+    };
+    const fetchPage = async () => ({
+      mandates: [
+        { id: 'MD1', status: 'active', scheme: 'bacs', links: { customer: 'CU1' } },
+      ],
+      after: null,
+    });
+    const fetchCustomer = async () => ({ company_name: 'Acme Ltd' });
+    const result = await syncMandatesFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      fetchCustomer,
+      [],
+    );
+    expect(result.success).toBe(true);
+    expect(result.updated_count).toBe(1);
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]?.opera_account).toBe('CUST01');
+    expect(state.rows[0]?.mandate_status).toBe('active');
+  });
+
+  it('upgrades __UNLINKED__ placeholder to a real link when Opera match found', async () => {
+    const state: MockState = {
+      rows: [
+        emptyMandate({
+          id: 1,
+          mandate_id: 'MD1',
+          opera_account: '__UNLINKED__',
+          opera_name: 'Beta Trading',
+        }),
+      ],
+    };
+    const fetchPage = async () => ({
+      mandates: [{ id: 'MD1', status: 'active', links: { customer: 'CU1' } }],
+      after: null,
+    });
+    const fetchCustomer = async () => ({ company_name: 'Beta Trading PLC' });
+    const result = await syncMandatesFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      fetchCustomer,
+      [{ account: 'CUST02', name: 'Beta Trading' }],
+    );
+    expect(result.auto_linked_count).toBe(1);
+    expect(state.rows.some((r) => r.opera_account === 'CUST02')).toBe(true);
+    // Placeholder cleaned up
+    expect(state.rows.some((r) => r.opera_account === '__UNLINKED__')).toBe(false);
+  });
+
+  it('paginates through multiple pages', async () => {
+    const state: MockState = { rows: [] };
+    const pages = [
+      {
+        mandates: [{ id: 'MD1', status: 'active', links: { customer: 'CU1' } }],
+        after: 'CUR1',
+      },
+      {
+        mandates: [{ id: 'MD2', status: 'active', links: { customer: 'CU2' } }],
+        after: null,
+      },
+    ];
+    let i = 0;
+    const fetchPage = async () => pages[i++] ?? { mandates: [], after: null };
+    const fetchCustomer = async () => ({ company_name: 'X' });
+    const result = await syncMandatesFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      fetchCustomer,
+      [],
+    );
+    expect(result.synced_count).toBe(2);
+    expect(state.rows).toHaveLength(2);
+  });
+
+  it('skips remote mandates without an id', async () => {
+    const state: MockState = { rows: [] };
+    const fetchPage = async () => ({
+      mandates: [
+        { id: '', status: 'active', links: { customer: 'CU1' } },
+        { id: 'MD1', status: 'active', links: { customer: 'CU1' } },
+      ],
+      after: null,
+    });
+    const fetchCustomer = async () => ({ company_name: 'X' });
+    const result = await syncMandatesFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      fetchCustomer,
+      [],
+    );
+    expect(result.synced_count).toBe(1);
+  });
+
+  it('cleans up duplicate __UNLINKED__ rows when a linked row exists', async () => {
+    const state: MockState = {
+      rows: [
+        emptyMandate({
+          id: 1,
+          mandate_id: 'MD1',
+          opera_account: '__UNLINKED__',
+          opera_name: 'Acme',
+        }),
+        emptyMandate({
+          id: 2,
+          mandate_id: 'MD1',
+          opera_account: 'CUST01',
+          opera_name: 'Acme Ltd',
+        }),
+      ],
+    };
+    const fetchPage = async () => ({ mandates: [], after: null });
+    const fetchCustomer = async () => null;
+    await syncMandatesFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      fetchCustomer,
+      [],
+    );
+    expect(
+      state.rows.find((r) => r.opera_account === '__UNLINKED__'),
+    ).toBeUndefined();
+    expect(
+      state.rows.find((r) => r.opera_account === 'CUST01'),
+    ).toBeDefined();
+  });
+
+  it('does not throw when fetchCustomer fails', async () => {
+    const state: MockState = { rows: [] };
+    const fetchPage = async () => ({
+      mandates: [{ id: 'MD1', status: 'active', links: { customer: 'CU1' } }],
+      after: null,
+    });
+    const fetchCustomer = async () => {
+      throw new Error('upstream unavailable');
+    };
+    const result = await syncMandatesFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      fetchCustomer,
+      [],
+    );
+    expect(result.success).toBe(true);
+    expect(result.synced_count).toBe(1);
+    expect(state.rows[0]?.opera_account).toBe('__UNLINKED__');
   });
 });
