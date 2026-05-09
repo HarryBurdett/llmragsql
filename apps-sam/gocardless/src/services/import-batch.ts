@@ -68,6 +68,8 @@ export interface ImportRequest {
   destBankAccount?: string | null;
   destBankSortCode?: string | null;
   payments: IncomingPayment[];
+  /** Optional email id (set when importing from a scanned email). */
+  emailId?: number | null;
 }
 
 export interface ImportSettings {
@@ -101,6 +103,7 @@ export interface ValidatedRequest {
   postingBank: string;
   destinationBank: string | null;
   transferCbtype: string | null;
+  emailId: number | null;
   warnings: string[];
 }
 
@@ -402,6 +405,7 @@ export async function validateImportRequest(
       postingBank,
       destinationBank,
       transferCbtype: transferCbtype || null,
+      emailId: input.emailId ?? null,
       warnings,
     },
   };
@@ -442,6 +446,7 @@ export interface RecordImportArgs {
   batchRef: string | null;
   importedBy: string;
   postDate: string;
+  emailId?: number | null;
 }
 
 async function recordImportHistory(
@@ -463,6 +468,7 @@ async function recordImportHistory(
       batch_ref: args.batchRef,
       imported_by: args.importedBy,
       post_date: args.postDate,
+      email_id: args.emailId ?? null,
       imported_at: appDb.fn.now(),
     });
   } catch {
@@ -557,6 +563,7 @@ export async function importGocardlessBatch(
       batchRef: result.batch_ref ?? null,
       importedBy: 'GOCARDLS',
       postDate: request.postDateString,
+      emailId: request.emailId,
     });
 
     return {

@@ -124,6 +124,10 @@ import {
   type IncomingPayment,
   type MandateLink,
 } from './services/import-batch.js';
+import {
+  importGocardlessBatchFromEmail,
+  type EmailArchiveAdapter,
+} from './services/import-from-email.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -3361,6 +3365,121 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('gocardless/import failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/import-from-email
+   *
+   * Same shape as POST /api/gocardless/import, but takes an
+   * `email_id` so the import-history row links back to the source
+   * email and (when an archive adapter is wired) the email is moved
+   * to the configured archive folder afterwards.
+   *
+   * Faithful port of `import_gocardless_from_email`
+   * (apps/gocardless/api/routes.py:3266-3500).
+   */
+  router.post(
+    '/api/gocardless/import-from-email',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const adapter = ctx as unknown as {
+        gocardlessBatchExecutor?: BatchPostingExecutor;
+        gocardlessImportLock?: ImportLockAdapter;
+        gocardlessEmailArchive?: EmailArchiveAdapter;
+      };
+      if (!adapter.gocardlessBatchExecutor || !adapter.gocardlessImportLock) {
+        res.status(503).json({
+          success: false,
+          error:
+            'Posting executor or import-lock adapter not configured. SAM team wiring required.',
+        });
+        return;
+      }
+      try {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const payments = Array.isArray(body.payments)
+          ? (body.payments as IncomingPayment[])
+          : [];
+        const settings = await loadSettings(appDb);
+        const known = (await appDb('gocardless_mandates').select(
+          'mandate_id',
+          'opera_account',
+        )) as unknown as MandateLink[];
+        const result = await importGocardlessBatchFromEmail(
+          operaDb,
+          appDb,
+          {
+            emailId: Number(req.query.email_id ?? body.email_id ?? 0),
+            bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
+            postDate: String(req.query.post_date ?? body.post_date ?? ''),
+            reference:
+              String(req.query.reference ?? body.reference ?? '') || 'GoCardless',
+            completeBatch:
+              req.query.complete_batch === 'true' ||
+              body.complete_batch === true,
+            cbtype: (req.query.cbtype ?? body.cbtype ?? null) as string | null,
+            goCardlessFees: Number(
+              req.query.gocardless_fees ?? body.gocardless_fees ?? 0,
+            ),
+            vatOnFees: Number(
+              req.query.vat_on_fees ?? body.vat_on_fees ?? 0,
+            ),
+            feesNominalAccount: (req.query.fees_nominal_account ??
+              body.fees_nominal_account ??
+              null) as string | null,
+            feesVatCode: String(
+              req.query.fees_vat_code ?? body.fees_vat_code ?? '2',
+            ),
+            feesPaymentType: (req.query.fees_payment_type ??
+              body.fees_payment_type ??
+              null) as string | null,
+            currency: (req.query.currency ?? body.currency ?? null) as
+              | string
+              | null,
+            payoutId: (req.query.payout_id ?? body.payout_id ?? null) as
+              | string
+              | null,
+            destBankAccount: (req.query.dest_bank_account ??
+              body.dest_bank_account ??
+              null) as string | null,
+            destBankSortCode: (req.query.dest_bank_sort_code ??
+              body.dest_bank_sort_code ??
+              null) as string | null,
+            archiveFolder:
+              (req.query.archive_folder as string) ??
+              (body.archive_folder as string) ??
+              'Archive/GoCardless',
+            payments,
+          },
+          {
+            gocardless_bank_code: (settings as unknown as {
+              gocardless_bank_code?: string;
+            }).gocardless_bank_code ?? null,
+            gocardless_transfer_cbtype: (settings as unknown as {
+              gocardless_transfer_cbtype?: string;
+            }).gocardless_transfer_cbtype ?? null,
+          },
+          known,
+          adapter.gocardlessBatchExecutor,
+          adapter.gocardlessImportLock,
+          adapter.gocardlessEmailArchive ?? null,
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('gocardless/import-from-email failed', err);
         res.status(500).json({
           success: false,
           error: err?.message ?? String(err),
