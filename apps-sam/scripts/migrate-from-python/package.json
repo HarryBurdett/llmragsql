@@ -1,0 +1,21 @@
+{
+  "name": "@sqlrag/sam-migrate-from-python",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "One-shot data migrator from the legacy Python SQLite databases under data/<company>/* into the SAM per-app MSSQL databases.",
+  "scripts": {
+    "migrate": "tsx migrate.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "knex": "^3.1.0",
+    "tedious": "^16.6.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
