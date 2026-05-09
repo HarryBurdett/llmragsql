@@ -36,12 +36,12 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 61 of ~124 endpoints (349 tests)
+**gocardless:** 63 of ~124 endpoints (370 tests)
 **bank-reconcile:** 40 of ~127 endpoints (208 tests)
 **suppliers:** 38 endpoints (greenfield TS work — 128 tests)
 **shared:** 11 utility modules covering all foundational primitives (92 tests)
-**Total TS tests across all packages:** 809 (all passing, all builds clean)
-**Endpoint coverage of Python source (3 porting apps):** 105 of ~258 = ~41%
+**Total TS tests across all packages:** 830 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** 107 of ~258 = ~41%
 **Calendar week of project:** 1
 **Sessions logged:** 3 (extended autonomous sessions)
 
@@ -221,7 +221,9 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `POST /api/gocardless/payment-requests/bulk` — bulk wrapper for request-payment
 - [x] `POST /api/gocardless/mandates/link` — link mandate to Opera customer (re-link confirm + ROWLOCK sn_analsys flag move)
 - [x] `POST /api/gocardless/mandates/sync` — pull every mandate from GC API + auto-link to GC-tagged Opera customers by normalised name match
-- [ ] `*` ~60 more endpoints
+- [x] `GET /api/gocardless/collectable-invoices` — outstanding sales-ledger invoices with mandate / payment-request / overdue enrichment
+- [x] `GET /api/gocardless/due-invoices` — invoices due for collection grouped by customer (advance_date filter, unallocated-credit warning, sub tagging)
+- [ ] `*` ~58 more endpoints
 
 #### Helpers
 - [x] `src/services/settings.ts` — settings load/save/mask/merge
