@@ -128,6 +128,18 @@ import {
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
 
+  // Opera-3 mirror routes — see bank-reconcile/router.ts for the
+  // rationale. The /api/opera3/* paths resolve to the same handlers
+  // as their canonical counterparts because the Opera DB is selected
+  // by tenant, not URL prefix.
+  router.use((req, _res, next) => {
+    if (req.url.startsWith('/api/opera3/')) {
+      req.url = '/api/' + req.url.slice('/api/opera3/'.length);
+      (req as unknown as { operaMirror?: boolean }).operaMirror = true;
+    }
+    next();
+  });
+
   function getAppDb(req: Request, res: Response): import('knex').Knex | null {
     if (!ctx.db.app) {
       res.status(503).json({

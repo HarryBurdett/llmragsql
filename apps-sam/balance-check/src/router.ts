@@ -21,6 +21,18 @@ import { vatVarianceDrilldown } from './services/vat-variance-drilldown.js';
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
 
+  // Opera-3 mirror routes — see bank-reconcile/router.ts for the
+  // rationale. /api/opera3/reconcile/* resolves to the same handlers
+  // as the canonical /api/reconcile/* routes; ctx.db.getCompanyDb()
+  // returns the right (FoxPro/Knex) connection for opera-3 tenants.
+  router.use((req, _res, next) => {
+    if (req.url.startsWith('/api/opera3/')) {
+      req.url = '/api/' + req.url.slice('/api/opera3/'.length);
+      (req as unknown as { operaMirror?: boolean }).operaMirror = true;
+    }
+    next();
+  });
+
   /** Resolve the per-company Opera pool, with consistent error handling. */
   function resolveCompanyDb(req: Request, res: Response): import('knex').Knex | null {
     const company = req.operaCompany;

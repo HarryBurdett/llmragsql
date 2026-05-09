@@ -134,6 +134,19 @@ import { inMemoryImportLock } from './services/import-lock.js';
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
 
+  // Opera-3 mirror routes: /api/opera3/* paths resolve to the same
+  // handlers as their canonical counterparts. ctx.db.getCompanyDb()
+  // already returns an Opera-3 (FoxPro/Knex) connection for opera-3
+  // tenants, so the queries Just Work. The frontend selects the
+  // prefix based on `ctx.operaType`.
+  router.use((req, _res, next) => {
+    if (req.url.startsWith('/api/opera3/')) {
+      req.url = '/api/' + req.url.slice('/api/opera3/'.length);
+      (req as unknown as { operaMirror?: boolean }).operaMirror = true;
+    }
+    next();
+  });
+
   function getAppDb(req: Request, res: Response): import('knex').Knex | null {
     if (!ctx.db.app) {
       res.status(503).json({

@@ -200,6 +200,21 @@ export function createRouter(ctx: AppContext): Router {
     ? createDefaultBankPdfExtractor({ llm: ctx.llm })
     : null;
 
+  // Opera-3 mirror routes: every Python endpoint under /api/opera3/*
+  // exists in this router under its canonical (non-prefixed) path.
+  // The frontend selects the prefix based on the tenant's Opera type
+  // (`opera_type === 'opera-3'` → use /api/opera3/...). Both prefixes
+  // resolve to the same handler because ctx.db.getCompanyDb() returns
+  // an Opera-3 (FoxPro/Knex) connection for opera-3 tenants, so the
+  // queries Just Work. We strip the prefix here and let Express route.
+  router.use((req, _res, next) => {
+    if (req.url.startsWith('/api/opera3/')) {
+      req.url = '/api/' + req.url.slice('/api/opera3/'.length);
+      (req as unknown as { operaMirror?: boolean }).operaMirror = true;
+    }
+    next();
+  });
+
   function getAppDb(req: Request, res: Response): import('knex').Knex | null {
     if (!ctx.db.app) {
       res.status(503).json({
