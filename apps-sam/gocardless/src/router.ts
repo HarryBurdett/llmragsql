@@ -90,6 +90,7 @@ import { getEligibleCustomers } from './services/eligible-customers.js';
 import { getCustomerEmail } from './services/customer-email.js';
 import { getRepeatDocuments } from './services/repeat-documents.js';
 import { getCollectableInvoices } from './services/collectable-invoices.js';
+import { getUnpostedPayments } from './services/unposted-payments.js';
 import {
   getDueInvoices,
   type PaymentRequestInfo,
@@ -1292,6 +1293,68 @@ export function createRouter(ctx: AppContext): Router {
       } catch (err: any) {
         ctx.logger.error('Request bulk payments failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/unposted-payments
+   *
+   * Surfaces collected GoCardless payments (status=confirmed or
+   * paid_out) that haven't been posted to Opera yet. Faithful port
+   * of get_unposted_gocardless_payments
+   * (apps/gocardless/api/routes.py:6283-6401).
+   *
+   * Three already-posted checks per request:
+   *   1. Has the payout been imported? (skipped when SAM doesn't
+   *      yet expose email_storage.is_gocardless_payout_imported)
+   *   2. Are the invoice_refs fully paid in stran?
+   *   3. Does the cashbook (aentry/atran with at_inputby='GOCARDLS')
+   *      already carry a matching receipt?
+   *
+   * On match, the local payment_request row is updated to
+   * status='posted'. Failures swallowed to match Python's
+   * "log + continue" — the dashboard always renders.
+   */
+  router.get(
+    '/api/gocardless/unposted-payments',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        // Build customer-name lookup from local mandates
+        const mandateRows = (await appDb('gocardless_mandates').select(
+          'opera_account',
+          'opera_name',
+        )) as unknown as Array<{
+          opera_account: string | null;
+          opera_name: string | null;
+        }>;
+        const customerNames = new Map<string, string>();
+        for (const m of mandateRows ?? []) {
+          const acct = (m.opera_account ?? '').trim();
+          const name = (m.opera_name ?? '').trim();
+          if (acct && acct !== '__UNLINKED__' && name) {
+            customerNames.set(acct, name);
+          }
+        }
+        const result = await getUnpostedPayments(operaDb, appDb, {
+          customerNamesByAccount: customerNames,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.warn?.('Could not check unposted GoCardless payments', err);
+        // Match Python: dashboard always loads, error swallowed
+        res.json({
+          success: true,
+          has_unposted: false,
+          unposted_count: 0,
+          unposted_total: 0,
+          unprocessed_batches: 0,
+          unposted: [],
+        });
       }
     },
   );
