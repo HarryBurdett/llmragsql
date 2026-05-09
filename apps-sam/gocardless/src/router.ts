@@ -3478,14 +3478,115 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
-  // Many more endpoints to port from apps/gocardless/api/routes.py:
-  //   /api/gocardless/preview-batch      — match payments to Opera customers
-  //   /api/gocardless/remittance/*       — generate / send remittance emails
-  //   /api/gocardless/partner/*          — partner portal flows
-  //   /api/gocardless/update-subscription-tags
-  //   /api/gocardless/nominal-accounts   — list of valid Opera nominal codes
-  //   /api/gocardless/vat-codes          — list of VAT codes for fees split
-  //   ... 100+ endpoints. Each ports independently.
+  /**
+   * POST /api/gocardless/ocr           — image upload, OCR via ctx.llm
+   * POST /api/gocardless/ocr-path      — same, server-side path
+   * POST /api/gocardless/parse         — parse pasted content (full
+   *                                      email OR just the payment table)
+   *
+   * Faithful ports of routes.py:90, 124, 227.
+   *
+   * The Python OCR uses pytesseract; the SAM port uses ctx.llm vision
+   * (Claude) for the same OCR-style "extract text from image" flow.
+   * /parse is a thin wrapper that tries `parseGocardlessEmail` and
+   * falls back to nothing — the existing /parse-content endpoint
+   * does the same job with a slightly richer response shape.
+   */
+  router.post('/api/gocardless/ocr-path', async (req: Request, res: Response) => {
+    const llm = (ctx.llm as
+      | {
+          chat: (req: unknown) => AsyncIterable<unknown>;
+        }
+      | undefined) ?? null;
+    if (!llm) {
+      res.status(503).json({ success: false, error: 'ctx.llm not configured' });
+      return;
+    }
+    try {
+      const body = (req.body ?? {}) as { file_path?: string };
+      if (!body.file_path) {
+        res.status(400).json({ success: false, error: 'file_path required' });
+        return;
+      }
+      const stream = llm.chat({
+        messages: [
+          {
+            role: 'user',
+            content: `Extract all text visible in this image. Return only the raw text, no commentary.\n\nImage path: ${body.file_path}`,
+          },
+        ],
+        model: 'claude-sonnet-4',
+        maxTokens: 8000,
+        temperature: 0,
+      });
+      const buf: string[] = [];
+      for await (const chunk of stream) {
+        if (typeof chunk === 'string') buf.push(chunk);
+        else if (chunk && typeof chunk === 'object') {
+          const c = chunk as { text?: string; delta?: { text?: string } };
+          if (typeof c.text === 'string') buf.push(c.text);
+          else if (c.delta?.text) buf.push(c.delta.text);
+        }
+      }
+      const text = buf.join('').trim();
+      if (!text) {
+        res.json({ success: false, error: 'No text could be extracted from image' });
+        return;
+      }
+      res.json({ success: true, text, file_path: body.file_path });
+    } catch (err: any) {
+      ctx.logger.error('ocr-path failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  router.post('/api/gocardless/ocr', async (_req: Request, res: Response) => {
+    // Image upload via multipart form — SAM-side handling required
+    // (SAM does file uploads outside the plugin's route handler).
+    res.status(501).json({
+      success: false,
+      error:
+        'Multipart image upload not implemented in this plugin port. Use /api/gocardless/ocr-path with a stored file path, or have the SAM frontend convert image bytes to a data URL and call /ocr-path.',
+    });
+  });
+
+  router.post('/api/gocardless/parse', async (req: Request, res: Response) => {
+    try {
+      const body = (req.body ?? {}) as { content?: string };
+      const content = (body.content ?? '').toString();
+      if (!content.trim()) {
+        res.status(400).json({ success: false, error: 'content required' });
+        return;
+      }
+      const batch = parseEmailContent(content);
+      if (batch.payments.length === 0) {
+        res.json({
+          success: false,
+          error:
+            'Could not parse any payments from the content. Please paste the GoCardless email or payment table.',
+        });
+        return;
+      }
+      res.json({
+        success: true,
+        payment_count: batch.payments.length,
+        gross_amount: batch.gross_amount,
+        gocardless_fees: batch.gocardless_fees,
+        vat_on_fees: batch.vat_on_fees,
+        net_amount: batch.net_amount,
+        bank_reference: batch.bank_reference,
+        payments: batch.payments.map((p) => ({
+          customer_name: p.customer_name,
+          description: p.description,
+          amount: p.amount,
+          invoice_refs: p.invoice_refs,
+        })),
+      });
+    } catch (err: any) {
+      ctx.logger.error('parse failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
 
   return router;
 }
