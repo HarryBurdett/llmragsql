@@ -73,6 +73,19 @@ import {
   recordOverride,
   deleteOverride,
 } from './services/supplier-overrides.js';
+import {
+  getStatementQueue,
+  getStatementsDashboard,
+  getStatementHistory,
+} from './services/statement-queue.js';
+import {
+  listQueries,
+  resolveQuery,
+  autoResolveQueries,
+  listOverdueQueries,
+  recordReminderSent,
+  type OperaPaymentLookup,
+} from './services/supplier-queries.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1225,12 +1238,225 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
+  // ---------------------------------------------------------------
+  // Statement queue / dashboard / history
+  // ---------------------------------------------------------------
+
+  router.get(
+    '/api/supplier-statements/queue',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await getStatementQueue(appDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get statement queue failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.get(
+    '/api/supplier-statements/dashboard',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const result = await getStatementsDashboard(appDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get statements dashboard failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.get(
+    '/api/supplier-statements/history',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const supplierCode = (req.query.supplier_code as string) || null;
+        const limit = req.query.limit
+          ? Number(req.query.limit)
+          : 100;
+        const result = await getStatementHistory(appDb, {
+          supplierCode,
+          limit,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get statement history failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // Supplier queries
+  // ---------------------------------------------------------------
+
+  router.get('/api/supplier-queries', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const supplierCode = (req.query.supplier_code as string) || null;
+      const status = (req.query.status as 'open' | 'resolved' | 'cancelled') || null;
+      const limit = req.query.limit ? Number(req.query.limit) : 200;
+      const result = await listQueries(appDb, {
+        supplierCode,
+        status,
+        limit,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List supplier queries failed', err);
+      res.status(500).json({
+        success: false,
+        error: err?.message ?? String(err),
+      });
+    }
+  });
+
+  router.post(
+    '/api/supplier-queries/:query_id/resolve',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const queryId = Number(req.params.query_id);
+        const body = (req.body ?? {}) as {
+          resolved_by?: string;
+          notes?: string;
+        };
+        const result = await resolveQuery(appDb, {
+          queryId,
+          resolvedBy: body.resolved_by ?? 'system',
+          notes: body.notes ?? null,
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Resolve query failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-queries/auto-resolve',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const lookup: OperaPaymentLookup = {
+          hasMatchingPosting: async ({
+            supplierCode,
+            reference,
+            amountPounds,
+          }) => {
+            try {
+              const row = (await operaDb('ptran')
+                .where('pt_account', supplierCode)
+                .andWhereRaw('LTRIM(RTRIM(pt_trref)) = ?', [reference])
+                .andWhereRaw('ABS(pt_value - ?) <= 0.01', [amountPounds])
+                .first()) as { pt_trref?: string } | undefined;
+              return !!row;
+            } catch {
+              return false;
+            }
+          },
+        };
+        const body = (req.body ?? {}) as { resolved_by?: string };
+        const result = await autoResolveQueries(
+          appDb,
+          lookup,
+          body.resolved_by ?? 'system',
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Auto-resolve queries failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.get(
+    '/api/supplier-queries/overdue',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const days = req.query.threshold_days
+          ? Number(req.query.threshold_days)
+          : 7;
+        const result = await listOverdueQueries(appDb, days);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List overdue queries failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-queries/:query_id/send-reminder',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const queryId = Number(req.params.query_id);
+        const body = (req.body ?? {}) as { triggered_by?: string };
+        const result = await recordReminderSent(appDb, {
+          queryId,
+          triggeredBy: body.triggered_by ?? 'system',
+        });
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        // Email send itself is the SAM team's wiring — we record the
+        // audit row + reminder counter; ctx.email is the bridge.
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Send reminder failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Future endpoints (designed during the TS port, not translated):
   //   POST /api/suppliers/scan-emails        — scan SAM mailbox
-  //   POST /api/suppliers/extract-statement  — Gemini extract line items
+  //   POST /api/suppliers/extract-statement  — Claude extract line items
   //   POST /api/suppliers/reconcile          — reconcile statement vs ptran
-  //   GET  /api/suppliers/:code/contacts     — extended contacts
-  //   POST /api/suppliers/onboard            — onboarding flow
   //   POST /api/suppliers/remittance         — generate + send remittance
 
   return router;
