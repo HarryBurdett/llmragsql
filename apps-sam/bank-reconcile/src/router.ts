@@ -132,6 +132,49 @@ import {
   type ImportType,
 } from './services/archive.js';
 import { processStatement } from './services/process-statement.js';
+import {
+  getBankReconciliationStatus,
+  getUnreconciledEntriesForBank,
+  getStatementTransactionsForImport,
+} from './services/bank-reconciliation-status.js';
+import {
+  recordDeferredTransaction,
+  listDeferredItems,
+  deleteDeferredItems,
+  deleteIgnoredTransactionByRecordId,
+} from './services/deferred-items.js';
+import {
+  listCashbookBankAccounts,
+  createCashbookEntry,
+  createBankTransfer,
+  autoMatchStatementLines,
+} from './services/cashbook-create.js';
+import {
+  archiveStatement,
+  listArchivedStatements,
+  restoreStatement,
+  getArchivedStatementPdf,
+  deleteArchivedStatement,
+  manageStatements,
+} from './services/statement-archive.js';
+import {
+  listCsvFiles,
+  listPdfFiles,
+  getPdfContent,
+  scanFolder,
+  fetchEmailsToFolder,
+  scanAllBanks,
+  rawPreviewFromPdf,
+  previewMultiformat,
+  validateCsv,
+  getStatementReview,
+  type PdfContentReader,
+  type MultiformatParser,
+} from './services/misc-endpoints.js';
+import {
+  importBankStatementFromEmail,
+  type BankImportFromEmailInput,
+} from './services/bank-import-from-email.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2525,10 +2568,444 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
-  // Remaining bank-reconcile endpoints (≈ 80 of 127) are
-  // smaller utility routes, drilldowns, and Opera-3 mirrors.
-  // Each ports independently using the patterns established in
-  // this codebase.
+  // ---------------------------------------------------------------
+  // Bank-reconciliation status / unreconciled / statement-transactions
+  // ---------------------------------------------------------------
+
+  router.get('/api/bank-reconciliation/status', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    res.json(await getBankReconciliationStatus(operaDb));
+  });
+
+  router.get('/api/bank-reconciliation/unreconciled-entries', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const bankCode = (req.query.bank_code as string) || null;
+    res.json(await getUnreconciledEntriesForBank(operaDb, bankCode));
+  });
+
+  router.get(
+    '/api/bank-reconciliation/statement-transactions/:import_id',
+    async (req, res) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const importId = Number(req.params.import_id);
+      res.json(await getStatementTransactionsForImport(appDb, importId));
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // Deferred items + ignored-transaction by record_id
+  // ---------------------------------------------------------------
+
+  router.post(
+    '/api/reconcile/bank/:bank_code/audit-defer',
+    async (req, res) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await recordDeferredTransaction(appDb, {
+        bankCode: String(req.params.bank_code ?? ''),
+        statementDate: String(body.statement_date ?? ''),
+        amount: Number(body.amount ?? 0),
+        description: String(body.description ?? ''),
+        deferredBy: String(body.deferred_by ?? 'system'),
+      });
+      res.json(result);
+    },
+  );
+
+  router.get(
+    '/api/reconcile/bank/:bank_code/deferred-items',
+    async (req, res) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      res.json(
+        await listDeferredItems(
+          appDb,
+          String(req.params.bank_code ?? ''),
+        ),
+      );
+    },
+  );
+
+  router.delete(
+    '/api/reconcile/bank/:bank_code/deferred-items',
+    async (req, res) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const body = (req.body ?? {}) as { ids?: number[] };
+      res.json(
+        await deleteDeferredItems(
+          appDb,
+          String(req.params.bank_code ?? ''),
+          Array.isArray(body.ids) ? body.ids : undefined,
+        ),
+      );
+    },
+  );
+
+  router.delete(
+    '/api/reconcile/bank/ignored-transaction/:record_id',
+    async (req, res) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      res.json(
+        await deleteIgnoredTransactionByRecordId(
+          appDb,
+          Number(req.params.record_id),
+        ),
+      );
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // Cashbook create / bank-accounts / auto-match
+  // ---------------------------------------------------------------
+
+  router.get('/api/cashbook/bank-accounts', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    res.json(await listCashbookBankAccounts(operaDb));
+  });
+
+  router.post('/api/cashbook/create-entry', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    res.json(
+      await createCashbookEntry(operaDb, {
+        bankCode: String(body.bank_code ?? ''),
+        date: String(body.date ?? ''),
+        amount: Number(body.amount ?? 0),
+        matchedAccount: String(body.matched_account ?? ''),
+        action:
+          (body.action as
+            | 'sales_receipt'
+            | 'purchase_payment'
+            | 'sales_refund'
+            | 'purchase_refund'
+            | 'nominal_payment'
+            | 'nominal_receipt') ?? 'sales_receipt',
+        reference: (body.reference as string) ?? '',
+        memo: (body.memo as string) ?? '',
+        cbtype: (body.cbtype as string | null) ?? null,
+      }),
+    );
+  });
+
+  router.post('/api/cashbook/create-bank-transfer', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    res.json(
+      await createBankTransfer(operaDb, {
+        sourceBank: String(body.source_bank ?? ''),
+        destBank: String(body.dest_bank ?? ''),
+        amount: Number(body.amount ?? 0),
+        date: String(body.date ?? ''),
+        reference: (body.reference as string) ?? '',
+        memo: (body.memo as string) ?? '',
+      }),
+    );
+  });
+
+  router.post('/api/cashbook/auto-match-statement-lines', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const body = (req.body ?? {}) as { bank_code?: string; import_id?: number };
+    res.json(
+      await autoMatchStatementLines(
+        operaDb,
+        String(body.bank_code ?? ''),
+        Number(body.import_id ?? 0),
+      ),
+    );
+  });
+
+  // ---------------------------------------------------------------
+  // Statement-archive endpoints
+  // ---------------------------------------------------------------
+
+  router.post('/api/bank-import/archive-statement', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const body = (req.body ?? {}) as { import_id?: number; archived_by?: string };
+    res.json(
+      await archiveStatement(
+        appDb,
+        Number(body.import_id ?? req.query.import_id ?? 0),
+        String(body.archived_by ?? 'system'),
+      ),
+    );
+  });
+
+  router.get('/api/bank-import/archived-statements', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    res.json(
+      await listArchivedStatements(
+        appDb,
+        (req.query.bank_code as string) || null,
+        req.query.limit ? Number(req.query.limit) : 200,
+      ),
+    );
+  });
+
+  router.post('/api/bank-import/restore-statement', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const body = (req.body ?? {}) as { import_id?: number };
+    res.json(
+      await restoreStatement(
+        appDb,
+        Number(body.import_id ?? req.query.import_id ?? 0),
+      ),
+    );
+  });
+
+  router.get(
+    '/api/bank-import/archived-statement-pdf/:record_id',
+    async (req, res) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const storage = (ctx as unknown as { fileStorage?: FileStorageAdapter })
+        .fileStorage ?? null;
+      res.json(
+        await getArchivedStatementPdf(
+          appDb,
+          storage,
+          Number(req.params.record_id),
+        ),
+      );
+    },
+  );
+
+  router.post('/api/bank-import/delete-archived-statement', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const body = (req.body ?? {}) as { record_id?: number };
+    res.json(
+      await deleteArchivedStatement(
+        appDb,
+        Number(body.record_id ?? req.query.record_id ?? 0),
+      ),
+    );
+  });
+
+  router.post('/api/bank-import/manage-statements', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const body = (req.body ?? {}) as {
+      bank_code?: string;
+      include_archived?: boolean;
+    };
+    res.json(
+      await manageStatements(
+        appDb,
+        body.bank_code ?? null,
+        !!body.include_archived,
+      ),
+    );
+  });
+
+  // ---------------------------------------------------------------
+  // File-list / scan-folder / scan-all-banks / pdf-content
+  // ---------------------------------------------------------------
+
+  const getFileStorage = () =>
+    (ctx as unknown as { fileStorage?: FileStorageAdapter }).fileStorage ?? null;
+  const getPdfReader = () =>
+    (ctx as unknown as { pdfContentReader?: PdfContentReader }).pdfContentReader ?? null;
+  const getMultiformatParser = () =>
+    (ctx as unknown as { multiformatParser?: MultiformatParser })
+      .multiformatParser ?? null;
+  const getEmailAttachments = () =>
+    (ctx as unknown as { bankEmailAttachments?: EmailAttachmentProvider })
+      .bankEmailAttachments ?? null;
+
+  router.get('/api/bank-import/list-csv', async (_req, res) => {
+    res.json(await listCsvFiles(getFileStorage()));
+  });
+
+  router.get('/api/bank-import/list-pdf', async (_req, res) => {
+    res.json(await listPdfFiles(getFileStorage()));
+  });
+
+  router.get('/api/bank-import/pdf-content', async (req, res) => {
+    res.json(
+      await getPdfContent(
+        getPdfReader(),
+        String(req.query.file_path ?? ''),
+      ),
+    );
+  });
+
+  router.get('/api/bank-import/scan-folder', async (_req, res) => {
+    res.json(await scanFolder(getFileStorage()));
+  });
+
+  router.post('/api/bank-import/fetch-emails-to-folder', async (req, res) => {
+    const body = (req.body ?? {}) as {
+      emails?: Array<{ emailId: number; attachmentId: string }>;
+    };
+    res.json(
+      await fetchEmailsToFolder(
+        getEmailAttachments(),
+        getFileStorage(),
+        Array.isArray(body.emails) ? body.emails : [],
+      ),
+    );
+  });
+
+  router.get('/api/bank-import/scan-all-banks', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    res.json(await scanAllBanks(operaDb));
+  });
+
+  // ---------------------------------------------------------------
+  // Raw / multiformat preview endpoints (LLM/parser-bound)
+  // ---------------------------------------------------------------
+
+  router.get('/api/bank-import/raw-preview', async (req, res) => {
+    const llm = (ctx.llm as LlmService | undefined) ?? null;
+    res.json(
+      await rawPreviewFromPdf(
+        llm,
+        null,
+        String(req.query.file_path ?? '') || null,
+      ),
+    );
+  });
+
+  router.get('/api/bank-import/raw-preview-email', async (req, res) => {
+    const llm = (ctx.llm as LlmService | undefined) ?? null;
+    const attachments = getEmailAttachments();
+    if (!attachments) {
+      res.status(503).json({ success: false, error: 'attachments not configured' });
+      return;
+    }
+    const emailId = Number(req.query.email_id ?? 0);
+    const attachmentId = String(req.query.attachment_id ?? '');
+    let bytes: Uint8Array | null = null;
+    try {
+      const att = await attachments.fetchAttachment({ emailId, attachmentId });
+      bytes = att?.bytes ?? null;
+    } catch {
+      // fall through
+    }
+    if (!bytes) {
+      res.status(404).json({ success: false, error: 'attachment not found' });
+      return;
+    }
+    res.json(await rawPreviewFromPdf(llm, bytes, null));
+  });
+
+  router.post('/api/bank-import/preview-multiformat', async (req, res) => {
+    const body = (req.body ?? {}) as { content?: string; format?: string };
+    res.json(
+      await previewMultiformat(
+        getMultiformatParser(),
+        String(body.content ?? ''),
+        body.format ?? null,
+      ),
+    );
+  });
+
+  router.post('/api/bank-import/validate-csv', async (req, res) => {
+    const body = (req.body ?? {}) as { content?: string };
+    res.json(
+      await validateCsv(getMultiformatParser(), String(body.content ?? '')),
+    );
+  });
+
+  router.get('/api/bank-import/statement-review/:import_id', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    res.json(
+      await getStatementReview(appDb, Number(req.params.import_id)),
+    );
+  });
+
+  // ---------------------------------------------------------------
+  // import-from-email + import-from-statement
+  // ---------------------------------------------------------------
+
+  const handleImportFromEmail = async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const adapter = ctx as unknown as {
+      bankPdfExtractor?: PdfExtractor;
+      bankImportExecutor?: ImportPostingExecutor;
+      bankImportLock?: ImportLockAdapter;
+      bankPeriodOverlapChecker?: PeriodOverlapChecker;
+      bankEmailAttachments?: EmailAttachmentProvider;
+    };
+    if (!adapter.bankPdfExtractor || !adapter.bankEmailAttachments) {
+      res.status(503).json({
+        success: false,
+        error:
+          'PDF extractor and email-attachment provider must both be configured.',
+      });
+      return;
+    }
+    const executor = adapter.bankImportExecutor ?? bankImportPostingExecutor;
+    const lock = adapter.bankImportLock ?? inMemoryImportLock;
+    const overlap = adapter.bankPeriodOverlapChecker ?? makeBankStatementOverlapChecker(appDb);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const input: BankImportFromEmailInput = {
+      emailId: Number(req.query.email_id ?? body.email_id ?? 0),
+      attachmentId: String(req.query.attachment_id ?? body.attachment_id ?? ''),
+      bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
+      autoAllocate: req.query.auto_allocate === '1',
+      autoReconcile: req.query.auto_reconcile === '1',
+      resumeImportId: req.query.resume_import_id
+        ? Number(req.query.resume_import_id)
+        : null,
+      overrides: Array.isArray(body.overrides) ? body.overrides : [],
+      selectedRows: Array.isArray(body.selected_rows)
+        ? (body.selected_rows as number[])
+        : null,
+      dateOverrides: Array.isArray(body.date_overrides)
+        ? body.date_overrides
+        : [],
+      rejectedRefundRows: Array.isArray(body.rejected_refund_rows)
+        ? (body.rejected_refund_rows as number[])
+        : [],
+      skipOverlapCheck: body.skip_overlap_check === true,
+    };
+    res.json(
+      await importBankStatementFromEmail(
+        operaDb,
+        appDb,
+        adapter.bankEmailAttachments,
+        adapter.bankPdfExtractor,
+        executor,
+        lock,
+        overlap,
+        input,
+      ),
+    );
+  };
+  router.post('/api/bank-import/import-from-email', handleImportFromEmail);
+  // Composite alias used by the legacy UI
+  router.post(
+    '/api/reconcile/bank/:bank_code/import-from-statement',
+    async (req, res) => {
+      // Forward to import-from-pdf with the bank_code from the path
+      req.url = '/api/bank-import/import-from-pdf';
+      (req.query as Record<string, string>).bank_code = String(
+        req.params.bank_code ?? '',
+      );
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
 
   return router;
 }
