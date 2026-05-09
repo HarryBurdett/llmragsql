@@ -109,6 +109,11 @@ import {
   suggestAccountForTransaction,
   type TransactionType,
 } from './services/suggest-account.js';
+import { bankImportPostingExecutor } from './services/import-posting-executor.js';
+import {
+  inMemoryImportLock,
+  makeBankStatementOverlapChecker,
+} from './services/import-defaults.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1986,19 +1991,19 @@ export function createRouter(ctx: AppContext): Router {
         bankImportLock?: ImportLockAdapter;
         bankPeriodOverlapChecker?: PeriodOverlapChecker;
       };
-      if (
-        !adapter.bankPdfExtractor ||
-        !adapter.bankImportExecutor ||
-        !adapter.bankImportLock ||
-        !adapter.bankPeriodOverlapChecker
-      ) {
+      if (!adapter.bankPdfExtractor) {
         res.status(503).json({
           success: false,
           error:
-            'PDF extractor / posting executor / import lock / overlap checker not configured. SAM team wiring required.',
+            'PDF extractor not configured. SAM team must provide ctx.bankPdfExtractor (ctx.llm-backed Claude Vision extractor).',
         });
         return;
       }
+      const executor = adapter.bankImportExecutor ?? bankImportPostingExecutor;
+      const lock = adapter.bankImportLock ?? inMemoryImportLock;
+      const overlapChecker =
+        adapter.bankPeriodOverlapChecker ??
+        makeBankStatementOverlapChecker(appDb);
       try {
         const body = (req.body ?? {}) as Record<string, unknown>;
         const result = await importBankStatementFromPdf(
@@ -2030,9 +2035,9 @@ export function createRouter(ctx: AppContext): Router {
             skipOverlapCheck: body.skip_overlap_check === true,
           },
           adapter.bankPdfExtractor,
-          adapter.bankImportExecutor,
-          adapter.bankImportLock,
-          adapter.bankPeriodOverlapChecker,
+          executor,
+          lock,
+          overlapChecker,
         );
         if (!result.success) {
           res.status(400).json(result);
