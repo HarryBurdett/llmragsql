@@ -124,6 +124,7 @@ import {
   getFirstSupplierAccount,
   type LlmService,
 } from './services/misc-endpoints.js';
+import { createDefaultEmailIngestAdapter } from './services/default-email-ingest.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -139,6 +140,22 @@ export function createRouter(ctx: AppContext): Router {
     }
     next();
   });
+
+  // Default email-ingest adapter — instantiated once per plugin
+  // lifecycle. Wraps ctx.emailIngest as a `supplierEmailAttachments`
+  // adapter (single fetchAttachment method). Activates when
+  // ctx.emailIngest is wired AND ctx.config.mailboxes is non-empty.
+  const cfg = (ctx.config ?? {}) as Record<string, unknown>;
+  const mailboxesCfg = Array.isArray(cfg.mailboxes)
+    ? (cfg.mailboxes as unknown[]).filter((s): s is string => typeof s === 'string')
+    : [];
+  const builtinEmailIngest = ctx.emailIngest
+    ? createDefaultEmailIngestAdapter({
+        emailIngest: ctx.emailIngest,
+        mailboxes: mailboxesCfg,
+        logger: ctx.logger,
+      })
+    : null;
 
   function getAppDb(req: Request, res: Response): import('knex').Knex | null {
     if (!ctx.db.app) {
@@ -2228,14 +2245,15 @@ export function createRouter(ctx: AppContext): Router {
     '/api/supplier-statements/extract-from-email/:email_id',
     async (req: Request, res: Response) => {
       const llm = (ctx.llm as LlmService | undefined) ?? null;
-      const attachments = (ctx as unknown as {
-        supplierEmailAttachments?: {
-          fetchAttachment(opts: { emailId: number; attachmentId?: string }): Promise<{
-            text?: string;
-            bytes?: Uint8Array;
-          } | null>;
-        };
-      }).supplierEmailAttachments;
+      const attachments =
+        (ctx as unknown as {
+          supplierEmailAttachments?: {
+            fetchAttachment(opts: { emailId: number; attachmentId?: string }): Promise<{
+              text?: string;
+              bytes?: Uint8Array;
+            } | null>;
+          };
+        }).supplierEmailAttachments ?? builtinEmailIngest?.attachments;
       if (!attachments) {
         res.status(503).json({
           success: false,

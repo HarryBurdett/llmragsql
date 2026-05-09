@@ -130,6 +130,7 @@ import {
 } from './services/import-from-email.js';
 import { gocardlessBatchPostingExecutor } from './services/batch-posting-executor.js';
 import { inMemoryImportLock } from './services/import-lock.js';
+import { createDefaultEmailIngestAdapter } from './services/default-email-ingest.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -146,6 +147,21 @@ export function createRouter(ctx: AppContext): Router {
     }
     next();
   });
+
+  // Default email-ingest adapter — instantiated once per plugin
+  // lifecycle. Activates when ctx.emailIngest is wired AND the tenant
+  // has configured at least one mailbox in ctx.config.mailboxes.
+  const cfg = (ctx.config ?? {}) as Record<string, unknown>;
+  const mailboxesCfg = Array.isArray(cfg.mailboxes)
+    ? (cfg.mailboxes as unknown[]).filter((s): s is string => typeof s === 'string')
+    : [];
+  const builtinEmailIngest = ctx.emailIngest
+    ? createDefaultEmailIngestAdapter({
+        emailIngest: ctx.emailIngest,
+        mailboxes: mailboxesCfg,
+        logger: ctx.logger,
+      })
+    : null;
 
   function getAppDb(req: Request, res: Response): import('knex').Knex | null {
     if (!ctx.db.app) {
@@ -3218,9 +3234,10 @@ export function createRouter(ctx: AppContext): Router {
       if (!operaDb) return;
       const appDb = getAppDb(req, res);
       if (!appDb) return;
-      const adapter = (ctx as unknown as {
-        gocardlessMailboxAdapter?: EmailMailboxAdapter;
-      }).gocardlessMailboxAdapter;
+      const adapter =
+        (ctx as unknown as {
+          gocardlessMailboxAdapter?: EmailMailboxAdapter;
+        }).gocardlessMailboxAdapter ?? builtinEmailIngest?.mailbox;
       if (!adapter) {
         res.status(503).json({
           success: false,
