@@ -15,8 +15,8 @@ the plugin code never branches on `ctx.operaType`.
 
 | Plugin | Backend tests | Backend endpoints | Frontend bundle |
 |---|---|---|---|
-| `gocardless` | 33 files / 490 tests | ~46 endpoints ported | UMD `__SAM_APPS__["gocardless"]` |
-| `bank-reconcile` | 34 files / 315 tests | ~46 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
+| `gocardless` | 34 files / 495 tests | ~46 endpoints ported | UMD `__SAM_APPS__["gocardless"]` |
+| `bank-reconcile` | 40 files / 350 tests | ~55 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
 | `suppliers` | 21 files / 184 tests | ~58 endpoints ported | UMD `__SAM_APPS__["suppliers"]` |
 | `balance-check` | TBC tests | 7 endpoints ported | UMD `__SAM_APPS__["balance-check"]` |
 
@@ -24,42 +24,38 @@ All four plugins type-check clean (`npx tsc --noEmit`) and all backend
 tests pass (`npx vitest run`). Frontend bundles build with
 `vite build` (esbuild minify) at ~17–19 kB each.
 
-## Posting / extraction adapters — SAM team to wire
+## Posting / extraction adapters
 
-The replication intentionally stops at the SQL-write boundary for the
-two large posting flows. Each is exposed as a typed adapter on
-`AppContext`. The plugin returns **HTTP 503** until the adapter is
-wired.
+Both posting flows now ship with **default executors** that handle
+the dominant happy path. The SAM team can override any adapter via
+`AppContext` for production deployments.
 
 ### gocardless/import (POST /api/gocardless/import)
-- `BatchPostingExecutor.postBatch(operaDb, ValidatedRequest)` — ~750
-  LOC of aentry / atran / stran / ntran / anoml + balance updates
-- `ImportLockAdapter` — bank-level lock (Python uses
-  `sql_rag/import_lock.py`)
-
-Source of truth for the posting body:
-`sql_rag/opera_sql_import.py:6017-7017` —
-`OperaSQLImport.import_gocardless_batch`.
-
-The validation layer (idempotency, mandate→customer match, fees gate,
-period gate, foreign currency, bank existence) is **fully ported** in
-`apps-sam/gocardless/src/services/import-batch.ts`. Tests cover all
-guards with mocks (`tests/import-batch.test.ts`).
+- **Default**: `gocardlessBatchPostingExecutor` — ports the inner
+  posting body of `OperaSQLImport.import_gocardless_batch`. Posts
+  aentry header + atran/stran per payment + ntran/anoml/njmemo
+  pairs (when completeBatch) + sname/nbank/nacnt updates.
+  Fees split + bank-transfer auto-leg are TODO'd as warnings (not
+  yet ported — operator posts manually until the SAM team layers
+  them on).
+- **Default**: `inMemoryImportLock` — bank-level lock with
+  5-minute stale TTL. Single-process semantics; SAM team can swap
+  for Redis-backed.
 
 ### bank-reconcile/import-from-pdf (POST /api/bank-import/import-from-pdf)
-- `PdfExtractor.extractFromPdf(...)` — ctx.llm Claude vision call
-- `ImportPostingExecutor.postBankImport(...)` — ~750 LOC posting body
-- `ImportLockAdapter`
-- `PeriodOverlapChecker` — equivalent of
-  `apps/bank_reconcile/logic/import_orchestration.check_statement_period_overlap`
-
-Source of truth for the posting body:
-`sql_rag/bank_import.py` (BankStatementImport class) and
-`apps/bank_reconcile/api/routes.py:4031-4787`.
-
-The orchestration shell (validation, overlap gate, lock, audit) is
-fully ported in
-`apps-sam/bank-reconcile/src/services/import-from-pdf.ts`.
+- **Default**: `bankImportPostingExecutor` — handles
+  sales_receipt / purchase_payment / sales_refund / purchase_refund
+  (~90% of bank-reconcile activity). Each row posts in its own DB
+  transaction so a single failure doesn't roll back the batch.
+  nominal_payment / nominal_receipt / bank_transfer emit a per-row
+  warning and skip — TODO follow-up.
+- **Default**: `inMemoryImportLock`
+- **Default**: `bankStatementImportsOverlapChecker` — reads the
+  per-app `bank_statement_imports` table for prior period overlap.
+- **Required**: `bankPdfExtractor` — ctx.llm-backed Claude Vision
+  extractor. Returns 503 until SAM wires this. The
+  `previewBankImportFromPdf` service can serve as the wiring
+  reference — it builds a complete extractor against ctx.llm.
 
 ## Email-ingest adapters — SAM team to wire
 
@@ -170,17 +166,46 @@ is the definitive list of what needs Opera 3 validation.
   so gocardless suggest-match and bank-reconcile suggest-account
   share one CPython-faithful implementation.
 
+## Latest stretch (this session, last 11 commits)
+
+The big remaining items from the prior handoff have all been
+addressed:
+
+- **gocardless `BatchPostingExecutor`** — default implementation
+  posts aentry/atran/stran/ntran/anoml + balance updates. Fees
+  split + bank-transfer auto-leg flagged as warnings.
+- **bank-reconcile `ImportPostingExecutor`** — handles 4 main
+  transaction types (sales_receipt / purchase_payment / sales_refund
+  / purchase_refund). Per-row DB transactions, per-row rollback
+  semantics. Stamps at_refer fingerprints.
+- **`/api/bank-import/preview-from-pdf`** — full ctx.llm pipeline
+  with strict-JSON prompt, code-fence stripping, balance-chain
+  validation, bank-mismatch detection.
+- **`/api/bank-import/preview-from-email`** — wraps preview-from-pdf
+  with EmailAttachmentProvider adapter.
+- **`/api/reconcile/bank/{bank_code}`** — full three-way variance
+  dashboard (cashbook vs bank master vs nominal ledger) with
+  transfer-file pending/posted summary. Sign-aware (handles
+  overdrawn accounts correctly — Python had a bug here).
+- **`/api/archive/*` (4 endpoints)** — log-table + FileStorageAdapter
+  contract. SAM team plugs in the storage strategy.
+- **`/api/reconcile/process-statement`** + unified alias —
+  extract+match in one round-trip.
+- **`/api/bank-import/import-with-overrides`** — alias for
+  import-from-pdf.
+
 ## Known follow-ups
 
-- `ctx.llm` integration for PDF extraction (bank-reconcile preview /
-  import-from-pdf, suppliers extract-from-email).
 - Frontend full-UI port of the four legacy React pages.
 - Email ingestion glue (per-plugin or SAM-host cache).
 - Write Agent — Opera 3 FoxPro write service, in development.
-- Remaining Python endpoints in bank-reconcile: the big
-  `/api/reconcile/bank/{bank_code}` dashboard endpoint and the
-  `/api/archive/*` filesystem-bound endpoints (these need a
-  storage adapter design decision from the SAM team).
+- gocardless executor: fees-split + bank-transfer auto-leg
+  (warnings now, port pending).
+- bank-reconcile executor: nominal_payment / nominal_receipt /
+  bank_transfer transaction types (skip with warning now).
+- Remaining ~80 small bank-reconcile utility / drilldown / Opera-3
+  mirror endpoints — each ports independently using the patterns
+  established in this codebase.
 
 ## Contact
 
