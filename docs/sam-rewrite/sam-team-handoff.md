@@ -15,9 +15,9 @@ the plugin code never branches on `ctx.operaType`.
 
 | Plugin | Backend tests | Backend endpoints | Frontend bundle |
 |---|---|---|---|
-| `gocardless` | 31 files / 485 tests | ~45 endpoints ported | UMD `__SAM_APPS__["gocardless"]` |
-| `bank-reconcile` | 31 files / 279 tests | ~43 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
-| `suppliers` | 19 files / 166 tests | ~50 endpoints ported | UMD `__SAM_APPS__["suppliers"]` |
+| `gocardless` | 33 files / 490 tests | ~46 endpoints ported | UMD `__SAM_APPS__["gocardless"]` |
+| `bank-reconcile` | 32 files / 293 tests | ~44 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
+| `suppliers` | 21 files / 184 tests | ~58 endpoints ported | UMD `__SAM_APPS__["suppliers"]` |
 | `balance-check` | TBC tests | 7 endpoints ported | UMD `__SAM_APPS__["balance-check"]` |
 
 All four plugins type-check clean (`npx tsc --noEmit`) and all backend
@@ -140,6 +140,27 @@ The transaction checklist in
 `~/opera-knowledge-ref/packages/opera-knowledge/transaction-library/INDEX.md`
 is the definitive list of what needs Opera 3 validation.
 
+## New since first handoff (this session)
+
+- **Suppliers state-transition workflow** — process / acknowledge /
+  approve / edit-response / bulk-approve, with the never_communicate
+  policy gate enforced on every outbound email path. Adapters:
+  `EmailSender`, `OperaSupplierLookup`, `PtranLookup`. Migrations
+  003 + 004 add the columns the workflow needs.
+- **Suppliers security** — list-alerts / verify / audit / scan-changes
+  with bank-detail change detection and email alerts to
+  `security_alert_recipients`. Adapters: `OperaPnameProvider`,
+  `SecurityEmailSender`. First-time observations auto-verify as
+  `scan_baseline` rows.
+- **gocardless/import-from-email** — thin wrapper around the
+  validated batch import that adds email-archive on success via the
+  optional `EmailArchiveAdapter`. Best-effort archive does not roll
+  back the import.
+- **bank-import/check-duplicates** — fingerprint + exact-match
+  strategies covering the dominant duplicate-detection paths.
+  Sign-aware: a +£X receipt and a -£X payment are not duplicates of
+  each other.
+
 ## Known follow-ups
 
 - `ctx.llm` integration for PDF extraction (bank-reconcile preview /
@@ -147,9 +168,14 @@ is the definitive list of what needs Opera 3 validation.
 - Frontend full-UI port of the four legacy React pages.
 - Email ingestion glue (per-plugin or SAM-host cache).
 - Write Agent — Opera 3 FoxPro write service, in development.
-- Remaining Python endpoints: ~85 in bank-reconcile (mostly
-  partial-rec drilldowns), ~5 in suppliers (security/audit and
-  preview-response). Each is small and ports independently.
+- Remaining Python endpoints in bank-reconcile: the big
+  `/api/reconcile/bank/{bank_code}` dashboard, the four remaining
+  duplicate-detection strategies (fit_id, fuzzy_amount, reference,
+  cross_period, bank_amount — all stubbed in
+  `bank-reconcile/src/services/duplicate-detection.ts` with pointers
+  to the Python source line numbers), and the
+  `/api/archive/*` filesystem-bound endpoints (these need a
+  storage adapter design decision from the SAM team).
 
 ## Contact
 
