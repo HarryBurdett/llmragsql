@@ -443,6 +443,103 @@ export async function updateSubscriptionDetails(
 }
 
 // ---------------------------------------------------------------------
+// sync-from-opera — read itran totals for linked docs, push to GC
+// ---------------------------------------------------------------------
+
+export interface OperaDocAmount {
+  /** Sum of `it_exvat` across the linked itran lines, in pence. */
+  lineNettPence: number;
+  /** Sum of `it_vatval` across the linked itran lines, in pence. */
+  lineVatPence: number;
+}
+
+export interface SyncSubscriptionFromOperaResponse {
+  success: boolean;
+  message?: string;
+  old_amount_pence?: number;
+  new_amount_pence?: number;
+  old_amount_formatted?: string;
+  new_amount_formatted?: string;
+  subscription?: Subscription;
+  error?: string;
+}
+
+/**
+ * Faithful port of sync_subscription_from_opera
+ * (apps/gocardless/api/routes.py:9172-9245).
+ *
+ * The Opera read and the GoCardless update are injected so this
+ * function stays unit-testable. The HTTP layer wires:
+ *   readOperaDocAmount = sum(it_exvat) + sum(it_vatval) FROM itran
+ *                        WHERE it_doc IN (...)
+ *   updateRemote       = GoCardlessClient.updateSubscription(id, {amountPence})
+ */
+export async function syncSubscriptionFromOpera(
+  appDb: Knex,
+  subscriptionId: string,
+  readOperaDocAmount: (sourceDocs: string[]) => Promise<OperaDocAmount>,
+  updateRemote: (id: string, amountPence: number) => Promise<RemoteSubscriptionResult>,
+): Promise<SyncSubscriptionFromOperaResponse> {
+  const id = (subscriptionId ?? '').trim();
+  if (!id) return { success: false, error: 'subscription_id is required' };
+
+  const local = await getSubscription(appDb, id);
+  if (!local.success || !local.subscription) {
+    return { success: false, error: local.error ?? `Subscription ${id} not found` };
+  }
+  const sourceDocs = local.subscription.source_docs ?? [];
+  if (sourceDocs.length === 0) {
+    return {
+      success: false,
+      error: 'Subscription is not linked to any Opera documents',
+    };
+  }
+
+  let opera: OperaDocAmount;
+  try {
+    opera = await readOperaDocAmount(sourceDocs);
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+  if ((opera.lineNettPence ?? 0) === 0 && (opera.lineVatPence ?? 0) === 0) {
+    return {
+      success: false,
+      error: 'Opera documents not found or have no lines',
+    };
+  }
+
+  const newAmountPence = Math.round(
+    (opera.lineNettPence ?? 0) + (opera.lineVatPence ?? 0),
+  );
+  const oldAmountPence = local.subscription.amount_pence;
+  if (newAmountPence === oldAmountPence) {
+    return { success: true, message: 'No change needed — amounts already match' };
+  }
+
+  const remote = await updateRemote(id, newAmountPence);
+  if (!remote.success) {
+    return { success: false, error: remote.error ?? 'Remote update failed' };
+  }
+
+  await appDb('gocardless_subscriptions')
+    .where({ subscription_id: id })
+    .update({
+      amount_pence: newAmountPence,
+      updated_at: appDb.fn.now(),
+    });
+
+  const fresh = await getSubscription(appDb, id);
+  return {
+    success: true,
+    old_amount_pence: oldAmountPence,
+    new_amount_pence: newAmountPence,
+    old_amount_formatted: formatPounds(oldAmountPence),
+    new_amount_formatted: formatPounds(newAmountPence),
+    subscription: fresh.subscription,
+  };
+}
+
+// ---------------------------------------------------------------------
 // Subscription <-> Opera repeat-document linking
 // ---------------------------------------------------------------------
 

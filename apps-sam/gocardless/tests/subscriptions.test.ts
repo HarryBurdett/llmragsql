@@ -9,6 +9,7 @@ import {
   linkSubscriptionToDocument,
   unlinkSubscriptionFromDocument,
   updateSubscriptionStatus,
+  syncSubscriptionFromOpera,
   type RemoteSubscriptionResult,
 } from '../src/services/subscriptions.js';
 
@@ -707,6 +708,134 @@ describe('linkSubscriptionToDocument', () => {
       subscriptionId: '',
       sourceDoc: 'X',
     });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('syncSubscriptionFromOpera', () => {
+  it('returns 404-style error when subscription missing', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const result = await syncSubscriptionFromOpera(
+      makeAppDb(state),
+      'MISSING',
+      async () => ({ lineNettPence: 0, lineVatPence: 0 }),
+      async () => ({ success: true }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not found/);
+  });
+
+  it('refuses when subscription has no linked docs', async () => {
+    const state: MockState = {
+      subs: [emptySub({ subscription_id: 'SUB1' })],
+      mandates: [],
+      docs: [],
+    };
+    const result = await syncSubscriptionFromOpera(
+      makeAppDb(state),
+      'SUB1',
+      async () => ({ lineNettPence: 0, lineVatPence: 0 }),
+      async () => ({ success: true }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/not linked/);
+  });
+
+  it('refuses when Opera read returns zero amounts', async () => {
+    const state: MockState = {
+      subs: [emptySub({ subscription_id: 'SUB1' })],
+      mandates: [],
+      docs: [
+        { subscription_id: 'SUB1', source_doc: 'INV1', added_at: '2026-04-01' },
+      ],
+    };
+    const result = await syncSubscriptionFromOpera(
+      makeAppDb(state),
+      'SUB1',
+      async () => ({ lineNettPence: 0, lineVatPence: 0 }),
+      async () => ({ success: true }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/no lines/);
+  });
+
+  it('returns "no change needed" when amounts already match', async () => {
+    const state: MockState = {
+      subs: [emptySub({ subscription_id: 'SUB1', amount_pence: 12000 })],
+      mandates: [],
+      docs: [
+        { subscription_id: 'SUB1', source_doc: 'INV1', added_at: '2026-04-01' },
+      ],
+    };
+    let remoteCalled = false;
+    const result = await syncSubscriptionFromOpera(
+      makeAppDb(state),
+      'SUB1',
+      async () => ({ lineNettPence: 10000, lineVatPence: 2000 }),
+      async () => {
+        remoteCalled = true;
+        return { success: true };
+      },
+    );
+    expect(result.success).toBe(true);
+    expect(result.message).toMatch(/already match/);
+    expect(remoteCalled).toBe(false);
+  });
+
+  it('pushes new total to remote and mirrors locally on amount change', async () => {
+    const state: MockState = {
+      subs: [emptySub({ subscription_id: 'SUB1', amount_pence: 10000 })],
+      mandates: [],
+      docs: [
+        { subscription_id: 'SUB1', source_doc: 'INV1', added_at: '2026-04-01' },
+        { subscription_id: 'SUB1', source_doc: 'INV2', added_at: '2026-04-02' },
+      ],
+    };
+    let remoteAmount = 0;
+    const result = await syncSubscriptionFromOpera(
+      makeAppDb(state),
+      'SUB1',
+      async () => ({ lineNettPence: 12500, lineVatPence: 2500 }),
+      async (_id, amount) => {
+        remoteAmount = amount;
+        return { success: true, subscription: { amount: amount } };
+      },
+    );
+    expect(result.success).toBe(true);
+    expect(remoteAmount).toBe(15000);
+    expect(result.old_amount_pence).toBe(10000);
+    expect(result.new_amount_pence).toBe(15000);
+    expect(result.old_amount_formatted).toBe('£100.00');
+    expect(result.new_amount_formatted).toBe('£150.00');
+    expect(state.subs[0]?.amount_pence).toBe(15000);
+  });
+
+  it('does NOT update local when remote update fails', async () => {
+    const state: MockState = {
+      subs: [emptySub({ subscription_id: 'SUB1', amount_pence: 10000 })],
+      mandates: [],
+      docs: [
+        { subscription_id: 'SUB1', source_doc: 'INV1', added_at: '2026-04-01' },
+      ],
+    };
+    const result = await syncSubscriptionFromOpera(
+      makeAppDb(state),
+      'SUB1',
+      async () => ({ lineNettPence: 12500, lineVatPence: 2500 }),
+      async () => ({ success: false, error: 'GC API down' }),
+    );
+    expect(result.success).toBe(false);
+    expect(state.subs[0]?.amount_pence).toBe(10000);
+  });
+
+  it('rejects empty subscription id', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const result = await syncSubscriptionFromOpera(
+      makeAppDb(state),
+      '',
+      async () => ({ lineNettPence: 1000, lineVatPence: 100 }),
+      async () => ({ success: true }),
+    );
     expect(result.success).toBe(false);
   });
 });

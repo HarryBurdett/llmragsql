@@ -70,6 +70,7 @@ import {
   updateSubscriptionDetails,
   linkSubscriptionToDocument,
   unlinkSubscriptionFromDocument,
+  syncSubscriptionFromOpera,
 } from './services/subscriptions.js';
 import {
   listMandates,
@@ -1261,6 +1262,72 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Resume subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/subscriptions/:subscription_id/sync-from-opera
+   *
+   * Re-derive the subscription amount from its linked Opera repeat
+   * documents and push the new total to GoCardless. Faithful port of
+   * sync_subscription_from_opera (apps/gocardless/api/routes.py
+   * :9172-9245). Reads itran (in pence) for all linked source_docs:
+   *   amount_pence = SUM(it_exvat) + SUM(it_vatval)
+   *
+   * Skips remote+local update when the new amount matches the existing
+   * one. Returns old/new amounts when an update happens.
+   */
+  router.post(
+    '/api/gocardless/subscriptions/:subscription_id/sync-from-opera',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const subscriptionId = String(req.params.subscription_id ?? '');
+        // Read itran totals (in pence) for the linked repeat docs.
+        const readOperaDocAmount = async (sourceDocs: string[]) => {
+          const row = await operaDb('itran')
+            .whereIn('it_doc', sourceDocs)
+            .select(
+              operaDb.raw('COALESCE(SUM(it_exvat), 0) AS line_nett'),
+              operaDb.raw('COALESCE(SUM(it_vatval), 0) AS line_vat'),
+            )
+            .first<{ line_nett: number | string | null; line_vat: number | string | null }>();
+          return {
+            lineNettPence: Number(row?.line_nett ?? 0),
+            lineVatPence: Number(row?.line_vat ?? 0),
+          };
+        };
+        const updateRemote = async (id: string, amountPence: number) =>
+          client.updateSubscription(id, { amountPence });
+        const result = await syncSubscriptionFromOpera(
+          appDb,
+          subscriptionId,
+          readOperaDocAmount,
+          updateRemote,
+        );
+        if (!result.success) {
+          const isMissing =
+            typeof result.error === 'string' && /not found/i.test(result.error);
+          res.status(isMissing ? 404 : 400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Sync subscription from Opera failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
