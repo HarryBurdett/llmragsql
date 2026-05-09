@@ -37,11 +37,11 @@ default factory, and passes a context our types already match.
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
 **gocardless:** 67 of ~124 endpoints (427 tests)
-**bank-reconcile:** 40 of ~127 endpoints (208 tests)
+**bank-reconcile:** 42 of ~127 endpoints (229 tests)
 **suppliers:** 42 endpoints (greenfield TS + ports — 154 tests)
 **shared:** 11 utility modules covering all foundational primitives (92 tests)
-**Total TS tests across all packages:** 913 (all passing, all builds clean)
-**Endpoint coverage of Python source (3 porting apps):** 117 of ~258 = ~45%
+**Total TS tests across all packages:** 934 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** 119 of ~258 = ~46%
 **Calendar week of project:** 1
 **Sessions logged:** 3 (extended autonomous sessions)
 
