@@ -36,12 +36,12 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 65 of ~124 endpoints (397 tests)
+**gocardless:** 67 of ~124 endpoints (427 tests)
 **bank-reconcile:** 40 of ~127 endpoints (208 tests)
 **suppliers:** 39 endpoints (greenfield TS work + suppliers/health-check ported — 135 tests)
 **shared:** 11 utility modules covering all foundational primitives (92 tests)
-**Total TS tests across all packages:** 864 (all passing, all builds clean)
-**Endpoint coverage of Python source (3 porting apps):** 112 of ~258 = ~43%
+**Total TS tests across all packages:** 894 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** 114 of ~258 = ~44%
 **Calendar week of project:** 1
 **Sessions logged:** 3 (extended autonomous sessions)
 
@@ -225,7 +225,9 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `GET /api/gocardless/due-invoices` — invoices due for collection grouped by customer (advance_date filter, unallocated-credit warning, sub tagging)
 - [x] `GET /api/gocardless/unposted-payments` — collected GC payments not yet posted to Opera (3-tier already-posted detection)
 - [x] `POST /api/gocardless/mandates/setup` — create billing request + flow + send authorisation email via SAM email service
-- [ ] `*` ~55 more endpoints
+- [x] `POST /api/gocardless/mandates/check-setups` — poll pending setups, auto-link mandate + ROWLOCK sn_analsys flag when active
+- [x] `GET /api/gocardless/mandates/suggest-match` — fuzzy-match GC name to Opera customer (Ratcliff/Obershelp ratio port of difflib.SequenceMatcher)
+- [ ] `*` ~53 more endpoints
 
 #### Helpers
 - [x] `src/services/settings.ts` — settings load/save/mask/merge
