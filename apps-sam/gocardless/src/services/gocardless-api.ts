@@ -607,6 +607,73 @@ export class GoCardlessClient {
   }
 
   /**
+   * POST /subscriptions — create a new subscription against a mandate.
+   *
+   * Faithful port of GoCardlessClient.create_subscription
+   * (sql_rag/gocardless_api.py:434-485). Returns uniform shape
+   * `{success, subscription?, error?}` so callers can compose without
+   * exception-handling.
+   */
+  async createSubscription(opts: {
+    mandateId: string;
+    amountPence: number;
+    intervalUnit: string;
+    interval?: number;
+    dayOfMonth?: number | null;
+    name?: string | null;
+    startDate?: string | null;
+    count?: number | null;
+    metadata?: Record<string, string> | null;
+  }): Promise<{
+    success: boolean;
+    subscription?: Record<string, unknown>;
+    error?: string;
+  }> {
+    if (!opts.mandateId) return { success: false, error: 'mandateId required' };
+    const body: Record<string, unknown> = {
+      amount: opts.amountPence,
+      currency: 'GBP',
+      interval_unit: opts.intervalUnit,
+      interval: opts.interval ?? 1,
+      links: { mandate: opts.mandateId },
+    };
+    if (opts.dayOfMonth !== undefined && opts.dayOfMonth !== null) {
+      body.day_of_month = opts.dayOfMonth;
+    }
+    if (opts.name) body.name = opts.name;
+    if (opts.startDate) body.start_date = opts.startDate;
+    if (opts.count !== undefined && opts.count !== null) body.count = opts.count;
+    if (opts.metadata) body.metadata = opts.metadata;
+    try {
+      const res = await this.request('POST', '/subscriptions', {
+        subscriptions: body,
+      });
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        subscriptions?: Record<string, unknown>;
+      };
+      return { success: true, subscription: data.subscriptions ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * GET /subscriptions — list subscriptions.
    *
    * Faithful port of GoCardlessClient.list_subscriptions

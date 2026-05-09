@@ -443,6 +443,275 @@ export async function updateSubscriptionDetails(
 }
 
 // ---------------------------------------------------------------------
+// createSubscription — from one or more Opera repeat documents
+// ---------------------------------------------------------------------
+
+const FREQUENCY_MAP: Record<string, { unit: string; count: number }> = {
+  W: { unit: 'weekly', count: 1 },
+  M: { unit: 'monthly', count: 1 },
+  Q: { unit: 'monthly', count: 3 },
+  A: { unit: 'yearly', count: 1 },
+};
+
+export interface CreateSubscriptionInput {
+  sourceDocs: string[];
+  dayOfMonth?: number | null;
+  startDate?: string | null;
+}
+
+export interface CreateSubscriptionRemote {
+  (opts: {
+    mandateId: string;
+    amountPence: number;
+    intervalUnit: string;
+    interval: number;
+    dayOfMonth?: number | null;
+    name: string;
+    startDate?: string | null;
+    metadata: Record<string, string>;
+  }): Promise<{
+    success: boolean;
+    subscription?: Record<string, unknown>;
+    error?: string;
+  }>;
+}
+
+export interface OperaRepeatDocReader {
+  /**
+   * Returns every active repeat doc with the SUB tag matching one of
+   * the supplied refs, plus the line totals (pence). Empty array if
+   * no docs found.
+   */
+  fetchTaggedDocs: (
+    sourceDocs: string[],
+    subscriptionTag: string,
+  ) => Promise<
+    Array<{
+      ih_doc: string;
+      ih_account: string;
+      ih_name: string;
+      ih_ignore: string;
+      ih_custref: string;
+    }>
+  >;
+  /** Sum of it_exvat + it_vatval for all the supplied docs (pence). */
+  sumLineTotals: (
+    sourceDocs: string[],
+  ) => Promise<{ lineNettPence: number; lineVatPence: number }>;
+}
+
+export interface CreateSubscriptionResponse {
+  success: boolean;
+  subscription?: Subscription;
+  gc_response?: Record<string, unknown>;
+  error?: string;
+}
+
+export async function createSubscription(
+  appDb: Knex,
+  input: CreateSubscriptionInput,
+  operaReader: OperaRepeatDocReader,
+  remote: CreateSubscriptionRemote,
+  opts: { subscriptionTag?: string } = {},
+): Promise<CreateSubscriptionResponse> {
+  const subTag = opts.subscriptionTag ?? 'SUB';
+  const sourceDocs = (input.sourceDocs ?? [])
+    .map((s) => (s ?? '').toString().trim())
+    .filter(Boolean);
+  if (sourceDocs.length === 0) {
+    return { success: false, error: 'source_doc or source_docs is required' };
+  }
+
+  // 1. Read repeat docs from Opera
+  let docs;
+  try {
+    docs = await operaReader.fetchTaggedDocs(sourceDocs, subTag);
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+  if (!docs || docs.length === 0) {
+    return {
+      success: false,
+      error: `No repeat documents found or not marked as ${subTag}`,
+    };
+  }
+
+  // 2. Validate same customer
+  const accounts = new Set<string>();
+  const docRefs: string[] = [];
+  for (const d of docs) {
+    accounts.add((d.ih_account ?? '').trim());
+    docRefs.push((d.ih_doc ?? '').trim());
+  }
+  if (accounts.size > 1) {
+    return {
+      success: false,
+      error: `All documents must belong to the same customer. Found: ${Array.from(accounts).join(', ')}`,
+    };
+  }
+  const account = accounts.values().next().value as string;
+
+  // 3. Sum line totals
+  let totals: { lineNettPence: number; lineVatPence: number };
+  try {
+    totals = await operaReader.sumLineTotals(docRefs);
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+  const totalAmountPence = Math.round(
+    (totals.lineNettPence ?? 0) + (totals.lineVatPence ?? 0),
+  );
+  if (totalAmountPence <= 0) {
+    return {
+      success: false,
+      error: `Invalid total amount: £${(totalAmountPence / 100).toFixed(2)}`,
+    };
+  }
+
+  // 4. Frequency from first doc
+  const first = docs[0]!;
+  const freqCode = (first.ih_ignore ?? 'M').trim() || 'M';
+  const freq = FREQUENCY_MAP[freqCode] ?? { unit: 'monthly', count: 1 };
+  const customerName = (first.ih_name ?? '').trim();
+  const custRef = (first.ih_custref ?? '').trim();
+  const subName = custRef ? `${customerName} - ${custRef}` : customerName;
+
+  // 5. Look up active mandate for the customer
+  const mandate = (await appDb('gocardless_mandates')
+    .where({ opera_account: account, mandate_status: 'active' })
+    .orderBy('created_at', 'desc')
+    .first()) as unknown as
+    | { mandate_id: string | null; opera_name: string | null }
+    | undefined;
+  if (!mandate || !mandate.mandate_id) {
+    return {
+      success: false,
+      error: `No active GoCardless mandate for customer ${account} (${customerName})`,
+    };
+  }
+
+  // 6. Check no doc already linked to a different active subscription
+  const linkedRows = (await appDb('gocardless_subscription_documents')
+    .whereIn('source_doc', docRefs)
+    .select('subscription_id', 'source_doc')) as unknown as Array<{
+    subscription_id: string | null;
+    source_doc: string | null;
+  }>;
+  if (linkedRows.length > 0) {
+    const subIds = Array.from(
+      new Set(
+        linkedRows
+          .map((r) => (r.subscription_id ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+    if (subIds.length > 0) {
+      const existing = (await appDb('gocardless_subscriptions')
+        .whereIn('subscription_id', subIds)
+        .andWhereNot({ status: 'cancelled' })
+        .select('subscription_id', 'status')) as unknown as Array<{
+        subscription_id: string | null;
+        status: string | null;
+      }>;
+      if (existing.length > 0) {
+        const existingIds = new Set(
+          existing.map((r) => (r.subscription_id ?? '').trim()),
+        );
+        for (const link of linkedRows) {
+          const sid = (link.subscription_id ?? '').trim();
+          const doc = (link.source_doc ?? '').trim();
+          if (sid && existingIds.has(sid)) {
+            const existingSub = existing.find(
+              (e) => (e.subscription_id ?? '').trim() === sid,
+            );
+            return {
+              success: false,
+              error: `Document ${doc} already linked to subscription ${sid} (status: ${existingSub?.status ?? 'unknown'})`,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // 7. Create subscription remotely
+  const remoteResult = await remote({
+    mandateId: mandate.mandate_id,
+    amountPence: totalAmountPence,
+    intervalUnit: freq.unit,
+    interval: freq.count,
+    dayOfMonth: input.dayOfMonth ?? null,
+    name: subName,
+    startDate: input.startDate ?? null,
+    metadata: {
+      opera_account: account,
+      source_docs: docRefs.join(','),
+    },
+  });
+  if (!remoteResult.success || !remoteResult.subscription) {
+    return {
+      success: false,
+      error: remoteResult.error ?? 'Failed to create subscription remotely',
+    };
+  }
+  const gcSub = remoteResult.subscription as Record<string, any>;
+  const gcSubId = (gcSub.id as string | undefined) ?? '';
+  if (!gcSubId) {
+    return {
+      success: false,
+      error: 'GoCardless did not return a subscription id',
+    };
+  }
+
+  // 8. Persist locally
+  try {
+    await appDb('gocardless_subscriptions').insert({
+      subscription_id: gcSubId,
+      mandate_id: mandate.mandate_id,
+      opera_account: account,
+      opera_name: customerName,
+      source_doc: docRefs[0]!,
+      amount_pence: totalAmountPence,
+      currency: 'GBP',
+      interval_unit: freq.unit,
+      interval_count: freq.count,
+      day_of_month:
+        gcSub.day_of_month === null || gcSub.day_of_month === undefined
+          ? null
+          : Number(gcSub.day_of_month),
+      name: subName,
+      status: (gcSub.status as string | undefined) ?? 'active',
+      start_date: (gcSub.start_date as string | undefined) ?? null,
+      end_date: (gcSub.end_date as string | undefined) ?? null,
+      synced_at: appDb.fn.now(),
+    });
+
+    // 9. Link all documents via junction table
+    for (const doc of docRefs) {
+      try {
+        await appDb('gocardless_subscription_documents').insert({
+          subscription_id: gcSubId,
+          source_doc: doc,
+          added_at: appDb.fn.now(),
+        });
+      } catch {
+        // best-effort — duplicate would already be a link
+      }
+    }
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+
+  // 10. Return enriched local record
+  const fresh = await getSubscription(appDb, gcSubId);
+  return {
+    success: true,
+    subscription: fresh.subscription,
+    gc_response: gcSub,
+  };
+}
+
+// ---------------------------------------------------------------------
 // syncSubscriptionsFromGocardless — pull every subscription via the API
 // ---------------------------------------------------------------------
 

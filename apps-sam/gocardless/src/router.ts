@@ -72,6 +72,7 @@ import {
   unlinkSubscriptionFromDocument,
   syncSubscriptionFromOpera,
   syncSubscriptionsFromGocardless,
+  createSubscription,
 } from './services/subscriptions.js';
 import {
   listMandates,
@@ -2054,6 +2055,140 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Unlink subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/subscriptions
+   *
+   * Create a GoCardless subscription from one or more Opera repeat
+   * documents. Faithful port of create_gocardless_subscription
+   * (apps/gocardless/api/routes.py:8997-9154).
+   *
+   * Body:
+   *   - source_doc (single) OR source_docs[] (multiple)
+   *   - day_of_month (optional, 1-28 or -1 for last)
+   *   - start_date (optional, YYYY-MM-DD)
+   *
+   * Pipeline:
+   *   1. Fetch tagged ihead docs (ih_docstat='U' AND ih_analsys=SUB)
+   *   2. Validate all docs belong to same customer
+   *   3. Sum line totals (it_exvat + it_vatval) → amount_pence
+   *   4. Look up active mandate for customer
+   *   5. Reject if any doc already linked to a non-cancelled subscription
+   *   6. Create remotely (mandate, amount, interval, day_of_month, metadata)
+   *   7. Persist locally + link all docs via junction table
+   */
+  router.post(
+    '/api/gocardless/subscriptions',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const body = (req.body ?? {}) as {
+          source_doc?: string;
+          source_docs?: string[];
+          day_of_month?: number | null;
+          start_date?: string | null;
+        };
+        const sourceDocs =
+          Array.isArray(body.source_docs) && body.source_docs.length > 0
+            ? body.source_docs.map((s) => String(s))
+            : body.source_doc
+              ? [String(body.source_doc)]
+              : [];
+        const subTag = settings.subscription_tag ?? 'SUB';
+        const operaReader = {
+          fetchTaggedDocs: async (refs: string[], tag: string) => {
+            const rows = await operaDb('ihead')
+              .where({ ih_docstat: 'U' })
+              .whereIn('ih_doc', refs)
+              .andWhereRaw('RTRIM(ih_analsys) = ?', [tag])
+              .select(
+                'ih_doc',
+                'ih_account',
+                'ih_name',
+                'ih_ignore',
+                'ih_custref',
+              );
+            return (rows ?? []).map((r: any) => ({
+              ih_doc: String(r.ih_doc ?? '').trim(),
+              ih_account: String(r.ih_account ?? '').trim(),
+              ih_name: String(r.ih_name ?? '').trim(),
+              ih_ignore: String(r.ih_ignore ?? '').trim(),
+              ih_custref: String(r.ih_custref ?? '').trim(),
+            }));
+          },
+          sumLineTotals: async (refs: string[]) => {
+            const row = await operaDb('itran')
+              .whereIn('it_doc', refs)
+              .select(
+                operaDb.raw('COALESCE(SUM(it_exvat), 0) AS line_nett'),
+                operaDb.raw('COALESCE(SUM(it_vatval), 0) AS line_vat'),
+              )
+              .first<{
+                line_nett: number | string | null;
+                line_vat: number | string | null;
+              }>();
+            return {
+              lineNettPence: Number(row?.line_nett ?? 0),
+              lineVatPence: Number(row?.line_vat ?? 0),
+            };
+          },
+        };
+        const remote = (input: {
+          mandateId: string;
+          amountPence: number;
+          intervalUnit: string;
+          interval: number;
+          dayOfMonth?: number | null;
+          name: string;
+          startDate?: string | null;
+          metadata: Record<string, string>;
+        }) =>
+          client.createSubscription({
+            mandateId: input.mandateId,
+            amountPence: input.amountPence,
+            intervalUnit: input.intervalUnit,
+            interval: input.interval,
+            dayOfMonth: input.dayOfMonth ?? null,
+            name: input.name,
+            startDate: input.startDate ?? null,
+            metadata: input.metadata,
+          });
+        const result = await createSubscription(
+          appDb,
+          {
+            sourceDocs,
+            dayOfMonth:
+              body.day_of_month === undefined ? null : Number(body.day_of_month),
+            startDate:
+              typeof body.start_date === 'string' ? body.start_date : null,
+          },
+          operaReader,
+          remote,
+          { subscriptionTag: subTag },
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Create subscription failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

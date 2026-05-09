@@ -352,6 +352,92 @@ describe('GoCardlessClient.createBillingRequest / createBillingRequestFlow', () 
   });
 });
 
+describe('GoCardlessClient.createSubscription', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs the subscriptions wrapper with required fields + currency=GBP', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        subscriptions: { id: 'SB_NEW', status: 'active' },
+      }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createSubscription({
+      mandateId: 'MD1',
+      amountPence: 12000,
+      intervalUnit: 'monthly',
+      interval: 1,
+      name: 'Acme Quarterly',
+      metadata: { opera_account: 'CUST01' },
+    });
+    expect(result.success).toBe(true);
+    expect(result.subscription?.id).toBe('SB_NEW');
+    const fetchCall = (global.fetch as any).mock.calls[0];
+    expect(fetchCall[0]).toMatch(/\/subscriptions$/);
+    expect(fetchCall[1].method).toBe('POST');
+    const body = JSON.parse(fetchCall[1].body);
+    expect(body.subscriptions.amount).toBe(12000);
+    expect(body.subscriptions.currency).toBe('GBP');
+    expect(body.subscriptions.interval_unit).toBe('monthly');
+    expect(body.subscriptions.interval).toBe(1);
+    expect(body.subscriptions.links.mandate).toBe('MD1');
+    expect(body.subscriptions.metadata.opera_account).toBe('CUST01');
+  });
+
+  it('omits optional fields when not provided', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ subscriptions: { id: 'SB1' } }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    await client.createSubscription({
+      mandateId: 'MD1',
+      amountPence: 100,
+      intervalUnit: 'monthly',
+    });
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    expect(body.subscriptions.day_of_month).toBeUndefined();
+    expect(body.subscriptions.name).toBeUndefined();
+    expect(body.subscriptions.start_date).toBeUndefined();
+    expect(body.subscriptions.metadata).toBeUndefined();
+    expect(body.subscriptions.interval).toBe(1);
+  });
+
+  it('refuses empty mandate id', async () => {
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createSubscription({
+      mandateId: '',
+      amountPence: 100,
+      intervalUnit: 'monthly',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('reports HTTP errors uniformly', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 422,
+      text: async () => 'mandate not active',
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createSubscription({
+      mandateId: 'MD1',
+      amountPence: 100,
+      intervalUnit: 'monthly',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/422/);
+  });
+});
+
 describe('GoCardlessClient.listSubscriptions', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

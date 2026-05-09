@@ -11,6 +11,7 @@ import {
   updateSubscriptionStatus,
   syncSubscriptionFromOpera,
   syncSubscriptionsFromGocardless,
+  createSubscription,
   type RemoteSubscriptionResult,
 } from '../src/services/subscriptions.js';
 
@@ -84,6 +85,8 @@ function makeSubsBuilder(state: MockState): any {
   let rows: SubRow[] = [...state.subs];
   let conds: Record<string, unknown> = {};
   let notConds: Record<string, unknown> = {};
+  let inCol: string | null = null;
+  let inVals: unknown[] | null = null;
   let order: { col: keyof SubRow; dir: 'asc' | 'desc' } | null = null;
   let limitN = Infinity;
   const builder: any = {
@@ -93,6 +96,15 @@ function makeSubsBuilder(state: MockState): any {
     },
     whereNot: (cond: Record<string, unknown>) => {
       Object.assign(notConds, cond);
+      return builder;
+    },
+    andWhereNot: (cond: Record<string, unknown>) => {
+      Object.assign(notConds, cond);
+      return builder;
+    },
+    whereIn: (col: string, vals: unknown[]) => {
+      inCol = col;
+      inVals = vals;
       return builder;
     },
     orderBy: (col: keyof SubRow, dir: 'asc' | 'desc' = 'asc') => {
@@ -108,6 +120,9 @@ function makeSubsBuilder(state: MockState): any {
       result = result.filter((r) =>
         Object.entries(notConds).every(([k, v]) => (r as any)[k] !== v),
       );
+      if (inCol && inVals) {
+        result = result.filter((r) => inVals!.includes((r as any)[inCol!]));
+      }
       return result[0];
     },
     update: async (patch: Record<string, unknown>) => {
@@ -124,11 +139,24 @@ function makeSubsBuilder(state: MockState): any {
       state.subs.push(row);
       return [state.subs.length];
     },
+    select: async (..._cols: string[]) => {
+      let result = applyConds(rows, conds);
+      result = result.filter((r) =>
+        Object.entries(notConds).every(([k, v]) => (r as any)[k] !== v),
+      );
+      if (inCol && inVals) {
+        result = result.filter((r) => inVals!.includes((r as any)[inCol!]));
+      }
+      return result;
+    },
     then: (cb: (rows: SubRow[]) => unknown) => {
       let result = applyConds(rows, conds);
       result = result.filter((r) =>
         Object.entries(notConds).every(([k, v]) => (r as any)[k] !== v),
       );
+      if (inCol && inVals) {
+        result = result.filter((r) => inVals!.includes((r as any)[inCol!]));
+      }
       if (order) {
         const o = order;
         result = [...result].sort((a, b) => {
@@ -147,17 +175,44 @@ function makeSubsBuilder(state: MockState): any {
 function makeMandateBuilder(state: MockState): any {
   let inCol: string | null = null;
   let inVals: unknown[] | null = null;
+  let conds: Record<string, unknown> = {};
+  let order: { col: string; dir: 'asc' | 'desc' } | null = null;
+  const matches = () =>
+    state.mandates.filter(
+      (m) =>
+        Object.entries(conds).every(([k, v]) => (m as any)[k] === v) &&
+        (!inCol || (inVals && inVals.includes((m as any)[inCol!]))),
+    );
   const builder: any = {
+    where: (cond: Record<string, unknown>) => {
+      Object.assign(conds, cond);
+      return builder;
+    },
     whereIn: (col: string, vals: unknown[]) => {
       inCol = col;
       inVals = vals;
       return builder;
     },
+    orderBy: (col: string, dir: 'asc' | 'desc' = 'asc') => {
+      order = { col, dir };
+      return builder;
+    },
+    first: async () => {
+      let rows = matches();
+      if (order) {
+        const o = order;
+        rows = [...rows].sort((a, b) => {
+          const cmp = String((a as any)[o.col]).localeCompare(
+            String((b as any)[o.col]),
+          );
+          return o.dir === 'desc' ? -cmp : cmp;
+        });
+      }
+      return rows[0];
+    },
     select: async (..._cols: string[]) => {
-      if (!inCol) return state.mandates;
-      return state.mandates.filter(
-        (m) => inVals && inVals.includes((m as any)[inCol!]),
-      );
+      if (!inCol && Object.keys(conds).length === 0) return state.mandates;
+      return matches();
     },
   };
   return builder;
@@ -1118,5 +1173,310 @@ describe('syncSubscriptionsFromGocardless', () => {
     );
     expect(result.success).toBe(true);
     expect(state.subs[0]?.opera_account).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------
+// createSubscription
+// ---------------------------------------------------------------------
+
+describe('createSubscription', () => {
+  function makeReader(
+    docs: Array<{
+      ih_doc: string;
+      ih_account: string;
+      ih_name: string;
+      ih_ignore: string;
+      ih_custref: string;
+    }>,
+    totals: { lineNettPence: number; lineVatPence: number },
+  ) {
+    return {
+      fetchTaggedDocs: async () => docs,
+      sumLineTotals: async () => totals,
+    };
+  }
+  const okRemote = async (input: any) => ({
+    success: true,
+    subscription: {
+      id: 'SUB_NEW',
+      status: 'active',
+      day_of_month: input.dayOfMonth,
+      start_date: input.startDate,
+    },
+  });
+
+  it('rejects empty source_docs', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const result = await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: [] },
+      makeReader([], { lineNettPence: 0, lineVatPence: 0 }),
+      okRemote,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/required/);
+  });
+
+  it('refuses when no tagged docs found', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const result = await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: ['DOC001'] },
+      makeReader([], { lineNettPence: 0, lineVatPence: 0 }),
+      okRemote,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No repeat documents found/);
+  });
+
+  it('refuses when docs span multiple customers', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const result = await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: ['DOC1', 'DOC2'] },
+      makeReader(
+        [
+          {
+            ih_doc: 'DOC1',
+            ih_account: 'CUST01',
+            ih_name: 'Acme',
+            ih_ignore: 'M',
+            ih_custref: '',
+          },
+          {
+            ih_doc: 'DOC2',
+            ih_account: 'CUST02',
+            ih_name: 'Beta',
+            ih_ignore: 'M',
+            ih_custref: '',
+          },
+        ],
+        { lineNettPence: 10000, lineVatPence: 2000 },
+      ),
+      okRemote,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/same customer/);
+  });
+
+  it('refuses when total amount is zero or negative', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const result = await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: ['DOC1'] },
+      makeReader(
+        [
+          {
+            ih_doc: 'DOC1',
+            ih_account: 'CUST01',
+            ih_name: 'Acme',
+            ih_ignore: 'M',
+            ih_custref: '',
+          },
+        ],
+        { lineNettPence: 0, lineVatPence: 0 },
+      ),
+      okRemote,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Invalid total amount/);
+  });
+
+  it('refuses when no active mandate exists', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const result = await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: ['DOC1'] },
+      makeReader(
+        [
+          {
+            ih_doc: 'DOC1',
+            ih_account: 'CUST01',
+            ih_name: 'Acme',
+            ih_ignore: 'M',
+            ih_custref: '',
+          },
+        ],
+        { lineNettPence: 10000, lineVatPence: 2000 },
+      ),
+      okRemote,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/No active GoCardless mandate/);
+  });
+
+  it('refuses when a doc already linked to a non-cancelled subscription', async () => {
+    const state: MockState = {
+      subs: [emptySub({ subscription_id: 'OLD_SUB', status: 'active' })],
+      mandates: [
+        {
+          opera_account: 'CUST01',
+          opera_name: 'Acme',
+          mandate_id: 'MD1',
+        } as any,
+      ],
+      docs: [
+        { subscription_id: 'OLD_SUB', source_doc: 'DOC1', added_at: '2026-04-01' },
+      ],
+    };
+    // mandates state needs mandate_status='active' for the lookup
+    (state.mandates[0] as any).mandate_status = 'active';
+    (state.mandates[0] as any).created_at = '2026-04-01';
+    const result = await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: ['DOC1'] },
+      makeReader(
+        [
+          {
+            ih_doc: 'DOC1',
+            ih_account: 'CUST01',
+            ih_name: 'Acme',
+            ih_ignore: 'M',
+            ih_custref: '',
+          },
+        ],
+        { lineNettPence: 10000, lineVatPence: 2000 },
+      ),
+      okRemote,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/already linked/);
+  });
+
+  it('happy path: creates subscription, persists row + junction links', async () => {
+    const state: MockState = {
+      subs: [],
+      mandates: [
+        {
+          opera_account: 'CUST01',
+          opera_name: 'Acme',
+          mandate_id: 'MD1',
+        } as any,
+      ],
+      docs: [],
+    };
+    (state.mandates[0] as any).mandate_status = 'active';
+    (state.mandates[0] as any).created_at = '2026-04-01';
+    const captured: any = {};
+    const result = await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: ['DOC1', 'DOC2'], dayOfMonth: 15 },
+      makeReader(
+        [
+          {
+            ih_doc: 'DOC1',
+            ih_account: 'CUST01',
+            ih_name: 'Acme Ltd',
+            ih_ignore: 'M',
+            ih_custref: 'PO123',
+          },
+          {
+            ih_doc: 'DOC2',
+            ih_account: 'CUST01',
+            ih_name: 'Acme Ltd',
+            ih_ignore: 'M',
+            ih_custref: 'PO123',
+          },
+        ],
+        { lineNettPence: 10000, lineVatPence: 2000 },
+      ),
+      async (input) => {
+        captured.input = input;
+        return {
+          success: true,
+          subscription: { id: 'SUB_NEW', status: 'active' },
+        };
+      },
+    );
+    expect(result.success).toBe(true);
+    expect(captured.input.amountPence).toBe(12000);
+    expect(captured.input.intervalUnit).toBe('monthly');
+    expect(captured.input.interval).toBe(1);
+    expect(captured.input.metadata.opera_account).toBe('CUST01');
+    expect(captured.input.metadata.source_docs).toBe('DOC1,DOC2');
+    expect(captured.input.name).toBe('Acme Ltd - PO123');
+    expect(state.subs).toHaveLength(1);
+    expect(state.subs[0]?.subscription_id).toBe('SUB_NEW');
+    expect(state.subs[0]?.amount_pence).toBe(12000);
+    expect(state.docs.map((d) => d.source_doc).sort()).toEqual(['DOC1', 'DOC2']);
+  });
+
+  it('maps Q frequency code to monthly/3 (quarterly)', async () => {
+    const state: MockState = {
+      subs: [],
+      mandates: [
+        {
+          opera_account: 'CUST01',
+          opera_name: 'Acme',
+          mandate_id: 'MD1',
+        } as any,
+      ],
+      docs: [],
+    };
+    (state.mandates[0] as any).mandate_status = 'active';
+    (state.mandates[0] as any).created_at = '2026-04-01';
+    const captured: any = {};
+    await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: ['DOC1'] },
+      makeReader(
+        [
+          {
+            ih_doc: 'DOC1',
+            ih_account: 'CUST01',
+            ih_name: 'Acme',
+            ih_ignore: 'Q',
+            ih_custref: '',
+          },
+        ],
+        { lineNettPence: 10000, lineVatPence: 2000 },
+      ),
+      async (input) => {
+        captured.input = input;
+        return {
+          success: true,
+          subscription: { id: 'SUB1', status: 'active' },
+        };
+      },
+    );
+    expect(captured.input.intervalUnit).toBe('monthly');
+    expect(captured.input.interval).toBe(3);
+  });
+
+  it('reports failure when remote create fails', async () => {
+    const state: MockState = {
+      subs: [],
+      mandates: [
+        {
+          opera_account: 'CUST01',
+          opera_name: 'Acme',
+          mandate_id: 'MD1',
+        } as any,
+      ],
+      docs: [],
+    };
+    (state.mandates[0] as any).mandate_status = 'active';
+    (state.mandates[0] as any).created_at = '2026-04-01';
+    const result = await createSubscription(
+      makeAppDb(state),
+      { sourceDocs: ['DOC1'] },
+      makeReader(
+        [
+          {
+            ih_doc: 'DOC1',
+            ih_account: 'CUST01',
+            ih_name: 'Acme',
+            ih_ignore: 'M',
+            ih_custref: '',
+          },
+        ],
+        { lineNettPence: 10000, lineVatPence: 2000 },
+      ),
+      async () => ({ success: false, error: 'mandate inactive' }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/mandate inactive/);
+    expect(state.subs).toHaveLength(0);
   });
 });
