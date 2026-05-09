@@ -62,6 +62,10 @@ import {
 } from './services/folder-settings.js';
 import { validateStatementForReconciliation } from './services/validate-statement.js';
 import {
+  matchStatementToCashbook,
+  type StatementTransaction,
+} from './services/match-statement.js';
+import {
   markEntriesReconciled,
   type ReconcileEntryInput,
 } from './services/mark-reconciled.js';
@@ -1593,6 +1597,76 @@ export function createRouter(ctx: AppContext): Router {
       } catch (err: any) {
         ctx.logger.error('Validate statement failed', err);
         res.status(500).json({ valid: false, error_message: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/bank-reconciliation/match-statement
+   *
+   * Match statement lines to unreconciled Opera cashbook entries.
+   * Faithful port of match_statement_to_cashbook
+   * (apps/bank_reconcile/api/routes.py:10244-10410 +
+   *  sql_rag/opera_sql_import.py:8367-8760).
+   *
+   * Tiered matching:
+   *   1. Exact reference + amount    → 100% (auto)
+   *   2. Amount + closest date       → 55..100% (auto if ≥95)
+   *   3. Already-reconciled second pass moves ✓-eligible lines
+   *      out of unmatched_statement
+   *
+   * Query params:
+   *   - bank_code (required)
+   *   - date_tolerance_days (default 45)
+   *
+   * Body:
+   *   - statement_transactions[] (required)
+   *   - period_start / period_end (optional but recommended)
+   */
+  router.post(
+    '/api/bank-reconciliation/match-statement',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const bankCode = String(req.query.bank_code ?? '').trim();
+        if (!bankCode) {
+          res.status(400).json({
+            success: false,
+            error: 'bank_code is required',
+          });
+          return;
+        }
+        const dateToleranceDays = req.query.date_tolerance_days
+          ? Number(req.query.date_tolerance_days)
+          : 45;
+        const body = (req.body ?? {}) as {
+          statement_transactions?: StatementTransaction[];
+          period_start?: string | null;
+          period_end?: string | null;
+        };
+        const txns = Array.isArray(body.statement_transactions)
+          ? body.statement_transactions
+          : [];
+        if (txns.length === 0) {
+          res.status(400).json({
+            success: false,
+            error: 'Request body must include statement_transactions',
+          });
+          return;
+        }
+        const result = await matchStatementToCashbook(operaDb, {
+          bankAccount: bankCode,
+          statementTransactions: txns,
+          dateToleranceDays,
+          periodStart: body.period_start ?? null,
+          periodEnd: body.period_end ?? null,
+          onWarn: (msg) => ctx.logger.warn?.(msg),
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Match statement failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
   );
