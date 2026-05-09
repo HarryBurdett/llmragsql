@@ -86,6 +86,26 @@ import {
   recordReminderSent,
   type OperaPaymentLookup,
 } from './services/supplier-queries.js';
+import {
+  processStatement,
+  acknowledgeStatement,
+  approveStatement,
+  editStatementResponse,
+  bulkApproveStatements,
+  type EmailSender,
+  type OperaSupplierLookup,
+  type PtranLookup,
+  type PtranLine,
+} from './services/statement-actions.js';
+import {
+  listSecurityAlerts,
+  verifySecurityAlert,
+  listSecurityAuditLog,
+  scanSupplierChanges,
+  type OperaPnameProvider,
+  type SecurityEmailSender,
+  type SupplierSnapshot,
+} from './services/security.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1453,10 +1473,423 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  // ---------------------------------------------------------------
+  // Statement state-transition actions (process / acknowledge /
+  // approve / edit-response / bulk-approve)
+  //
+  // Each builds a small adapter set against ctx (operaDb supplier
+  // lookup + ctx.email send) and delegates to the deterministic
+  // service. Email send failures are surfaced; statement updates
+  // run regardless of email outcome (mirrors Python behaviour).
+  // ---------------------------------------------------------------
+
+  function buildEmailSender(): EmailSender {
+    return {
+      send: async (opts) => {
+        const send = ctx.email?.send;
+        if (!send) {
+          return { success: false, error: 'ctx.email not configured' };
+        }
+        try {
+          return await send({
+            to: opts.to,
+            subject: opts.subject,
+            bodyHtml: opts.body,
+            bodyText: opts.body,
+          });
+        } catch (e: any) {
+          return { success: false, error: e?.message ?? String(e) };
+        }
+      },
+    };
+  }
+
+  function buildSupplierLookup(operaDb: import('knex').Knex): OperaSupplierLookup {
+    return {
+      resolveName: async (code) => {
+        try {
+          const row = (await operaDb('pname')
+            .where('pn_account', code)
+            .first('pn_name')) as { pn_name?: string } | undefined;
+          return (row?.pn_name ?? code).trim() || code;
+        } catch {
+          return code;
+        }
+      },
+    };
+  }
+
+  function buildPtranLookup(operaDb: import('knex').Knex): PtranLookup {
+    return {
+      forSupplier: async (code) => {
+        try {
+          const rows = (await operaDb('ptran')
+            .where('pt_account', code)
+            .orderBy('pt_trdate', 'desc')
+            .select(
+              'pt_unique',
+              'pt_trref',
+              'pt_supref',
+              'pt_trtype',
+              'pt_trvalue',
+              'pt_trbal',
+              'pt_trdate',
+            )) as unknown as PtranLine[];
+          return rows;
+        } catch {
+          return [];
+        }
+      },
+    };
+  }
+
+  router.post(
+    '/api/supplier-statements/:id/process',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id) || id <= 0) {
+          res.status(400).json({ success: false, error: 'Invalid id' });
+          return;
+        }
+        const result = await processStatement(
+          appDb,
+          id,
+          buildPtranLookup(operaDb),
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('process statement failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/:id/acknowledge',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const id = Number(req.params.id);
+        const result = await acknowledgeStatement(
+          appDb,
+          buildEmailSender(),
+          buildSupplierLookup(operaDb),
+          id,
+        );
+        if (!result.success && result.policy_blocked) {
+          res.status(403).json(result);
+          return;
+        }
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('acknowledge failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/:id/approve',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const id = Number(req.params.id);
+        const body = (req.body ?? {}) as {
+          approved_by?: string;
+          subject?: string;
+          body?: string;
+        };
+        const result = await approveStatement(
+          appDb,
+          buildEmailSender(),
+          buildSupplierLookup(operaDb),
+          id,
+          {
+            approvedBy: body.approved_by ?? 'system',
+            subject: body.subject ?? null,
+            body: body.body ?? null,
+          },
+        );
+        if (!result.success && result.policy_blocked) {
+          res.status(403).json(result);
+          return;
+        }
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('approve failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.put(
+    '/api/supplier-statements/:id/response',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const id = Number(req.params.id);
+        const body = (req.body ?? {}) as {
+          response_text?: string;
+          response_subject?: string | null;
+        };
+        if (!body.response_text) {
+          res
+            .status(400)
+            .json({ success: false, error: 'response_text is required' });
+          return;
+        }
+        const result = await editStatementResponse(appDb, id, {
+          responseText: body.response_text,
+          responseSubject: body.response_subject ?? null,
+        });
+        if (!result.success) {
+          res.status(404).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('edit response failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/queue/bulk-approve',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const body = (req.body ?? {}) as {
+          statement_ids?: number[];
+          approved_by?: string;
+        };
+        if (!Array.isArray(body.statement_ids) || body.statement_ids.length === 0) {
+          res.status(400).json({
+            success: false,
+            error: 'statement_ids array is required',
+          });
+          return;
+        }
+        const result = await bulkApproveStatements(
+          appDb,
+          buildEmailSender(),
+          buildSupplierLookup(operaDb),
+          {
+            statementIds: body.statement_ids,
+            approvedBy: body.approved_by ?? 'system',
+          },
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('bulk approve failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // Supplier security — alerts, audit log, scan-changes
+  // ---------------------------------------------------------------
+
+  function buildPnameProvider(operaDb: import('knex').Knex): OperaPnameProvider {
+    return {
+      snapshot: async () => {
+        try {
+          const rows = (await operaDb('pname').select(
+            operaDb.raw('RTRIM(pn_account) AS account'),
+            operaDb.raw('RTRIM(pn_name) AS name'),
+            operaDb.raw("RTRIM(ISNULL(pn_bankac, '')) AS pn_bankac"),
+            operaDb.raw("RTRIM(ISNULL(pn_banksor, '')) AS pn_banksor"),
+            operaDb.raw("RTRIM(ISNULL(pn_email, '')) AS pn_email"),
+          )) as unknown as SupplierSnapshot[];
+          return rows ?? [];
+        } catch {
+          return [];
+        }
+      },
+      resolveNames: async (codes) => {
+        if (codes.length === 0) return {};
+        try {
+          const rows = (await operaDb('pname')
+            .whereIn('pn_account', codes)
+            .select(
+              operaDb.raw('RTRIM(pn_account) AS code'),
+              operaDb.raw('RTRIM(pn_name) AS name'),
+            )) as unknown as Array<{ code: string; name: string }>;
+          const out: Record<string, string> = {};
+          for (const r of rows) {
+            out[r.code] = r.name;
+          }
+          return out;
+        } catch {
+          return {};
+        }
+      },
+    };
+  }
+
+  function buildSecurityEmail(): SecurityEmailSender {
+    return {
+      send: async (opts) => {
+        const send = ctx.email?.send;
+        if (!send) {
+          return { success: false, error: 'ctx.email not configured' };
+        }
+        try {
+          return await send({
+            to: opts.to,
+            subject: opts.subject,
+            bodyHtml: opts.body,
+            bodyText: opts.body,
+          });
+        } catch (e: any) {
+          return { success: false, error: e?.message ?? String(e) };
+        }
+      },
+    };
+  }
+
+  router.get(
+    '/api/supplier-security/alerts',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const result = await listSecurityAlerts(
+          appDb,
+          buildPnameProvider(operaDb),
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('list security alerts failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-security/alerts/:id/verify',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const id = Number(req.params.id);
+        const body = (req.body ?? {}) as { verified_by?: string };
+        const result = await verifySecurityAlert(
+          appDb,
+          id,
+          body.verified_by ?? 'System',
+        );
+        if (!result.success) {
+          res.status(404).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('verify alert failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.get(
+    '/api/supplier-security/audit',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const days = req.query.days ? Number(req.query.days) : 90;
+        const result = await listSecurityAuditLog(
+          appDb,
+          buildPnameProvider(operaDb),
+          days,
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('audit log failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-security/scan-changes',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const result = await scanSupplierChanges(
+          appDb,
+          buildPnameProvider(operaDb),
+          buildSecurityEmail(),
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('scan-changes failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Future endpoints (designed during the TS port, not translated):
   //   POST /api/suppliers/scan-emails        — scan SAM mailbox
   //   POST /api/suppliers/extract-statement  — Claude extract line items
-  //   POST /api/suppliers/reconcile          — reconcile statement vs ptran
   //   POST /api/suppliers/remittance         — generate + send remittance
 
   return router;
