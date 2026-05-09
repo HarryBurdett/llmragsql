@@ -16,7 +16,7 @@ the plugin code never branches on `ctx.operaType`.
 | Plugin | Backend tests | Backend endpoints | Frontend bundle |
 |---|---|---|---|
 | `gocardless` | 33 files / 490 tests | ~46 endpoints ported | UMD `__SAM_APPS__["gocardless"]` |
-| `bank-reconcile` | 32 files / 303 tests | ~44 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
+| `bank-reconcile` | 34 files / 315 tests | ~46 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
 | `suppliers` | 21 files / 184 tests | ~58 endpoints ported | UMD `__SAM_APPS__["suppliers"]` |
 | `balance-check` | TBC tests | 7 endpoints ported | UMD `__SAM_APPS__["balance-check"]` |
 
@@ -161,6 +161,14 @@ is the definitive list of what needs Opera 3 validation.
   reference, cross_period, bank_amount). Sign-aware: a +£X receipt
   and a -£X payment are not duplicates of each other; opposite-sign
   aentry rows are not flagged in bank_amount fallback.
+- **reconcile/refresh-matches** — re-runs duplicate detection
+  against Opera and updates is_duplicate / skip_reason / action
+  flags without a full re-extract. Threshold-based (≥0.85 → posted).
+- **bank-import/suggest-account** — three-tier customer/supplier
+  picker for unmatched statement lines (substring → word-match →
+  fuzzy). Promoted `sequenceMatcherRatio` to `@sqlrag/sam-shared`
+  so gocardless suggest-match and bank-reconcile suggest-account
+  share one CPython-faithful implementation.
 
 ## Known follow-ups
 
