@@ -32,10 +32,20 @@ interface PtranRow {
   pt_trtype: string;
 }
 
+interface AentryRow {
+  ae_entry: string;
+  ae_value: number;
+  ae_lstdate: string;
+  ae_entref: string;
+  ae_comment: string;
+  ae_acnt: string;
+}
+
 interface State {
   atran: AtranRow[];
   stran: StranRow[];
   ptran: PtranRow[];
+  aentry?: AentryRow[];
 }
 
 function makeOperaDb(state: State): any {
@@ -43,27 +53,66 @@ function makeOperaDb(state: State): any {
     let pattern: string | null = null;
     let bankCodeFilter: string | null = null;
     let dateFilter: string | null = null;
+    let dateNotEqFilter: string | null = null;
+    let dateRange: [string, string] | null = null;
     let typeFilter: string | null = null;
     let accountFilter: string | null = null;
     let rawAmountValue: number | null = null;
     let rawAmountKind: 'sub' | 'add' | null = null;
+    let fuzzyAbs: number | null = null;
+    let fuzzyTolerance: number | null = null;
+    let fuzzyExclude01: number | null = null;
+    let fitIdEqual: string | null = null;
+    let limitN: number | null = null;
 
     const builder: any = {
       where: (col: any, op?: any, val?: any) => {
+        if (typeof col === 'function') {
+          // Sub-query filter — Knex calls the function with `this`
+          // bound to a sub-builder. Replicate that.
+          const subBuilder: any = {
+            where: (c: any, o?: any) => {
+              if (c === 'at_refer' && o !== undefined && typeof o !== 'function') {
+                fitIdEqual = (o ?? '').toString();
+              }
+              return subBuilder;
+            },
+            orWhere: (c: any, op2?: any, v?: any) => {
+              if (c === 'at_refer' && op2 === 'like' && typeof v === 'string') {
+                fitIdEqual = (v.replace(/^%/, '').replace(/%$/, '')) || fitIdEqual;
+              }
+              return subBuilder;
+            },
+          };
+          col.call(subBuilder);
+          return builder;
+        }
         if (typeof col === 'string') {
           if ((col === 'at_refer' || col === 'st_trref' || col === 'pt_trref') && op === 'like') {
             pattern = val.toString();
-          } else if (col === 'at_acnt') {
+          } else if (col === 'at_acnt' || col === 'ae_acnt') {
             bankCodeFilter = op;
           } else if (col === 'at_pstdate' || col === 'st_trdate' || col === 'pt_trdate') {
-            dateFilter = op;
+            if (op === '!=') {
+              dateNotEqFilter = val;
+            } else {
+              dateFilter = op;
+            }
           } else if (col === 'st_trtype' || col === 'pt_trtype') {
             typeFilter = op;
+          } else if (col === 'at_refer' && (op === undefined || typeof op === 'string')) {
+            fitIdEqual = (op ?? '').toString();
           }
         }
         return builder;
       },
       andWhere: (col: any, op?: any, val?: any) => builder.where(col, op, val),
+      andWhereBetween: (col: string, range: [string, string]) => {
+        if (col === 'st_trdate' || col === 'pt_trdate' || col === 'ae_lstdate') {
+          dateRange = range;
+        }
+        return builder;
+      },
       whereRaw: (sql: string, params: any[]) => {
         if (sql.includes('RTRIM(st_account)') || sql.includes('RTRIM(pt_account)')) {
           accountFilter = params?.[0] ?? null;
@@ -71,7 +120,21 @@ function makeOperaDb(state: State): any {
         return builder;
       },
       andWhereRaw: (sql: string, params: any[]) => {
-        if (sql.includes('ABS(at_value - ?)')) {
+        if (sql.includes('ABS(ABS(st_trvalue) - ?) <= ?')) {
+          fuzzyAbs = params?.[0] ?? null;
+          fuzzyTolerance = params?.[1] ?? null;
+        } else if (sql.includes('ABS(ABS(st_trvalue) - ?) > 0.01')) {
+          fuzzyExclude01 = params?.[0] ?? null;
+        } else if (sql.includes('ABS(ABS(pt_trvalue) - ?) <= ?')) {
+          fuzzyAbs = params?.[0] ?? null;
+          fuzzyTolerance = params?.[1] ?? null;
+        } else if (sql.includes('ABS(ABS(pt_trvalue) - ?) > 0.01')) {
+          fuzzyExclude01 = params?.[0] ?? null;
+        } else if (sql.includes('ABS(ABS(st_trvalue) - ?) < 0.01')) {
+          fuzzyAbs = params?.[0] ?? null;
+        } else if (sql.includes('ABS(ABS(pt_trvalue) - ?) < 0.01')) {
+          fuzzyAbs = params?.[0] ?? null;
+        } else if (sql.includes('ABS(at_value - ?)')) {
           rawAmountValue = params?.[0] ?? null;
           rawAmountKind = 'sub';
         } else if (sql.includes('ABS(st_trvalue + ?)')) {
@@ -80,18 +143,45 @@ function makeOperaDb(state: State): any {
         } else if (sql.includes('ABS(pt_trvalue - ?)')) {
           rawAmountValue = params?.[0] ?? null;
           rawAmountKind = 'sub';
+        } else if (sql.includes('ABS(ae_value - ?)')) {
+          rawAmountValue = params?.[0] ?? null;
+          rawAmountKind = 'sub';
         }
+        return builder;
+      },
+      orderBy: () => builder,
+      limit: (n: number) => {
+        limitN = n;
         return builder;
       },
       select: () => builder,
       then: async (resolve: any) => {
         const matchPattern = (s: string) => {
           if (!pattern) return true;
-          const prefix = pattern.replace(/%$/, '');
-          return s.startsWith(prefix);
+          const prefix = pattern.replace(/^%/, '').replace(/%$/, '');
+          // %text% is "contains", BKIMP:HASH% is "startsWith"
+          if (pattern.startsWith('%') && pattern.endsWith('%')) {
+            return s.includes(prefix);
+          }
+          if (pattern.endsWith('%')) {
+            return s.startsWith(prefix);
+          }
+          return s === prefix;
+        };
+        const inDateRange = (d: string) => {
+          if (!dateRange) return true;
+          return d >= dateRange[0] && d <= dateRange[1];
         };
         if (table === 'atran') {
           const filtered = state.atran.filter((r) => {
+            if (fitIdEqual !== null) {
+              if (
+                r.at_refer !== fitIdEqual &&
+                !r.at_refer.includes(fitIdEqual)
+              )
+                return false;
+              return true;
+            }
             if (pattern && !matchPattern(r.at_refer)) return false;
             if (bankCodeFilter && r.at_acnt !== bankCodeFilter) return false;
             if (dateFilter && r.at_pstdate !== dateFilter) return false;
@@ -108,8 +198,12 @@ function makeOperaDb(state: State): any {
         if (table === 'stran') {
           const filtered = state.stran.filter((r) => {
             if (pattern && !matchPattern(r.st_trref)) return false;
-            if (accountFilter && r.st_account.trim() !== accountFilter) return false;
+            if (accountFilter && r.st_account.trim() !== accountFilter)
+              return false;
             if (dateFilter && r.st_trdate !== dateFilter) return false;
+            if (dateNotEqFilter && r.st_trdate === dateNotEqFilter)
+              return false;
+            if (dateRange && !inDateRange(r.st_trdate)) return false;
             if (typeFilter && r.st_trtype !== typeFilter) return false;
             if (
               rawAmountValue !== null &&
@@ -117,20 +211,83 @@ function makeOperaDb(state: State): any {
               Math.abs(r.st_trvalue + rawAmountValue) >= 0.01
             )
               return false;
+            // Cross-period amount check: ABS(ABS(st_trvalue)-?)<0.01
+            if (
+              fuzzyAbs !== null &&
+              fuzzyTolerance === null &&
+              Math.abs(Math.abs(r.st_trvalue) - fuzzyAbs) >= 0.01
+            )
+              return false;
+            // Fuzzy amount check: <= tolerance, > 0.01
+            if (
+              fuzzyAbs !== null &&
+              fuzzyTolerance !== null &&
+              !(
+                Math.abs(Math.abs(r.st_trvalue) - fuzzyAbs) <= fuzzyTolerance &&
+                Math.abs(Math.abs(r.st_trvalue) - fuzzyAbs) > 0.01
+              )
+            )
+              return false;
+            if (
+              fuzzyExclude01 !== null &&
+              Math.abs(Math.abs(r.st_trvalue) - fuzzyExclude01) <= 0.01
+            )
+              return false;
             return true;
           });
-          return resolve(filtered);
+          const limited = limitN ? filtered.slice(0, limitN) : filtered;
+          return resolve(limited);
         }
         if (table === 'ptran') {
           const filtered = state.ptran.filter((r) => {
             if (pattern && !matchPattern(r.pt_trref)) return false;
-            if (accountFilter && r.pt_account.trim() !== accountFilter) return false;
+            if (accountFilter && r.pt_account.trim() !== accountFilter)
+              return false;
             if (dateFilter && r.pt_trdate !== dateFilter) return false;
+            if (dateNotEqFilter && r.pt_trdate === dateNotEqFilter)
+              return false;
+            if (dateRange && !inDateRange(r.pt_trdate)) return false;
             if (typeFilter && r.pt_trtype !== typeFilter) return false;
             if (
               rawAmountValue !== null &&
               rawAmountKind === 'sub' &&
               Math.abs(r.pt_trvalue - rawAmountValue) >= 0.01
+            )
+              return false;
+            if (
+              fuzzyAbs !== null &&
+              fuzzyTolerance === null &&
+              Math.abs(Math.abs(r.pt_trvalue) - fuzzyAbs) >= 0.01
+            )
+              return false;
+            if (
+              fuzzyAbs !== null &&
+              fuzzyTolerance !== null &&
+              !(
+                Math.abs(Math.abs(r.pt_trvalue) - fuzzyAbs) <= fuzzyTolerance &&
+                Math.abs(Math.abs(r.pt_trvalue) - fuzzyAbs) > 0.01
+              )
+            )
+              return false;
+            if (
+              fuzzyExclude01 !== null &&
+              Math.abs(Math.abs(r.pt_trvalue) - fuzzyExclude01) <= 0.01
+            )
+              return false;
+            return true;
+          });
+          const limited = limitN ? filtered.slice(0, limitN) : filtered;
+          return resolve(limited);
+        }
+        if (table === 'aentry') {
+          const aentry = state.aentry ?? [];
+          const filtered = aentry.filter((r) => {
+            if (bankCodeFilter && r.ae_acnt !== bankCodeFilter) return false;
+            if (dateRange && !inDateRange(r.ae_lstdate)) return false;
+            if (
+              rawAmountValue !== null &&
+              rawAmountKind === 'sub' &&
+              Math.abs(r.ae_value - rawAmountValue) >= 1
             )
               return false;
             return true;
@@ -374,6 +531,304 @@ describe('findDuplicates (exact)', () => {
       account: 'A001',
     });
     // Only fingerprint, not exact (skipped because fingerprint matched)
+    expect(result.every((r) => r.match_type === 'fingerprint')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------
+// findDuplicates — fit_id
+// ---------------------------------------------------------------------
+
+describe('findDuplicates (fit_id)', () => {
+  it('matches when at_refer equals the FIT id', async () => {
+    const state: State = {
+      atran: [
+        {
+          at_unique: 'A-1',
+          at_pstdate: '2026-04-30',
+          at_value: 10000,
+          at_refer: 'OFX-FITID-9988',
+          at_acnt: 'BC010',
+        },
+      ],
+      stran: [],
+      ptran: [],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'Acme',
+      amount: 100,
+      date: '2026-04-30',
+      bank_code: 'BC010',
+      fit_id: 'OFX-FITID-9988',
+    });
+    expect(result.length).toBe(1);
+    expect(result[0]?.match_type).toBe('fit_id');
+    expect(result[0]?.confidence).toBe(0.95);
+  });
+});
+
+// ---------------------------------------------------------------------
+// findDuplicates — fuzzy amount
+// ---------------------------------------------------------------------
+
+describe('findDuplicates (fuzzy_amount)', () => {
+  it('matches a stran row within 5% tolerance (positive amount)', async () => {
+    const state: State = {
+      atran: [],
+      stran: [
+        {
+          st_unique: 'S-1',
+          st_trdate: '2026-04-30',
+          st_trvalue: -103, // 3% off £100
+          st_trref: 'something',
+          st_account: 'A001',
+          st_trtype: 'R',
+        },
+      ],
+      ptran: [],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'Acme',
+      amount: 100,
+      date: '2026-04-30',
+      account: 'A001',
+    });
+    expect(result.some((r) => r.match_type === 'fuzzy_amount')).toBe(true);
+    const fuzzy = result.find((r) => r.match_type === 'fuzzy_amount');
+    expect(fuzzy?.confidence).toBeGreaterThanOrEqual(0.5);
+    expect(fuzzy?.confidence).toBeLessThanOrEqual(0.7);
+  });
+
+  it('skips rows within 0.01 (those go to exact match instead)', async () => {
+    const state: State = {
+      atran: [],
+      stran: [
+        {
+          st_unique: 'S-1',
+          st_trdate: '2026-04-30',
+          st_trvalue: -100, // exact
+          st_trref: '',
+          st_account: 'A001',
+          st_trtype: 'R',
+        },
+      ],
+      ptran: [],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'Acme',
+      amount: 100,
+      date: '2026-04-30',
+      account: 'A001',
+    });
+    expect(result.some((r) => r.match_type === 'fuzzy_amount')).toBe(false);
+    expect(result.some((r) => r.match_type === 'exact')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------
+// findDuplicates — reference
+// ---------------------------------------------------------------------
+
+describe('findDuplicates (reference)', () => {
+  it('matches by partial reference on stran', async () => {
+    const state: State = {
+      atran: [],
+      stran: [
+        {
+          st_unique: 'S-1',
+          st_trdate: '2026-03-15',
+          st_trvalue: -50,
+          st_trref: 'CUST-INV-12345',
+          st_account: 'A001',
+          st_trtype: 'R',
+        },
+      ],
+      ptran: [],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'Acme',
+      amount: 999, // doesn't match stran row
+      date: '2026-04-30',
+      account: 'A001',
+      reference: 'INV-12345',
+    });
+    const refMatch = result.find((r) => r.match_type === 'reference');
+    expect(refMatch).toBeDefined();
+    expect(refMatch?.confidence).toBe(0.6);
+  });
+
+  it('skips reference < 3 chars', async () => {
+    const state: State = {
+      atran: [],
+      stran: [
+        {
+          st_unique: 'S-1',
+          st_trdate: '2026-03-15',
+          st_trvalue: -50,
+          st_trref: 'AB',
+          st_account: 'A001',
+          st_trtype: 'R',
+        },
+      ],
+      ptran: [],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'Acme',
+      amount: 999,
+      date: '2026-04-30',
+      account: 'A001',
+      reference: 'AB',
+    });
+    expect(result.filter((r) => r.match_type === 'reference').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// findDuplicates — cross-period
+// ---------------------------------------------------------------------
+
+describe('findDuplicates (cross_period)', () => {
+  it('matches a stran row 5 days off', async () => {
+    const state: State = {
+      atran: [],
+      stran: [
+        {
+          st_unique: 'S-1',
+          st_trdate: '2026-04-25', // 5 days before 2026-04-30
+          st_trvalue: -100,
+          st_trref: '',
+          st_account: 'A001',
+          st_trtype: 'R',
+        },
+      ],
+      ptran: [],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'Acme',
+      amount: 100,
+      date: '2026-04-30',
+      account: 'A001',
+    });
+    const cp = result.find((r) => r.match_type === 'cross_period');
+    expect(cp).toBeDefined();
+    expect(cp?.confidence).toBeCloseTo(0.5, 1); // 0.75 - 5*0.05 = 0.5
+  });
+
+  it('skips dates outside the ±7 day window', async () => {
+    const state: State = {
+      atran: [],
+      stran: [
+        {
+          st_unique: 'S-1',
+          st_trdate: '2026-04-15', // 15 days before
+          st_trvalue: -100,
+          st_trref: '',
+          st_account: 'A001',
+          st_trtype: 'R',
+        },
+      ],
+      ptran: [],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'Acme',
+      amount: 100,
+      date: '2026-04-30',
+      account: 'A001',
+    });
+    expect(result.filter((r) => r.match_type === 'cross_period').length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------
+// findDuplicates — bank_amount (fallback when no account match)
+// ---------------------------------------------------------------------
+
+describe('findDuplicates (bank_amount)', () => {
+  it('matches aentry by signed amount + bank when no account', async () => {
+    const state: State = {
+      atran: [],
+      stran: [],
+      ptran: [],
+      aentry: [
+        {
+          ae_entry: 'E-1',
+          ae_value: 10000, // £100 in pence
+          ae_lstdate: '2026-04-28',
+          ae_entref: 'HMRC-VAT',
+          ae_comment: 'HMRC VAT return',
+          ae_acnt: 'BC010',
+        },
+      ],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'HMRC',
+      amount: 100,
+      date: '2026-04-30',
+      bank_code: 'BC010',
+    });
+    expect(result.length).toBe(1);
+    expect(result[0]?.match_type).toBe('bank_amount');
+    expect(result[0]?.table).toBe('aentry');
+  });
+
+  it('opposite-sign aentry rows are not duplicates', async () => {
+    const state: State = {
+      atran: [],
+      stran: [],
+      ptran: [],
+      aentry: [
+        {
+          ae_entry: 'E-1',
+          ae_value: -10000, // £100 PAYMENT
+          ae_lstdate: '2026-04-28',
+          ae_entref: 'HMRC-PAY',
+          ae_comment: '',
+          ae_acnt: 'BC010',
+        },
+      ],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'HMRC',
+      amount: 100, // RECEIPT
+      date: '2026-04-30',
+      bank_code: 'BC010',
+    });
+    expect(result.length).toBe(0);
+  });
+
+  it('does not run when account-level matches found', async () => {
+    const fp = generateImportFingerprint('Acme', 100, '2026-04-30');
+    const hash = fp.split(':')[1]!;
+    const state: State = {
+      atran: [
+        {
+          at_unique: 'A-1',
+          at_pstdate: '2026-04-30',
+          at_value: 10000,
+          at_refer: `BKIMP:${hash}:20260430`,
+          at_acnt: 'BC010',
+        },
+      ],
+      stran: [],
+      ptran: [],
+      aentry: [
+        {
+          ae_entry: 'E-1',
+          ae_value: 10000,
+          ae_lstdate: '2026-04-30',
+          ae_entref: '',
+          ae_comment: '',
+          ae_acnt: 'BC010',
+        },
+      ],
+    };
+    const result = await findDuplicates(makeOperaDb(state), {
+      name: 'Acme',
+      amount: 100,
+      date: '2026-04-30',
+      bank_code: 'BC010',
+    });
+    // Fingerprint short-circuits, bank_amount fallback NOT triggered
     expect(result.every((r) => r.match_type === 'fingerprint')).toBe(true);
   });
 });
