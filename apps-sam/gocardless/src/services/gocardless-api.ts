@@ -388,6 +388,70 @@ export class GoCardlessClient {
   }
 
   /**
+   * GET /subscriptions — list subscriptions.
+   *
+   * Faithful port of GoCardlessClient.list_subscriptions
+   * (sql_rag/gocardless_api.py:487-527). Returns the page of raw
+   * subscription objects plus the next-page cursor for pagination.
+   */
+  async listSubscriptions(opts: {
+    mandateId?: string;
+    customerId?: string;
+    status?: string;
+    limit?: number;
+    cursor?: string;
+  } = {}): Promise<{
+    success: boolean;
+    subscriptions: Array<Record<string, unknown>>;
+    after: string | null;
+    error?: string;
+  }> {
+    try {
+      const params = new URLSearchParams();
+      if (opts.mandateId) params.set('mandate', opts.mandateId);
+      if (opts.customerId) params.set('customer', opts.customerId);
+      if (opts.status) params.set('status', opts.status);
+      params.set('limit', String(Math.min(opts.limit ?? 100, 500)));
+      if (opts.cursor) params.set('after', opts.cursor);
+      const path = `/subscriptions?${params.toString()}`;
+      const res = await this.request('GET', path);
+      if (res.status === 401) {
+        return {
+          success: false,
+          subscriptions: [],
+          after: null,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          subscriptions: [],
+          after: null,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        subscriptions?: Array<Record<string, unknown>>;
+        meta?: { cursors?: { after?: string | null } };
+      };
+      return {
+        success: true,
+        subscriptions: Array.isArray(data.subscriptions) ? data.subscriptions : [],
+        after: data.meta?.cursors?.after ?? null,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        subscriptions: [],
+        after: null,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * GET /subscriptions/:id — fetch a subscription's current state.
    *
    * Faithful port of `GoCardlessClient.get_subscription`

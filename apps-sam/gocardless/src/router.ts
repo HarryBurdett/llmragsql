@@ -71,6 +71,7 @@ import {
   linkSubscriptionToDocument,
   unlinkSubscriptionFromDocument,
   syncSubscriptionFromOpera,
+  syncSubscriptionsFromGocardless,
 } from './services/subscriptions.js';
 import {
   listMandates,
@@ -1509,6 +1510,91 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Unlink subscription failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/subscriptions/sync
+   *
+   * Pull every subscription from the GoCardless API and upsert into
+   * the local DB. Faithful port of sync_gocardless_subscriptions
+   * (apps/gocardless/api/routes.py:9375-9500). Resolves
+   * mandate -> {opera_account, opera_name} via the local mandates
+   * table first, falling back to the GoCardless mandate + customer
+   * APIs when the local link doesn't carry a name.
+   *
+   * NB: must be defined before /subscriptions/:id so Express doesn't
+   * mis-route 'sync' as a path parameter.
+   */
+  router.post(
+    '/api/gocardless/subscriptions/sync',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const fetchPage = async (cursor: string | null) => {
+          const r = await client.listSubscriptions({
+            limit: 100,
+            cursor: cursor ?? undefined,
+          });
+          if (!r.success) {
+            throw new Error(r.error ?? 'Subscription list failed');
+          }
+          return { subscriptions: r.subscriptions as any[], after: r.after };
+        };
+        const customerCache = new Map<string, string | null>();
+        const mandateCustomerCache = new Map<string, string | null>();
+        const resolveAccount = async (mandateId: string) => {
+          let customerId = mandateCustomerCache.get(mandateId);
+          if (customerId === undefined) {
+            const m = await client.getMandate(mandateId);
+            customerId =
+              m.success && m.mandate
+                ? ((m.mandate as Record<string, any>).links
+                    ?.customer as string | undefined) ?? null
+                : null;
+            mandateCustomerCache.set(mandateId, customerId);
+          }
+          if (!customerId) return { opera_account: null, opera_name: null };
+          let name = customerCache.get(customerId);
+          if (name === undefined) {
+            const c = await client.getCustomer(customerId);
+            if (c.success && c.customer) {
+              const cd = c.customer as Record<string, any>;
+              const company = (cd.company_name as string | undefined) ?? '';
+              const given = (cd.given_name as string | undefined) ?? '';
+              const family = (cd.family_name as string | undefined) ?? '';
+              name = company || `${given} ${family}`.trim() || null;
+            } else {
+              name = null;
+            }
+            customerCache.set(customerId, name);
+          }
+          return { opera_account: null, opera_name: name ?? null };
+        };
+        const result = await syncSubscriptionsFromGocardless(
+          appDb,
+          fetchPage,
+          { resolveAccount },
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Sync subscriptions failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

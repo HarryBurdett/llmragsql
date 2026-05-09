@@ -242,6 +242,66 @@ describe('createClientFromSettings', () => {
   });
 });
 
+describe('GoCardlessClient.listSubscriptions', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('passes filters and parses page + cursor', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        subscriptions: [{ id: 'SB1' }, { id: 'SB2' }],
+        meta: { cursors: { after: 'NEXT' } },
+      }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.listSubscriptions({
+      mandateId: 'MD1',
+      status: 'active',
+      limit: 50,
+      cursor: 'PREV',
+    });
+    expect(result.success).toBe(true);
+    expect(result.subscriptions).toHaveLength(2);
+    expect(result.after).toBe('NEXT');
+    const url = (global.fetch as any).mock.calls[0][0] as string;
+    expect(url).toContain('mandate=MD1');
+    expect(url).toContain('status=active');
+    expect(url).toContain('limit=50');
+    expect(url).toContain('after=PREV');
+  });
+
+  it('caps limit at 500', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ subscriptions: [], meta: { cursors: {} } }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    await client.listSubscriptions({ limit: 1000 });
+    const url = (global.fetch as any).mock.calls[0][0] as string;
+    expect(url).toContain('limit=500');
+  });
+
+  it('returns empty array on 401', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => 'Unauthorized',
+    });
+    const client = new GoCardlessClient({ accessToken: 'bad', sandbox: true });
+    const result = await client.listSubscriptions();
+    expect(result.success).toBe(false);
+    expect(result.subscriptions).toEqual([]);
+    expect(result.after).toBeNull();
+  });
+});
+
 describe('GoCardlessClient.getMandate / getCustomer', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

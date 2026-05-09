@@ -36,12 +36,12 @@ default factory, and passes a context our types already match.
 
 **Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 53 of ~124 endpoints (261 tests)
+**gocardless:** 60 of ~124 endpoints (334 tests)
 **bank-reconcile:** 36 of ~127 endpoints (181 tests)
 **suppliers:** 38 endpoints (greenfield TS work — 128 tests)
 **shared:** 11 utility modules covering all foundational primitives (92 tests)
-**Total TS tests across all packages:** 694 (all passing, all builds clean)
-**Endpoint coverage of Python source (3 porting apps):** 93 of ~258 = ~36%
+**Total TS tests across all packages:** 767 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** 100 of ~258 = ~39%
 **Calendar week of project:** 1
 **Sessions logged:** 2 (extended autonomous sessions)
 
@@ -213,7 +213,14 @@ the Python codebase — the cashbook check is part of `/api/reconcile/summary`.
 - [x] `POST /api/gocardless/subscriptions/:id/cancel` — remote cancel + local status mirror
 - [x] `POST /api/gocardless/subscriptions/link` — link Opera repeat-doc to subscription
 - [x] `POST /api/gocardless/subscriptions/unlink` — remove specific or all doc links
-- [ ] `*` ~70 more endpoints
+- [x] `POST /api/gocardless/subscriptions/:id/sync-from-opera` — re-derive subscription amount from itran lines + push to GC
+- [x] `POST /api/gocardless/subscriptions/sync` — pull every subscription from GoCardless API + upsert local
+- [x] `GET /api/gocardless/customer-email/:account` — pre-fill mandate-setup form from sname
+- [x] `GET /api/gocardless/repeat-documents` — list active ihead docs with mandate/subscription/mismatch enrichment
+- [x] `POST /api/gocardless/request-payment` — single-payment request (dup guard, mandate lookup, Opera safety check, GC create, persist)
+- [x] `POST /api/gocardless/payment-requests/bulk` — bulk wrapper for request-payment
+- [x] `POST /api/gocardless/mandates/link` — link mandate to Opera customer (re-link confirm + ROWLOCK sn_analsys flag move)
+- [ ] `*` ~60 more endpoints
 
 #### Helpers
 - [x] `src/services/settings.ts` — settings load/save/mask/merge

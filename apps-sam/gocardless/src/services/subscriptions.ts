@@ -443,6 +443,196 @@ export async function updateSubscriptionDetails(
 }
 
 // ---------------------------------------------------------------------
+// syncSubscriptionsFromGocardless — pull every subscription via the API
+// ---------------------------------------------------------------------
+
+export interface RemoteSubscription {
+  id?: string;
+  amount?: number | string;
+  interval_unit?: string;
+  interval?: number | string;
+  day_of_month?: number | string | null;
+  name?: string | null;
+  status?: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  links?: { mandate?: string };
+  [k: string]: unknown;
+}
+
+export interface SyncSubscriptionsResponse {
+  success: boolean;
+  message?: string;
+  synced?: number;
+  updated?: number;
+  total?: number;
+  error?: string;
+}
+
+interface SyncOptions {
+  /**
+   * Resolves a mandate_id to {opera_account, opera_name} using the
+   * local mandates table + best-effort GoCardless API enrichment.
+   * Allows the caller to inject API mandate/customer fetches without
+   * coupling this module to the API client.
+   */
+  resolveAccount?: (
+    mandateId: string,
+  ) => Promise<{ opera_account: string | null; opera_name: string | null }>;
+  pageSize?: number;
+}
+
+interface PageResult {
+  subscriptions: RemoteSubscription[];
+  after: string | null;
+}
+
+/**
+ * Faithful port of sync_gocardless_subscriptions
+ * (apps/gocardless/api/routes.py:9375-9500). Pulls every subscription
+ * from GoCardless and upserts the local row, preserving any existing
+ * source_doc / opera_name when GC didn't supply better.
+ */
+export async function syncSubscriptionsFromGocardless(
+  appDb: Knex,
+  fetchPage: (cursor: string | null) => Promise<PageResult>,
+  opts: SyncOptions = {},
+): Promise<SyncSubscriptionsResponse> {
+  try {
+    // Build mandate -> {opera_account, opera_name} lookup from local
+    const mandates = (await appDb('gocardless_mandates').select(
+      'mandate_id',
+      'opera_account',
+      'opera_name',
+    )) as unknown as Array<{
+      mandate_id: string | null;
+      opera_account: string | null;
+      opera_name: string | null;
+    }>;
+    const mandateLookup = new Map<
+      string,
+      { opera_account: string | null; opera_name: string | null }
+    >();
+    for (const m of mandates ?? []) {
+      const mid = (m.mandate_id ?? '').trim();
+      if (!mid) continue;
+      const acct = (m.opera_account ?? '').trim();
+      mandateLookup.set(mid, {
+        opera_account: acct && acct !== '__UNLINKED__' ? acct : null,
+        opera_name: (m.opera_name ?? '').trim() || null,
+      });
+    }
+
+    let synced = 0;
+    let updated = 0;
+    let cursor: string | null = null;
+    while (true) {
+      const page = await fetchPage(cursor);
+      if (!page.subscriptions || page.subscriptions.length === 0) break;
+      for (const gc of page.subscriptions) {
+        const subId = (gc.id ?? '').toString().trim();
+        if (!subId) continue;
+        const mandateId = (gc.links?.mandate ?? '').trim();
+        let info = mandateLookup.get(mandateId) ?? {
+          opera_account: null,
+          opera_name: null,
+        };
+        if (!info.opera_name && mandateId && opts.resolveAccount) {
+          try {
+            const enriched = await opts.resolveAccount(mandateId);
+            info = {
+              opera_account: enriched.opera_account ?? info.opera_account,
+              opera_name: enriched.opera_name ?? info.opera_name,
+            };
+          } catch {
+            // best-effort
+          }
+        }
+
+        const existing = (await appDb('gocardless_subscriptions')
+          .where({ subscription_id: subId })
+          .first()) as unknown as
+          | {
+              id: number;
+              source_doc: string | null;
+              opera_account: string | null;
+              opera_name: string | null;
+            }
+          | undefined;
+
+        const amountPence = Math.round(Number(gc.amount ?? 0));
+        const intervalUnit = String(gc.interval_unit ?? 'monthly').toLowerCase();
+        const intervalCount = Number(gc.interval ?? 1) || 1;
+        const dayOfMonth =
+          gc.day_of_month === null || gc.day_of_month === undefined
+            ? null
+            : Number(gc.day_of_month);
+        const name = gc.name ?? null;
+        const status = gc.status ?? 'active';
+        const startDate = (gc.start_date ?? null) as string | null;
+        const endDate = (gc.end_date ?? null) as string | null;
+
+        if (existing) {
+          await appDb('gocardless_subscriptions')
+            .where({ subscription_id: subId })
+            .update({
+              mandate_id: mandateId,
+              amount_pence: amountPence,
+              interval_unit: intervalUnit,
+              interval_count: intervalCount,
+              day_of_month: Number.isFinite(dayOfMonth as number)
+                ? (dayOfMonth as number)
+                : null,
+              name,
+              status,
+              start_date: startDate,
+              end_date: endDate,
+              opera_account: info.opera_account ?? existing.opera_account,
+              opera_name: info.opera_name ?? existing.opera_name,
+              updated_at: appDb.fn.now(),
+              synced_at: appDb.fn.now(),
+            });
+          updated += 1;
+        } else {
+          await appDb('gocardless_subscriptions').insert({
+            subscription_id: subId,
+            mandate_id: mandateId,
+            opera_account: info.opera_account,
+            opera_name: info.opera_name,
+            source_doc: null,
+            amount_pence: amountPence,
+            currency: 'GBP',
+            interval_unit: intervalUnit,
+            interval_count: intervalCount,
+            day_of_month: Number.isFinite(dayOfMonth as number)
+              ? (dayOfMonth as number)
+              : null,
+            name,
+            status,
+            start_date: startDate,
+            end_date: endDate,
+            synced_at: appDb.fn.now(),
+          });
+          synced += 1;
+        }
+      }
+      if (!page.after) break;
+      cursor = page.after;
+    }
+
+    return {
+      success: true,
+      synced,
+      updated,
+      total: synced + updated,
+      message: `Synced ${synced} new, updated ${updated} existing subscriptions`,
+    };
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// ---------------------------------------------------------------------
 // sync-from-opera — read itran totals for linked docs, push to GC
 // ---------------------------------------------------------------------
 

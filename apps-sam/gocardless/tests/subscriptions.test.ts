@@ -10,6 +10,7 @@ import {
   unlinkSubscriptionFromDocument,
   updateSubscriptionStatus,
   syncSubscriptionFromOpera,
+  syncSubscriptionsFromGocardless,
   type RemoteSubscriptionResult,
 } from '../src/services/subscriptions.js';
 
@@ -41,6 +42,7 @@ interface SubRow {
 interface MandateRow {
   opera_account: string;
   opera_name: string;
+  mandate_id?: string;
 }
 
 interface SubDocRow {
@@ -152,8 +154,9 @@ function makeMandateBuilder(state: MockState): any {
       return builder;
     },
     select: async (..._cols: string[]) => {
+      if (!inCol) return state.mandates;
       return state.mandates.filter(
-        (m) => !inCol || (inVals && inVals.includes((m as any)[inCol!])),
+        (m) => inVals && inVals.includes((m as any)[inCol!]),
       );
     },
   };
@@ -896,5 +899,224 @@ describe('unlinkSubscriptionFromDocument', () => {
     });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/not found/);
+  });
+});
+
+// ---------------------------------------------------------------------
+// syncSubscriptionsFromGocardless
+// ---------------------------------------------------------------------
+
+describe('syncSubscriptionsFromGocardless', () => {
+  it('inserts new subscriptions and resolves opera account from mandate lookup', async () => {
+    const state: MockState = {
+      subs: [],
+      mandates: [
+        { opera_account: 'CUST01', opera_name: 'Acme Ltd', mandate_id: 'MD1' },
+      ],
+      docs: [],
+    };
+    const fetchPage = async () => ({
+      subscriptions: [
+        {
+          id: 'SB1',
+          amount: 5000,
+          interval_unit: 'monthly',
+          interval: 1,
+          status: 'active',
+          links: { mandate: 'MD1' },
+        },
+        {
+          id: 'SB2',
+          amount: 12000,
+          interval_unit: 'monthly',
+          interval: 3,
+          status: 'paused',
+          links: { mandate: 'MD1' },
+        },
+      ],
+      after: null,
+    });
+    const result = await syncSubscriptionsFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+    );
+    expect(result.success).toBe(true);
+    expect(result.synced).toBe(2);
+    expect(result.updated).toBe(0);
+    expect(result.total).toBe(2);
+    expect(state.subs).toHaveLength(2);
+    expect(state.subs[0]?.opera_account).toBe('CUST01');
+    expect(state.subs[0]?.opera_name).toBe('Acme Ltd');
+    expect(state.subs[0]?.amount_pence).toBe(5000);
+  });
+
+  it('updates existing subscriptions instead of duplicating', async () => {
+    const state: MockState = {
+      subs: [
+        emptySub({
+          subscription_id: 'SB1',
+          amount_pence: 1000,
+          status: 'active',
+        }),
+      ],
+      mandates: [],
+      docs: [],
+    };
+    const fetchPage = async () => ({
+      subscriptions: [
+        {
+          id: 'SB1',
+          amount: 9999,
+          interval_unit: 'yearly',
+          interval: 1,
+          status: 'cancelled',
+          links: { mandate: 'MD1' },
+        },
+      ],
+      after: null,
+    });
+    const result = await syncSubscriptionsFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+    );
+    expect(result.success).toBe(true);
+    expect(result.updated).toBe(1);
+    expect(result.synced).toBe(0);
+    expect(state.subs).toHaveLength(1);
+    expect(state.subs[0]?.amount_pence).toBe(9999);
+    expect(state.subs[0]?.status).toBe('cancelled');
+    expect(state.subs[0]?.interval_unit).toBe('yearly');
+  });
+
+  it('paginates through multiple pages until no more cursor', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const pages = [
+      {
+        subscriptions: [
+          {
+            id: 'SB1',
+            amount: 100,
+            interval_unit: 'monthly',
+            interval: 1,
+            status: 'active',
+            links: { mandate: 'MD1' },
+          },
+        ],
+        after: 'CUR1',
+      },
+      {
+        subscriptions: [
+          {
+            id: 'SB2',
+            amount: 200,
+            interval_unit: 'monthly',
+            interval: 1,
+            status: 'active',
+            links: { mandate: 'MD1' },
+          },
+        ],
+        after: null,
+      },
+    ];
+    let i = 0;
+    const fetchPage = async () => pages[i++] ?? { subscriptions: [], after: null };
+    const result = await syncSubscriptionsFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+    );
+    expect(result.synced).toBe(2);
+    expect(state.subs.map((s) => s.subscription_id).sort()).toEqual([
+      'SB1',
+      'SB2',
+    ]);
+  });
+
+  it('uses resolveAccount fallback when mandate not in local lookup', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    let called = '';
+    const fetchPage = async () => ({
+      subscriptions: [
+        {
+          id: 'SB1',
+          amount: 100,
+          interval_unit: 'monthly',
+          interval: 1,
+          status: 'active',
+          links: { mandate: 'MD_REMOTE' },
+        },
+      ],
+      after: null,
+    });
+    const result = await syncSubscriptionsFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+      {
+        resolveAccount: async (id) => {
+          called = id;
+          return { opera_account: 'CUST99', opera_name: 'Remote Ltd' };
+        },
+      },
+    );
+    expect(result.success).toBe(true);
+    expect(called).toBe('MD_REMOTE');
+    expect(state.subs[0]?.opera_name).toBe('Remote Ltd');
+    expect(state.subs[0]?.opera_account).toBe('CUST99');
+  });
+
+  it('skips empty subscription_id rows', async () => {
+    const state: MockState = { subs: [], mandates: [], docs: [] };
+    const fetchPage = async () => ({
+      subscriptions: [
+        { id: '', amount: 100, links: { mandate: 'MD1' } },
+        {
+          id: 'SB1',
+          amount: 100,
+          interval_unit: 'monthly',
+          interval: 1,
+          status: 'active',
+          links: { mandate: 'MD1' },
+        },
+      ],
+      after: null,
+    });
+    const result = await syncSubscriptionsFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+    );
+    expect(result.synced).toBe(1);
+    expect(state.subs).toHaveLength(1);
+  });
+
+  it('treats __UNLINKED__ mandate as no opera_account', async () => {
+    const state: MockState = {
+      subs: [],
+      mandates: [
+        {
+          opera_account: '__UNLINKED__',
+          opera_name: 'Acme (raw)',
+          mandate_id: 'MD1',
+        },
+      ],
+      docs: [],
+    };
+    const fetchPage = async () => ({
+      subscriptions: [
+        {
+          id: 'SB1',
+          amount: 100,
+          interval_unit: 'monthly',
+          interval: 1,
+          status: 'active',
+          links: { mandate: 'MD1' },
+        },
+      ],
+      after: null,
+    });
+    const result = await syncSubscriptionsFromGocardless(
+      makeAppDb(state),
+      fetchPage,
+    );
+    expect(result.success).toBe(true);
+    expect(state.subs[0]?.opera_account).toBeNull();
   });
 });
