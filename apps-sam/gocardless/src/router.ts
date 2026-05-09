@@ -89,6 +89,7 @@ import {
   checkPendingMandateSetups,
 } from './services/mandate-setups.js';
 import { getEligibleCustomers } from './services/eligible-customers.js';
+import { suggestMandateMatch } from './services/suggest-match.js';
 import { getCustomerEmail } from './services/customer-email.js';
 import { getRepeatDocuments } from './services/repeat-documents.js';
 import { getCollectableInvoices } from './services/collectable-invoices.js';
@@ -1055,6 +1056,39 @@ export function createRouter(ctx: AppContext): Router {
       } catch (err: any) {
         ctx.logger.error('Link mandate failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/mandates/suggest-match
+   *
+   * Suggest the best Opera customer match for a GoCardless customer
+   * name using fuzzy matching against the full sales ledger.
+   * Faithful port of suggest_mandate_match
+   * (apps/gocardless/api/routes.py:7644-7718).
+   *
+   * Scoring tiers: exact (1.0) > containment (0.85) > Ratcliff/
+   * Obershelp ratio (sequenceMatcherRatio). Threshold 0.5; cap 5
+   * results. GC-tagged customers tie-break to the top.
+   *
+   * Query params:
+   *   - gc_name (required) — GoCardless customer name
+   */
+  router.get(
+    '/api/gocardless/mandates/suggest-match',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const gcName =
+          typeof req.query.gc_name === 'string' ? req.query.gc_name : '';
+        const result = await suggestMandateMatch(operaDb, gcName);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Suggest mandate match failed', err);
+        // Match Python: soft success on error
+        res.json({ success: true, suggestions: [], gc_name: '' });
       }
     },
   );
