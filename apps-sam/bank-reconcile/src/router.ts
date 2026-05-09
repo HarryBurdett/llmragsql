@@ -176,9 +176,29 @@ import {
   type BankImportFromEmailInput,
 } from './services/bank-import-from-email.js';
 import { defaultMultiformatParser } from './services/default-multiformat-parser.js';
+import { createDefaultFileStorage } from './services/default-file-storage.js';
+import { createDefaultPdfContentReader } from './services/default-pdf-content-reader.js';
+import { createDefaultBankPdfExtractor } from './services/default-bank-pdf-extractor.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
+
+  // Built-in fallback adapters — used when SAM hasn't wired a custom
+  // implementation onto ctx. The filesystem adapters key off
+  // `ctx.config.bankStatementRoot`; the PDF extractor activates when
+  // `ctx.llm` is available.
+  const cfg = (ctx.config ?? {}) as Record<string, unknown>;
+  const bankStatementRoot =
+    typeof cfg.bankStatementRoot === 'string' ? cfg.bankStatementRoot : null;
+  const builtinFileStorage: FileStorageAdapter | null = bankStatementRoot
+    ? createDefaultFileStorage({ rootDir: bankStatementRoot, flatLayout: true })
+    : null;
+  const builtinPdfReader: PdfContentReader | null = bankStatementRoot
+    ? createDefaultPdfContentReader({ rootDir: bankStatementRoot })
+    : createDefaultPdfContentReader({});
+  const builtinPdfExtractor: PdfExtractor | null = ctx.llm
+    ? createDefaultBankPdfExtractor({ llm: ctx.llm })
+    : null;
 
   function getAppDb(req: Request, res: Response): import('knex').Knex | null {
     if (!ctx.db.app) {
@@ -2082,11 +2102,12 @@ export function createRouter(ctx: AppContext): Router {
         bankImportLock?: ImportLockAdapter;
         bankPeriodOverlapChecker?: PeriodOverlapChecker;
       };
-      if (!adapter.bankPdfExtractor) {
+      const extractor = adapter.bankPdfExtractor ?? builtinPdfExtractor;
+      if (!extractor) {
         res.status(503).json({
           success: false,
           error:
-            'PDF extractor not configured. SAM team must provide ctx.bankPdfExtractor (ctx.llm-backed Claude Vision extractor).',
+            'PDF extractor not configured. SAM team must provide ctx.bankPdfExtractor or enable ctx.llm.',
         });
         return;
       }
@@ -2125,7 +2146,7 @@ export function createRouter(ctx: AppContext): Router {
               : [],
             skipOverlapCheck: body.skip_overlap_check === true,
           },
-          adapter.bankPdfExtractor,
+          extractor,
           executor,
           lock,
           overlapChecker,
@@ -2389,8 +2410,9 @@ export function createRouter(ctx: AppContext): Router {
   router.post('/api/archive/file', async (req: Request, res: Response) => {
     const appDb = getAppDb(req, res);
     if (!appDb) return;
-    const storage = (ctx as unknown as { fileStorage?: FileStorageAdapter })
-      .fileStorage;
+    const storage =
+      (ctx as unknown as { fileStorage?: FileStorageAdapter }).fileStorage ??
+      builtinFileStorage;
     if (!storage) {
       res.status(503).json({
         success: false,
@@ -2451,8 +2473,9 @@ export function createRouter(ctx: AppContext): Router {
   router.post('/api/archive/restore', async (req: Request, res: Response) => {
     const appDb = getAppDb(req, res);
     if (!appDb) return;
-    const storage = (ctx as unknown as { fileStorage?: FileStorageAdapter })
-      .fileStorage;
+    const storage =
+      (ctx as unknown as { fileStorage?: FileStorageAdapter }).fileStorage ??
+      builtinFileStorage;
     if (!storage) {
       res.status(503).json({
         success: false,
@@ -2481,8 +2504,9 @@ export function createRouter(ctx: AppContext): Router {
   });
 
   router.get('/api/archive/pending', async (req: Request, res: Response) => {
-    const storage = (ctx as unknown as { fileStorage?: FileStorageAdapter })
-      .fileStorage;
+    const storage =
+      (ctx as unknown as { fileStorage?: FileStorageAdapter }).fileStorage ??
+      builtinFileStorage;
     if (!storage) {
       res.status(503).json({
         success: false,
@@ -2771,8 +2795,9 @@ export function createRouter(ctx: AppContext): Router {
     async (req, res) => {
       const appDb = getAppDb(req, res);
       if (!appDb) return;
-      const storage = (ctx as unknown as { fileStorage?: FileStorageAdapter })
-        .fileStorage ?? null;
+      const storage =
+        (ctx as unknown as { fileStorage?: FileStorageAdapter }).fileStorage ??
+        builtinFileStorage;
       res.json(
         await getArchivedStatementPdf(
           appDb,
@@ -2816,9 +2841,11 @@ export function createRouter(ctx: AppContext): Router {
   // ---------------------------------------------------------------
 
   const getFileStorage = () =>
-    (ctx as unknown as { fileStorage?: FileStorageAdapter }).fileStorage ?? null;
+    (ctx as unknown as { fileStorage?: FileStorageAdapter }).fileStorage ??
+    builtinFileStorage;
   const getPdfReader = () =>
-    (ctx as unknown as { pdfContentReader?: PdfContentReader }).pdfContentReader ?? null;
+    (ctx as unknown as { pdfContentReader?: PdfContentReader }).pdfContentReader ??
+    builtinPdfReader;
   const getMultiformatParser = () =>
     (ctx as unknown as { multiformatParser?: MultiformatParser })
       .multiformatParser ?? defaultMultiformatParser;
@@ -2946,11 +2973,12 @@ export function createRouter(ctx: AppContext): Router {
       bankPeriodOverlapChecker?: PeriodOverlapChecker;
       bankEmailAttachments?: EmailAttachmentProvider;
     };
-    if (!adapter.bankPdfExtractor || !adapter.bankEmailAttachments) {
+    const extractor = adapter.bankPdfExtractor ?? builtinPdfExtractor;
+    if (!extractor || !adapter.bankEmailAttachments) {
       res.status(503).json({
         success: false,
         error:
-          'PDF extractor and email-attachment provider must both be configured.',
+          'PDF extractor (or ctx.llm) and email-attachment provider must both be configured.',
       });
       return;
     }
@@ -2984,7 +3012,7 @@ export function createRouter(ctx: AppContext): Router {
         operaDb,
         appDb,
         adapter.bankEmailAttachments,
-        adapter.bankPdfExtractor,
+        extractor,
         executor,
         lock,
         overlap,
