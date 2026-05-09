@@ -83,6 +83,7 @@ import {
   cancelMandateSetup,
 } from './services/mandate-setups.js';
 import { getEligibleCustomers } from './services/eligible-customers.js';
+import { getCustomerEmail } from './services/customer-email.js';
 import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
@@ -847,6 +848,36 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Eligible customers failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/customer-email/:account
+   *
+   * Look up the customer email + name + contact from sname for the
+   * given account. Used by the mandate-setup form to pre-fill
+   * customer details. Faithful port of get_customer_email_for_mandate
+   * (apps/gocardless/api/routes.py:7189-7217).
+   *
+   * Returns success=true with empty fields if the account is not
+   * found — the form still loads, the operator just types the email
+   * manually.
+   */
+  router.get(
+    '/api/gocardless/customer-email/:account',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const result = await getCustomerEmail(
+          operaDb,
+          String(req.params.account ?? ''),
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get customer email failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
