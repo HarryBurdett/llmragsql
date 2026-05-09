@@ -16,7 +16,7 @@ the plugin code never branches on `ctx.operaType`.
 | Plugin | Backend tests | Backend endpoints | Frontend bundle |
 |---|---|---|---|
 | `gocardless` | 33 files / 490 tests | ~46 endpoints ported | UMD `__SAM_APPS__["gocardless"]` |
-| `bank-reconcile` | 32 files / 293 tests | ~44 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
+| `bank-reconcile` | 32 files / 303 tests | ~44 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
 | `suppliers` | 21 files / 184 tests | ~58 endpoints ported | UMD `__SAM_APPS__["suppliers"]` |
 | `balance-check` | TBC tests | 7 endpoints ported | UMD `__SAM_APPS__["balance-check"]` |
 
@@ -156,10 +156,11 @@ is the definitive list of what needs Opera 3 validation.
   validated batch import that adds email-archive on success via the
   optional `EmailArchiveAdapter`. Best-effort archive does not roll
   back the import.
-- **bank-import/check-duplicates** — fingerprint + exact-match
-  strategies covering the dominant duplicate-detection paths.
-  Sign-aware: a +£X receipt and a -£X payment are not duplicates of
-  each other.
+- **bank-import/check-duplicates** — all six EnhancedDuplicateDetector
+  strategies ported (fingerprint, fit_id, exact, fuzzy_amount,
+  reference, cross_period, bank_amount). Sign-aware: a +£X receipt
+  and a -£X payment are not duplicates of each other; opposite-sign
+  aentry rows are not flagged in bank_amount fallback.
 
 ## Known follow-ups
 
@@ -169,11 +170,7 @@ is the definitive list of what needs Opera 3 validation.
 - Email ingestion glue (per-plugin or SAM-host cache).
 - Write Agent — Opera 3 FoxPro write service, in development.
 - Remaining Python endpoints in bank-reconcile: the big
-  `/api/reconcile/bank/{bank_code}` dashboard, the four remaining
-  duplicate-detection strategies (fit_id, fuzzy_amount, reference,
-  cross_period, bank_amount — all stubbed in
-  `bank-reconcile/src/services/duplicate-detection.ts` with pointers
-  to the Python source line numbers), and the
+  `/api/reconcile/bank/{bank_code}` dashboard endpoint and the
   `/api/archive/*` filesystem-bound endpoints (these need a
   storage adapter design decision from the SAM team).
 
