@@ -66,6 +66,7 @@ import {
   type StatementTransaction,
 } from './services/match-statement.js';
 import { reconcileBank } from './services/reconcile-bank.js';
+import { completeReconciliation } from './services/complete-reconciliation.js';
 import {
   markEntriesReconciled,
   type ReconcileEntryInput,
@@ -1590,6 +1591,134 @@ export function createRouter(ctx: AppContext): Router {
       } catch (err: any) {
         ctx.logger.error('Reconcile bank failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/bank-reconciliation/complete
+   *
+   * Final closer for the bank-reconciliation flow. Faithful port of
+   * complete_reconciliation (apps/bank_reconcile/api/routes.py
+   * :10416-10794) + OperaSQLImport.complete_reconciliation
+   * (sql_rag/opera_sql_import.py:9021-9145).
+   *
+   * Pipeline:
+   *   1. Validate inputs (bank_code, statement metadata, matched
+   *      entries non-empty)
+   *   2. Service computes calculated closing, auto-detects partial
+   *      mode if mismatch within 1p tolerance, generates gap-aware
+   *      ae_statln line numbers, delegates to markEntriesReconciled
+   *   3. On success, update bank_statement_imports tracking row
+   *      (is_reconciled / reconciled_count / statement_number)
+   *      when import_id supplied
+   *
+   * Query params:
+   *   - bank_code (required)
+   *   - statement_number (required, integer)
+   *   - statement_date (required, YYYY-MM-DD)
+   *   - closing_balance (required, pounds)
+   *   - partial (optional, defaults false)
+   *   - import_id (optional, for app-DB tracking update)
+   *
+   * Body:
+   *   - matched_entries[] (required): { entry_number, statement_line }
+   *   - statement_transactions[] (optional): drives gap calculation
+   *   - period_start, period_end (optional, YYYY-MM-DD)
+   */
+  router.post(
+    '/api/bank-reconciliation/complete',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = ctx.db.app;
+      if (!appDb) {
+        res.status(503).json({
+          success: false,
+          error:
+            'bank-reconcile per-app database not provisioned for this tenant.',
+        });
+        return;
+      }
+      try {
+        const bankCode = String(req.query.bank_code ?? '').trim();
+        const statementNumber = Number(req.query.statement_number);
+        const statementDate = String(req.query.statement_date ?? '').trim();
+        const closingBalance = Number(req.query.closing_balance);
+        const partial =
+          req.query.partial === 'true' || req.query.partial === '1';
+        const importId = req.query.import_id
+          ? Number(req.query.import_id)
+          : null;
+        if (
+          !bankCode ||
+          !Number.isFinite(statementNumber) ||
+          !statementDate ||
+          !Number.isFinite(closingBalance)
+        ) {
+          res.status(400).json({
+            success: false,
+            error:
+              'bank_code, statement_number, statement_date, closing_balance are required',
+          });
+          return;
+        }
+        const body = (req.body ?? {}) as {
+          matched_entries?: Array<{ entry_number: string; statement_line: number }>;
+          statement_transactions?: unknown[];
+        };
+        const matchedEntries = Array.isArray(body.matched_entries)
+          ? body.matched_entries
+          : [];
+        if (matchedEntries.length === 0) {
+          res.status(400).json({
+            success: false,
+            error: 'No matched entries provided',
+          });
+          return;
+        }
+        const result = await completeReconciliation(operaDb, appDb, {
+          bankCode,
+          statementNumber,
+          statementDate,
+          closingBalance,
+          matchedEntries,
+          statementTransactions: Array.isArray(body.statement_transactions)
+            ? body.statement_transactions
+            : [],
+          partial,
+        });
+
+        // App-DB tracking update on success
+        if (result.success && importId !== null && Number.isFinite(importId)) {
+          try {
+            const newRecBal = result.new_reconciled_balance ?? null;
+            const statementActuallyComplete =
+              !result.partial ||
+              (newRecBal !== null &&
+                Math.abs(newRecBal - closingBalance) < 0.01);
+            const isReconciled = statementActuallyComplete ? 1 : 0;
+            await appDb('bank_statement_imports')
+              .where({ id: importId })
+              .update({
+                is_reconciled: isReconciled,
+                reconciled_count: result.records_reconciled ?? 0,
+                reconciled_at: appDb.fn.now(),
+              });
+          } catch (dbErr: any) {
+            ctx.logger.warn?.(
+              'Could not update bank_statement_imports tracking row',
+              dbErr,
+            );
+          }
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Complete reconciliation failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
       }
     },
   );
