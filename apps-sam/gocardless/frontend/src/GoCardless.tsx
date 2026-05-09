@@ -118,7 +118,7 @@ export default function GoCardless({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="gocardless-app space-y-4">
       <header className="flex items-baseline justify-between">
         <div>
           <h1 className="text-2xl font-bold">GoCardless</h1>

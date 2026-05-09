@@ -5,6 +5,7 @@
  * the registered component MUST match
  * `manifest.frontend.entryComponent`.
  */
+import './index.css';
 import BankReconcile from './BankReconcile';
 
 if (typeof window !== 'undefined') {

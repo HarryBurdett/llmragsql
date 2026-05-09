@@ -109,7 +109,7 @@ export default function Suppliers({
   }, [tab, context.api]);
 
   return (
-    <div className="space-y-4">
+    <div className="suppliers-app space-y-4">
       <header>
         <h1 className="text-2xl font-bold">Suppliers</h1>
         <p className="text-sm text-gray-500">

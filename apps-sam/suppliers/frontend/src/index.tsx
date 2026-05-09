@@ -1,6 +1,7 @@
 /**
  * Suppliers plugin — UMD bundle entry.
  */
+import './index.css';
 import Suppliers from './Suppliers';
 
 if (typeof window !== 'undefined') {

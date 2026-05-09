@@ -7,6 +7,7 @@
  * exported component name MUST match
  * `manifest.frontend.entryComponent` ("GoCardless").
  */
+import './index.css';
 import GoCardless from './GoCardless';
 
 if (typeof window !== 'undefined') {

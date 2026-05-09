@@ -1,6 +1,7 @@
 /**
  * Balance Check plugin — UMD bundle entry.
  */
+import './index.css';
 import BalanceCheck from './BalanceCheck';
 
 if (typeof window !== 'undefined') {

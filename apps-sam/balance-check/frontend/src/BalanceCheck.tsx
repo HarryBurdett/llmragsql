@@ -63,7 +63,7 @@ export default function BalanceCheck({
   }, [context.api]);
 
   return (
-    <div className="space-y-4">
+    <div className="balance-check-app space-y-4">
       <header className="flex items-baseline justify-between">
         <div>
           <h1 className="text-2xl font-bold">Balance Check</h1>
