@@ -114,6 +114,10 @@ import {
   inMemoryImportLock,
   makeBankStatementOverlapChecker,
 } from './services/import-defaults.js';
+import {
+  previewBankImportFromPdf,
+  type LlmService,
+} from './services/preview-from-pdf.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2200,10 +2204,51 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  /**
+   * POST /api/bank-import/preview-from-pdf
+   *
+   * Extract a bank statement from a PDF and return the structured
+   * preview the import-review UI renders. Uses ctx.llm (Claude) for
+   * the actual PDF→JSON extraction.
+   *
+   * Faithful port of `preview_bank_import_from_pdf`
+   * (apps/bank_reconcile/api/routes.py:3623-3940).
+   */
+  router.post(
+    '/api/bank-import/preview-from-pdf',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const llm = (ctx.llm as LlmService | undefined) ?? null;
+      if (!llm) {
+        res.status(503).json({
+          success: false,
+          error:
+            'ctx.llm not configured. SAM team must enable the LLM service for this app (manifest.consumes.llm = true).',
+        });
+        return;
+      }
+      try {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const result = await previewBankImportFromPdf(operaDb, llm, {
+          filePath: String(req.query.file_path ?? body.file_path ?? '') || undefined,
+          bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
+          filename: (body.filename as string) ?? undefined,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('preview-from-pdf failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
   //   - GET  /api/reconcile/bank/{bank_code} — full reconcile (~600 LOC)
-  //   - POST /api/bank-import/preview-from-pdf (Claude extraction)
   //   - POST /api/reconcile/process-statement (Claude extraction + matching)
   //   - POST /api/archive/* (filesystem-bound — needs storage adapter)
 

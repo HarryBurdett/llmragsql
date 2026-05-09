@@ -44,6 +44,8 @@ export interface PdfExtractionResult {
     memo: string | null;
     amount: number;
     type: 'credit' | 'debit' | string;
+    /** Running balance after this transaction, when the statement shows it. */
+    balance?: number | null;
     line_number?: number;
   }>;
 }
