@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   listMandateSetups,
   cancelMandateSetup,
+  createMandateSetup,
 } from '../src/services/mandate-setups.js';
 
 interface SetupRow {
@@ -59,6 +60,30 @@ function makeAppDb(state: MockState): any {
           }
         }
         return Promise.resolve(count);
+      },
+      insert: (row: Record<string, unknown>) => {
+        const id = (state.rows[state.rows.length - 1]?.id ?? 0) + 1;
+        state.rows.push({
+          id,
+          opera_account: '',
+          opera_name: '',
+          customer_email: '',
+          billing_request_id: '',
+          billing_request_flow_id: '',
+          authorisation_url: '',
+          mandate_id: '',
+          gocardless_customer_id: '',
+          status: 'pending',
+          status_detail: '',
+          email_sent_at: null,
+          mandate_active_at: null,
+          created_at: '2026-04-15',
+          updated_at: '2026-04-15',
+          ...(row as Partial<SetupRow>),
+        });
+        return {
+          returning: async () => [{ id }],
+        };
       },
       then: (cb: (rows: SetupRow[]) => unknown) => {
         let rows = state.rows.filter((r) =>
@@ -171,5 +196,166 @@ describe('cancelMandateSetup', () => {
     };
     const result = await cancelMandateSetup(makeAppDb(state), 1);
     expect(result.message).toMatch(/CUST_X/);
+  });
+});
+
+describe('createMandateSetup', () => {
+  function okRemote(brId = 'BR1', flowId = 'FL1', authUrl = 'https://gocardless/x') {
+    return {
+      createBillingRequest: async () => ({ success: true, id: brId }),
+      createBillingRequestFlow: async (_id: string) => ({
+        success: true,
+        flowId,
+        authorisationUrl: authUrl,
+      }),
+    };
+  }
+  const okEmail = async () => ({ success: true });
+
+  it('rejects empty opera_account', async () => {
+    const state: MockState = { rows: [] };
+    const result = await createMandateSetup(
+      makeAppDb(state),
+      { operaAccount: '', customerEmail: 'a@b.com' },
+      okRemote(),
+      okEmail,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/account/);
+  });
+
+  it('rejects empty customer_email', async () => {
+    const state: MockState = { rows: [] };
+    const result = await createMandateSetup(
+      makeAppDb(state),
+      { operaAccount: 'CUST01', customerEmail: '' },
+      okRemote(),
+      okEmail,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/email/);
+  });
+
+  it('rejects malformed email', async () => {
+    const state: MockState = { rows: [] };
+    const result = await createMandateSetup(
+      makeAppDb(state),
+      { operaAccount: 'CUST01', customerEmail: 'not-an-email' },
+      okRemote(),
+      okEmail,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Invalid email/);
+  });
+
+  it('returns auth URL on success and persists tracking row', async () => {
+    const state: MockState = { rows: [] };
+    const result = await createMandateSetup(
+      makeAppDb(state),
+      {
+        operaAccount: 'CUST01',
+        operaName: 'Acme Ltd',
+        customerEmail: 'a@b.com',
+      },
+      okRemote('BR_X', 'FL_X', 'https://gc/auth/X'),
+      okEmail,
+    );
+    expect(result.success).toBe(true);
+    expect(result.authorisation_url).toBe('https://gc/auth/X');
+    expect(result.email_sent).toBe(true);
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]?.billing_request_id).toBe('BR_X');
+    expect(state.rows[0]?.status).toBe('email_sent');
+  });
+
+  it('marks status=pending + status_detail when email send fails', async () => {
+    const state: MockState = { rows: [] };
+    const result = await createMandateSetup(
+      makeAppDb(state),
+      { operaAccount: 'CUST01', customerEmail: 'a@b.com' },
+      okRemote(),
+      async () => ({ success: false, error: 'SMTP refused connection' }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.email_sent).toBe(false);
+    expect(result.email_error).toMatch(/SMTP refused/);
+    expect(state.rows[0]?.status).toBe('pending');
+    expect(state.rows[0]?.status_detail).toMatch(/SMTP refused/);
+  });
+
+  it('returns failure when billing-request creation fails', async () => {
+    const state: MockState = { rows: [] };
+    const result = await createMandateSetup(
+      makeAppDb(state),
+      { operaAccount: 'CUST01', customerEmail: 'a@b.com' },
+      {
+        createBillingRequest: async () => ({
+          success: false,
+          error: 'GC down',
+        }),
+        createBillingRequestFlow: async () => ({ success: false }),
+      },
+      okEmail,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/GC down/);
+    expect(state.rows).toHaveLength(0);
+  });
+
+  it('returns failure when flow creation fails', async () => {
+    const state: MockState = { rows: [] };
+    const result = await createMandateSetup(
+      makeAppDb(state),
+      { operaAccount: 'CUST01', customerEmail: 'a@b.com' },
+      {
+        createBillingRequest: async () => ({ success: true, id: 'BR1' }),
+        createBillingRequestFlow: async () => ({
+          success: false,
+          error: 'GC API timeout',
+        }),
+      },
+      okEmail,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/GC API timeout/);
+    expect(state.rows).toHaveLength(0);
+  });
+
+  it('substitutes {authorisation_url} placeholder in custom email body', async () => {
+    const state: MockState = { rows: [] };
+    let captured = { subject: '', body: '' };
+    await createMandateSetup(
+      makeAppDb(state),
+      {
+        operaAccount: 'CUST01',
+        customerEmail: 'a@b.com',
+        emailSubject: 'Custom subject',
+        emailBodyHtml:
+          '<p>Sign here: <a href="{authorisation_url}">link</a></p>',
+      },
+      okRemote('BR_X', 'FL_X', 'https://gc/auth/Z'),
+      async (opts) => {
+        captured.subject = opts.subject;
+        captured.body = opts.bodyHtml;
+        return { success: true };
+      },
+    );
+    expect(captured.subject).toBe('Custom subject');
+    expect(captured.body).toContain('https://gc/auth/Z');
+    expect(captured.body).not.toContain('{authorisation_url}');
+  });
+
+  it('treats absent email sender as failure (status=pending)', async () => {
+    const state: MockState = { rows: [] };
+    const result = await createMandateSetup(
+      makeAppDb(state),
+      { operaAccount: 'CUST01', customerEmail: 'a@b.com' },
+      okRemote(),
+      undefined,
+    );
+    expect(result.success).toBe(true);
+    expect(result.email_sent).toBe(false);
+    expect(result.email_error).toMatch(/No email sender/);
+    expect(state.rows[0]?.status).toBe('pending');
   });
 });

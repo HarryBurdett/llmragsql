@@ -205,6 +205,117 @@ export class GoCardlessClient {
   }
 
   /**
+   * POST /billing_requests — create a new billing request.
+   *
+   * Faithful port of GoCardlessClient.create_billing_request — used
+   * by the mandate-setup flow to generate a hosted authorisation
+   * URL the customer can use to sign the Direct Debit.
+   */
+  async createBillingRequest(opts: {
+    customerEmail: string;
+    customerName?: string | null;
+    description?: string | null;
+    metadata?: Record<string, string> | null;
+  }): Promise<{
+    success: boolean;
+    billingRequest?: Record<string, unknown>;
+    error?: string;
+  }> {
+    if (!opts.customerEmail) {
+      return { success: false, error: 'customerEmail required' };
+    }
+    const customer: Record<string, unknown> = { email: opts.customerEmail };
+    if (opts.customerName) customer.given_name = opts.customerName;
+    const body: Record<string, unknown> = {
+      billing_requests: {
+        mandate_request: { scheme: 'bacs' },
+        links: {},
+        resources: { customer },
+      },
+    };
+    if (opts.metadata) {
+      (body.billing_requests as any).metadata = opts.metadata;
+    }
+    try {
+      const res = await this.request('POST', '/billing_requests', body);
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        billing_requests?: Record<string, unknown>;
+      };
+      return { success: true, billingRequest: data.billing_requests ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
+   * POST /billing_request_flows — create the hosted-payment-pages flow
+   * URL for an existing billing request. Returns `{authorisation_url}`.
+   */
+  async createBillingRequestFlow(opts: {
+    billingRequestId: string;
+    redirectUri?: string | null;
+    exitUri?: string | null;
+  }): Promise<{
+    success: boolean;
+    flow?: Record<string, unknown>;
+    error?: string;
+  }> {
+    if (!opts.billingRequestId) {
+      return { success: false, error: 'billingRequestId required' };
+    }
+    const flow: Record<string, unknown> = {
+      links: { billing_request: opts.billingRequestId },
+    };
+    if (opts.redirectUri) flow.redirect_uri = opts.redirectUri;
+    if (opts.exitUri) flow.exit_uri = opts.exitUri;
+    try {
+      const res = await this.request(
+        'POST',
+        '/billing_request_flows',
+        { billing_request_flows: flow },
+      );
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as {
+        billing_request_flows?: Record<string, unknown>;
+      };
+      return { success: true, flow: data.billing_request_flows ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * GET /mandates — list mandates.
    *
    * Faithful port of GoCardlessClient.list_mandates. Returns a page

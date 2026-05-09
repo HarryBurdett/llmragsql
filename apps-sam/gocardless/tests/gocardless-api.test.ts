@@ -242,6 +242,85 @@ describe('createClientFromSettings', () => {
   });
 });
 
+describe('GoCardlessClient.createBillingRequest / createBillingRequestFlow', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('createBillingRequest POSTs the billing_requests envelope', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ billing_requests: { id: 'BR1', status: 'pending' } }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createBillingRequest({
+      customerEmail: 'a@b.com',
+      customerName: 'Acme Ltd',
+      metadata: { opera_account: 'CUST01' },
+    });
+    expect(result.success).toBe(true);
+    expect(result.billingRequest?.id).toBe('BR1');
+    const fetchCall = (global.fetch as any).mock.calls[0];
+    expect(fetchCall[0]).toMatch(/\/billing_requests$/);
+    const body = JSON.parse(fetchCall[1].body);
+    expect(body.billing_requests.resources.customer.email).toBe('a@b.com');
+    expect(body.billing_requests.metadata.opera_account).toBe('CUST01');
+  });
+
+  it('createBillingRequest refuses empty email', async () => {
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createBillingRequest({ customerEmail: '' });
+    expect(result.success).toBe(false);
+  });
+
+  it('createBillingRequest reports HTTP errors', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 422,
+      text: async () => 'invalid email',
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createBillingRequest({
+      customerEmail: 'a@b.com',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/422/);
+  });
+
+  it('createBillingRequestFlow POSTs the billing_request_flows envelope', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        billing_request_flows: {
+          id: 'FL1',
+          authorisation_url: 'https://gc/x',
+        },
+      }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createBillingRequestFlow({
+      billingRequestId: 'BR1',
+    });
+    expect(result.success).toBe(true);
+    expect(result.flow?.authorisation_url).toBe('https://gc/x');
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    expect(body.billing_request_flows.links.billing_request).toBe('BR1');
+  });
+
+  it('createBillingRequestFlow refuses empty id', async () => {
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createBillingRequestFlow({
+      billingRequestId: '',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('GoCardlessClient.listSubscriptions', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

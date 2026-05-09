@@ -85,6 +85,7 @@ import {
 import {
   listMandateSetups,
   cancelMandateSetup,
+  createMandateSetup,
 } from './services/mandate-setups.js';
 import { getEligibleCustomers } from './services/eligible-customers.js';
 import { getCustomerEmail } from './services/customer-email.js';
@@ -1518,6 +1519,126 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Get customer email failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/mandates/setup
+   *
+   * Initiate a new GoCardless mandate setup for an Opera customer:
+   *   1. Creates a billing request via GoCardless API
+   *   2. Creates a billing-request flow + auth URL
+   *   3. Persists a tracking row in mandate_setup_requests
+   *   4. Sends the customer an email with the auth URL via SAM's
+   *      email service
+   *
+   * Faithful port of create_mandate_setup
+   * (apps/gocardless/api/routes.py:6852-7051). Email send is
+   * best-effort: setup row persists either way, status reflects
+   * whether the email went out.
+   *
+   * Body:
+   *   - opera_account (required)
+   *   - opera_name
+   *   - customer_email (required)
+   *   - email_subject (optional)
+   *   - email_body (optional, supports {authorisation_url} placeholder)
+   */
+  router.post(
+    '/api/gocardless/mandates/setup',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error:
+              'GoCardless API access token not configured. Go to GoCardless Settings to add your API credentials.',
+          });
+          return;
+        }
+        const body = (req.body ?? {}) as {
+          opera_account?: string;
+          opera_name?: string;
+          customer_email?: string;
+          email_subject?: string;
+          email_body?: string;
+        };
+        const remote = {
+          createBillingRequest: async (opts: {
+            customerEmail: string;
+            customerName: string | null;
+            metadata: Record<string, string>;
+          }) => {
+            const r = await client.createBillingRequest({
+              customerEmail: opts.customerEmail,
+              customerName: opts.customerName,
+              metadata: opts.metadata,
+            });
+            const id =
+              r.success && r.billingRequest
+                ? ((r.billingRequest as Record<string, any>).id as
+                    | string
+                    | undefined) ?? undefined
+                : undefined;
+            return { success: r.success, id, error: r.error };
+          },
+          createBillingRequestFlow: async (billingRequestId: string) => {
+            const r = await client.createBillingRequestFlow({
+              billingRequestId,
+            });
+            const flow = r.flow as Record<string, any> | undefined;
+            return {
+              success: r.success,
+              flowId: (flow?.id as string | undefined) ?? undefined,
+              authorisationUrl:
+                (flow?.authorisation_url as string | undefined) ?? undefined,
+              error: r.error,
+            };
+          },
+        };
+        const sendEmail = ctx.email
+          ? async (opts: { to: string; subject: string; bodyHtml: string }) => {
+              const r = await ctx.email!.send({
+                to: opts.to,
+                subject: opts.subject,
+                bodyHtml: opts.bodyHtml,
+              });
+              return { success: r.success, error: r.error ?? null };
+            }
+          : undefined;
+        const companyName =
+          (settings.company_reference ?? '')
+            .replace(/LTDLTD/g, ' LTD')
+            .replace(/LTD/g, ' Ltd')
+            .trim() || 'Our Company';
+        const result = await createMandateSetup(
+          appDb,
+          {
+            operaAccount: String(body.opera_account ?? ''),
+            operaName: typeof body.opera_name === 'string' ? body.opera_name : null,
+            customerEmail: String(body.customer_email ?? ''),
+            emailSubject:
+              typeof body.email_subject === 'string' ? body.email_subject : null,
+            emailBodyHtml:
+              typeof body.email_body === 'string' ? body.email_body : null,
+            companyName,
+          },
+          remote,
+          sendEmail,
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Create mandate setup failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
