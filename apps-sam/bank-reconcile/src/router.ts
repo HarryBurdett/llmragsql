@@ -131,6 +131,7 @@ import {
   type FileStorageAdapter,
   type ImportType,
 } from './services/archive.js';
+import { processStatement } from './services/process-statement.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2460,10 +2461,74 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
-  // Many more endpoints to port from apps/bank_reconcile/api/routes.py
-  // (127 routes total). Future-session priorities:
-  //   - POST /api/reconcile/process-statement (Claude extraction + matching)
-  //   - POST /api/bank-import/import-with-overrides
+  /**
+   * POST /api/reconcile/process-statement
+   *
+   * Extract a statement via ctx.llm and run duplicate detection +
+   * account suggestion in one pass. Used by the unified import UI
+   * that wants the matched preview in a single round-trip.
+   *
+   * Faithful port of `process_bank_statement`
+   * (apps/bank_reconcile/api/routes.py:1370-1645). Also wires the
+   * `process-statement-unified` alias which Python exposes for the
+   * newer UI but uses the same flow underneath.
+   */
+  const handleProcessStatement = async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const llm = (ctx.llm as LlmService | undefined) ?? null;
+    if (!llm) {
+      res.status(503).json({
+        success: false,
+        error: 'ctx.llm not configured.',
+      });
+      return;
+    }
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const result = await processStatement(operaDb, llm, {
+        filePath: String(req.query.file_path ?? body.file_path ?? '') || undefined,
+        bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('process-statement failed', err);
+      res.status(500).json({
+        success: false,
+        error: err?.message ?? String(err),
+      });
+    }
+  };
+  router.post('/api/reconcile/process-statement', handleProcessStatement);
+  router.post(
+    '/api/reconcile/process-statement-unified',
+    handleProcessStatement,
+  );
+
+  /**
+   * POST /api/bank-import/import-with-overrides — alias for
+   * /api/bank-import/import-from-pdf. Python's separate endpoint
+   * exists for legacy reasons (the older UI hit this URL with the
+   * same body shape). Behaviour is identical, so we register the
+   * alias as a thin re-route.
+   */
+  router.post(
+    '/api/bank-import/import-with-overrides',
+    async (req: Request, res: Response) => {
+      // Same logic as /api/bank-import/import-from-pdf — Python's
+      // separate endpoint accepts the same body shape so we just
+      // forward via Express's internal dispatch.
+      req.url = '/api/bank-import/import-from-pdf';
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  // Remaining bank-reconcile endpoints (≈ 80 of 127) are
+  // smaller utility routes, drilldowns, and Opera-3 mirrors.
+  // Each ports independently using the patterns established in
+  // this codebase.
 
   return router;
 }
