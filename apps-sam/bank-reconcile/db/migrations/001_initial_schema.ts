@@ -91,16 +91,11 @@ export async function up(knex: Knex): Promise<void> {
     table.timestamp('expires_at');
   });
 
-  // Deferred transactions (operator skipped during a previous import)
-  await knex.schema.createTable('deferred_transactions', (table) => {
-    table.increments('id').primary();
-    table.string('bank_code', 16).notNullable();
-    table.date('post_date');
-    table.decimal('amount', 12, 2);
-    table.string('description', 500);
-    table.text('reason');
-    table.timestamp('deferred_at').defaultTo(knex.fn.now());
-  });
+  // Note: `deferred_transactions` is created by migration 011 with
+  // its production schema (statement_date, deferred_by). The earlier
+  // version sketched here had the wrong column shape and clashed with
+  // 011 — removing it from 001 lets a fresh database apply both
+  // migrations cleanly.
 
   // Statement history (which PDFs were imported, when, by whom)
   await knex.schema.createTable('bank_statement_imports', (table) => {
@@ -119,7 +114,7 @@ export async function up(knex: Knex): Promise<void> {
 
 export async function down(knex: Knex): Promise<void> {
   await knex.schema.dropTableIfExists('bank_statement_imports');
-  await knex.schema.dropTableIfExists('deferred_transactions');
+  // deferred_transactions: dropped by migration 011's down()
   await knex.schema.dropTableIfExists('import_locks');
   await knex.schema.dropTableIfExists('extraction_cache');
   await knex.schema.dropTableIfExists('bank_import_patterns');
