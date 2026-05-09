@@ -13,6 +13,7 @@ import {
   getGlobalSupplierSettings,
   updateGlobalSupplierSettings,
 } from './services/global-settings.js';
+import { listSupplierDirectory } from './services/supplier-directory.js';
 import { getAgedDebtSummary, getAgedDebtBySupplier } from './services/aged-debt.js';
 import {
   listContacts,
@@ -175,6 +176,39 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Update supplier settings failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/suppliers/directory
+   *
+   * List suppliers from Opera pname enriched with supplier-statement
+   * automation info from the per-app DB. Faithful port of
+   * list_supplier_directory (apps/suppliers/api/routes.py:2285-2371).
+   *
+   * Query params:
+   *   - search (optional) — match account or name (LIKE %term%); top 100
+   *   - omitted        → only suppliers with non-zero balance; top 500
+   *
+   * Both modes exclude dormant suppliers (per CLAUDE.md mandate —
+   * the Python source omits this filter; we add it for parity with
+   * the rest of the SAM port).
+   */
+  router.get('/api/suppliers/directory', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const search =
+        typeof req.query.search === 'string' ? req.query.search : null;
+      const result = await listSupplierDirectory(
+        operaDb,
+        ctx.db.app ?? null,
+        { search },
+      );
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('List supplier directory failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
