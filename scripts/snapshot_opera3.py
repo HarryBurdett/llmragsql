@@ -2,25 +2,25 @@
 """
 Opera 3 (FoxPro DBF) snapshot script.
 
-Mirrors `snapshot_opera.py`'s output shape so the two snapshots are
-diffable. Reads every .dbf file in the given Opera 3 data folder
-(via `sql_rag.opera3_foxpro.Opera3Reader`) and captures:
-  - Field names and types
-  - Record count
-  - Up to N most recent records (sample for type inspection)
+Companion to snapshot_opera.py (which targets Opera SE / SQL Server).
+Output shape matches snapshot_opera.py so the two snapshots can be
+diffed directly.
+
+Reads every .dbf file in the supplied Opera 3 data folder via
+sql_rag.opera3_foxpro.Opera3Reader (dbfread under the hood) and
+captures field names, types, record count, and up to N sample
+records per table.
 
 Usage (from project root):
-    python docs/sam-rewrite/tools/snapshot_opera3.py /path/to/opera3/data
-    python docs/sam-rewrite/tools/snapshot_opera3.py /path/to/opera3/data \
+    python scripts/snapshot_opera3.py /path/to/opera3/data
+    python scripts/snapshot_opera3.py /path/to/opera3/data \\
         --output scripts/opera3_snapshot.json
-    python docs/sam-rewrite/tools/snapshot_opera3.py /path/to/opera3/data --limit 100
+    python scripts/snapshot_opera3.py /path/to/opera3/data --limit 100
 
-Default output: scripts/opera3_snapshot.json (sibling of opera_snapshot.json
-for diffability — the scripts/ folder is git-ignored so the snapshot stays
-local).
-Default sample limit per table: 500 (same as snapshot_opera.py)
+Default output: scripts/opera3_snapshot.json (sibling of opera_snapshot.json)
+Default sample limit per table: 500 (matches snapshot_opera.py)
 
-The output structure matches snapshot_opera.py:
+Output structure:
     {
       "timestamp": "...",
       "data_path": "...",
@@ -32,11 +32,15 @@ The output structure matches snapshot_opera.py:
           "field_types": {col: type_char},
           "records": [...],
           "count": N,
-          "key_field": "..."
+          "sampled": M,
+          "key_field": "...",
+          "last_modified": "..."
         },
         ...
       }
     }
+
+See docs/sam-rewrite/snapshot_opera3.md for full operating notes.
 """
 
 from __future__ import annotations
@@ -167,7 +171,10 @@ def snapshot_all_tables(reader: Opera3Reader, limit: int = 500):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Snapshot an Opera 3 (FoxPro) installation.')
+    parser = argparse.ArgumentParser(
+        description='Snapshot an Opera 3 (FoxPro) installation. '
+                    'Companion to snapshot_opera.py for SQL Server SE.'
+    )
     parser.add_argument(
         'data_path',
         help='Path to Opera 3 data folder (e.g. /mnt/opera3 or C:\\Apps\\O3 Server VFP)',
