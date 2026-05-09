@@ -109,6 +109,14 @@ import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
 } from '@sqlrag/sam-shared';
+import {
+  scanGocardlessEmails,
+  type EmailMailboxAdapter,
+  type ScannedEmail,
+} from './services/scan-emails.js';
+import {
+  parseGocardlessEmail as parseEmailContent,
+} from './services/parser.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -3103,8 +3111,134 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
+  /**
+   * POST /api/gocardless/parse-content
+   *
+   * Parse arbitrary GoCardless email content and return the structured
+   * batch. Used by the dev playground / when an operator pastes the
+   * email body. Faithful port of `parse_gocardless_content`
+   * (apps/gocardless/api/routes.py:228-269).
+   */
+  router.post(
+    '/api/gocardless/parse-content',
+    async (req: Request, res: Response) => {
+      try {
+        const content = String(
+          (req.body?.content ?? req.body?.email_content ?? '').toString(),
+        );
+        if (!content.trim()) {
+          res
+            .status(400)
+            .json({ success: false, error: 'content is required' });
+          return;
+        }
+        const batch = parseEmailContent(content);
+        res.json({
+          success: true,
+          batch: {
+            gross_amount: batch.gross_amount,
+            gocardless_fees: batch.gocardless_fees,
+            app_fees: batch.app_fees,
+            vat_on_fees: batch.vat_on_fees,
+            net_amount: batch.net_amount,
+            bank_reference: batch.bank_reference,
+            currency: batch.currency,
+            payment_date: batch.payment_date
+              ? batch.payment_date.toISOString().slice(0, 10)
+              : null,
+            email_subject: batch.email_subject,
+            payment_count: batch.payments.length,
+            payments: batch.payments.map((p) => ({
+              customer_name: p.customer_name,
+              description: p.description,
+              amount: p.amount,
+              invoice_refs: p.invoice_refs,
+            })),
+          },
+        });
+      } catch (err: any) {
+        ctx.logger.error('parse-content failed', err);
+        res
+          .status(500)
+          .json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/gocardless/scan-emails
+   *
+   * Scan the connected mailbox for GoCardless payout notifications and
+   * return parsed batches with duplicate flags + period validation.
+   * Faithful port of scan_gocardless_emails (routes.py:2731-3130).
+   *
+   * The SAM email-ingest contract delivers emails via a streaming
+   * handler rather than a query API (`emailIngest.registerHandler`),
+   * so the route requires the SAM team to provide an
+   * `EmailMailboxAdapter` at construction time. The replication shape
+   * is everything that's deterministic; the adapter wiring is one
+   * concrete glue point the SAM team owns.
+   *
+   * Query params:
+   *   - from_date            (YYYY-MM-DD, optional)
+   *   - to_date              (YYYY-MM-DD, optional)
+   *   - include_processed    ('1' to include already-imported emails)
+   *   - company_reference    (override settings.company_reference)
+   */
+  router.get(
+    '/api/gocardless/scan-emails',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const adapter = (ctx as unknown as {
+        gocardlessMailboxAdapter?: EmailMailboxAdapter;
+      }).gocardlessMailboxAdapter;
+      if (!adapter) {
+        res.status(503).json({
+          success: false,
+          error:
+            'Mailbox adapter not configured. SAM email-ingest wiring required.',
+        });
+        return;
+      }
+      try {
+        const settings = await loadSettings(appDb);
+        const fromDate = (req.query.from_date as string) ?? null;
+        const toDate = (req.query.to_date as string) ?? null;
+        const includeProcessed =
+          req.query.include_processed === '1' ||
+          req.query.include_processed === 'true';
+        const companyOverride =
+          (req.query.company_reference as string) ?? null;
+        const result = await scanGocardlessEmails(
+          operaDb,
+          appDb,
+          adapter,
+          {
+            fromDate,
+            toDate,
+            includeProcessed,
+            companyReferenceOverride: companyOverride,
+            companyReference: settings.company_reference ?? null,
+            defaultCbtype: (settings as unknown as {
+              default_batch_type?: string;
+            }).default_batch_type ?? null,
+          },
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('scan-emails failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
   // Many more endpoints to port from apps/gocardless/api/routes.py:
-  //   /api/gocardless/scan-emails        — IMAP/Graph scan via SAM email service
   //   /api/gocardless/preview-batch      — match payments to Opera customers
   //   /api/gocardless/import             — post sales receipts to Opera
   //   /api/gocardless/remittance/*       — generate / send remittance emails

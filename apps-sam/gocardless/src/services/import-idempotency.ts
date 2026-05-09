@@ -105,3 +105,31 @@ export async function getImportedEmailIds(
     return [];
   }
 }
+
+/**
+ * Set of bank references that have been imported, from any source
+ * (email or API). Faithful port of
+ * `email_storage.get_imported_gocardless_references`.
+ */
+export async function getImportedReferences(
+  appDb: Knex,
+  opts: IdempotencyOptions = {},
+): Promise<Set<string>> {
+  try {
+    let q = appDb('gocardless_imports').whereNotNull('bank_reference');
+    if (opts.targetSystem) {
+      q = q.andWhere({ target_system: opts.targetSystem });
+    }
+    const rows = (await q
+      .distinct('bank_reference')
+      .select('bank_reference')) as Array<{ bank_reference: string | null }>;
+    const out = new Set<string>();
+    for (const row of rows) {
+      const ref = (row.bank_reference ?? '').toString().trim();
+      if (ref) out.add(ref);
+    }
+    return out;
+  } catch {
+    return new Set();
+  }
+}
