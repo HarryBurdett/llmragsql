@@ -52,6 +52,11 @@ import {
 } from './services/account-dropdowns.js';
 import { unreconcileEntries } from './services/unreconcile.js';
 import {
+  listImportHistory,
+  deleteImportRecord,
+  clearImportHistory,
+} from './services/import-history.js';
+import {
   markEntriesReconciled,
   type ReconcileEntryInput,
 } from './services/mark-reconciled.js';
@@ -1291,6 +1296,179 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Update repeat entry date failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/bank-import/import-history
+   *
+   * List bank statement import audit rows. Faithful port of
+   * get_bank_statement_import_history (apps/bank_reconcile/api/
+   * routes.py:9967-9997).
+   *
+   * Query params:
+   *   - bank_code (optional)
+   *   - from_date / to_date (statement_date range, optional)
+   *   - limit (default 50)
+   * Filters target_system='opera_se' to match the Python wrapper —
+   * the legacy variant on /api/bank-import/email-import-history below
+   * mirrors that without the filter for backwards compatibility.
+   */
+  router.get(
+    '/api/bank-import/import-history',
+    async (req: Request, res: Response) => {
+      const appDb = ctx.db.app;
+      if (!appDb) {
+        res.status(503).json({
+          success: false,
+          error: 'bank-reconcile per-app database not provisioned for this tenant.',
+        });
+        return;
+      }
+      try {
+        const result = await listImportHistory(appDb, {
+          bankCode:
+            typeof req.query.bank_code === 'string'
+              ? req.query.bank_code
+              : null,
+          fromDate:
+            typeof req.query.from_date === 'string'
+              ? req.query.from_date
+              : null,
+          toDate:
+            typeof req.query.to_date === 'string'
+              ? req.query.to_date
+              : null,
+          limit: req.query.limit ? Number(req.query.limit) : 50,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('List import history failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/bank-import/email-import-history
+   *
+   * Legacy alias for /api/bank-import/import-history. Same shape but
+   * the response key is `history` (Python wrapper kept that name for
+   * backwards compatibility — see routes.py:10171-10192). Filters
+   * default-target_system NOT applied; matches Python's exact
+   * behaviour.
+   */
+  router.get(
+    '/api/bank-import/email-import-history',
+    async (req: Request, res: Response) => {
+      const appDb = ctx.db.app;
+      if (!appDb) {
+        res.status(503).json({
+          success: false,
+          error: 'bank-reconcile per-app database not provisioned for this tenant.',
+        });
+        return;
+      }
+      try {
+        const result = await listImportHistory(appDb, {
+          bankCode:
+            typeof req.query.bank_code === 'string'
+              ? req.query.bank_code
+              : null,
+          limit: req.query.limit ? Number(req.query.limit) : 50,
+          targetSystem: null, // legacy: no target_system filter
+        });
+        if (!result.success) {
+          res.status(500).json(result);
+          return;
+        }
+        res.json({
+          success: true,
+          history: result.imports,
+          count: result.count,
+        });
+      } catch (err: any) {
+        ctx.logger.error('List email import history failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * DELETE /api/bank-import/import-history/:record_id
+   *
+   * Delete a single import audit row so the statement can be
+   * re-imported. Faithful port of delete_bank_statement_import_record
+   * (apps/bank_reconcile/api/routes.py:10104-10131). Does NOT touch
+   * Opera — only the local audit row.
+   */
+  router.delete(
+    '/api/bank-import/import-history/:record_id',
+    async (req: Request, res: Response) => {
+      const appDb = ctx.db.app;
+      if (!appDb) {
+        res.status(503).json({
+          success: false,
+          error: 'bank-reconcile per-app database not provisioned for this tenant.',
+        });
+        return;
+      }
+      try {
+        const id = Number(req.params.record_id);
+        const result = await deleteImportRecord(appDb, id);
+        if (!result.success) {
+          res
+            .status(/not found/i.test(result.error ?? '') ? 404 : 400)
+            .json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Delete import record failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * DELETE /api/bank-import/import-history
+   *
+   * Bulk-clear import audit rows by optional bank_code + date range.
+   * Faithful port of clear_bank_statement_import_history
+   * (apps/bank_reconcile/api/routes.py:10137-10165). Returns the
+   * deleted count.
+   */
+  router.delete(
+    '/api/bank-import/import-history',
+    async (req: Request, res: Response) => {
+      const appDb = ctx.db.app;
+      if (!appDb) {
+        res.status(503).json({
+          success: false,
+          error: 'bank-reconcile per-app database not provisioned for this tenant.',
+        });
+        return;
+      }
+      try {
+        const result = await clearImportHistory(appDb, {
+          bankCode:
+            typeof req.query.bank_code === 'string'
+              ? req.query.bank_code
+              : null,
+          fromDate:
+            typeof req.query.from_date === 'string'
+              ? req.query.from_date
+              : null,
+          toDate:
+            typeof req.query.to_date === 'string'
+              ? req.query.to_date
+              : null,
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Clear import history failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
