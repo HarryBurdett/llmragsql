@@ -242,6 +242,95 @@ describe('createClientFromSettings', () => {
   });
 });
 
+describe('GoCardlessClient.createPayment', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('POSTs the payments wrapper with the expected body', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ payments: { id: 'PM1', status: 'pending_submission' } }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createPayment({
+      amountPence: 5000,
+      mandateId: 'MD1',
+      description: 'INV001',
+      chargeDate: '2026-05-15',
+      metadata: { opera_account: 'CUST01', invoices: 'INV001' },
+    });
+    expect(result.success).toBe(true);
+    expect(result.payment?.id).toBe('PM1');
+    const fetchCall = (global.fetch as any).mock.calls[0];
+    expect(fetchCall[0]).toMatch(/\/payments$/);
+    expect(fetchCall[1].method).toBe('POST');
+    const body = JSON.parse(fetchCall[1].body);
+    expect(body.payments.amount).toBe(5000);
+    expect(body.payments.currency).toBe('GBP');
+    expect(body.payments.links.mandate).toBe('MD1');
+    expect(body.payments.charge_date).toBe('2026-05-15');
+    expect(body.payments.metadata.opera_account).toBe('CUST01');
+    expect(body.payments.retry_if_possible).toBe(true);
+  });
+
+  it('omits optional fields when not provided', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ payments: { id: 'PM1' } }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    await client.createPayment({ amountPence: 100, mandateId: 'MD1' });
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    expect(body.payments.charge_date).toBeUndefined();
+    expect(body.payments.description).toBeUndefined();
+    expect(body.payments.metadata).toBeUndefined();
+  });
+
+  it('honours retryIfPossible=false', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ payments: { id: 'PM1' } }),
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    await client.createPayment({
+      amountPence: 100,
+      mandateId: 'MD1',
+      retryIfPossible: false,
+    });
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    expect(body.payments.retry_if_possible).toBe(false);
+  });
+
+  it('reports HTTP errors uniformly', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: false,
+      status: 422,
+      text: async () => 'mandate not active',
+    });
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createPayment({
+      amountPence: 100,
+      mandateId: 'MD1',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/422/);
+  });
+
+  it('refuses empty mandate id', async () => {
+    const client = new GoCardlessClient({ accessToken: 'token', sandbox: true });
+    const result = await client.createPayment({ amountPence: 100, mandateId: '' });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/mandateId required/);
+  });
+});
+
 describe('GoCardlessClient.getSubscription', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn());

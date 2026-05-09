@@ -34,7 +34,7 @@ export interface GoCardlessSettings {
   partner_client_secret?: string;
   partner_redirect_uri?: string;
   partner_admin_password?: string;
-  request_statement_reference?: boolean;
+  request_statement_reference?: string;
   payout_lookback_days?: number;
 }
 

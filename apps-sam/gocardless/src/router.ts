@@ -86,6 +86,12 @@ import { getEligibleCustomers } from './services/eligible-customers.js';
 import { getCustomerEmail } from './services/customer-email.js';
 import { getRepeatDocuments } from './services/repeat-documents.js';
 import {
+  requestPayment,
+  requestBulkPayments,
+  type OperaSnapshot,
+  type RequestPaymentInput,
+} from './services/request-payment.js';
+import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
 } from '@sqlrag/sam-shared';
@@ -849,6 +855,216 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Eligible customers failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/request-payment
+   *
+   * Request a single Direct Debit payment from a customer via the
+   * customer's existing GoCardless mandate. Faithful port of
+   * request_gocardless_payment (apps/gocardless/api/routes.py
+   * :8249-8435). Pipeline:
+   *   1. Duplicate-invoice guard against active payment_requests
+   *   2. Active mandate lookup (gocardless_mandates)
+   *   3. Opera read: invoice total (from stran.st_trbal) +
+   *      unallocated-credit safety check
+   *   4. POST /payments via the GoCardless client
+   *   5. Persist to gocardless_payment_requests + return enriched
+   *      response with customer_name + estimated_arrival
+   */
+  router.post(
+    '/api/gocardless/request-payment',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const body = (req.body ?? {}) as Partial<RequestPaymentInput> & {
+          opera_account?: string;
+          amount?: number | string | null;
+          charge_date?: string | null;
+        };
+        const input: RequestPaymentInput = {
+          operaAccount: String(body.opera_account ?? body.operaAccount ?? ''),
+          invoices: Array.isArray(body.invoices) ? body.invoices.map(String) : [],
+          amountPence:
+            body.amount === undefined || body.amount === null
+              ? body.amountPence ?? null
+              : Number(body.amount),
+          chargeDate:
+            typeof body.charge_date === 'string'
+              ? body.charge_date
+              : (body.chargeDate ?? null),
+          description: body.description ?? null,
+        };
+        const readOpera = async (
+          operaAccount: string,
+          invoices: string[],
+        ): Promise<OperaSnapshot> => {
+          let invoiceTotalPounds: number | null = null;
+          if (invoices.length > 0) {
+            const totalRow = await operaDb('stran')
+              .where({ st_account: operaAccount })
+              .whereIn('st_trref', invoices)
+              .sum<{ total: number | string | null }>({ total: 'st_trbal' })
+              .first();
+            const total = totalRow?.total;
+            if (total !== null && total !== undefined && Number(total) !== 0) {
+              invoiceTotalPounds = Number(total);
+            }
+          }
+          const creditRow = await operaDb('stran')
+            .where({ st_account: operaAccount })
+            .andWhere('st_trbal', '<', 0)
+            .sum<{ total: number | string | null }>({ total: 'st_trbal' })
+            .first();
+          const credit = Number(creditRow?.total ?? 0);
+          return {
+            invoiceTotalPounds,
+            unallocatedCreditPounds: Math.abs(credit),
+          };
+        };
+        const createRemote = async (input2: {
+          amountPence: number;
+          mandateId: string;
+          description: string;
+          chargeDate: string | null;
+          metadata: Record<string, string>;
+        }) =>
+          client.createPayment({
+            amountPence: input2.amountPence,
+            mandateId: input2.mandateId,
+            description: input2.description,
+            chargeDate: input2.chargeDate,
+            metadata: input2.metadata,
+          });
+        const result = await requestPayment(
+          appDb,
+          input,
+          { request_statement_reference: settings.request_statement_reference ?? '' },
+          readOpera,
+          createRemote,
+        );
+        if (!result.success) {
+          res.status(400).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Request payment failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/payment-requests/bulk
+   *
+   * Request multiple payments in one shot. Each row is run through
+   * the same pipeline as /request-payment; failures are reported
+   * per-row and don't abort the batch. Faithful port of
+   * request_bulk_payments (apps/gocardless/api/routes.py:8438-8486).
+   *
+   * Accepts either { requests: [...] } or a bare array body.
+   */
+  router.post(
+    '/api/gocardless/payment-requests/bulk',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const settings = await loadSettings(appDb);
+        const client = createClientFromSettings(settings);
+        if (!client) {
+          res.status(400).json({
+            success: false,
+            error: 'GoCardless API not configured',
+          });
+          return;
+        }
+        const raw = req.body;
+        const body = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.requests)
+            ? raw.requests
+            : [];
+        const inputs: RequestPaymentInput[] = body.map((r: any) => ({
+          operaAccount: String(r.opera_account ?? r.operaAccount ?? ''),
+          invoices: Array.isArray(r.invoices) ? r.invoices.map(String) : [],
+          amountPence:
+            r.amount === undefined || r.amount === null
+              ? r.amountPence ?? null
+              : Number(r.amount),
+          chargeDate:
+            typeof r.charge_date === 'string' ? r.charge_date : (r.chargeDate ?? null),
+          description: r.description ?? null,
+        }));
+        const readOpera = async (
+          operaAccount: string,
+          invoices: string[],
+        ): Promise<OperaSnapshot> => {
+          let invoiceTotalPounds: number | null = null;
+          if (invoices.length > 0) {
+            const totalRow = await operaDb('stran')
+              .where({ st_account: operaAccount })
+              .whereIn('st_trref', invoices)
+              .sum<{ total: number | string | null }>({ total: 'st_trbal' })
+              .first();
+            const total = totalRow?.total;
+            if (total !== null && total !== undefined && Number(total) !== 0) {
+              invoiceTotalPounds = Number(total);
+            }
+          }
+          const creditRow = await operaDb('stran')
+            .where({ st_account: operaAccount })
+            .andWhere('st_trbal', '<', 0)
+            .sum<{ total: number | string | null }>({ total: 'st_trbal' })
+            .first();
+          const credit = Number(creditRow?.total ?? 0);
+          return {
+            invoiceTotalPounds,
+            unallocatedCreditPounds: Math.abs(credit),
+          };
+        };
+        const createRemote = async (input2: {
+          amountPence: number;
+          mandateId: string;
+          description: string;
+          chargeDate: string | null;
+          metadata: Record<string, string>;
+        }) =>
+          client.createPayment({
+            amountPence: input2.amountPence,
+            mandateId: input2.mandateId,
+            description: input2.description,
+            chargeDate: input2.chargeDate,
+            metadata: input2.metadata,
+          });
+        const result = await requestBulkPayments(
+          appDb,
+          inputs,
+          { request_statement_reference: settings.request_statement_reference ?? '' },
+          readOpera,
+          createRemote,
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Request bulk payments failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },

@@ -253,6 +253,63 @@ export class GoCardlessClient {
   }
 
   /**
+   * POST /payments — create a new payment against a mandate.
+   *
+   * Faithful port of GoCardlessClient.create_payment
+   * (sql_rag/gocardless_api.py:329-380). Uniform `{success, payment?,
+   * error?}` shape so callers can compose without exception-handling.
+   */
+  async createPayment(opts: {
+    amountPence: number;
+    mandateId: string;
+    description?: string | null;
+    chargeDate?: string | null;
+    currency?: string;
+    metadata?: Record<string, string> | null;
+    reference?: string | null;
+    retryIfPossible?: boolean;
+  }): Promise<{
+    success: boolean;
+    payment?: Record<string, unknown>;
+    error?: string;
+  }> {
+    if (!opts.mandateId) return { success: false, error: 'mandateId required' };
+    const body: Record<string, unknown> = {
+      amount: opts.amountPence,
+      currency: opts.currency ?? 'GBP',
+      links: { mandate: opts.mandateId },
+      retry_if_possible: opts.retryIfPossible !== false,
+    };
+    if (opts.description) body.description = opts.description;
+    if (opts.chargeDate) body.charge_date = opts.chargeDate;
+    if (opts.reference) body.reference = opts.reference;
+    if (opts.metadata) body.metadata = opts.metadata;
+    try {
+      const res = await this.request('POST', '/payments', { payments: body });
+      if (res.status === 401) {
+        return {
+          success: false,
+          error: 'Invalid GoCardless API token (401 Unauthorized)',
+        };
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        return {
+          success: false,
+          error: `GoCardless API returned ${res.status}: ${text.slice(0, 200)}`,
+        };
+      }
+      const data = (await res.json()) as { payments?: Record<string, unknown> };
+      return { success: true, payment: data.payments ?? {} };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Network error: ${err?.message ?? String(err)}`,
+      };
+    }
+  }
+
+  /**
    * GET /subscriptions/:id — fetch a subscription's current state.
    *
    * Faithful port of `GoCardlessClient.get_subscription`
