@@ -57,6 +57,10 @@ import {
   clearImportHistory,
 } from './services/import-history.js';
 import {
+  getFolderSettings,
+  saveFolderSettings,
+} from './services/folder-settings.js';
+import {
   markEntriesReconciled,
   type ReconcileEntryInput,
 } from './services/mark-reconciled.js';
@@ -1469,6 +1473,76 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('Clear import history failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/bank-import/folder-settings
+   *
+   * Read the per-tenant bank-statement folder paths used by both the
+   * file-system scanner and the email-archiver. Faithful port of
+   * get_bank_import_folder_settings (apps/bank_reconcile/api/
+   * routes.py:5501-5516). Always returns success=true so the UI
+   * loads even when the row is missing.
+   */
+  router.get(
+    '/api/bank-import/folder-settings',
+    async (_req: Request, res: Response) => {
+      const appDb = ctx.db.app;
+      if (!appDb) {
+        res.status(503).json({
+          success: false,
+          error: 'bank-reconcile per-app database not provisioned for this tenant.',
+        });
+        return;
+      }
+      try {
+        const result = await getFolderSettings(appDb);
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Get folder settings failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/bank-import/folder-settings
+   *
+   * Update the bank-statement folder paths. Faithful port of
+   * save_bank_import_folder_settings (apps/bank_reconcile/api/
+   * routes.py:5522-5535). Empty strings are valid (clears the
+   * setting).
+   */
+  router.post(
+    '/api/bank-import/folder-settings',
+    async (req: Request, res: Response) => {
+      const appDb = ctx.db.app;
+      if (!appDb) {
+        res.status(503).json({
+          success: false,
+          error: 'bank-reconcile per-app database not provisioned for this tenant.',
+        });
+        return;
+      }
+      try {
+        const body = (req.body ?? {}) as {
+          base_folder?: string | null;
+          archive_folder?: string | null;
+        };
+        const result = await saveFolderSettings(appDb, {
+          base_folder: body.base_folder ?? '',
+          archive_folder: body.archive_folder ?? '',
+        });
+        if (!result.success) {
+          res.status(500).json(result);
+          return;
+        }
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Save folder settings failed', err);
         res.status(500).json({ success: false, error: err?.message ?? String(err) });
       }
     },
