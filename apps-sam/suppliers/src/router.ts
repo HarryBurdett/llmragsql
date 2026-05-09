@@ -106,6 +106,24 @@ import {
   type SecurityEmailSender,
   type SupplierSnapshot,
 } from './services/security.js';
+import {
+  getCreditorsDashboard,
+  getCreditorsReport,
+  searchCreditors,
+  getCreditorsSupplier,
+  getCreditorsSupplierTransactions,
+  getStatementPdf,
+  previewStatementResponse,
+  sendUpdatedStatementStatus,
+  extractStatementFromText,
+  processStatementEmail,
+  reconcileStatementByEmail,
+  listReconciliations,
+  getFlaggedEmails,
+  getSupplierAccountByCode,
+  getFirstSupplierAccount,
+  type LlmService,
+} from './services/misc-endpoints.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1887,9 +1905,544 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  // ---------------------------------------------------------------
+  // Path-namespace aliases (Python uses /api/supplier-* singular,
+  // /api/suppliers/* plural for different concepts; we expose both)
+  // ---------------------------------------------------------------
+
+  router.get('/api/supplier-directory', async (req: Request, res: Response) => {
+    req.url = '/api/suppliers/directory';
+    (router as unknown as {
+      handle: (req: Request, res: Response, next: () => void) => void;
+    }).handle(req, res, () => undefined);
+  });
+
+  router.get('/api/supplier-settings', async (req: Request, res: Response) => {
+    req.url = '/api/suppliers/settings';
+    (router as unknown as {
+      handle: (req: Request, res: Response, next: () => void) => void;
+    }).handle(req, res, () => undefined);
+  });
+
+  router.post('/api/supplier-settings', async (req: Request, res: Response) => {
+    req.url = '/api/suppliers/settings';
+    (router as unknown as {
+      handle: (req: Request, res: Response, next: () => void) => void;
+    }).handle(req, res, () => undefined);
+  });
+
+  router.get('/api/supplier-config', async (req: Request, res: Response) => {
+    // Forward to /api/suppliers (list of supplier_config rows)
+    req.url = '/api/suppliers';
+    (router as unknown as {
+      handle: (req: Request, res: Response, next: () => void) => void;
+    }).handle(req, res, () => undefined);
+  });
+
+  router.post('/api/supplier-config/sync', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      // Sync supplier_config rows from Opera pname (insert any missing)
+      const rows = (await operaDb.raw(
+        `SELECT RTRIM(pn_account) AS account, RTRIM(pn_name) AS name
+         FROM pname WITH (NOLOCK)
+         WHERE pn_dormant = 0 OR pn_dormant IS NULL`,
+      )) as unknown as Array<{ account: string; name: string }>;
+      let inserted = 0;
+      for (const r of rows ?? []) {
+        const exists = (await appDb('supplier_config')
+          .where({ supplier_code: r.account })
+          .first()) as { id?: number } | undefined;
+        if (!exists) {
+          await appDb('supplier_config').insert({
+            supplier_code: r.account,
+            config_json: '{}',
+          });
+          inserted += 1;
+        }
+      }
+      res.json({ success: true, inserted, total: rows.length });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  router.get(
+    '/api/supplier-config/:account',
+    async (req: Request, res: Response) => {
+      // Forward to /api/suppliers/:code/config
+      const account = String(req.params.account ?? '');
+      req.url = `/api/suppliers/${encodeURIComponent(account)}/config`;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  router.put(
+    '/api/supplier-config/:account',
+    async (req: Request, res: Response) => {
+      const account = String(req.params.account ?? '');
+      req.url = `/api/suppliers/${encodeURIComponent(account)}/config`;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  router.get(
+    '/api/supplier-config/:account/detail',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const account = String(req.params.account ?? '');
+      res.json(await getSupplierAccountByCode(operaDb, account));
+    },
+  );
+
+  router.get(
+    '/api/supplier-communications',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const rows = (await appDb('supplier_communications')
+          .orderBy('sent_at', 'desc')
+          .limit(200)) as unknown as Array<Record<string, unknown>>;
+        res.json({ success: true, communications: rows });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  router.get(
+    '/api/supplier-communications/:account',
+    async (req: Request, res: Response) => {
+      const account = String(req.params.account ?? '');
+      req.url = `/api/suppliers/${encodeURIComponent(account)}/communications`;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // /api/supplier-statements/* aliases + new endpoints
+  // ---------------------------------------------------------------
+
+  router.get('/api/supplier-statements', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const supplierCode = (req.query.supplier_code as string) ?? null;
+      const fromDate = (req.query.from_date as string) ?? null;
+      const toDate = (req.query.to_date as string) ?? null;
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      const result = await listStatements(appDb, {
+        supplierCode,
+        fromDate,
+        toDate,
+        limit,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  router.get(
+    '/api/supplier-statements/reconciliations',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      res.json(await listReconciliations(appDb));
+    },
+  );
+
+  router.get(
+    '/api/supplier-statements/:statement_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const id = Number(req.params.statement_id);
+      res.json(await getStatement(appDb, id));
+    },
+  );
+
+  router.get(
+    '/api/supplier-statements/:statement_id/lines',
+    async (req: Request, res: Response) => {
+      // Forward to existing /api/suppliers/statements/:id/lines
+      const id = String(req.params.statement_id ?? '');
+      req.url = `/api/suppliers/statements/${encodeURIComponent(id)}/lines`;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  router.get(
+    '/api/supplier-statements/:statement_id/pdf',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      res.json(
+        await getStatementPdf(appDb, Number(req.params.statement_id)),
+      );
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/:statement_id/process',
+    async (req: Request, res: Response) => {
+      const id = String(req.params.statement_id ?? '');
+      req.url = `/api/supplier-statements/${encodeURIComponent(id)}/process`;
+      // Already wired at /api/supplier-statements/:id/process via earlier
+      // route; just ensure :statement_id maps to :id.
+      // This is a stub forward; the actual handler reads :id.
+      // Since we registered :id earlier, skip this to avoid loops.
+      const original = (req as unknown as { params: Record<string, string> }).params;
+      original.id = id;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/:statement_id/acknowledge',
+    async (req: Request, res: Response) => {
+      const id = String(req.params.statement_id ?? '');
+      req.url = `/api/supplier-statements/${encodeURIComponent(id)}/acknowledge`;
+      (req as unknown as { params: Record<string, string> }).params.id = id;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/:statement_id/approve',
+    async (req: Request, res: Response) => {
+      const id = String(req.params.statement_id ?? '');
+      req.url = `/api/supplier-statements/${encodeURIComponent(id)}/approve`;
+      (req as unknown as { params: Record<string, string> }).params.id = id;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  router.put(
+    '/api/supplier-statements/:statement_id/edit-response',
+    async (req: Request, res: Response) => {
+      const id = String(req.params.statement_id ?? '');
+      req.url = `/api/supplier-statements/${encodeURIComponent(id)}/response`;
+      (req as unknown as { params: Record<string, string> }).params.id = id;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/:statement_id/preview-response',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const llm = (ctx.llm as LlmService | undefined) ?? null;
+      res.json(
+        await previewStatementResponse(
+          appDb,
+          llm,
+          Number(req.params.statement_id),
+        ),
+      );
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/:statement_id/send-updated-status',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const body = (req.body ?? {}) as { status?: string; updated_by?: string };
+      res.json(
+        await sendUpdatedStatementStatus(
+          appDb,
+          Number(req.params.statement_id),
+          String(body.status ?? 'received'),
+          String(body.updated_by ?? 'system'),
+        ),
+      );
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/extract-from-text',
+    async (req: Request, res: Response) => {
+      const llm = (ctx.llm as LlmService | undefined) ?? null;
+      const body = (req.body ?? {}) as { content?: string };
+      res.json(
+        await extractStatementFromText(llm, String(body.content ?? '')),
+      );
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/extract-from-file',
+    async (req: Request, res: Response) => {
+      // File upload is SAM-side; this expects pre-extracted text in the
+      // body, otherwise returns 501.
+      const body = (req.body ?? {}) as { content?: string };
+      if (body.content) {
+        const llm = (ctx.llm as LlmService | undefined) ?? null;
+        res.json(await extractStatementFromText(llm, body.content));
+        return;
+      }
+      res.status(501).json({
+        success: false,
+        error:
+          'Multipart file upload not implemented in this plugin port. POST text content under "content" or use /extract-from-text.',
+      });
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/extract-from-email/:email_id',
+    async (req: Request, res: Response) => {
+      const llm = (ctx.llm as LlmService | undefined) ?? null;
+      const attachments = (ctx as unknown as {
+        supplierEmailAttachments?: {
+          fetchAttachment(opts: { emailId: number; attachmentId?: string }): Promise<{
+            text?: string;
+            bytes?: Uint8Array;
+          } | null>;
+        };
+      }).supplierEmailAttachments;
+      if (!attachments) {
+        res.status(503).json({
+          success: false,
+          error: 'ctx.supplierEmailAttachments not configured.',
+        });
+        return;
+      }
+      try {
+        const att = await attachments.fetchAttachment({
+          emailId: Number(req.params.email_id),
+        });
+        if (!att?.text) {
+          res.status(404).json({
+            success: false,
+            error: 'No extractable text found in email',
+          });
+          return;
+        }
+        res.json(await extractStatementFromText(llm, att.text));
+      } catch (err: any) {
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/process-email/:email_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      res.json(await processStatementEmail(appDb, Number(req.params.email_id)));
+    },
+  );
+
+  router.post(
+    '/api/supplier-statements/reconcile/:email_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      res.json(
+        await reconcileStatementByEmail(appDb, Number(req.params.email_id)),
+      );
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // /api/supplier-security/* aliases + email-flags
+  // ---------------------------------------------------------------
+
+  router.post(
+    '/api/supplier-security/alerts/:alert_id/verify',
+    async (req: Request, res: Response) => {
+      const id = String(req.params.alert_id ?? '');
+      req.url = `/api/supplier-security/alerts/${encodeURIComponent(id)}/verify`;
+      (req as unknown as { params: Record<string, string> }).params.id = id;
+      (router as unknown as {
+        handle: (req: Request, res: Response, next: () => void) => void;
+      }).handle(req, res, () => undefined);
+    },
+  );
+
+  router.get(
+    '/api/supplier-security/email-flags',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      res.json(await getFlaggedEmails(appDb));
+    },
+  );
+
+  router.get(
+    '/api/supplier-security/approved-senders',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const rows = (await appDb('supplier_approved_emails')
+          .orderBy('approved_at', 'desc')) as unknown as Array<Record<string, unknown>>;
+        res.json({ success: true, approved_senders: rows });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  router.post(
+    '/api/supplier-security/approved-senders',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const body = (req.body ?? {}) as {
+        supplier_code?: string;
+        email_address?: string;
+      };
+      try {
+        const [id] = (await appDb('supplier_approved_emails')
+          .insert({
+            supplier_code: String(body.supplier_code ?? ''),
+            email_address: String(body.email_address ?? ''),
+          })
+          .returning('id')) as unknown as Array<number | { id: number }>;
+        const numericId = typeof id === 'number' ? id : Number(id?.id ?? 0);
+        res.json({ success: true, id: numericId });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  router.delete(
+    '/api/supplier-security/approved-senders/:sender_id',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const deleted = await appDb('supplier_approved_emails')
+          .where({ id: Number(req.params.sender_id) })
+          .delete();
+        res.json({ success: deleted > 0, deleted });
+      } catch (err: any) {
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // /api/creditors/* — purchase-ledger views
+  // ---------------------------------------------------------------
+
+  router.get('/api/creditors/dashboard', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    res.json(await getCreditorsDashboard(operaDb));
+  });
+
+  router.get('/api/creditors/report', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    res.json(await getCreditorsReport(operaDb));
+  });
+
+  router.get('/api/creditors/search', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    res.json(await searchCreditors(operaDb, String(req.query.q ?? '')));
+  });
+
+  router.get(
+    '/api/creditors/supplier/:account',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      res.json(
+        await getCreditorsSupplier(operaDb, String(req.params.account ?? '')),
+      );
+    },
+  );
+
+  router.get(
+    '/api/creditors/supplier/:account/transactions',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      res.json(
+        await getCreditorsSupplierTransactions(
+          operaDb,
+          String(req.params.account ?? ''),
+        ),
+      );
+    },
+  );
+
+  router.get(
+    '/api/creditors/supplier/:account/statement',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const supplier = await getCreditorsSupplier(
+        operaDb,
+        String(req.params.account ?? ''),
+      );
+      const txns = await getCreditorsSupplierTransactions(
+        operaDb,
+        String(req.params.account ?? ''),
+      );
+      res.json({
+        success: supplier.success && txns.success,
+        supplier: supplier.supplier,
+        transactions: txns.transactions,
+      });
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // /api/supplier/account/*
+  // ---------------------------------------------------------------
+
+  router.get('/api/supplier/account/first', async (req: Request, res: Response) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    res.json(await getFirstSupplierAccount(operaDb));
+  });
+
+  router.get(
+    '/api/supplier/account/:account',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      res.json(
+        await getSupplierAccountByCode(operaDb, String(req.params.account ?? '')),
+      );
+    },
+  );
+
   // Future endpoints (designed during the TS port, not translated):
   //   POST /api/suppliers/scan-emails        — scan SAM mailbox
-  //   POST /api/suppliers/extract-statement  — Claude extract line items
   //   POST /api/suppliers/remittance         — generate + send remittance
 
   return router;
