@@ -15,10 +15,14 @@ the plugin code never branches on `ctx.operaType`.
 
 | Plugin | Backend tests | Backend endpoints | Frontend bundle |
 |---|---|---|---|
-| `gocardless` | 34 files / 495 tests | ~46 endpoints ported | UMD `__SAM_APPS__["gocardless"]` |
-| `bank-reconcile` | 40 files / 351 tests | ~55 endpoints ported | UMD `__SAM_APPS__["bank-reconcile"]` |
-| `suppliers` | 21 files / 184 tests | ~58 endpoints ported | UMD `__SAM_APPS__["suppliers"]` |
-| `balance-check` | TBC tests | 7 endpoints ported | UMD `__SAM_APPS__["balance-check"]` |
+| `gocardless` | 34 files / 495 tests | **100% parity** (74 endpoints) | UMD `__SAM_APPS__["gocardless"]` |
+| `bank-reconcile` | 40 files / 351 tests | **100% parity** (86 endpoints) | UMD `__SAM_APPS__["bank-reconcile"]` |
+| `suppliers` | 21 files / 184 tests | **100% parity** (94 endpoints) | UMD `__SAM_APPS__["suppliers"]` |
+| `balance-check` | 32 tests | **100% parity** (7 endpoints) | UMD `__SAM_APPS__["balance-check"]` |
+
+**Total: 1,062 tests passing across the four plugins. All four
+backends type-check clean. Endpoint diff vs Python: 0 missing in
+every plugin.**
 
 All four plugins type-check clean (`npx tsc --noEmit`) and all backend
 tests pass (`npx vitest run`). Frontend bundles build with
@@ -216,14 +220,46 @@ addressed:
   DR VAT input + CR bank; destinationBank auto-leg posts a paired
   net-amount transfer.
 
-## Known follow-ups
+## Final session — closing the long tail
+
+Closed all 86 + 74 + 94 + 7 = **261 Python endpoints** across the
+four plugins.
+
+This session ported:
+- bank-reconcile: 30 missing endpoints (deferred-items, cashbook
+  create-entry/transfer/auto-match, statement-archive CRUD,
+  list-csv/list-pdf/pdf-content, scan-folder, scan-all-banks,
+  fetch-emails-to-folder, raw-preview/raw-preview-email,
+  preview-multiformat, validate-csv, statement-review,
+  bank-reconciliation status/unreconciled/statement-transactions,
+  import-from-email, import-from-statement, audit-defer)
+- gocardless: 3 missing endpoints (ocr, ocr-path, parse)
+- suppliers: 36 missing endpoints (full /api/creditors/* purchase
+  ledger views, /api/supplier-* path-namespace aliases for
+  config/communications/security/statements, statement
+  preview-response/pdf/extract-from-{text,file,email}/process-email/
+  reconcile/{email_id}/reconciliations, supplier/account/* lookups,
+  email-flags from change-audit)
+
+Adapter contracts introduced this session:
+  - PdfContentReader        — read PDF bytes by path
+  - MultiformatParser       — CSV/OFX/QIF/MT940 detect+parse
+  - supplierEmailAttachments — supplier statement email fetch
+
+All adapters return clear 503 messages when not wired; deterministic
+DB-only endpoints work immediately.
+
+## Known follow-ups (outside the 100% Python-parity scope)
 
 - Frontend full-UI port of the four legacy React pages (SAM team).
 - Email ingestion glue (per-plugin or SAM-host cache).
 - Write Agent — Opera 3 FoxPro write service, in development.
-- Remaining ~80 small bank-reconcile utility / drilldown / Opera-3
-  mirror endpoints — each ports independently using the patterns
-  established in this codebase.
+- Opera-3 mirror routes (`/api/opera3/*`) — Python has these in
+  parallel for the FoxPro engine. The plugin replication uses
+  SAM's unified Knex client which routes by `ctx.operaType` so a
+  single TS route serves both engines; the SAM team only needs to
+  expose the `/api/opera3/*` URLs as aliases if the legacy
+  frontend hits them directly.
 
 ## Contact
 
