@@ -23,6 +23,7 @@
  * Python's suggest_mandate_match also strips a trailing period.
  */
 import type { Knex } from 'knex';
+import { sequenceMatcherRatio as sharedSequenceMatcherRatio } from '@sqlrag/sam-shared';
 
 export interface MatchSuggestion {
   account: string;
@@ -64,100 +65,13 @@ export function normaliseSuggestName(name: string | null | undefined): string {
 }
 
 // ---------------------------------------------------------------------
-// Ratcliff/Obershelp ratio — port of Python's difflib.SequenceMatcher
+// Ratcliff/Obershelp ratio
 // ---------------------------------------------------------------------
-
-interface MatchBlock {
-  a: number;
-  b: number;
-  size: number;
-}
-
-/**
- * Find the longest contiguous matching subsequence between a[alo:ahi]
- * and b[blo:bhi]. Returns a Match block; size=0 if none found.
- *
- * Faithful port of `SequenceMatcher.find_longest_match` (CPython
- * Lib/difflib.py). We don't implement the autojunk heuristic — for
- * short company names it has no effect. b2j builds a position
- * lookup once per call.
- */
-function findLongestMatch(
-  a: string,
-  b: string,
-  alo: number,
-  ahi: number,
-  blo: number,
-  bhi: number,
-): MatchBlock {
-  const b2j = new Map<string, number[]>();
-  for (let i = blo; i < bhi; i++) {
-    const ch = b[i]!;
-    const arr = b2j.get(ch);
-    if (arr) arr.push(i);
-    else b2j.set(ch, [i]);
-  }
-
-  let besti = alo;
-  let bestj = blo;
-  let bestsize = 0;
-  let j2len = new Map<number, number>();
-
-  for (let i = alo; i < ahi; i++) {
-    const newJ2len = new Map<number, number>();
-    const positions = b2j.get(a[i]!);
-    if (positions) {
-      for (const j of positions) {
-        if (j < blo) continue;
-        if (j >= bhi) break;
-        const k = (j2len.get(j - 1) ?? 0) + 1;
-        newJ2len.set(j, k);
-        if (k > bestsize) {
-          besti = i - k + 1;
-          bestj = j - k + 1;
-          bestsize = k;
-        }
-      }
-    }
-    j2len = newJ2len;
-  }
-  return { a: besti, b: bestj, size: bestsize };
-}
-
-function getMatchingBlocks(a: string, b: string): MatchBlock[] {
-  // Recursive / queue-based to mirror Python's behaviour — collect
-  // all maximal-match triples, append a sentinel, then return
-  // (Python's matching_blocks).
-  const queue: Array<[number, number, number, number]> = [
-    [0, a.length, 0, b.length],
-  ];
-  const matches: MatchBlock[] = [];
-  while (queue.length > 0) {
-    const [alo, ahi, blo, bhi] = queue.pop()!;
-    const m = findLongestMatch(a, b, alo, ahi, blo, bhi);
-    if (m.size > 0) {
-      matches.push(m);
-      if (alo < m.a && blo < m.b) {
-        queue.push([alo, m.a, blo, m.b]);
-      }
-      if (m.a + m.size < ahi && m.b + m.size < bhi) {
-        queue.push([m.a + m.size, ahi, m.b + m.size, bhi]);
-      }
-    }
-  }
-  matches.sort((x, y) => x.a - y.a || x.b - y.b);
-  return matches;
-}
-
-export function sequenceMatcherRatio(a: string, b: string): number {
-  if (!a && !b) return 1.0;
-  const total = a.length + b.length;
-  if (total === 0) return 0;
-  const matches = getMatchingBlocks(a, b);
-  let matched = 0;
-  for (const m of matches) matched += m.size;
-  return (2 * matched) / total;
-}
+// Re-exported from @sqlrag/sam-shared so existing callers keep working.
+// The shared implementation is a faithful port of Python's
+// `difflib.SequenceMatcher.ratio`; see
+// `apps-sam/shared/src/string/sequence-matcher.ts`.
+export const sequenceMatcherRatio = sharedSequenceMatcherRatio;
 
 // ---------------------------------------------------------------------
 // Service entry point

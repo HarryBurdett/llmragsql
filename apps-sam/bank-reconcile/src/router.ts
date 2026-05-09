@@ -105,6 +105,10 @@ import {
   refreshMatches,
   type RefreshTransactionInput,
 } from './services/refresh-matches.js';
+import {
+  suggestAccountForTransaction,
+  type TransactionType,
+} from './services/suggest-account.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -2136,6 +2140,53 @@ export function createRouter(ctx: AppContext): Router {
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('refresh-matches failed', err);
+        res.status(500).json({
+          success: false,
+          error: err?.message ?? String(err),
+        });
+      }
+    },
+  );
+
+  /**
+   * GET /api/bank-import/suggest-account
+   *
+   * Suggest a customer or supplier account for a bank-statement
+   * line based on the transaction name and direction. Faithful port
+   * of `suggest_account_for_transaction` (routes.py:11225-11334).
+   *
+   * Three-tier matcher: substring (95) → word match (≥70) → fuzzy
+   * Ratcliff/Obershelp ratio (≥60). sales_receipt/sales_refund
+   * search sname; purchase_payment/purchase_refund search pname.
+   * Dormant accounts (sn_stop='Y' / pn_stop='Y') excluded.
+   */
+  router.get(
+    '/api/bank-import/suggest-account',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const name = String(req.query.name ?? '');
+        const transactionType = String(
+          req.query.transaction_type ?? '',
+        ) as TransactionType;
+        const limit = req.query.limit ? Number(req.query.limit) : 5;
+        if (!name || !transactionType) {
+          res.status(400).json({
+            success: false,
+            error: 'name and transaction_type are required',
+          });
+          return;
+        }
+        const result = await suggestAccountForTransaction(
+          operaDb,
+          name,
+          transactionType,
+          limit,
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('suggest-account failed', err);
         res.status(500).json({
           success: false,
           error: err?.message ?? String(err),
