@@ -397,3 +397,230 @@ A few patterns to recognise:
 | Migration takes minutes | Backfill on a large table | Move backfill out of the migration to a one-off script; the migration just creates the structure |
 
 ---
+
+## Section 3 — Monitoring
+
+What to watch in normal operation. Not exhaustive — just the dials worth a daily glance.
+
+### 3.1 — Logs to follow
+
+```
+# Terminal — SAM Mac
+docker logs -f ai-sam --tail 100
+```
+
+Filter for one plugin:
+
+```
+# Terminal — SAM Mac
+docker logs -f ai-sam | grep "<plugin>"
+```
+
+Watch for:
+- `[PluginLoader]` lines on every sync — should always say `Loaded` for all four
+- `[GitInstall]` lines on every release — should always say `Success`
+- Stack traces — never expected in steady state
+
+### 3.2 — Per-plugin health endpoints
+
+Each plugin exposes a health check. From inside SAM (or via the SAM Admin shell):
+
+```
+# Terminal — SAM Mac
+curl http://localhost:<sam-port>/api/balance-check/health
+curl http://localhost:<sam-port>/api/bank-reconcile/health
+curl http://localhost:<sam-port>/api/gocardless/health
+curl http://localhost:<sam-port>/api/suppliers/health
+```
+
+**✓ Looks good if you see:** `{"status": "ok", "version": "1.0.x"}` for each.
+
+**✗ If any returns non-200** — plugin is broken or not loaded. See Section 2.
+
+### 3.3 — Sandbox vs live indicators
+
+Only relevant for `gocardless`. Open the GoCardless plugin → **Settings** → confirm the environment field shows `sandbox` or `live`. ⚠ If it shows `live` and you weren't expecting that, do NOT proceed with any imports — verify with Harry first.
+
+### 3.4 — What "all green" looks like on a normal day
+
+- All four `/api/<plugin>/health` endpoints return 200
+- `docker logs ai-sam --tail 50 | grep ERROR` is empty
+- Each plugin's "last sync" timestamp (visible in its UI) is recent
+- No `[PluginLoader] reload` events without an accompanying `[GitInstall]` (a reload without an install means SAM thinks the plugin restarted unexpectedly)
+
+---
+
+## Section 4 — Extending
+
+### 4.1 — Add a new endpoint to an existing plugin
+
+A SAM plugin endpoint is three things: a route definition, a service function, and a test. Follow the existing pattern.
+
+#### Step 4.1.1 — Add the service function
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam/<plugin>/src/services
+# Create new-endpoint.ts
+```
+
+Example:
+
+```ts
+// apps-sam/<plugin>/src/services/new-endpoint.ts
+import type { Knex } from "knex";
+
+export interface NewEndpointInput {
+  // ...
+}
+
+export async function newEndpoint(db: Knex, input: NewEndpointInput) {
+  // implementation
+  return { ok: true };
+}
+```
+
+#### Step 4.1.2 — Wire it in the router
+
+```ts
+// apps-sam/<plugin>/src/router.ts
+import { newEndpoint } from "./services/new-endpoint";
+
+// inside the router setup function:
+router.post("/api/<plugin>/new-endpoint", async (req, res) => {
+  const result = await newEndpoint(ctx.db.opera, req.body);
+  res.json(result);
+});
+```
+
+#### Step 4.1.3 — Write the test
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam/<plugin>/tests
+# Create new-endpoint.test.ts
+```
+
+```ts
+import { describe, it, expect } from "vitest";
+import { newEndpoint } from "../src/services/new-endpoint";
+import { createKnexMock } from "./helpers/knex-mock";
+
+describe("newEndpoint", () => {
+  it("returns ok for valid input", async () => {
+    const db = createKnexMock([{ /* fake row */ }]);
+    const result = await newEndpoint(db, { /* input */ });
+    expect(result.ok).toBe(true);
+  });
+});
+```
+
+#### Step 4.1.4 — Run tests
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam/<plugin>
+npm test
+```
+
+**✓ Looks good if you see:** new test included in the count, all green.
+
+#### Step 4.1.5 — Ship via Section 1.3 (minor version bump)
+
+### 4.2 — Add a new database migration
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam/<plugin>/db/migrations
+# Create NNN_descriptive_name.ts where NNN is the next number
+```
+
+Use the existing migration naming convention: zero-padded sequence + descriptive snake_case suffix (e.g. `010_scanned_statements.ts`).
+
+```ts
+// apps-sam/<plugin>/db/migrations/NNN_descriptive_name.ts
+import type { Knex } from "knex";
+
+export async function up(knex: Knex): Promise<void> {
+  await knex.schema.createTable("new_table", (t) => {
+    t.increments("id").primary();
+    t.string("name").notNullable();
+    t.timestamps(true, true);
+  });
+}
+
+export async function down(knex: Knex): Promise<void> {
+  await knex.schema.dropTable("new_table");
+}
+```
+
+The plugin's `migrations.test.ts` will run the new migration automatically on next `npm test` to confirm it applies and reverts cleanly. Always confirm tests pass before pushing.
+
+### 4.3 — Add a new shared utility
+
+Per Section 1.4, **any change to shared touches all four plugins**.
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam/shared/src
+# Create new-helper.ts
+# Add an export in src/index.ts (or src/opera/index.ts if Opera-related)
+npm test
+```
+
+Then follow Section 1.4 to ship: bump all four plugin versions, commit, push, extract, push all four release repos.
+
+### 4.4 — Add a whole new plugin
+
+Less common. Five steps:
+
+1. **Scaffold from an existing plugin.** `cp -r apps-sam/balance-check apps-sam/<new-plugin>` then rename in `package.json`, `manifest.json`, and the workspaces array in `apps-sam/package.json`.
+2. **Write the `manifest.json`** — `id`, `name`, `description`, `category`, `frontend`, `backend`, `permissions`, `consumes`. Match the format of an existing manifest.
+3. **Add to the workspaces array** in `apps-sam/package.json` so the monorepo recognises it.
+4. **Write the first endpoint + test** (Section 4.1).
+5. **Run extract-all.sh** — should produce a fifth staged repo. Push to a new `intsysuk/sam-<new-plugin>` repo and register in SAM Central per `DEPLOY-TO-SAM.md` Phase 3.
+
+---
+
+## Appendix — File structure reference
+
+Each plugin has roughly the same layout. Here's where to find things in any plugin's folder under `apps-sam/<plugin>/`:
+
+| Path | Contains |
+|---|---|
+| `package.json`, `manifest.json` | Version, name, declared routes/permissions |
+| `src/index.ts` | Default-export factory function consumed by SAM's PluginLoader |
+| `src/router.ts` | Express route registrations |
+| `src/services/*.ts` | One file per concern (one endpoint or one cohesive group of endpoints) |
+| `src/services/default-*.ts` | Default adapters provided by the plugin when SAM doesn't inject one (filesystem, LLM, email-ingest, etc.) |
+| `src/_shared/` | Vendored copy of `apps-sam/shared/`. Don't edit here — edit `apps-sam/shared/` and re-extract. |
+| `db/migrations/NNN_*.ts` | Knex migrations, applied automatically on plugin install |
+| `tests/*.test.ts` | Vitest unit tests (run with `npm test`) |
+| `tests/migrations.test.ts` | Smoke test that runs all migrations on a clean SQLite |
+| `frontend/src/` | React components — the page rendered when the user clicks into this plugin in SAM |
+| `frontend/dist/index.js` | UMD bundle produced by `vite build`. Registers the entry component on `window.__SAM_APPS__`. |
+
+Outside the plugins:
+
+| Path | Contains |
+|---|---|
+| `apps-sam/shared/src/` | The shared library — vendored into each plugin on extraction |
+| `apps-sam/scripts/extract-all.sh` | Packages all four plugins as standalone repos in `~/sam-plugins-staging/` |
+| `apps-sam/scripts/push-to-github.sh` | Pushes a staged repo to its `intsysuk/sam-*` GitHub repo and tags it |
+| `apps-sam/scripts/migrate-from-python/` | Data migration tool — only relevant during first-time deployment |
+| `apps-sam/scripts/render-md-to-html.py` | Helper that produces styled HTML versions of these docs for email delivery |
+| `apps-sam/DEPLOY-TO-SAM.md` | First-time deployment guide |
+| `apps-sam/MAINTAIN-SAM-PLUGINS.md` | This file |
+| `apps-sam/README.md` | Workspace overview and conventions |
+
+The legacy Python that the SAM ports faithfully replicate:
+
+| Path | Contains |
+|---|---|
+| `apps/<plugin>/` | The legacy Python app's routes and business logic |
+| `sql_rag/*.py` | Core Opera-interfacing modules (bank_import.py, opera_sql_import.py, statement_reconcile.py, etc.) |
+| `frontend/src/pages/*.tsx` | The legacy React pages (still in use as the canonical reference) |
+
+---
+
+**End of document.** Edits welcome — open a PR or commit directly to `main`.
