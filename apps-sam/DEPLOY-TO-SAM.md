@@ -206,3 +206,199 @@ By the end of this guide, all of these should be true:
 When all eight are ticked, you're done. Hand back to Harry.
 
 ---
+
+## Phase 1 — Extract the four plugins
+
+**What you're doing here:** The four plugins currently live as workspaces inside the SQLRAG monorepo. Before SAM can install them, each one has to be packaged as a standalone repo. The extraction script does this in one go — it copies each plugin's folder, vendors the shared library into each, runs the tests, and runs the build. The result is four ready-to-push folders in `~/sam-plugins-staging/`.
+
+### Step 1.1 — Clone or update the SQLRAG monorepo on your Mac
+
+If you've never cloned it before:
+
+```
+# Terminal — your Mac
+cd ~
+git clone https://github.com/HarryBurdett/llmragsql.git
+cd llmragsql
+```
+
+If you already have it:
+
+```
+# Terminal — your Mac
+cd ~/llmragsql
+git checkout main
+git pull
+```
+
+**✓ Looks good if you see:** the latest commit dated 2026-05-09 or later when you run `git log -1`.
+
+### Step 1.2 — Run the extraction script
+
+```
+# Terminal — your Mac
+cd ~/llmragsql
+chmod +x apps-sam/scripts/*.sh
+./apps-sam/scripts/extract-all.sh
+```
+
+**✓ Looks good if you see:**
+```
+✓ balance-check — tests passed, lint clean, build ok → ~/sam-plugins-staging/sam-balance-check
+✓ bank-reconcile — tests passed, lint clean, build ok → ~/sam-plugins-staging/sam-bank-reconcile
+✓ gocardless — tests passed, lint clean, build ok → ~/sam-plugins-staging/sam-gocardless
+✓ suppliers — tests passed, lint clean, build ok → ~/sam-plugins-staging/sam-suppliers
+```
+
+**✗ If you see `Permission denied`** — `chmod +x` didn't work. Try `bash apps-sam/scripts/extract-all.sh` instead.
+
+**✗ If you see a test failure** — stop. Don't proceed. Re-run with `npm install` first in `apps-sam/` (`cd apps-sam && npm install && cd ..`) then try again. If still failing, message Harry — the build is broken upstream and the deployment is not safe to proceed.
+
+### Step 1.3 — Confirm the four staged folders exist
+
+```
+# Terminal — your Mac
+ls -la ~/sam-plugins-staging/
+```
+
+**✓ Looks good if you see:** four directories: `sam-balance-check`, `sam-bank-reconcile`, `sam-gocardless`, `sam-suppliers`.
+
+---
+
+## Phase 2 — Create GitHub repos and push
+
+**What you're doing here:** Each plugin needs its own GitHub repo so SAM Central can pull it. You'll create four empty private repos under the `intsysuk` organisation, then the push script pushes each plugin's code and tags it `v1.0.0`.
+
+### Step 2.1 — Create four empty private repos on GitHub
+
+For each of the four plugins, do this in the GitHub web UI:
+
+```
+# Browser — GitHub
+```
+
+1. Go to https://github.com/organizations/intsysuk/repositories/new
+2. Repository name: `sam-balance-check` (then `sam-bank-reconcile`, `sam-gocardless`, `sam-suppliers`)
+3. Visibility: **Private**
+4. **Do not** initialise the repo (no README, no .gitignore, no licence — leave all those unchecked). The extraction script ships these.
+5. Click **Create repository**.
+
+**✓ Looks good if you see:** after creating all four, https://github.com/intsysuk shows the four `sam-*` repos in the list.
+
+**Alternatively, with `gh` CLI** (faster if you prefer the terminal):
+
+```
+# Terminal — your Mac
+gh repo create intsysuk/sam-balance-check --private --confirm
+gh repo create intsysuk/sam-bank-reconcile --private --confirm
+gh repo create intsysuk/sam-gocardless --private --confirm
+gh repo create intsysuk/sam-suppliers --private --confirm
+```
+
+**✗ If you see `HTTP 422: Repository already exists`** — repo was created before. Either delete it from GitHub and retry, or skip Step 2.1 for that plugin and proceed to Step 2.2.
+
+### Step 2.2 — Push each plugin to its repo
+
+For each plugin, run:
+
+```
+# Terminal — your Mac
+cd ~/sam-plugins-staging
+./push-to-github.sh balance-check
+```
+
+**✓ Looks good if you see:**
+```
+Pushing to https://github.com/intsysuk/sam-balance-check.git…
+✓ Success — v1.0.0 tagged and pushed
+```
+
+**✗ If you see `Permission denied (publickey)`** — your SSH key isn't set up for GitHub. Run `gh auth status` to check. If you'd rather use HTTPS, edit the `REMOTE_URL` line in the push script to use `https://` and `gh auth refresh -s repo`.
+
+**✗ If you see `remote: Repository not found`** — the repo doesn't exist. Go back to Step 2.1.
+
+Repeat for the other three plugins:
+
+```
+# Terminal — your Mac
+./push-to-github.sh bank-reconcile
+./push-to-github.sh gocardless
+./push-to-github.sh suppliers
+```
+
+### Step 2.3 — Confirm v1.0.0 tag and code on GitHub
+
+For each plugin, browse to the repo on GitHub. Check:
+
+- [ ] There are files in the repo (not empty)
+- [ ] The "tags" page (e.g. `https://github.com/intsysuk/sam-balance-check/tags`) shows `v1.0.0`
+
+**✓ All four repos populated with v1.0.0 tagged** — Phase 2 is done.
+
+---
+
+## Phase 3 — Register in SAM Central
+
+**What you're doing here:** SAM Central is the central registry that tells each SAM host instance which apps to install. You'll add four catalogue entries (one per plugin), pin each to `v1.0.0`, and assign them to the IntSys client's license. Charlie's SAM host will pick these up automatically when he triggers a sync in Phase 4.
+
+> **⚠ UI verification note:** This phase is written from the existing handoff docs. The exact button labels and screen names in SAM Central may differ slightly from what's described here. If anything doesn't match, follow the spirit of each step — the data being entered is what matters. Send Harry a one-line update on any UI discrepancies so this doc can be corrected for next time.
+
+### Step 3.1 — Open SAM Central
+
+```
+# Browser — SAM Central
+```
+
+Log in. Navigate to the **Apps** section (usually in the left nav).
+
+### Step 3.2 — Add each plugin to the Apps catalogue
+
+For each of the four plugins, do the following:
+
+1. Click **+ Add app** (or **+ New app**).
+2. Fill in the fields:
+
+| Field | Value (for balance-check; substitute per plugin) |
+|---|---|
+| App ID | `balance-check` |
+| Display name | `Balance Check` |
+| Git URL | `https://github.com/intsysuk/sam-balance-check.git` |
+| Default version | `v1.0.0` |
+| Authentication | Use the org-wide GitHub PAT (configured at the org level — should already exist) |
+
+3. Click **Save**.
+
+**✓ Looks good if you see:** the app appears in the catalogue list with status "Ready" or similar.
+
+**✗ If saving fails with "git URL not reachable"** — Central's GitHub PAT doesn't have access to the new private repo. Add the repos to the PAT's scope (in SAM Central → Settings → Integrations → GitHub), or extend the PAT's organisation read scope.
+
+Repeat for `bank-reconcile`, `gocardless`, `suppliers` — substituting names accordingly.
+
+### Step 3.3 — Assign `v1.0.0` to the IntSys client license
+
+In SAM Central, navigate to **Clients** (or **Licenses**) → **IntSys**.
+
+For each of the four plugins:
+
+1. Click **+ Add app to license**.
+2. Select the plugin from the dropdown.
+3. Pin version: `v1.0.0`.
+4. Click **Save**.
+
+**✓ Looks good if you see:** all four plugins listed under IntSys's licensed apps, each at `v1.0.0`.
+
+### Step 3.4 — Confirm Central can pull the repos
+
+In SAM Central, on each app's catalogue entry, click **Test pull** (or equivalent — there's usually a "verify" or "preview" button).
+
+**✓ Looks good if you see:** `Success — manifest read, version v1.0.0`.
+
+**✗ If you see any pull error** — fix it now. The most common cause is the GitHub PAT lacking read access to the new private repos.
+
+### Step 3.5 — Ping Charlie
+
+Message Charlie: "All four apps registered in Central. Ready for you to trigger sync on the SAM Mac."
+
+Phase 3 done. Hand-off complete.
+
+---
