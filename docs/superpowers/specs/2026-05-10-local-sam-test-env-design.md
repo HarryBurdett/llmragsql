@@ -24,7 +24,26 @@ See the related project memory and feedback rule:
 ## Audience
 
 - **Primary:** Harry — runs the local SAM, drives the validation work, owns the test environment going forward
-- **Secondary:** Future Claude sessions picking up the work — the spec and resulting docs must be enough context to continue
+- **Secondary:** Jonathan and Charlie — internal team-mates working in parallel on the SAM platform and live SAM operations respectively. Their work converges with Harry's at merge time (see "Eventual merging" below).
+- **Tertiary:** Future Claude sessions picking up the work — the spec and resulting docs must be enough context to continue
+
+### Team context
+
+This project is internal IntSys work, not external vendor coordination. Harry, Jonathan, and Charlie are on the same team:
+
+- **Harry** — works on the four SAM plugins (this project) and the legacy SQLRAG Python apps
+- **Jonathan** — works in parallel on the SAM platform itself (`jonathangintsys/aisam`) and his own apps
+- **Charlie** — operates the live SAM host and runs the day-to-day finance work
+
+References to "asking Jonathan" or "handing off to Jonathan" throughout this spec are **internal team coordination**, not external handoffs. Standalone-mode isolation is workflow discipline (parallel work, clean merge later), not arms-length distrust.
+
+### Eventual merging
+
+In a future phase, the four plugins from this project + Jonathan's apps + the SAM platform will be merged into a unified deployment. Design choices in this project must not block that merge:
+
+- All four plugins stay in their current monorepo paths (`apps-sam/<plugin>/`), so Jonathan's apps can sit alongside in the same workspace structure when they're added
+- The standalone mode is reversible — once merging happens, Harry's plugins move to the same Central-managed distribution path Jonathan's apps use
+- The validation work done in this project (proven `.sap` files) accelerates the eventual merge: Harry's plugins enter the merged deployment already battle-tested
 
 ## Architecture
 
@@ -65,12 +84,30 @@ See the related project memory and feedback rule:
 
 | Decision | Choice | Why |
 |---|---|---|
-| SAM mode | Standalone (no SAM Central) | Independence — Harry's local SAM never auto-syncs from anywhere; he controls when/what gets installed |
+| SAM mode | Standalone (no SAM Central) | Workflow isolation — Harry's local SAM doesn't auto-sync from anywhere; he controls when/what gets installed. Independent of Jonathan's parallel SAM work even though they're on the same team. |
 | Plugin install path | `.sap` upload (not GitHub-pull) | Fast iteration — change code, repackage as `.sap`, re-upload, retest. No GitHub round-trips during development. |
-| License config | Empty / local — `LICENSE_SERVER_URL`, `LICENSE_HMAC_SECRET`, `LICENSE_KEY` left blank in `.env` | No phone-home, no Jonathan dependency, no Central account needed |
+| License config | Empty / local — `LICENSE_SERVER_URL`, `LICENSE_HMAC_SECRET`, `LICENSE_KEY` left blank in `.env` | No phone-home, no upstream coordination needed for routine work |
 | Opera connection | Live Intsys Opera SE (read + write) | Real data, real edge cases. Tests duplicate-detection under real conditions. Risk acceptable: Harry controls Opera, can restore from backup; apps have been extensively tested as Python ports already. |
 | Mailbox | Live `intsys@wimbledoncloud.net` as-is | Real emails. Legacy Python continues to scan the same inbox in parallel — duplicate-detection in SAM should skip already-posted transactions. If it doesn't, that's a bug worth finding pre-production. |
 | Opera 3 | Deferred to a later phase | Needs Pegasus Agent on a Windows machine — separate setup. Not blocking Opera SE validation. |
+
+### Isolation guarantee
+
+**Local SAM is a one-way street: things only enter it when Harry puts them in via `.sap` upload, and nothing leaves or gets replaced except by Harry's action.**
+
+This is an explicit architectural property of standalone mode. The three layers in play are independent:
+
+| Layer | What | Where | Updated by |
+|---|---|---|---|
+| 1. SAM platform source | The Docker image (runtime, plugin loader, admin UI) | `~/opera-knowledge-ref/` (clone of `jonathangintsys/aisam`) | `git pull` when Harry chooses |
+| 2. Plugin source code | The four plugins (and any future ones) | `/Users/maccb/llmragsql/apps-sam/` (SQLRAG monorepo) | Harry's direct edits |
+| 3. Installed plugins in local SAM | The `.sap` packages running inside SAM | SAM's Docker data volume (`sam_data:/data/sam`) | Only when Harry re-uploads a `.sap` |
+
+A SAM platform update touches layer 1 only. Layers 2 and 3 are untouched. There is **no mechanism** by which a new SAM release (or anyone else's work on SAM or other apps) could push old plugin versions into Harry's local SAM, because local SAM never connects to Central and Central is the only thing that ever pushes apps.
+
+**Why this matters:** Jonathan is on the same team but works in parallel on the SAM platform and his own apps. The eventual plan is to merge all apps together into one SAM deployment. Until that merge happens, Harry's work-in-progress plugins must be insulated from Jonathan's work-in-progress SAM changes (and vice versa). Standalone mode gives that insulation without slowing either person down — Jonathan can ship SAM releases at his own pace; Harry pulls them when he's ready to validate against the new platform.
+
+**Caveat: breakage is not overwrite.** A SAM platform update CAN break Harry's installed plugins if the platform changes the plugin contract (e.g. a new required field in `manifest.json`). The plugins are still there — the data isn't lost — but they may fail to load. The fix is to update the plugin code, rebuild `.sap`, re-upload. Same iteration loop as any other plugin change. This is breakage that needs Harry's response, not silent overwrite of his work.
 
 ## What's in scope
 
@@ -154,11 +191,13 @@ Once this project is complete, it becomes:
 
 The local-SAM step is mandatory per `feedback_test_before_live_sam.md`. No release to live SAM without local validation first.
 
-## Out-of-band: email to Jonathan
+## Out-of-band: message to Jonathan
 
-The implementation plan will include drafting an email to Jonathan asking him to:
-1. **Pause** the deployment we sent him today (don't install the four plugins on Charlie's Mac yet)
-2. **Wait** for us to produce proven `.sap` artifacts after local validation
-3. **Expect** ~few days timeframe before we're ready
+The implementation plan will include drafting a message to Jonathan (team-mate, internal — informal tone) saying:
 
-This email is **drafted but not sent** as part of the project deliverables — sending is Harry's call once he reviews.
+1. **Pause** the deployment guide we sent him today (don't install the four plugins on Charlie's Mac yet)
+2. **Why:** changing approach — we're standing up a local test SAM here first, will hand him proven `.sap` files when ready
+3. **Timeframe:** ~few days
+4. **No coordination needed from him** during this period — we'll run our local SAM independently and ping him when artifacts are ready
+
+This message is **drafted but not sent** as part of the project deliverables — Harry decides when and how to send (email, Slack, whatever the team's normal channel is).
