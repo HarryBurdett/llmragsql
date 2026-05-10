@@ -18,17 +18,21 @@ code ported.
 Read each plugin's `README.md` for ctx contract, defaults, and
 config keys.
 
-## Deploying to SAM
+## Deploying and maintaining SAM plugins
 
-See **[DEPLOY-TO-SAM.md](DEPLOY-TO-SAM.md)** for the complete
-end-to-end deployment guide: extracting the plugins from this
-monorepo, pushing to GitHub, registering in SAM Central, installing
-on the SAM host, configuring each plugin, and migrating data from
-the legacy Python apps.
+Two reference documents cover everything you need:
 
-`DEPLOY-TO-SAM.md` is the single source of truth for deployment.
+- **[DEPLOY-TO-SAM.md](DEPLOY-TO-SAM.md)** — first-time deployment.
+  Extract plugins from this monorepo, push to GitHub, register in SAM
+  Central, install on the SAM host, configure each plugin, migrate
+  data from the legacy Python apps.
+- **[MAINTAIN-SAM-PLUGINS.md](MAINTAIN-SAM-PLUGINS.md)** — everything
+  after deployment. Ship fixes, ship features, roll back releases,
+  debug production issues, monitor health, add new endpoints or new
+  plugins.
+
 The earlier handoff docs (`EMBEDDING.md`, `OPERATOR-SETUP.md`,
-`MIGRATION.md`) have been retired and replaced by it.
+`MIGRATION.md`) have been retired and replaced by these two.
 
 ## Workspace commands
 
