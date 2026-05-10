@@ -26,7 +26,7 @@ These three will be **deleted** in the same commit as the new doc.
 
 ### File
 - **Path:** `apps-sam/DEPLOY-TO-SAM.md`
-- **Length:** ~600 lines (one ~30-min read end-to-end; ~90 min of actual execution time)
+- **Length:** ~700 lines (one ~40-min read end-to-end including the Phase 0 idiot's guide; ~90 min of actual execution time)
 - **Audience:** Jonathan + Charlie + any future SAM-team member who joins after this
 
 ### Tone and clarity bar
@@ -76,7 +76,7 @@ The document has 8 phases plus a final Done block and a Troubleshooting appendix
 
 | Phase | Title | Who | Est. time |
 |---|---|---|---|
-| 0 | Before you start | Read together | 5 min |
+| 0 | Before you start (6 subsections, incl. "no coding required" idiot's guide) | Read together | 15 min |
 | 1 | Extract the four plugins from the monorepo | Jonathan | 10 min |
 | 2 | Create GitHub repos and push the code | Jonathan | 15 min |
 | 3 | Register the four apps in SAM Central | Jonathan | 15 min |
@@ -89,11 +89,52 @@ The document has 8 phases plus a final Done block and a Troubleshooting appendix
 ### Phase content map
 
 #### Phase 0 — Before you start
-- **The two machines you'll be using** — explicit table mapping each `# Terminal — …` label to a physical machine, who uses it, and what's installed there. The first time a reader encounters labelled code blocks, they understand exactly what they mean.
-- **Accounts and access you need** — GitHub `intsysuk` write access; SAM Central admin login; SAM Mac SSH/physical access; sandbox GoCardless API token.
-- **Software each machine needs** — with one-line check commands (`git --version`, `node --version`, `gh --version`).
-- **What you're deploying** — one-paragraph plain-English summary of each plugin.
-- **What "done" looks like** — the end-state we're driving to, so the team knows when they've succeeded.
+
+Phase 0 has six subsections, in order:
+
+##### 0.1 — What kind of work is this? *(the "no coding required" idiot's guide)*
+
+A detailed, plain-language explanation that sets the expectation: **there is no coding to do.** Everything is either already in the code (done by Harry) or is a value typed into a form in a web UI.
+
+Structure of this subsection:
+
+- **One-sentence summary at the top**: *"Deploying the four plugins to SAM is entirely web-UI configuration. No code changes. No SQL scripts. No editing of config files."*
+- **What "code" means here vs what "config" means here** — defined in plain English so the reader doesn't have to guess.
+- **The four plugins as boxes** — small ASCII or markdown diagram showing the four plugins sitting on top of SAM, and the three things SAM passes into each plugin at runtime (Opera DB connection, per-app database, mailboxes).
+- **The two pre-flight code rewires** that were needed historically — listed explicitly with the note that **both are already done in the code Jonathan extracts**, so the team doesn't have to do them. (Prevents anyone reading EMBEDDING.md elsewhere and getting confused.)
+- **Email side** — single table with rows for:
+  - The plugin asks SAM for its mailbox via `ctx.emailIngest.listMyMailboxes()` — **Code, already done**
+  - SAM stores which mailbox belongs to which plugin via the `owner_app_id` column on `email_mailboxes` — **Config, Charlie does this in SAM Admin UI**
+  - Microsoft Graph credentials — **Config, should already exist if SAM serves email today**
+- **SQL side — three separate connections explained** with the same table format:
+  1. **The Opera database** (SQL Server for SE, FoxPro for Opera 3) — connection set in SAM Admin → Opera Connections. Auto-discovered from `seqco`. Likely already set if SAM is already talking to Opera.
+  2. **The per-app database** (one MSSQL DB per plugin, SAM creates automatically) — schema is in `db/migrations/*.ts` (already in code). SAM runs migrations on install. Connection string never seen by anyone.
+  3. **Per-plugin runtime settings** (API tokens, folder paths) — entered through each plugin's OWN Settings page after install. Stored in the per-app database.
+- **A 5-step "what the SAM team actually does" summary** listing exactly the five user actions:
+  1. Confirm Opera connections in SAM Admin (verify only)
+  2. Confirm Microsoft Graph email is active (verify only)
+  3. Assign three mailboxes to three plugins (3 clicks, 3 saves)
+  4. Enter GoCardless sandbox token + company reference (paste, save)
+  5. Optionally set bank-reconcile folder path (paste, save)
+
+Tone of this subsection: **patient, idiot-guide, leaves nothing to inference.** This is the section the reader returns to whenever they get confused about "wait, do I need to write any code?" The answer they should find every time: no.
+
+Length target: ~80–120 lines of markdown.
+
+##### 0.2 — The two machines you'll be using
+Explicit table mapping each `# Terminal — …` label to a physical machine, who uses it, and what's installed there. The first time a reader encounters labelled code blocks, they understand exactly what they mean.
+
+##### 0.3 — Accounts and access you need
+GitHub `intsysuk` write access; SAM Central admin login; SAM Mac SSH/physical access; sandbox GoCardless API token. One row per item, with how to check or how to request.
+
+##### 0.4 — Software each machine needs
+With one-line check commands (`git --version`, `node --version`, `gh --version`, `docker --version`) and what to do if the command isn't found.
+
+##### 0.5 — What you're deploying
+One-paragraph plain-English summary of each plugin, plus a small "what runs in the cloud vs what runs on your Opera server" diagram if it adds clarity.
+
+##### 0.6 — What "done" looks like
+The end-state we're driving to, so the team knows when they've succeeded. A checklist of observable signals: "All four plugins appear in SAM Admin → Apps. A bank statement test scan returns 1 result. A GoCardless test API call returns 200. The supplier dashboard shows migrated rows."
 
 #### Phase 1 — Extract the four plugins (Jonathan, ~10 min)
 - Clone the SQLRAG monorepo (or pull latest if already cloned).
