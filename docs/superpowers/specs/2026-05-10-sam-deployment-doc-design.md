@@ -232,6 +232,20 @@ These belong in the second document.
 3. Update `apps-sam/EMAIL-DRAFT.md` to point at `DEPLOY-TO-SAM.md` instead of the three old docs.
 4. Update `apps-sam/README.md` to point to `DEPLOY-TO-SAM.md` for deployment.
 5. Commit message: `docs: replace 3 SAM handoff docs with single unified deployment guide`.
+6. Push the commit to `origin/main` so Charlie and Jonathan can access the doc via GitHub.
+7. **Email the deployment guide to the SAM team** via the project's `/api/email/send` endpoint:
+   - **To:** `charlieb@intsysuk.com`, `jonathang@intsysuk.com`
+   - **From:** `intsys@wimbledoncloud.net` (required for external relay, per project config)
+   - **Subject:** `SAM plugin deployment guide — ready to install`
+   - **Body:** HTML email, structured as:
+     - 1-paragraph "what this is" summary (the four plugins are ready to install in SAM; the attached guide walks through it end-to-end)
+     - Action-split summary table: Jonathan does Phases 1–3, Charlie does Phases 4–6, both do Phase 7
+     - Link to the doc on GitHub: `https://github.com/HarryBurdett/llmragsql/blob/main/apps-sam/DEPLOY-TO-SAM.md`
+     - Link to the repo itself in case they want to clone: `https://github.com/HarryBurdett/llmragsql`
+     - "Reply with any questions" sign-off
+   - **Attachment:** the `DEPLOY-TO-SAM.md` file itself, so the team has it locally even if GitHub access lapses
+   - **Pre-send check:** show the user (Harry) the rendered email body in chat for approval before actually calling `/api/email/send`. No surprises.
+8. Wait for Charlie/Jonathan to confirm receipt; record any feedback from their first read-through as a follow-up task for a doc revision pass.
 
 ## Acceptance criteria
 
@@ -243,6 +257,8 @@ The doc is considered done when:
 - [ ] The 8-phase table-of-contents at the top works as navigation
 - [ ] All references to `EMBEDDING.md` / `OPERATOR-SETUP.md` / `MIGRATION.md` are removed from the codebase
 - [ ] A non-technical reader can follow the doc top-to-bottom and produce a working SAM install without asking clarifying questions (the bar)
+- [ ] Doc committed and pushed to `origin/main`
+- [ ] Email sent to `charlieb@intsysuk.com` and `jonathang@intsysuk.com` (after Harry approves the rendered body)
 
 ## Next deliverable (separate spec)
 
