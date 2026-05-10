@@ -402,3 +402,207 @@ Message Charlie: "All four apps registered in Central. Ready for you to trigger 
 Phase 3 done. Hand-off complete.
 
 ---
+
+## Phase 4 — Install on the SAM host
+
+**What you're doing here:** Charlie's first job. SAM Central now knows about the four apps; the SAM host needs to pull them down and install them. One click triggers everything; the rest is watching logs.
+
+### Step 4.1 — Trigger an app sync from SAM Admin
+
+```
+# Browser — SAM Central
+```
+
+In SAM Admin (the host's admin UI, not Central), go to **Apps** → click **Sync now**.
+
+### Step 4.2 — Watch the install in the SAM container's logs
+
+```
+# Terminal — SAM Mac
+docker logs -f ai-sam | grep -E "GitInstall|PluginLoader"
+```
+
+**✓ Looks good if you see** (one set of lines per plugin, four sets total):
+
+```
+[GitInstall] cloning github.com/intsysuk/sam-balance-check.git@v1.0.0
+[GitInstall] Success
+[PluginLoader] Loading balance-check
+[PluginLoader] Running migrations for balance-check (0 to apply)
+[PluginLoader] Loaded balance-check (7 routes registered)
+```
+
+**✗ If you see `[GitInstall] git: authentication required`** — the host's GitHub PAT isn't reaching the new repos. Check SAM host → Settings → Integrations → GitHub. The PAT needs `repo` scope on the `intsysuk` org.
+
+**✗ If you see `[PluginLoader] migration failed`** — the per-app database creation failed. Check the SAM host's MSSQL instance is reachable and SAM has CREATE DATABASE rights. Send the full error to Harry.
+
+**✗ If you see `[PluginLoader] manifest validation failed`** — the plugin's `manifest.json` doesn't match what this version of SAM expects. Likely a SAM-host version mismatch — Harry needs to know the host's version.
+
+### Step 4.3 — Confirm all four plugins are installed in SAM Admin
+
+```
+# Browser — SAM Central
+```
+
+Navigate to SAM Admin → Apps. You should see four entries:
+
+- [ ] balance-check — Installed
+- [ ] bank-reconcile — Installed
+- [ ] gocardless — Installed
+- [ ] suppliers — Installed
+
+Each should be green/healthy.
+
+---
+
+## Phase 5 — Configure each plugin
+
+**What you're doing here:** The plugins are installed but need to know which mailboxes to read, which GoCardless token to use, and which folders to scan. All configuration is done in the SAM Admin UI or each plugin's own Settings page — no terminal, no code.
+
+### Step 5.1 — Verify Opera connections (should already exist)
+
+```
+# Browser — SAM Central
+```
+
+SAM Admin → **Opera Connections**. Confirm:
+
+- [ ] `Intsys` is listed
+- [ ] `CloudSiS` is listed
+
+Both should be auto-discovered from Opera's `seqco` table. If neither appears, SAM has never been wired to Opera here — that's a wider setup issue, message Harry before proceeding.
+
+### Step 5.2 — Verify Microsoft Graph email is active
+
+SAM Admin → **Email Settings**. Status should read **Active** with a recent successful sync timestamp.
+
+**✗ If status is `Disconnected`** — the Microsoft Graph integration needs re-auth. Click **Reconnect** and complete the OAuth flow.
+
+### Step 5.3 — Assign mailboxes to plugins
+
+SAM Admin → **Email Mailboxes**. For each mailbox in the table, set the `owner_app_id`:
+
+| Mailbox purpose | owner_app_id |
+|---|---|
+| Bank statement notifications (Barclays, HSBC, etc.) | `bank-reconcile` |
+| GoCardless payout notification emails | `gocardless` |
+| Supplier statement emails | `suppliers` |
+
+**✓ Looks good if you see:** three mailboxes assigned, each with the correct app shown next to it.
+
+### Step 5.4 — Configure GoCardless plugin
+
+```
+# Browser — SAM Central
+```
+
+Navigate to the GoCardless plugin's UI → **Settings**. Enter:
+
+| Field | Value |
+|---|---|
+| Environment | **sandbox** |
+| API token | The sandbox token Charlie has from the GoCardless sandbox dashboard |
+| Company reference | The IntSys company reference (matches Opera's company ID) |
+
+Save.
+
+⚠ **Do not use the live GoCardless API token until the sandbox smoke-test in Phase 7 passes.** Live calls move real money; we test in sandbox first.
+
+### Step 5.5 — Configure bank-reconcile plugin (optional)
+
+If you also watch a local folder for bank-statement PDFs (separate from email):
+
+Navigate to bank-reconcile's UI → **Settings** → **Folder settings**. Enter the absolute path to the folder you watch. Save.
+
+If you only ingest statements via email, skip this step.
+
+### Step 5.6 — Confirm suppliers + balance-check need no setup
+
+The other two plugins ship with sensible defaults:
+
+- **suppliers** — defaults are fine. You can tune contact/automation settings later.
+- **balance-check** — read-only, no configuration.
+
+---
+
+## Phase 6 — Migrate existing data from Python apps
+
+**What you're doing here:** The four Python apps under `apps/` in the SQLRAG monorepo have been collecting data for months — bank aliases, GoCardless mandates, supplier statements. That data lives in SQLite files on the existing Python host. This step copies it into the new SAM per-app MSSQL databases so the new plugins start with the same knowledge.
+
+### Step 6.1 — Make the Python data folder readable from the SAM Mac
+
+The Python data lives at `/Users/maccb/llmragsql/data/<company>/` (the path on Harry's machine — Charlie's path depends on where the legacy Python is hosted).
+
+Either:
+- Mount the existing data folder as a network share readable from the SAM Mac, or
+- Copy the folder to the SAM Mac (`rsync` from the source).
+
+**✓ Looks good if you see:** running `ls /path/to/data/intsys/` on the SAM Mac shows folders like `bank_reconcile/`, `gocardless/`, `suppliers/`.
+
+### Step 6.2 — Install migration tool dependencies
+
+```
+# Terminal — SAM Mac
+cd /path/to/cloned/sqlrag-monorepo/apps-sam/scripts/migrate-from-python
+npm install
+```
+
+(If the monorepo isn't on the SAM Mac, clone it: `git clone https://github.com/HarryBurdett/llmragsql.git`)
+
+### Step 6.3 — Dry-run for each company × each plugin
+
+**Always dry-run first.** The dry-run reads the source files and shows the row counts it would migrate without writing anything.
+
+```
+# Terminal — SAM Mac
+npm run migrate -- \
+  --company intsys \
+  --plugin bank-reconcile \
+  --data-root /path/to/data \
+  --dry-run
+```
+
+**✓ Looks good if you see** something like:
+
+```
+[DRY-RUN] company=intsys plugin=bank-reconcile
+  bank_import_aliases:     161 rows ready
+  bank_import_patterns:     95 rows ready
+  deferred_transactions:    10 rows ready
+  (skipped: extraction_cache, import_locks — runtime state)
+```
+
+Expected approximate row counts per the existing migration runbook:
+
+| Plugin | Company | Aliases | Patterns | Mandates | Statements |
+|---|---|---|---|---|---|
+| bank-reconcile | intsys | 161 | 95 | — | — |
+| bank-reconcile | cloudsis | 1 | 7 | — | — |
+| gocardless | intsys | — | — | 39 | — |
+| gocardless | cloudsis | — | — | 35 | — |
+| suppliers | intsys | — | — | — | 9 |
+| suppliers | cloudsis | — | — | — | 5 |
+
+Run dry-run for each combination — 6 commands total.
+
+**✗ If you see `0 rows ready`** — `--data-root` is pointing at the wrong folder. Check the path.
+
+### Step 6.4 — Run the migration for real
+
+Remove the `--dry-run` flag and rerun each command:
+
+```
+# Terminal — SAM Mac
+npm run migrate -- \
+  --company intsys \
+  --plugin bank-reconcile \
+  --data-root /path/to/data
+```
+
+**✓ Looks good if you see:** `inserted: X rows` where X matches the dry-run count.
+
+**✗ If you see `duplicate key` errors** — the script is idempotent on `source_ref`. Errors mean either: (a) you already ran this and re-running double-counts (safe to ignore — it skipped existing rows); or (b) a unique constraint on the per-app DB doesn't match the source data. Send the full error to Harry.
+
+Repeat for each combination. balance-check has no data to migrate (read-only plugin).
+
+---
