@@ -81,3 +81,230 @@ Every SAM service file has comments citing the legacy Python file and line numbe
 The legacy code under `apps/`, `sql_rag/`, and `frontend/src/pages/` is retained indefinitely as the canonical behavioural reference. Don't propose retiring it.
 
 ---
+
+## Section 1 — Release management
+
+### 1.1 — The release flow (overview)
+
+```
+┌─────────────────┐   1. Edit       ┌────────────────┐
+│ SQLRAG monorepo │ ──────────────> │ Bump version   │
+│ (your Mac)      │                 │ in pkg + man   │
+└─────────────────┘                 └────────┬───────┘
+                                             │ 2. Extract & push
+                                             ▼
+                                    ┌────────────────────┐
+                                    │ intsysuk/sam-*     │
+                                    │ tagged v1.0.x      │
+                                    └────────┬───────────┘
+                                             │ 3. Sync
+                                             ▼
+                                    ┌────────────────────┐
+                                    │ SAM Central        │
+                                    │ (auto-pulls)       │
+                                    └────────┬───────────┘
+                                             │ 4. Host sync
+                                             ▼
+                                    ┌────────────────────┐
+                                    │ SAM host installs  │
+                                    │ new version        │
+                                    └────────────────────┘
+```
+
+Five-line summary of the loop:
+
+1. Edit code in the monorepo (`apps-sam/<plugin>/src/...`).
+2. Bump the plugin's version in `package.json` and `manifest.json` (both must match).
+3. Re-run `extract-all.sh` then `push-to-github.sh <plugin>`. This pushes the new code and tags it.
+4. SAM Central picks up the new tag (on schedule or via "Sync now").
+5. The SAM host installs the new version on its next sync.
+
+### 1.2 — Ship a patch (v1.0.0 → v1.0.1)
+
+Use this for: a bug fix in one plugin. No new endpoints. No shared-library changes.
+
+#### Step 1.2.1 — Make the fix
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam/<plugin>
+# Edit the relevant file(s), e.g. src/services/import-route.ts
+```
+
+Run the plugin's tests before doing anything else:
+
+```
+# Terminal — your Mac
+npm test
+```
+
+**✓ Looks good if you see:** all green, zero failures.
+
+**✗ If tests fail:** stop. Don't release a broken plugin. Fix until green.
+
+#### Step 1.2.2 — Bump the version in two places
+
+Edit `apps-sam/<plugin>/package.json` and `apps-sam/<plugin>/manifest.json`. Both should show the new version, e.g. `"version": "1.0.1"`.
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam/<plugin>
+grep '"version"' package.json manifest.json
+```
+
+**✓ Looks good if you see:** both files show the same new version.
+
+#### Step 1.2.3 — Commit and push the monorepo change
+
+```
+# Terminal — your Mac
+cd ~/llmragsql
+git add apps-sam/<plugin>/
+git commit -m "fix(<plugin>): <one-line bug summary>"
+git push origin main
+```
+
+#### Step 1.2.4 — Re-extract and push the release repo
+
+```
+# Terminal — your Mac
+cd ~/llmragsql
+./apps-sam/scripts/extract-all.sh
+cd ~/sam-plugins-staging
+./push-to-github.sh <plugin>
+```
+
+**✓ Looks good if you see:** `✓ Success — v1.0.1 tagged and pushed`.
+
+**✗ If you see `tag v1.0.1 already exists`** — the push script tried to push a tag that's already on GitHub. Two possibilities:
+1. You forgot to bump the version (it pushed v1.0.0 again). Check `package.json` and `manifest.json`.
+2. You already published v1.0.1 from a previous attempt. Skip — it's already there.
+
+#### Step 1.2.5 — Trigger SAM to pick up the new version
+
+In SAM Central, navigate to the plugin's app catalogue entry. Either wait for the next scheduled sync (usually within minutes), or click **Sync now** to force it.
+
+Then in SAM Admin (on the SAM host), Apps → **Sync now**. Watch:
+
+```
+# Terminal — SAM Mac
+docker logs -f ai-sam | grep -E "GitInstall|PluginLoader"
+```
+
+**✓ Looks good if you see:**
+```
+[GitInstall] cloning github.com/intsysuk/sam-<plugin>.git@v1.0.1
+[GitInstall] Success
+[PluginLoader] Running migrations for <plugin> (0 to apply)
+[PluginLoader] Loaded <plugin> (N routes registered)
+```
+
+The previous version is now superseded. The new code is running.
+
+### 1.3 — Ship a minor (v1.0.0 → v1.1.0)
+
+Identical flow to a patch, except:
+
+- The version bump goes to the next minor (e.g. `1.0.5` → `1.1.0`)
+- The commit message and tag annotation usually describe the new feature(s)
+- If you added a database migration, the `[PluginLoader]` log line will show `Running migrations for <plugin> (1 to apply)` — confirm that line and that the migration didn't error
+
+### 1.4 — Update the shared library
+
+⚠ **Updating `apps-sam/shared/` touches all four plugins.** You must:
+
+1. Re-extract (which vendors the new shared into each plugin)
+2. Bump the version in **all four** plugin manifests
+3. Push all four release repos
+
+#### Step 1.4.1 — Make the shared change
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam/shared
+# Edit src/...
+npm test
+```
+
+**✓ Looks good if you see:** shared tests pass.
+
+#### Step 1.4.2 — Bump all four plugin versions
+
+```
+# Terminal — your Mac
+cd ~/llmragsql
+for plugin in balance-check bank-reconcile gocardless suppliers; do
+  echo "=== $plugin ==="
+  grep '"version"' apps-sam/$plugin/package.json apps-sam/$plugin/manifest.json
+done
+```
+
+Edit each one. Use patch bumps (e.g. all four go from `1.0.x` to `1.0.x+1`) unless the shared change is a feature, in which case minor bumps.
+
+#### Step 1.4.3 — Commit, push, extract, push all four
+
+```
+# Terminal — your Mac
+cd ~/llmragsql
+git add apps-sam/
+git commit -m "feat(shared): <one-line summary> — all four plugins bumped"
+git push origin main
+
+./apps-sam/scripts/extract-all.sh
+cd ~/sam-plugins-staging
+for plugin in balance-check bank-reconcile gocardless suppliers; do
+  ./push-to-github.sh $plugin
+done
+```
+
+**✓ Looks good if you see:** four `✓ Success` lines, one per plugin.
+
+### 1.5 — Roll back a broken release
+
+If a release is causing problems in production, you have two options.
+
+#### Option A — Re-pin to the previous version in SAM Central (fast, ~30 seconds)
+
+In SAM Central → Apps catalogue → the plugin → **Change pinned version** → select the previous version (e.g. v1.0.0 instead of v1.0.1) → **Save**.
+
+In SAM Admin (on the SAM host) → Apps → **Sync now**. The host downgrades to the pinned version.
+
+**✓ Looks good if you see:** `[GitInstall] cloning github.com/intsysuk/sam-<plugin>.git@v1.0.0` (note the older version).
+
+**This is reversible** — pin back to the new version when fixed.
+
+#### Option B — Revert and republish (clean)
+
+If you want the rollback to be the new canonical version (not a pin override):
+
+```
+# Terminal — your Mac
+cd ~/llmragsql
+git revert <commit-sha-of-bad-release>
+# Bump version (e.g. v1.0.1 was broken → publish v1.0.2 with the revert)
+# Edit package.json + manifest.json
+git add apps-sam/<plugin>/
+git commit -m "revert: rollback <plugin> v1.0.1 — <reason>"
+git push origin main
+
+./apps-sam/scripts/extract-all.sh
+cd ~/sam-plugins-staging
+./push-to-github.sh <plugin>
+```
+
+Then trigger SAM Central + SAM host sync as in Step 1.2.5.
+
+### 1.6 — Hotfix flow (when something is on fire)
+
+The minimum sequence when production is degraded and you need to ship fast:
+
+1. **Reproduce the bug locally.** If you can't reproduce, you can't trust the fix. (5-15 min)
+2. **Write the fix.** Skip the temptation to refactor on the way through. One change. (5-30 min)
+3. **Run tests for the affected plugin.** Don't skip this even when tired — broken fix = bigger fire. (1-2 min)
+4. **Bump patch version + commit + push + extract + push release repo.** (Steps 1.2.2–1.2.4 above, ~3 min.)
+5. **Sync SAM** (Step 1.2.5, ~1 min).
+6. **Verify in production** by reproducing the original symptom and confirming it's fixed.
+
+If the fix turns out to be wrong, roll back via Section 1.5 Option A, then go back to Step 1 with the new evidence.
+
+---
