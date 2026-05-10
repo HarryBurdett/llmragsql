@@ -606,3 +606,140 @@ npm run migrate -- \
 Repeat for each combination. balance-check has no data to migrate (read-only plugin).
 
 ---
+
+## Phase 7 — Verify everything works
+
+**What you're doing here:** Smoke-test each plugin end-to-end before declaring done. Catch any "looks installed but doesn't actually work" issues now, while the install context is fresh.
+
+### Step 7.1 — Smoke-test balance-check
+
+```
+# Browser — SAM Central
+```
+
+Open the balance-check plugin in SAM. Navigate to the **Cashbook reconcile** view.
+
+**✓ Looks good if you see:** a list of cashbook balances loaded from Opera (e.g. each bank account's balance from `nbank` matches the corresponding `nacnt` row).
+
+### Step 7.2 — Smoke-test bank-reconcile
+
+Open bank-reconcile → click **Scan email**. Wait ~30 seconds.
+
+**✓ Looks good if you see:** at least one bank statement appears in the list (from the bank-statements mailbox you assigned).
+
+If no statements appear and you know there should be some in the mailbox: check Phase 5.3 — the mailbox `owner_app_id` may not be set correctly.
+
+### Step 7.3 — Smoke-test gocardless
+
+Open gocardless → **Settings** → **Test API connection**.
+
+**✓ Looks good if you see:** `Success — connected to GoCardless sandbox`.
+
+**✗ If you see `401 Unauthorized`** — the sandbox token is wrong or the environment is set to `live`. Check Phase 5.4.
+
+### Step 7.4 — Smoke-test suppliers
+
+Open suppliers → **Dashboard**.
+
+**✓ Looks good if you see:** the migrated supplier statements from Phase 6 listed (9 for intsys, 5 for cloudsis).
+
+### Step 7.5 — Sanity check: legacy Python apps still work
+
+```
+# Browser
+```
+
+In a different browser tab, open the legacy SQLRAG frontend (`http://localhost:5173` or wherever it runs). Navigate to:
+
+- Cashbook → Cashbook Reconcile
+- GoCardless → Import
+- Suppliers → Dashboard
+
+**✓ Looks good if you see:** all three still load and function as they did before. (The legacy code is preserved as the canonical behavioural reference — nothing in the SAM merge should have changed it.)
+
+---
+
+## ∎ Done — hand back to Harry
+
+When all eight checkboxes in section 0.6 are ticked and Phase 7's smoke tests all pass, the SAM deployment is done. Email Harry:
+
+```
+Subject: SAM deployment complete
+
+Harry,
+
+All four plugins installed and verified in SAM:
+
+- balance-check: installed, smoke-test passed
+- bank-reconcile: installed, scan returned N statements
+- gocardless: installed, sandbox API connection successful
+- suppliers: installed, M statements migrated and visible
+
+Open items handed back to you:
+- GoCardless: still on sandbox token. Swap to live token after [N] days of clean sandbox runs.
+- Any phase-3 UI discrepancies noticed: [list, or "none"].
+- Anything else: [...].
+
+Charlie + Jonathan
+```
+
+### Deferred items (Harry's responsibility, not SAM team's)
+
+- Swap GoCardless sandbox → live token after smoke-test period
+- Decide when to retire the legacy frontend menu items (the legacy *backend* code stays per repo policy)
+- Schedule the maintenance-guide brainstorming session
+
+---
+
+## Troubleshooting
+
+Quick reference for the most likely failure modes. Listed in the order you're likely to hit them.
+
+### `extract-all.sh` fails partway through
+
+Most common cause: stale `node_modules` in `apps-sam/`. Fix:
+
+```
+# Terminal — your Mac
+cd ~/llmragsql/apps-sam
+rm -rf node_modules
+npm install
+cd ..
+./apps-sam/scripts/extract-all.sh
+```
+
+### `push-to-github.sh` says `Permission denied (publickey)`
+
+Your SSH key isn't loaded for GitHub. Run `gh auth status`. If not logged in, `gh auth login`. If you'd rather use HTTPS, edit `REMOTE_URL` in the push script.
+
+### SAM Central can't reach the new private repos
+
+Central's PAT scope is too narrow. SAM Central → Settings → Integrations → GitHub. Either re-issue the PAT with full `repo` scope on `intsysuk`, or add the four new repos individually if your auth setup uses fine-grained tokens.
+
+### `[PluginLoader] Loaded` lines don't appear
+
+Either the install failed (see `[GitInstall]` lines above) or `docker logs -f` isn't following — try `docker logs --tail 200 ai-sam` to see static history.
+
+### Mailbox assignment doesn't trigger scans
+
+The email-ingest adapter checks for new mailbox assignments every ~60 seconds. Wait a minute, then trigger the scan manually from the plugin's UI.
+
+### GoCardless API call returns 401
+
+Three possible causes (in order):
+
+1. Token typo — re-paste from the dashboard.
+2. Environment mismatch — token is for `live` but plugin is configured for `sandbox` (or vice versa).
+3. Token was revoked in the GoCardless dashboard — generate a new one.
+
+### Migration `0 rows ready` in dry-run
+
+`--data-root` path is wrong. Verify: `ls $DATA_ROOT/intsys/bank_reconcile/` should show `.db` files.
+
+### Migration says `duplicate key`
+
+You already ran the migration for that combo. Safe to ignore — the script is idempotent on `source_ref`. Existing rows are skipped, not re-inserted.
+
+---
+
+**End of guide.** If you hit something not covered here, message Harry with: which phase + step number you're on, the exact command/click, and the full error output.
