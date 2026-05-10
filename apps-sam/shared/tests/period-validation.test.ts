@@ -5,6 +5,7 @@ import {
   getPeriodStatus,
   isOpenPeriodAccountingEnabled,
   validatePostingPeriod,
+  getPeriodPostingDecision,
   getLedgerTypeForTransaction,
 } from '../src/opera/period-validation.js';
 
@@ -250,6 +251,156 @@ describe('validatePostingPeriod', () => {
     expect(result.is_valid).toBe(false);
     expect(result.error_message).toMatch(/Period 3\/2026 is blocked/);
     expect(result.error_message).toMatch(/Current period is 4\/2026/);
+  });
+});
+
+/**
+ * getPeriodPostingDecision — port of `get_period_posting_decision`
+ * (sql_rag/opera_config.py:848-1037). The Python tests in
+ * tests/test_opera_config.py cover these branches; we mirror them.
+ */
+describe('getPeriodPostingDecision', () => {
+  function setupHandlers(opts: {
+    txnPeriod?: number;
+    txnYear?: number;
+    currentPeriod?: number | null;
+    currentYear?: number | null;
+    opa?: 0 | 1;
+    rt?: 0 | 1;
+    nlStatus?: 0 | 1 | 2 | null;
+    slStatus?: 0 | 1 | 2 | null;
+  }): RawHandler[] {
+    return [
+      {
+        match: (sql) => sql.includes('FROM nclndd') && !sql.includes('ncd_nlstat') && !sql.includes('ncd_slstat'),
+        rows: [
+          {
+            ncd_period: opts.txnPeriod ?? 4,
+            ncd_year: opts.txnYear ?? 2026,
+          },
+        ],
+      },
+      {
+        match: (sql) => sql.includes('FROM nparm'),
+        rows: [
+          {
+            np_year: opts.currentYear ?? 2026,
+            np_perno: opts.currentPeriod ?? 4,
+            np_periods: 12,
+          },
+        ],
+      },
+      {
+        match: (sql) => sql.includes('seqco') && sql.includes('co_opanl'),
+        rows: [{ co_opanl: opts.opa ?? 1 }],
+      },
+      {
+        match: (sql) => sql.includes('seqco') && sql.includes('co_rtupdnl'),
+        rows: [{ co_rtupdnl: opts.rt ?? 1 }],
+      },
+      // ncd status lookup for NL
+      {
+        match: (sql) => sql.includes('ncd_nlstat'),
+        rows:
+          opts.nlStatus === null
+            ? []
+            : [{ period_status: opts.nlStatus ?? 0 }],
+      },
+      // ncd status lookup for SL
+      {
+        match: (sql) => sql.includes('ncd_slstat'),
+        rows:
+          opts.slStatus === null
+            ? []
+            : [{ period_status: opts.slStatus ?? 0 }],
+      },
+    ];
+  }
+
+  it('OPA off + RT on + current period → posts to NL with done=Y', async () => {
+    const { db } = makeMockOperaDb(
+      setupHandlers({ opa: 0, txnPeriod: 4, currentPeriod: 4 }),
+    );
+    const decision = await getPeriodPostingDecision(db, '2026-04-15', 'SL');
+    expect(decision.can_post).toBe(true);
+    expect(decision.post_to_nominal).toBe(true);
+    expect(decision.post_to_transfer_file).toBe(true);
+    expect(decision.transfer_file_done_flag).toBe('Y');
+  });
+
+  it('OPA off + non-current period → REJECT', async () => {
+    const { db } = makeMockOperaDb(
+      setupHandlers({ opa: 0, txnPeriod: 3, currentPeriod: 4 }),
+    );
+    const decision = await getPeriodPostingDecision(db, '2026-03-15', 'SL');
+    expect(decision.can_post).toBe(false);
+    expect(decision.error_message).toMatch(/Open Period Accounting is disabled/);
+  });
+
+  it('OPA on + NL closed → REJECT (NL is master gatekeeper)', async () => {
+    const { db } = makeMockOperaDb(
+      setupHandlers({ opa: 1, nlStatus: 2 }),
+    );
+    const decision = await getPeriodPostingDecision(db, '2026-04-15', 'SL');
+    expect(decision.can_post).toBe(false);
+    expect(decision.error_message).toMatch(/closed for NL/);
+  });
+
+  it('OPA on + sub-ledger blocked → REJECT', async () => {
+    const { db } = makeMockOperaDb(
+      setupHandlers({ opa: 1, nlStatus: 0, slStatus: 1 }),
+    );
+    const decision = await getPeriodPostingDecision(db, '2026-04-15', 'SL');
+    expect(decision.can_post).toBe(false);
+    expect(decision.error_message).toMatch(/blocked for SL/);
+  });
+
+  it('OPA on + RT off → transfer-file only with done=" "', async () => {
+    const { db } = makeMockOperaDb(
+      setupHandlers({ opa: 1, rt: 0, nlStatus: 0, slStatus: 0 }),
+    );
+    const decision = await getPeriodPostingDecision(db, '2026-04-15', 'SL');
+    expect(decision.can_post).toBe(true);
+    expect(decision.post_to_nominal).toBe(false);
+    expect(decision.post_to_transfer_file).toBe(true);
+    expect(decision.transfer_file_done_flag).toBe(' ');
+  });
+
+  it('OPA on + RT on + backdated within same year → still posts to NL', async () => {
+    const { db } = makeMockOperaDb(
+      setupHandlers({
+        opa: 1,
+        rt: 1,
+        nlStatus: 0,
+        slStatus: 0,
+        txnPeriod: 2,
+        currentPeriod: 5,
+        txnYear: 2026,
+        currentYear: 2026,
+      }),
+    );
+    const decision = await getPeriodPostingDecision(db, '2026-02-15', 'SL');
+    expect(decision.can_post).toBe(true);
+    expect(decision.post_to_nominal).toBe(true);
+    expect(decision.transfer_file_done_flag).toBe('Y');
+  });
+
+  it('Prior financial year → REJECT', async () => {
+    const { db } = makeMockOperaDb(
+      setupHandlers({
+        opa: 1,
+        rt: 1,
+        nlStatus: 0,
+        slStatus: 0,
+        txnYear: 2025,
+        currentYear: 2026,
+        txnPeriod: 4,
+        currentPeriod: 4,
+      }),
+    );
+    const decision = await getPeriodPostingDecision(db, '2025-04-15', 'SL');
+    expect(decision.can_post).toBe(false);
+    expect(decision.error_message).toMatch(/prior financial year/);
   });
 });
 

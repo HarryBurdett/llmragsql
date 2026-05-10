@@ -67,6 +67,110 @@ function coerceDate(d: unknown): Date | null {
  * Read ztax (Home country VAT codes) and compute the applicable rate
  * for `refDate`.
  */
+/**
+ * Single-code VAT rate lookup with date-effective resolution.
+ *
+ * Faithful port of `OperaSQLImport.get_vat_rate`
+ * (sql_rag/opera_sql_import.py:468-560). Used by posting flows when
+ * splitting fees into net + VAT components.
+ *
+ * Tries:
+ *   1. Exact match: tx_code + tx_trantyp + tx_ctrytyp='H'
+ *   2. Without trantyp filter: tx_code + tx_ctrytyp='H'
+ *   3. Fallback: any tx_nominal in ztax (so the caller has SOMETHING
+ *      to post against rather than failing)
+ */
+export interface VatRateLookup {
+  rate: number;
+  nominal: string;
+  description: string;
+  found: boolean;
+}
+
+export async function getVatRate(
+  operaDb: Knex,
+  vatCode: string,
+  vatType: 'S' | 'P' = 'S',
+  asOfDate: Date = new Date(),
+): Promise<VatRateLookup> {
+  const code = (vatCode ?? '').trim();
+  if (!code) {
+    return { rate: 0, nominal: '', description: '', found: false };
+  }
+
+  let rows = (await operaDb.raw(
+    `SELECT tx_code, tx_desc, tx_rate1, tx_rate2, tx_rate1dy, tx_rate2dy, tx_nominal
+     FROM ztax WITH (NOLOCK)
+     WHERE RTRIM(tx_code) = ?
+       AND tx_trantyp = ?
+       AND tx_ctrytyp = 'H'`,
+    [code, vatType],
+  )) as unknown as Array<{
+    tx_rate1: number | null;
+    tx_rate2: number | null;
+    tx_rate1dy: Date | string | null;
+    tx_rate2dy: Date | string | null;
+    tx_nominal: string | null;
+    tx_desc: string | null;
+  }>;
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    rows = (await operaDb.raw(
+      `SELECT tx_code, tx_desc, tx_rate1, tx_rate2, tx_rate1dy, tx_rate2dy, tx_nominal
+       FROM ztax WITH (NOLOCK)
+       WHERE RTRIM(tx_code) = ?
+         AND tx_ctrytyp = 'H'`,
+      [code],
+    )) as unknown as typeof rows;
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    // Fallback: any VAT nominal so caller can still post
+    let fallback = '';
+    try {
+      const fallbackRows = (await operaDb.raw(
+        `SELECT TOP 1 tx_nominal FROM ztax WITH (NOLOCK)
+         WHERE tx_nominal IS NOT NULL AND tx_ctrytyp = 'H'`,
+      )) as unknown as Array<{ tx_nominal: string | null }>;
+      fallback =
+        Array.isArray(fallbackRows) && fallbackRows[0]
+          ? (fallbackRows[0].tx_nominal ?? '').trim()
+          : '';
+    } catch {
+      // best-effort
+    }
+    return { rate: 0, nominal: fallback, description: 'Unknown', found: false };
+  }
+
+  const row = rows[0]!;
+  const rate1 = Number(row.tx_rate1 ?? 0);
+  const rate2 = Number(row.tx_rate2 ?? 0);
+  const date1 = coerceDate(row.tx_rate1dy);
+  const date2 = coerceDate(row.tx_rate2dy);
+  const rate = pickApplicableRate(rate1, rate2, date1, date2, asOfDate);
+  let nominal = (row.tx_nominal ?? '').trim();
+  if (!nominal) {
+    try {
+      const fallbackRows = (await operaDb.raw(
+        `SELECT TOP 1 tx_nominal FROM ztax WITH (NOLOCK)
+         WHERE tx_nominal IS NOT NULL AND tx_ctrytyp = 'H'`,
+      )) as unknown as Array<{ tx_nominal: string | null }>;
+      nominal =
+        Array.isArray(fallbackRows) && fallbackRows[0]
+          ? (fallbackRows[0].tx_nominal ?? '').trim()
+          : '';
+    } catch {
+      // best-effort
+    }
+  }
+  return {
+    rate,
+    nominal,
+    description: (row.tx_desc ?? '').trim(),
+    found: true,
+  };
+}
+
 export async function fetchVatCodesWithRates(
   db: Knex,
   refDate: Date,

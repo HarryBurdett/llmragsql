@@ -4,12 +4,18 @@
 
 export {
   getControlAccounts,
+  getCustomerControlAccount,
+  getSupplierControlAccount,
   clearControlAccountsCache,
 } from './control-accounts.js';
 export type { OperaControlAccounts } from './control-accounts.js';
 
-export { fetchVatCodesWithRates } from './vat-rates.js';
-export type { VatCodeRow, VatCodesWithRatesResult } from './vat-rates.js';
+export { fetchVatCodesWithRates, getVatRate } from './vat-rates.js';
+export type {
+  VatCodeRow,
+  VatCodesWithRatesResult,
+  VatRateLookup,
+} from './vat-rates.js';
 
 export {
   getPeriodForDate,
@@ -18,6 +24,7 @@ export {
   isOpenPeriodAccountingEnabled,
   isRealTimeUpdateEnabled,
   validatePostingPeriod,
+  getPeriodPostingDecision,
   getLedgerTypeForTransaction,
 } from './period-validation.js';
 
@@ -53,8 +60,15 @@ export {
   generateOperaUniqueId,
   generateOperaUniqueIds,
 } from './unique-id.js';
+
+export { importBankTransfer } from './bank-transfer.js';
+export type {
+  BankTransferOptions,
+  BankTransferResult,
+} from './bank-transfer.js';
 export type {
   LedgerType,
   PeriodInfo,
   PeriodValidationResult,
+  PeriodPostingDecision,
 } from './period-validation.js';

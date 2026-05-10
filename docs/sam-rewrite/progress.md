@@ -34,16 +34,35 @@ default factory, and passes a context our types already match.
 
 ## Status
 
-**Status:** All 4 plugin foundations in place; 1 fully ported; 3 in active progress.
+**Status:** All 4 plugin foundations in place; 1 fully ported; 3 substantially ported with all major finance-write flows + read views in place.
 **balance-check:** ✅ BACKEND COMPLETE (7/7 endpoints, 32 tests)
-**gocardless:** 46 of ~124 endpoints (219 tests)
-**bank-reconcile:** 36 of ~127 endpoints (181 tests)
-**suppliers:** 38 endpoints (greenfield TS work — 128 tests)
-**shared:** 11 utility modules covering all foundational primitives (92 tests)
-**Total TS tests across all packages:** 648 (all passing, all builds clean)
-**Endpoint coverage of Python source (3 porting apps):** 86 of ~258 = ~33%
+**gocardless:** ~50 endpoints — full posting flow (import-batch + auto-allocate + bank-transfer), scan-emails (234 tests)
+**bank-reconcile:** ~45 endpoints — all 4 cashbook posters + bank transfer + reconcile view + import-from-statement preview + scan-emails (202 tests)
+**suppliers:** ~42 endpoints — extract-statement + reconcile-statement + scan-emails (134 tests)
+**shared:** 13 utility modules — all foundational primitives + bank-transfer + control accounts (109 tests)
+**Total TS tests across all packages:** 711 (all passing, all builds clean)
+**Endpoint coverage of Python source (3 porting apps):** ~140 of ~258 = ~54%
 **Calendar week of project:** 1
-**Sessions logged:** 1 (extended autonomous session — 60+ commits)
+**Sessions logged:** 2 (extended autonomous sessions)
+
+### Latest session adds
+1. `getPeriodPostingDecision` shared helper (port of Python's `get_period_posting_decision`).
+2. `getCustomerControlAccount` + `getSupplierControlAccount` shared helpers.
+3. `getVatRate` single-code VAT lookup with strict/loose/fallback layers.
+4. `importBankTransfer` shared helper — full 2× aentry, 2× atran, 2× ntran, 2× anoml, nbank+nacnt updates with alphabetical lock ordering.
+5. `importGocardlessBatch` + `importGocardlessRoute` (gocardless `/api/gocardless/import`):
+   - Idempotency gate
+   - Mandate verification
+   - Destination-bank resolution from sort/account
+   - Bank-level import lock
+   - VAT split for fees (zvtran + nvat)
+   - Auto-allocate per-payment receipts (RULE 0/1/2 from Python)
+   - Auto-transfer net to destination bank via `importBankTransfer`
+6. `postCashbookEntry` (bank-reconcile) — unified poster for sales receipt / sales refund / purchase payment / purchase refund. Signs derived from kind config; single transaction; bank lock per request.
+7. `getReconcileBankView` — full GET /api/reconcile/bank/:bank_code port with 3-source variance check.
+8. `importFromStatementPreview` — alias-based matching for already-extracted statement transactions.
+9. `scanEmailsForBankStatements` / `scanEmailsForGocardless` / `scanEmailsForSupplierStatements` — three thin scan endpoints reading from per-app capture tables (`scanned_statements`, `scanned_payouts`, `scanned_supplier_statements`).
+10. Suppliers `persistExtractedStatement` (idempotent header + lines write) and `reconcileStatement` (ref + amount/date matching against ptran).
 
 ### Foundational primitives in @sqlrag/sam-shared
 All primitives needed for finance-write endpoints are now in place:

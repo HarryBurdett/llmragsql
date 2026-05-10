@@ -67,6 +67,12 @@ import {
   recordOverride,
   deleteOverride,
 } from './services/supplier-overrides.js';
+import { scanEmailsForSupplierStatements } from './services/scan-emails.js';
+import {
+  persistExtractedStatement,
+  type ExtractedLine,
+} from './services/extract-statement.js';
+import { reconcileStatement } from './services/reconcile-statement.js';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1103,13 +1109,95 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
-  // Future endpoints (designed during the TS port, not translated):
-  //   POST /api/suppliers/scan-emails        — scan SAM mailbox
-  //   POST /api/suppliers/extract-statement  — Gemini extract line items
-  //   POST /api/suppliers/reconcile          — reconcile statement vs ptran
-  //   GET  /api/suppliers/:code/contacts     — extended contacts
-  //   POST /api/suppliers/onboard            — onboarding flow
-  //   POST /api/suppliers/remittance         — generate + send remittance
+  /**
+   * GET /api/suppliers/scan-emails
+   *
+   * Lists supplier-statement candidate emails captured by the SAM
+   * email-ingest handler.
+   */
+  router.get('/api/suppliers/scan-emails', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const q = (req.query ?? {}) as Record<string, string | undefined>;
+      const result = await scanEmailsForSupplierStatements(appDb, {
+        ...(q.days_back !== undefined ? { daysBack: Number(q.days_back) } : {}),
+        ...(q.include_processed !== undefined
+          ? { includeProcessed: q.include_processed === 'true' }
+          : {}),
+        ...(q.supplier_code ? { supplierCode: String(q.supplier_code) } : {}),
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Suppliers scan-emails failed', err);
+      res
+        .status(500)
+        .json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/extract-statement
+   *
+   * Persists an already-extracted statement (header + lines) into
+   * supplier_statements + statement_lines. Idempotent against
+   * source_ref. The actual AI extraction (Gemini call against the
+   * PDF) happens client-side or via a separate orchestrator; this
+   * endpoint takes the structured result and writes it.
+   *
+   * Body: { supplier_code, statement_date, opening_balance,
+   *         closing_balance, source, source_ref, pdf_path?, lines: [...] }
+   */
+  router.post('/api/suppliers/extract-statement', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const lines = Array.isArray(body.lines)
+        ? (body.lines as ExtractedLine[])
+        : [];
+      const result = await persistExtractedStatement(appDb, {
+        supplierCode: String(body.supplier_code ?? ''),
+        statementDate: String(body.statement_date ?? ''),
+        openingBalance: Number(body.opening_balance ?? 0),
+        closingBalance: Number(body.closing_balance ?? 0),
+        source: (String(body.source ?? 'manual') as 'email' | 'file' | 'manual'),
+        sourceRef: String(body.source_ref ?? ''),
+        ...(body.pdf_path ? { pdfPath: String(body.pdf_path) } : {}),
+        lines,
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Suppliers extract-statement failed', err);
+      res
+        .status(500)
+        .json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/suppliers/reconcile/:statement_id
+   *
+   * Reconciles a saved supplier statement against Opera ptran. Returns
+   * matched / missing / extra lines plus a variance summary.
+   */
+  router.post('/api/suppliers/reconcile/:statement_id', async (req, res) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await reconcileStatement(appDb, operaDb, {
+        statementId: Number(req.params.statement_id ?? 0),
+      });
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Suppliers reconcile failed', err);
+      res
+        .status(500)
+        .json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
 
   return router;
 }

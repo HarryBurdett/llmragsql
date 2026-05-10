@@ -5,7 +5,10 @@
  * suite.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getControlAccounts } from '../src/opera/control-accounts.js';
+import {
+  getControlAccounts,
+  getCustomerControlAccount,
+} from '../src/opera/control-accounts.js';
 
 /**
  * Minimal mock Knex builder that returns canned rows from `.first()`.
@@ -161,5 +164,101 @@ describe('getControlAccounts', () => {
     // code review (search for literal '1100', '2100', etc.). This file
     // doesn't attempt the search at runtime — that's a lint job.
     expect(true).toBe(true);
+  });
+});
+
+/**
+ * Tests for getCustomerControlAccount — port of
+ * `get_customer_control_account()` in `sql_rag/opera_config.py:187-228`.
+ *
+ * Behaviour:
+ *   - Empty account → returns company-default debtorsControl
+ *   - Account with profile linked to sprfls.sc_dbtctrl → returns that
+ *   - Account with no profile / no sc_dbtctrl → falls back to default
+ *   - SQL error during lookup → falls back to default (best-effort)
+ */
+describe('getCustomerControlAccount', () => {
+  function makeKnexWithCustomerLookup(opts: {
+    customerControl?: string;
+    rawShouldThrow?: boolean;
+    defaultsDebtors?: string;
+    defaultsCreditors?: string;
+  }): any {
+    const db: any = (table: string) => {
+      const builder: any = {
+        _table: table,
+        select: (..._cols: unknown[]) => builder,
+        first: async () => {
+          if (table === 'sprfls') {
+            return {
+              debtors_control: opts.defaultsDebtors ?? '1100',
+            };
+          }
+          if (table === 'pprfls') {
+            return {
+              creditors_control: opts.defaultsCreditors ?? '2100',
+            };
+          }
+          return null;
+        },
+      };
+      return builder;
+    };
+    db.raw = (sql: string, _params?: unknown[]) => {
+      // Only the FROM sname query is await-ed; column-tag calls just return.
+      if (typeof sql === 'string' && sql.includes('FROM sname')) {
+        if (opts.rawShouldThrow) {
+          return Promise.reject(new Error('simulated SQL error'));
+        }
+        if (opts.customerControl !== undefined) {
+          return Promise.resolve([
+            {
+              profile_code: 'PROF1',
+              control_account: opts.customerControl,
+            },
+          ]);
+        }
+        return Promise.resolve([]);
+      }
+      // Tag-style use inside a SELECT — not awaited
+      return sql;
+    };
+    return db;
+  }
+
+  it('returns company default when account is empty', async () => {
+    const db = makeKnexWithCustomerLookup({
+      defaultsDebtors: '1199',
+      defaultsCreditors: '2299',
+    });
+    const result = await getCustomerControlAccount(db, '');
+    expect(result).toBe('1199');
+  });
+
+  it('returns the customer-specific control when sname.sn_cprfl resolves', async () => {
+    const db = makeKnexWithCustomerLookup({
+      customerControl: '1150',
+      defaultsDebtors: '1100',
+    });
+    const result = await getCustomerControlAccount(db, 'CUST01');
+    expect(result).toBe('1150');
+  });
+
+  it('falls back to company default when customer has no profile-linked control', async () => {
+    const db = makeKnexWithCustomerLookup({
+      customerControl: '',
+      defaultsDebtors: '1100',
+    });
+    const result = await getCustomerControlAccount(db, 'CUST_NOPROFILE');
+    expect(result).toBe('1100');
+  });
+
+  it('falls back to company default when SQL errors (best-effort)', async () => {
+    const db = makeKnexWithCustomerLookup({
+      rawShouldThrow: true,
+      defaultsDebtors: '1100',
+    });
+    const result = await getCustomerControlAccount(db, 'CUST_ERR');
+    expect(result).toBe('1100');
   });
 });

@@ -56,6 +56,28 @@ export interface PeriodValidationResult {
   open_period_accounting: boolean;
 }
 
+/**
+ * Mirrors the Python `PeriodPostingDecision` dataclass in
+ * `sql_rag/opera_config.py`.
+ *
+ * Drives how a transaction is written:
+ *   - `can_post=false` → reject (use `error_message` for UX)
+ *   - `post_to_nominal=true` → write ntran + nacnt updates
+ *   - `post_to_transfer_file=true` → write anoml; `done_flag` is the ax_done value
+ */
+export interface PeriodPostingDecision {
+  can_post: boolean;
+  post_to_nominal: boolean;
+  post_to_transfer_file: boolean;
+  /** `'Y'` (posted to NL) or `' '` (pending transfer). */
+  transfer_file_done_flag: ' ' | 'Y';
+  error_message: string | null;
+  current_year: number | null;
+  current_period: number | null;
+  transaction_year: number;
+  transaction_period: number;
+}
+
 // ---------------------------------------------------------------------
 // Date parsing
 // ---------------------------------------------------------------------
@@ -304,6 +326,197 @@ export async function validatePostingPeriod(
     };
   }
   return { is_valid: true, year, period, open_period_accounting: false };
+}
+
+// ---------------------------------------------------------------------
+// getPeriodPostingDecision — port of get_period_posting_decision
+// (sql_rag/opera_config.py:848-1037). Returns the structured decision
+// the Opera writers use to choose between immediate NL posting and
+// transfer-file-only posting.
+// ---------------------------------------------------------------------
+
+export async function getPeriodPostingDecision(
+  operaDb: Knex,
+  postDate: Date | string,
+  ledgerType: LedgerType = 'NL',
+): Promise<PeriodPostingDecision> {
+  const { period: txnPeriod, year: txnYear } = await getPeriodForDate(
+    operaDb,
+    postDate,
+  );
+  const current = await getCurrentPeriodInfo(operaDb);
+  const opaEnabled = await isOpenPeriodAccountingEnabled(operaDb);
+  const realTimeUpdate = await isRealTimeUpdateEnabled(operaDb);
+
+  const currentYear = current.np_year;
+  const currentPeriod = current.np_perno;
+
+  // Could not read current period — Python falls back to transfer-only
+  if (currentYear === null || currentPeriod === null) {
+    return {
+      can_post: true,
+      post_to_nominal: false,
+      post_to_transfer_file: true,
+      transfer_file_done_flag: ' ',
+      error_message: null,
+      current_year: currentYear,
+      current_period: currentPeriod,
+      transaction_year: txnYear,
+      transaction_period: txnPeriod,
+    };
+  }
+
+  // Step 1: OPA gating — NL is master gatekeeper
+  if (opaEnabled) {
+    const nlStatus = await getPeriodStatus(operaDb, txnYear, txnPeriod, 'NL');
+    if (nlStatus === null) {
+      return {
+        can_post: false,
+        post_to_nominal: false,
+        post_to_transfer_file: false,
+        transfer_file_done_flag: ' ',
+        error_message: `Period ${txnPeriod}/${txnYear} not found in calendar (nclndd)`,
+        current_year: currentYear,
+        current_period: currentPeriod,
+        transaction_year: txnYear,
+        transaction_period: txnPeriod,
+      };
+    }
+    if (nlStatus !== 0) {
+      const desc = nlStatus === 2 ? 'closed' : 'blocked';
+      return {
+        can_post: false,
+        post_to_nominal: false,
+        post_to_transfer_file: false,
+        transfer_file_done_flag: ' ',
+        error_message: `Period ${txnPeriod}/${txnYear} is ${desc} for NL — all ledgers blocked`,
+        current_year: currentYear,
+        current_period: currentPeriod,
+        transaction_year: txnYear,
+        transaction_period: txnPeriod,
+      };
+    }
+
+    // Sub-ledger check for SL/PL/etc.
+    if (ledgerType !== 'NL') {
+      const subStatus = await getPeriodStatus(
+        operaDb,
+        txnYear,
+        txnPeriod,
+        ledgerType,
+      );
+      if (subStatus === null) {
+        return {
+          can_post: false,
+          post_to_nominal: false,
+          post_to_transfer_file: false,
+          transfer_file_done_flag: ' ',
+          error_message: `Period ${txnPeriod}/${txnYear} not found in calendar for ${ledgerType}`,
+          current_year: currentYear,
+          current_period: currentPeriod,
+          transaction_year: txnYear,
+          transaction_period: txnPeriod,
+        };
+      }
+      if (subStatus !== 0) {
+        const desc = subStatus === 2 ? 'closed' : 'blocked';
+        return {
+          can_post: false,
+          post_to_nominal: false,
+          post_to_transfer_file: false,
+          transfer_file_done_flag: ' ',
+          error_message: `Period ${txnPeriod}/${txnYear} is ${desc} for ${ledgerType}`,
+          current_year: currentYear,
+          current_period: currentPeriod,
+          transaction_year: txnYear,
+          transaction_period: txnPeriod,
+        };
+      }
+    }
+  } else {
+    // OPA OFF: Only current period allowed
+    if (txnYear !== currentYear || txnPeriod !== currentPeriod) {
+      return {
+        can_post: false,
+        post_to_nominal: false,
+        post_to_transfer_file: false,
+        transfer_file_done_flag: ' ',
+        error_message:
+          `Period ${txnPeriod}/${txnYear} is blocked. ` +
+          `Current period is ${currentPeriod}/${currentYear}. ` +
+          `Open Period Accounting is disabled.`,
+        current_year: currentYear,
+        current_period: currentPeriod,
+        transaction_year: txnYear,
+        transaction_period: txnPeriod,
+      };
+    }
+  }
+
+  // Step 2: Real Time Update OFF → transfer file only, done=' '
+  if (!realTimeUpdate) {
+    return {
+      can_post: true,
+      post_to_nominal: false,
+      post_to_transfer_file: true,
+      transfer_file_done_flag: ' ',
+      error_message: null,
+      current_year: currentYear,
+      current_period: currentPeriod,
+      transaction_year: txnYear,
+      transaction_period: txnPeriod,
+    };
+  }
+
+  // Step 3: Real Time Update ON
+  // Period >= current → post to NL immediately
+  if (
+    txnYear > currentYear ||
+    (txnYear === currentYear && txnPeriod >= currentPeriod)
+  ) {
+    return {
+      can_post: true,
+      post_to_nominal: true,
+      post_to_transfer_file: true,
+      transfer_file_done_flag: 'Y',
+      error_message: null,
+      current_year: currentYear,
+      current_period: currentPeriod,
+      transaction_year: txnYear,
+      transaction_period: txnPeriod,
+    };
+  }
+
+  // Backdated within same financial year → still post immediately
+  if (txnYear === currentYear) {
+    return {
+      can_post: true,
+      post_to_nominal: true,
+      post_to_transfer_file: true,
+      transfer_file_done_flag: 'Y',
+      error_message: null,
+      current_year: currentYear,
+      current_period: currentPeriod,
+      transaction_year: txnYear,
+      transaction_period: txnPeriod,
+    };
+  }
+
+  // Prior financial year → reject (mirrors Python)
+  return {
+    can_post: false,
+    post_to_nominal: false,
+    post_to_transfer_file: false,
+    transfer_file_done_flag: ' ',
+    error_message:
+      `Cannot post to prior financial year (${txnYear}). ` +
+      `Current financial year is ${currentYear}. ` +
+      `Please change the posting date to the current year.`,
+    current_year: currentYear,
+    current_period: currentPeriod,
+    transaction_year: txnYear,
+    transaction_period: txnPeriod,
+  };
 }
 
 // ---------------------------------------------------------------------

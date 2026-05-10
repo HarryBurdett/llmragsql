@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- Demo version: 2026-03-25 - Automated Supplier Account Management (Complete) -->
+<!-- Demo version: 2026-04-16 - Automated Supplier Account Management (Comprehensive) -->
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Automated Supplier Account Management - Complete Demo</title>
+    <title>Automated Supplier Account Management - Comprehensive Demo</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -90,6 +90,11 @@
             margin-bottom: 20px;
             color: #f1f5f9;
         }
+        .slide h3 {
+            font-size: 1.2rem;
+            margin-bottom: 12px;
+            color: #c4b5fd;
+        }
         .slide p {
             color: #c4b5fd;
             line-height: 1.7;
@@ -123,6 +128,12 @@
         .mock-title {
             font-weight: 600;
             color: #f1f5f9;
+        }
+        .mock-badge {
+            margin-left: auto;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75rem;
         }
         .mock-form {
             display: grid;
@@ -182,6 +193,7 @@
         .badge-purple { background: #4c1d95; color: #a78bfa; }
         .badge-amber { background: #78350f; color: #fbbf24; }
         .badge-emerald { background: #064e3b; color: #6ee7b7; }
+        .badge-gray { background: #374151; color: #9ca3af; }
         .amount-positive { color: #34d399; }
         .amount-negative { color: #f87171; }
         .highlight-box {
@@ -333,11 +345,17 @@
             font-size: 0.85rem;
             flex-shrink: 0;
         }
+        .workflow-number.auto {
+            background: linear-gradient(135deg, #059669, #10b981);
+        }
+        .workflow-number.human {
+            background: linear-gradient(135deg, #d97706, #f59e0b);
+        }
         .workflow-step .wf-label {
             color: #f1f5f9;
             font-weight: 600;
             font-size: 0.9rem;
-            min-width: 90px;
+            min-width: 110px;
         }
         .workflow-step .wf-desc {
             color: #c4b5fd;
@@ -368,6 +386,15 @@
             color: #f1f5f9;
             font-weight: 500;
             margin-bottom: 8px;
+        }
+        .email-body {
+            color: #c4b5fd;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            padding: 12px;
+            background: #1e1b4b;
+            border-radius: 6px;
+            margin-top: 8px;
         }
         .email-attachment {
             display: flex;
@@ -547,58 +574,121 @@
             margin-bottom: 8px;
         }
         .contact-card .role {
+            font-size: 0.75rem;
             color: #a78bfa;
-            font-size: 0.8rem;
-            margin-bottom: 6px;
         }
-        .contact-card .detail {
+        .merge-field {
+            display: inline-block;
+            background: #4c1d95;
+            border: 1px dashed #7c3aed;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: #c4b5fd;
+            margin: 2px;
+        }
+        .toggle-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            background: #2e1065;
+            border-radius: 8px;
+            margin-bottom: 6px;
+            border: 1px solid #3b2f5e;
+        }
+        .toggle-row .label { color: #f1f5f9; font-size: 0.9rem; }
+        .toggle-track {
+            width: 40px; height: 22px;
+            border-radius: 11px;
+            position: relative;
+            flex-shrink: 0;
+        }
+        .toggle-track.on { background: #059669; }
+        .toggle-track.off { background: #4b5563; }
+        .toggle-track::after {
+            content: '';
+            position: absolute;
+            width: 16px; height: 16px;
+            border-radius: 50%;
+            background: white;
+            top: 3px;
+            transition: left 0.2s;
+        }
+        .toggle-track.on::after { left: 21px; }
+        .toggle-track.off::after { left: 3px; }
+        .comparison-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0;
+            margin-top: 20px;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .comparison-col {
+            padding: 24px;
+        }
+        .comparison-col.before {
+            background: rgba(239,68,68,0.08);
+            border: 1px solid rgba(239,68,68,0.2);
+        }
+        .comparison-col.after {
+            background: rgba(34,197,94,0.08);
+            border: 1px solid rgba(34,197,94,0.2);
+        }
+        .comparison-col h3 {
+            margin-bottom: 16px;
+            font-size: 1.1rem;
+        }
+        .comparison-col ul {
+            list-style: none;
+            padding: 0;
+        }
+        .comparison-col ul li {
             color: #c4b5fd;
             font-size: 0.85rem;
-            padding: 2px 0;
+            padding: 6px 0;
+            padding-left: 24px;
+            position: relative;
         }
-        .portal-feature {
-            background: #2e1065;
-            border: 1px solid #3b2f5e;
-            border-radius: 8px;
-            padding: 16px;
-            text-align: center;
+        .comparison-col.before ul li::before {
+            content: '✕';
+            position: absolute;
+            left: 0;
+            color: #f87171;
+            font-weight: bold;
         }
-        .portal-feature .icon {
-            width: 40px;
-            height: 40px;
-            margin: 0 auto 10px;
-            background: linear-gradient(135deg, #7c3aed, #8b5cf6);
-            border-radius: 10px;
+        .comparison-col.after ul li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #4ade80;
+            font-weight: bold;
+        }
+        .stat-row {
             display: flex;
-            align-items: center;
-            justify-content: center;
+            justify-content: space-between;
+            align-items: baseline;
+            padding: 8px 0;
+            border-bottom: 1px solid #3b2f5e;
         }
-        .portal-feature h4 {
-            color: #f1f5f9;
-            font-size: 0.9rem;
-            margin-bottom: 6px;
+        .stat-row:last-child { border-bottom: none; }
+        .stat-label { color: #c4b5fd; font-size: 0.9rem; }
+        .stat-value { color: #f1f5f9; font-weight: 600; font-size: 1rem; }
+        .stat-value.positive { color: #4ade80; }
+        .query-type-card {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 8px;
         }
-        .portal-feature p {
-            color: #c4b5fd;
+        .query-type-card h5 {
+            font-size: 0.85rem;
+            margin-bottom: 4px;
+        }
+        .query-type-card p {
             font-size: 0.8rem;
             margin: 0;
-        }
-        @media print {
-            body { background: white; color: #1e1b4b; }
-            .slide { display: block !important; page-break-after: always; margin-bottom: 40px; }
-            .slide-content { border: 1px solid #ddd; background: #faf5ff; }
-            .mock-ui { background: #f8f5ff; border: 1px solid #ddd; }
-            .settings-panel, .controls, .auto-play-indicator, .progress-bar { display: none !important; }
-            .header h1 { -webkit-text-fill-color: #4c1d95; }
-            .header p, .slide p, .highlight-box p, .info-box p, .success-box p, .warning-box p { color: #4a4458; }
-            .slide h2 { color: #1e1b4b; }
-            .mock-table th { color: #4c1d95; }
-            .mock-table td { color: #1e1b4b; }
-            .feature-card h4 { color: #4c1d95; }
-            .feature-card p { color: #4a4458; }
-            .badge-green { background: #d1fae5; color: #065f46; }
-            .badge-amber { background: #fef3c7; color: #78350f; }
-            .badge-red { background: #fee2e2; color: #7f1d1d; }
         }
     </style>
 </head>
@@ -606,1037 +696,1158 @@
     <div class="demo-container">
         <div class="header">
             <h1>Automated Supplier Account Management</h1>
-            <p>Automating supplier enquiries and account management for Opera</p>
+            <p>Complete workflow automation for Pegasus Opera SQL SE and Opera 3</p>
         </div>
 
         <div class="settings-panel">
-            <div>
-                <span style="color: #a78bfa; font-size: 0.85rem; margin-right: 12px;">Slide Duration:</span>
-                <button class="duration-btn" data-duration="5000">5s</button>
-                <button class="duration-btn" data-duration="10000">10s</button>
-                <button class="duration-btn" data-duration="15000">15s</button>
-                <button class="duration-btn active" data-duration="20000">20s</button>
-                <button class="duration-btn" data-duration="30000">30s</button>
-            </div>
+            <span style="color:#a78bfa;font-size:0.85rem;">Speed:</span>
+            <button class="duration-btn" data-duration="10000">10s</button>
+            <button class="duration-btn" data-duration="15000">15s</button>
+            <button class="duration-btn active" data-duration="20000">20s</button>
+            <button class="duration-btn" data-duration="30000">30s</button>
+            <button class="duration-btn" data-duration="40000">40s</button>
             <button class="mute-btn" id="muteBtn">
-                <svg id="volumeIcon" width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                <svg id="volumeIcon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
                 <span>Sound On</span>
             </button>
         </div>
 
-        <div class="progress-bar">
-            <div class="progress-fill" id="progressFill"></div>
-        </div>
-
-        <div class="slide-counter" id="slideCounter">Slide 1 of 14</div>
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="slide-counter" id="slideCounter">Slide 1 of 22</div>
 
         <div class="slides-container">
 
-            <!-- ============================================================ -->
-            <!-- Slide 1: TITLE -->
-            <!-- ============================================================ -->
+            <!-- SLIDE 1: Title -->
             <div class="slide active" data-slide="1">
-                <div class="slide-content" style="text-align: center; padding: 60px 40px;">
-                    <div style="display: inline-block; background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.25); padding: 8px 20px; border-radius: 50px; font-size: 0.85rem; color: #a78bfa; font-weight: 500; margin-bottom: 24px;">
-                        AI Automation for Pegasus Opera
-                    </div>
-
-                    <h2 style="font-size: 2.8rem; font-weight: 800; margin-bottom: 16px; letter-spacing: -0.02em;">
-                        Automated Supplier <span style="background: linear-gradient(135deg, #8b5cf6, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Account Management</span>
-                    </h2>
-
-                    <p style="font-size: 1.15rem; color: rgba(255,255,255,0.5); max-width: 700px; margin: 0 auto 16px;">
-                        Automating supplier enquiries and account management for Opera
-                    </p>
-                    <p style="font-size: 1rem; color: rgba(255,255,255,0.4); max-width: 700px; margin: 0 auto 40px;">
-                        Automated email monitoring &bull; AI-powered statement processing &bull; Smart reconciliation &bull; Automated enquiry responses &bull; Payment forecasts &bull; Remittance automation
-                    </p>
-
-                    <div class="feature-grid-4" style="max-width: 900px; margin: 0 auto;">
+                <div class="slide-content" style="text-align:center;padding:60px 40px;">
+                    <div style="font-size:3rem;margin-bottom:8px;">&#128200;</div>
+                    <h2 style="font-size:2.2rem;margin-bottom:12px;">Automated Supplier<br>Account Management</h2>
+                    <p style="font-size:1.15rem;color:#c4b5fd;margin-bottom:32px;">From supplier statement to professional response &mdash; fully automated</p>
+                    <div class="feature-grid" style="max-width:800px;margin:0 auto;">
                         <div class="feature-card">
-                            <h4>Email Monitoring</h4>
-                            <p>Auto-detect supplier emails, statements, and enquiries</p>
+                            <h4>&#128231; Email Monitoring</h4>
+                            <p>Automatic detection of supplier statements from your inbox</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Enquiry Management</h4>
-                            <p>Automated responses to routine supplier queries</p>
+                            <h4>&#129302; AI Extraction</h4>
+                            <p>Every line item captured from any PDF format</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Statement Reconciliation</h4>
-                            <p>AI-powered matching against Opera Purchase Ledger</p>
+                            <h4>&#9989; Smart Reconciliation</h4>
+                            <p>Matched against your purchase ledger automatically</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Proactive Communication</h4>
-                            <p>Payment forecasts, remittances, and status updates</p>
+                            <h4>&#128172; Auto-Response</h4>
+                            <p>Professional replies drafted and queued for approval</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>&#128274; Security Alerts</h4>
+                            <p>Bank detail changes detected and flagged immediately</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>&#128202; Full Audit Trail</h4>
+                            <p>Every communication logged for compliance</p>
                         </div>
                     </div>
-
-                    <div style="margin-top: 36px;">
-                        <p style="color: #a78bfa; font-size: 0.9rem;">Works seamlessly with <strong style="color: #f59e0b;">Pegasus Opera SQL SE</strong> and <strong style="color: #f59e0b;">Opera 3</strong></p>
-                    </div>
+                    <p style="margin-top:24px;color:#a78bfa;font-size:0.9rem;">For Pegasus Opera SQL SE and Opera 3</p>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 2: THE PROBLEM -->
-            <!-- ============================================================ -->
+            <!-- SLIDE 2: The Problem -->
             <div class="slide" data-slide="2">
                 <div class="slide-content">
-                    <div class="step-number" style="background: linear-gradient(135deg, #dc2626, #ef4444);">!</div>
-                    <h2>The Problem</h2>
-                    <p>Managing supplier relationships consumes the accounts department. Constant phone calls, emails asking "where's my payment?", manual statement reconciliation, and no visibility of what has been communicated. The finance team is stuck on the phone instead of doing productive work.</p>
+                    <h2>The Problem Every Finance Team Knows</h2>
+                    <p>Supplier account management is one of the most time-consuming tasks in any accounts department. It's repetitive, manual, and takes your team away from higher-value work.</p>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 20px;">
-                        <div>
-                            <h3 style="color: #f87171; margin-bottom: 16px; font-size: 1.1rem;">Daily Reality</h3>
-                            <div class="timeline">
-                                <div class="timeline-item">
-                                    <strong style="color: #f1f5f9;">Suppliers calling asking "where's my payment?"</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Finance team tied up answering routine queries all day</p>
-                                </div>
-                                <div class="timeline-item">
-                                    <strong style="color: #f1f5f9;">Hours spent on phone</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Routine enquiries that could be answered automatically</p>
-                                </div>
-                                <div class="timeline-item">
-                                    <strong style="color: #f1f5f9;">Manual statement reconciliation</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Line-by-line comparison when statements arrive</p>
-                                </div>
-                                <div class="timeline-item">
-                                    <strong style="color: #f1f5f9;">No automated response to supplier communications</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Every email requires manual reading and reply</p>
-                                </div>
-                                <div class="timeline-item">
-                                    <strong style="color: #f1f5f9;">No visibility of what's been communicated</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Who said what to which supplier? No audit trail</p>
-                                </div>
-                            </div>
+                    <div class="comparison-grid">
+                        <div class="comparison-col before">
+                            <h3 style="color:#f87171;">Today's Reality</h3>
+                            <ul>
+                                <li>Supplier statements arrive by email and sit unread</li>
+                                <li>Manual line-by-line comparison against your ledger</li>
+                                <li>Spreadsheets or printouts to track differences</li>
+                                <li>Drafting emails to query missing invoices</li>
+                                <li>Chasing suppliers who don't respond to queries</li>
+                                <li>No record of what was communicated and when</li>
+                                <li>Bank detail fraud attempts go undetected</li>
+                                <li>Accidental overpayments from unreconciled accounts</li>
+                            </ul>
                         </div>
-                        <div>
-                            <h3 style="color: #fbbf24; margin-bottom: 16px; font-size: 1.1rem;">The Cost</h3>
-                            <div class="feature-card" style="margin-bottom: 12px; text-align: left; padding: 14px;">
-                                <h4 style="color: #f87171; text-align: left;">Finance Team Tied Up</h4>
-                                <p style="text-align: left;">Hours every day spent answering routine supplier enquiries instead of productive work</p>
-                            </div>
-                            <div class="feature-card" style="margin-bottom: 12px; text-align: left; padding: 14px;">
-                                <h4 style="color: #f87171; text-align: left;">Overpayments</h4>
-                                <p style="text-align: left;">Accidentally reminding suppliers about credits they have forgotten</p>
-                            </div>
-                            <div class="feature-card" style="margin-bottom: 12px; text-align: left; padding: 14px;">
-                                <h4 style="color: #f87171; text-align: left;">Fraud Risk</h4>
-                                <p style="text-align: left;">Bank detail changes going undetected in emails</p>
-                            </div>
-                            <div class="feature-card" style="margin-bottom: 12px; text-align: left; padding: 14px;">
-                                <h4 style="color: #f87171; text-align: left;">Inconsistent Responses</h4>
-                                <p style="text-align: left;">Different staff give different answers to the same supplier</p>
-                            </div>
+                        <div class="comparison-col after">
+                            <h3 style="color:#4ade80;">With Automation</h3>
+                            <ul>
+                                <li>Statements detected and processed automatically</li>
+                                <li>AI reads every line and matches to your ledger</li>
+                                <li>Differences identified and categorised in seconds</li>
+                                <li>Professional response emails drafted automatically</li>
+                                <li>Overdue queries escalated with follow-up reminders</li>
+                                <li>Complete audit trail of every communication</li>
+                                <li>Bank detail changes flagged instantly</li>
+                                <li>Accounts reconciled before you open the post</li>
+                            </ul>
                         </div>
+                    </div>
+
+                    <div class="highlight-box" style="margin-top:20px;text-align:center;">
+                        <p style="margin:0;color:#f1f5f9;font-size:1rem;"><strong>The average accounts team spends 12-16 hours per month</strong> on supplier statement reconciliation alone. That's 2 full working days every month on repetitive manual work.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 3: THE SOLUTION -->
-            <!-- ============================================================ -->
+            <!-- SLIDE 3: The Solution Overview -->
             <div class="slide" data-slide="3">
                 <div class="slide-content">
-                    <div class="step-number" style="background: linear-gradient(135deg, #059669, #10b981);">&#10003;</div>
-                    <h2>The Solution</h2>
-                    <p>Automated management of ALL supplier interactions. Email monitoring, AI-powered statement processing, smart reconciliation, automated responses to routine enquiries, payment forecasts, and remittance automation. <strong>Suppliers get answers without calling. Finance team freed from routine work.</strong></p>
+                    <h2>The Solution: End-to-End Automation</h2>
+                    <p>Every step of the supplier account management process &mdash; from receiving a statement to sending a professional response &mdash; is automated. Your team reviews and approves. The system does the work.</p>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 20px;">
+                    <div class="feature-grid-2">
                         <div>
-                            <h3 style="color: #4ade80; margin-bottom: 16px; font-size: 1.1rem;">Automated Capabilities</h3>
-                            <div class="timeline">
-                                <div class="timeline-item completed">
-                                    <strong style="color: #f1f5f9;">Automated monitoring of supplier emails</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Statements, enquiries, and communications detected instantly</p>
-                                </div>
-                                <div class="timeline-item completed">
-                                    <strong style="color: #f1f5f9;">AI-powered statement processing</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Any PDF format extracted and reconciled automatically</p>
-                                </div>
-                                <div class="timeline-item completed">
-                                    <strong style="color: #f1f5f9;">Smart reconciliation with business rules</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Only query when NOT in your favour</p>
-                                </div>
-                                <div class="timeline-item completed">
-                                    <strong style="color: #f1f5f9;">Automated responses to routine enquiries</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Suppliers informed proactively, reducing inbound calls</p>
-                                </div>
-                                <div class="timeline-item completed">
-                                    <strong style="color: #f1f5f9;">Full audit trail of all communications</strong>
-                                    <p style="color: #c4b5fd; font-size: 0.85rem;">Every email, response, and action logged and searchable</p>
-                                </div>
+                            <div class="info-box">
+                                <h4>&#128231; Inbound Automation</h4>
+                                <p style="margin:0;color:#c4b5fd;font-size:0.85rem;">Emails monitored continuously. Statements detected by AI. PDF extracted automatically. Sender validated against approved list. Receipt acknowledged within minutes.</p>
+                            </div>
+                            <div class="info-box">
+                                <h4>&#129302; Intelligent Processing</h4>
+                                <p style="margin:0;color:#c4b5fd;font-size:0.85rem;">Every transaction line extracted from the PDF. Reference-matched against your Opera purchase ledger. Differences classified by business rules that protect your cash position.</p>
+                            </div>
+                            <div class="info-box">
+                                <h4>&#128202; Query Management</h4>
+                                <p style="margin:0;color:#c4b5fd;font-size:0.85rem;">Open queries tracked with deadlines. Automatic follow-up reminders escalate from friendly to firm. Resolution logged with full audit trail.</p>
                             </div>
                         </div>
                         <div>
-                            <h3 style="color: #60a5fa; margin-bottom: 16px; font-size: 1.1rem;">Key Capabilities</h3>
-                            <div class="feature-card" style="margin-bottom: 12px; text-align: left; padding: 14px;">
-                                <h4 style="color: #4ade80; text-align: left;">Payment Forecast Information</h4>
-                                <p style="text-align: left;">Proactively tells suppliers when they will be paid - reduces inbound queries</p>
+                            <div class="success-box">
+                                <h4>&#128172; Outbound Automation</h4>
+                                <p style="margin:0;color:#c4b5fd;font-size:0.85rem;">Professional response emails generated with matched items, query details, recent payments, and payment schedule. Queued for one-click approval. Sent automatically.</p>
                             </div>
-                            <div class="feature-card" style="margin-bottom: 12px; text-align: left; padding: 14px;">
-                                <h4 style="color: #4ade80; text-align: left;">Remittance Advice Automation</h4>
-                                <p style="text-align: left;">Auto-generated after payment runs with full allocation detail</p>
+                            <div class="success-box">
+                                <h4>&#128176; Remittance Advice</h4>
+                                <p style="margin:0;color:#c4b5fd;font-size:0.85rem;">After payment runs, detailed remittance advice sent automatically. Shows exactly which invoices and credits were paid. Reduces follow-up calls.</p>
                             </div>
-                            <div class="feature-card" style="margin-bottom: 12px; text-align: left; padding: 14px;">
-                                <h4 style="color: #4ade80; text-align: left;">Approval Queue</h4>
-                                <p style="text-align: left;">Auto-drafted responses held for human review before sending</p>
-                            </div>
-                            <div class="feature-card" style="margin-bottom: 12px; text-align: left; padding: 14px;">
-                                <h4 style="color: #4ade80; text-align: left;">Security Alerts</h4>
-                                <p style="text-align: left;">Bank detail changes flagged immediately for phone verification</p>
+                            <div class="success-box">
+                                <h4>&#128274; Security & Compliance</h4>
+                                <p style="margin:0;color:#c4b5fd;font-size:0.85rem;">Bank detail changes trigger immediate alerts. Unknown senders held for verification. Every communication logged. 7-year retention for audit compliance.</p>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 4: THE 10-STEP WORKFLOW -->
-            <!-- ============================================================ -->
+            <!-- SLIDE 4: Complete Workflow -->
             <div class="slide" data-slide="4">
                 <div class="slide-content">
-                    <div class="step-number">4</div>
-                    <h2>Automated Enquiry Workflow</h2>
-                    <p>The complete 10-step flow from supplier communication received to response sent. Fully automated, with human approval at step 9.</p>
+                    <h2>The Complete Automated Workflow</h2>
+                    <p>10 steps from receipt to response. Only one requires human intervention.</p>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px;">
-                        <div>
-                            <div class="workflow-step">
-                                <div class="workflow-number">1</div>
-                                <span class="wf-label">Receive</span>
-                                <span class="wf-desc">Supplier emails statement (PDF attachment)</span>
-                            </div>
-                            <div class="workflow-step">
-                                <div class="workflow-number">2</div>
-                                <span class="wf-label">Validate</span>
-                                <span class="wf-desc">Verify sender email matches supplier record</span>
-                            </div>
-                            <div class="workflow-step">
-                                <div class="workflow-number">3</div>
-                                <span class="wf-label">Acknowledge</span>
-                                <span class="wf-desc">Auto-reply confirming receipt (configurable)</span>
-                            </div>
-                            <div class="workflow-step">
-                                <div class="workflow-number">4</div>
-                                <span class="wf-label">Extract</span>
-                                <span class="wf-desc">AI parses PDF - any format, any layout</span>
-                            </div>
-                            <div class="workflow-step">
-                                <div class="workflow-number">5</div>
-                                <span class="wf-label">Reconcile</span>
-                                <span class="wf-desc">Match statement lines against Opera PL</span>
-                            </div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">1</div>
+                            <div class="wf-label">Receive</div>
+                            <p class="wf-desc">Email arrives with supplier statement PDF attached</p>
                         </div>
-                        <div>
-                            <div class="workflow-step">
-                                <div class="workflow-number">6</div>
-                                <span class="wf-label">Analyse</span>
-                                <span class="wf-desc">Identify differences, apply business rules</span>
-                            </div>
-                            <div class="workflow-step">
-                                <div class="workflow-number">7</div>
-                                <span class="wf-label">Generate</span>
-                                <span class="wf-desc">Auto-draft response with queries &amp; payment info</span>
-                            </div>
-                            <div class="workflow-step">
-                                <div class="workflow-number">8</div>
-                                <span class="wf-label">Queue</span>
-                                <span class="wf-desc">Response held for approval</span>
-                            </div>
-                            <div class="workflow-step" style="border-color: #7c3aed;">
-                                <div class="workflow-number" style="background: linear-gradient(135deg, #f59e0b, #fbbf24);">9</div>
-                                <span class="wf-label" style="color: #fbbf24;">Approve</span>
-                                <span class="wf-desc">Authorised user reviews and releases</span>
-                            </div>
-                            <div class="workflow-step">
-                                <div class="workflow-number" style="background: linear-gradient(135deg, #059669, #10b981);">10</div>
-                                <span class="wf-label">Send</span>
-                                <span class="wf-desc">Response sent to supplier automatically</span>
-                            </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">2</div>
+                            <div class="wf-label">Validate</div>
+                            <p class="wf-desc">Sender checked against approved supplier email list</p>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">3</div>
+                            <div class="wf-label">Acknowledge</div>
+                            <p class="wf-desc">Professional receipt confirmation sent to supplier</p>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">4</div>
+                            <div class="wf-label">Extract</div>
+                            <p class="wf-desc">AI reads every line item from the PDF statement</p>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">5</div>
+                            <div class="wf-label">Reconcile</div>
+                            <p class="wf-desc">Each reference matched against Opera purchase ledger</p>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">6</div>
+                            <div class="wf-label">Analyse</div>
+                            <p class="wf-desc">Business rules classify differences and protect cash</p>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">7</div>
+                            <div class="wf-label">Generate</div>
+                            <p class="wf-desc">Professional response email drafted from template</p>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">8</div>
+                            <div class="wf-label">Queue</div>
+                            <p class="wf-desc">Response added to approval queue with full detail</p>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number human">9</div>
+                            <div class="wf-label" style="color:#fbbf24;">Approve</div>
+                            <p class="wf-desc" style="color:#fbbf24;">Authorised user reviews and approves the response</p>
+                        </div>
+                        <div class="workflow-step">
+                            <div class="workflow-number auto">10</div>
+                            <div class="wf-label">Send</div>
+                            <p class="wf-desc">Response sent to supplier, logged to audit trail</p>
                         </div>
                     </div>
 
-                    <div class="highlight-box" style="margin-top: 16px;">
-                        <h4>Automation First</h4>
-                        <p style="color: #c4b5fd; margin: 0;">Steps 1-8 and 10 are fully automated. Only step 9 (Approve) requires human intervention. The system does the work - you review and release.</p>
+                    <div class="highlight-box" style="margin-top:16px;">
+                        <p style="margin:0;font-size:0.9rem;"><span style="color:#10b981;">&#9679; Green</span> = fully automated &nbsp;&nbsp;&nbsp; <span style="color:#f59e0b;">&#9679; Amber</span> = human approval required</p>
+                        <p style="margin:4px 0 0;font-size:0.9rem;color:#f1f5f9;"><strong>Steps 1-8 and 10 are fully automated.</strong> Your team only reviews and approves at step 9.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 5: AI STATEMENT EXTRACTION -->
-            <!-- ============================================================ -->
+            <!-- SLIDE 5: Email Monitoring & Detection -->
             <div class="slide" data-slide="5">
                 <div class="slide-content">
-                    <div class="step-number">5</div>
-                    <h2>AI Statement Extraction</h2>
-                    <p>Using AI vision capabilities, the system reads any supplier statement PDF regardless of format. <strong>Automatic document identification and processing</strong> means no templates to configure.</p>
+                    <h2>Automatic Email Monitoring</h2>
+                    <p>The system continuously monitors your inbox for supplier statements. No manual forwarding or downloading required.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
-                            <div class="mock-icon" style="background: #3b82f6;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6z"/></svg>
-                            </div>
-                            <span class="mock-title">Statement Extraction - Acme Supplies Ltd</span>
-                            <span class="badge badge-green" style="margin-left: auto;">Extracted</span>
+                            <div class="mock-icon">&#128231;</div>
+                            <div class="mock-title">Incoming Emails &mdash; Supplier Statements Detected</div>
+                            <span class="badge badge-green mock-badge">Auto-Scanning</span>
                         </div>
 
-                        <div class="mock-form" style="margin-bottom: 20px;">
-                            <div class="mock-field">
-                                <label>Supplier</label>
-                                <div class="value">Acme Supplies Ltd (ACM001)</div>
+                        <div class="email-card">
+                            <div class="email-header">
+                                <span class="email-from">accounts@acmesupplies.co.uk</span>
+                                <div><span class="badge badge-green">Verified Sender</span> &nbsp; <span class="email-date">10:24 AM</span></div>
                             </div>
-                            <div class="mock-field">
-                                <label>Statement Date</label>
-                                <div class="value">28 February 2026</div>
+                            <div class="email-subject">Statement of Account - March 2026</div>
+                            <div class="email-attachment">&#128206; Acme_Statement_Mar2026.pdf (142 KB)</div>
+                        </div>
+                        <div class="email-card">
+                            <div class="email-header">
+                                <span class="email-from">invoices@newvendor.com</span>
+                                <div><span class="badge badge-amber">New Sender</span> &nbsp; <span class="email-date">09:15 AM</span></div>
                             </div>
-                            <div class="mock-field">
-                                <label>Opening Balance</label>
-                                <div class="value" style="color: #f87171;">£4,250.00</div>
+                            <div class="email-subject">Your account statement</div>
+                            <div class="email-attachment">&#128206; Statement.pdf (98 KB)</div>
+                        </div>
+                        <div class="email-card">
+                            <div class="email-header">
+                                <span class="email-from">ar@buildright.co.uk</span>
+                                <div><span class="badge badge-green">Verified Sender</span> &nbsp; <span class="email-date">08:42 AM</span></div>
                             </div>
-                            <div class="mock-field">
-                                <label>Closing Balance</label>
-                                <div class="value" style="color: #f87171;">£3,390.50</div>
-                            </div>
+                            <div class="email-subject">BuildRight Ltd - Monthly Statement</div>
+                            <div class="email-attachment">&#128206; BuildRight_Statement_2026-03.pdf (215 KB)</div>
+                        </div>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>Sender Validation</h4>
+                            <p>Each sender checked against your approved supplier email list. Unknown senders are held for review.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>PDF Detection</h4>
+                            <p>AI identifies supplier statements from other attachments. Only statements are processed.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Duplicate Prevention</h4>
+                            <p>Processed email IDs are tracked. The same statement is never processed twice.</p>
+                        </div>
+                    </div>
+
+                    <div class="info-box">
+                        <h4>Benefit to your team</h4>
+                        <p style="margin:0;font-size:0.85rem;">No more downloading PDFs, printing statements, or forwarding emails. Every statement that arrives in your inbox is automatically detected, validated, and queued for processing. Your team starts each day with statements already reconciled and responses ready for approval.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 6: AI Extraction -->
+            <div class="slide" data-slide="6">
+                <div class="slide-content">
+                    <h2>AI-Powered Statement Extraction</h2>
+                    <p>Using AI vision, the system reads any supplier statement PDF regardless of format. Every line item is captured accurately, verified, and ready for reconciliation.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#129302;</div>
+                            <div class="mock-title">Statement Extraction &mdash; Acme Supplies Ltd</div>
+                            <span class="badge badge-green mock-badge">23 lines extracted</span>
+                        </div>
+
+                        <div class="mock-form">
+                            <div class="mock-field"><label>Supplier</label><div class="value">Acme Supplies Ltd (ACM001)</div></div>
+                            <div class="mock-field"><label>Statement Date</label><div class="value">31 March 2026</div></div>
+                            <div class="mock-field"><label>Opening Balance</label><div class="value">&pound;12,450.00</div></div>
+                            <div class="mock-field"><label>Closing Balance</label><div class="value">&pound;8,725.50</div></div>
                         </div>
 
                         <table class="mock-table">
-                            <thead>
-                                <tr>
-                                    <th>Date</th>
-                                    <th>Reference</th>
-                                    <th>Description</th>
-                                    <th style="text-align: right;">Debit</th>
-                                    <th style="text-align: right;">Credit</th>
-                                    <th style="text-align: right;">Balance</th>
-                                </tr>
-                            </thead>
+                            <thead><tr><th>Date</th><th>Reference</th><th>Description</th><th>Debit</th><th>Credit</th><th>Balance</th></tr></thead>
                             <tbody>
-                                <tr>
-                                    <td>01 Feb</td>
-                                    <td></td>
-                                    <td style="color: #a78bfa;">Opening Balance</td>
-                                    <td></td>
-                                    <td></td>
-                                    <td style="text-align: right;">£4,250.00</td>
-                                </tr>
-                                <tr>
-                                    <td>03 Feb</td>
-                                    <td>INV-4567</td>
-                                    <td>Widgets x 200</td>
-                                    <td style="text-align: right; color: #f87171;">£1,200.00</td>
-                                    <td></td>
-                                    <td style="text-align: right;">£5,450.00</td>
-                                </tr>
-                                <tr>
-                                    <td>10 Feb</td>
-                                    <td>PMT-9812</td>
-                                    <td>BACS Payment</td>
-                                    <td></td>
-                                    <td style="text-align: right; color: #34d399;">£2,100.00</td>
-                                    <td style="text-align: right;">£3,350.00</td>
-                                </tr>
-                                <tr>
-                                    <td>15 Feb</td>
-                                    <td>INV-4589</td>
-                                    <td>Sprockets x 50</td>
-                                    <td style="text-align: right; color: #f87171;">£890.50</td>
-                                    <td></td>
-                                    <td style="text-align: right;">£4,240.50</td>
-                                </tr>
-                                <tr>
-                                    <td>20 Feb</td>
-                                    <td>CN-0234</td>
-                                    <td>Returns credit</td>
-                                    <td></td>
-                                    <td style="text-align: right; color: #34d399;">£850.00</td>
-                                    <td style="text-align: right;">£3,390.50</td>
-                                </tr>
+                                <tr><td>03/03</td><td>INV-4521</td><td>Office supplies</td><td>&pound;1,250.00</td><td></td><td>&pound;13,700.00</td></tr>
+                                <tr><td>07/03</td><td>CN-892</td><td>Returns credit</td><td></td><td>&pound;320.00</td><td>&pound;13,380.00</td></tr>
+                                <tr><td>12/03</td><td>INV-4598</td><td>Printer cartridges</td><td>&pound;845.50</td><td></td><td>&pound;14,225.50</td></tr>
+                                <tr><td>15/03</td><td>PMT-1203</td><td>BACS payment</td><td></td><td>&pound;5,500.00</td><td>&pound;8,725.50</td></tr>
                             </tbody>
                         </table>
+                        <p style="font-size:0.8rem;color:#6b7280;margin-top:8px;">Showing 4 of 23 extracted lines</p>
                     </div>
 
-                    <div class="feature-grid" style="margin-top: 12px;">
+                    <div class="feature-grid">
                         <div class="feature-card">
-                            <h4>Any Format PDF</h4>
-                            <p>No templates needed - AI reads any layout</p>
+                            <h4>Any PDF Format</h4>
+                            <p>No setup per supplier. The AI reads any layout, any format, any style of statement.</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Balance Chain Validation</h4>
-                            <p>Opening + transactions must equal closing</p>
+                            <h4>Balance Validation</h4>
+                            <p>Opening balance + debits - credits must equal closing balance. Mismatches are flagged.</p>
                         </div>
                         <div class="feature-card">
                             <h4>Supplier Verification</h4>
-                            <p>Cross-referenced against Opera supplier record</p>
+                            <p>Extracted supplier name and reference cross-checked against Opera records.</p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 6: SMART BUSINESS RULES -->
-            <!-- ============================================================ -->
-            <div class="slide" data-slide="6">
-                <div class="slide-content">
-                    <div class="step-number">6</div>
-                    <h2>Smart Business Rules</h2>
-                    <p>The system applies intelligent business logic to every reconciliation difference. This is a finance system - figures must be accurate, and the rules protect your cash position.</p>
-
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-top: 20px;">
-                        <div class="rule-card" style="border-color: #fbbf24;">
-                            <h4 style="color: #fbbf24;">Query (Not In Your Favour)</h4>
-                            <ul>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #fbbf24;">&#9679;</span> Invoice on their statement, not in our system</li>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #fbbf24;">&#9679;</span> Their amount higher than ours</li>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #fbbf24;">&#9679;</span> Credit they claim sent, we don't have</li>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #fbbf24;">&#9679;</span> Payment they claim made, we haven't received</li>
-                            </ul>
-                        </div>
-
-                        <div class="rule-card" style="border-color: #4ade80;">
-                            <h4 style="color: #4ade80;">Stay Quiet (In Your Favour)</h4>
-                            <ul>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #4ade80;">&#9679;</span> Overpayment from supplier</li>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #4ade80;">&#9679;</span> Credit we have that they forgot</li>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #4ade80;">&#9679;</span> Their amount lower than ours</li>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #4ade80;">&#9679;</span> Invoice we have that they haven't billed</li>
-                            </ul>
-                        </div>
-
-                        <div class="rule-card" style="border-color: #60a5fa;">
-                            <h4 style="color: #60a5fa;">Always Notify (Helpful)</h4>
-                            <ul>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #60a5fa;">&#9679;</span> Payments we have made not on their statement</li>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #60a5fa;">&#9679;</span> Payment forecast with due dates</li>
-                                <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #60a5fa;">&#9679;</span> Next payment run date</li>
-                            </ul>
-                            <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #3b2f5e;">
-                                <h4 style="color: #f87171; font-size: 0.85rem;">Flag for Review</h4>
-                                <ul>
-                                    <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #f87171;">&#9679;</span> Large discrepancies above threshold</li>
-                                    <li style="padding-left: 20px;"><span style="position: absolute; left: 0; color: #f87171;">&#9679;</span> Unusual patterns</li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="success-box" style="margin-top: 16px;">
-                        <h4>Result: Protected Cash Position</h4>
-                        <p style="color: #c4b5fd; margin: 0;">By only querying items not in your favour, the system ensures you never accidentally remind a supplier about money they owe you or credits they have forgotten to apply.</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ============================================================ -->
-            <!-- Slide 7: AUTOMATED COMMUNICATIONS -->
-            <!-- ============================================================ -->
+            <!-- SLIDE 7: Reconciliation -->
             <div class="slide" data-slide="7">
                 <div class="slide-content">
-                    <div class="step-number">7</div>
-                    <h2>Automated Communications</h2>
-                    <p><strong>All communications are automated.</strong> From instant acknowledgment through to detailed reconciliation responses, payment forecasts, and query follow-ups.</p>
-
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
-                        <div>
-                            <h3 style="color: #a78bfa; margin-bottom: 12px; font-size: 1rem;">Auto-Acknowledgment</h3>
-                            <div class="mock-ui" style="padding: 16px; font-size: 0.85rem;">
-                                <div style="color: #a78bfa; font-size: 0.75rem; margin-bottom: 8px;">SENT AUTOMATICALLY</div>
-                                <p style="color: #c4b5fd; margin: 0 0 8px 0; font-size: 0.85rem;">Dear Accounts Team,</p>
-                                <p style="color: #c4b5fd; margin: 0 0 8px 0; font-size: 0.85rem;">Thank you for sending your statement dated 28 Feb 2026.</p>
-                                <p style="color: #c4b5fd; margin: 0; font-size: 0.85rem;">We have received it and are currently processing. You will receive a detailed reconciliation response within 2 working days.</p>
-                            </div>
-
-                            <h3 style="color: #a78bfa; margin-bottom: 12px; margin-top: 16px; font-size: 1rem;">Query Follow-Up</h3>
-                            <div class="mock-ui" style="padding: 16px; font-size: 0.85rem;">
-                                <div style="color: #fbbf24; font-size: 0.75rem; margin-bottom: 8px;">AUTO FOLLOW-UP (7 DAYS)</div>
-                                <p style="color: #c4b5fd; margin: 0 0 8px 0; font-size: 0.85rem;">Dear Accounts Team,</p>
-                                <p style="color: #c4b5fd; margin: 0; font-size: 0.85rem;">Further to our reconciliation of 1 Mar, we are still awaiting copies of INV-4602 (£675.00). Could you please arrange for this to be sent at your earliest convenience?</p>
-                            </div>
-                        </div>
-                        <div>
-                            <h3 style="color: #a78bfa; margin-bottom: 12px; font-size: 1rem;">Reconciliation Response</h3>
-                            <div class="mock-ui" style="padding: 16px; font-size: 0.85rem;">
-                                <div style="color: #4ade80; font-size: 0.75rem; margin-bottom: 8px;">QUEUED FOR APPROVAL</div>
-                                <p style="color: #c4b5fd; margin: 0 0 8px 0; font-size: 0.85rem;">Dear Accounts Team,</p>
-                                <p style="color: #c4b5fd; margin: 0 0 8px 0; font-size: 0.85rem;">Thank you for your statement dated 28 Feb 2026.</p>
-
-                                <div style="background: #2e1065; border-radius: 6px; padding: 10px; margin: 10px 0;">
-                                    <div style="color: #4ade80; font-size: 0.75rem; margin-bottom: 4px;">MATCHED ITEMS: 3</div>
-                                    <div style="color: #c4b5fd; font-size: 0.8rem;">INV-4567 £1,200.00 | PMT-9812 £2,100.00 | CN-0234 £850.00</div>
-                                </div>
-
-                                <div style="background: #2e1065; border-radius: 6px; padding: 10px; margin: 10px 0;">
-                                    <div style="color: #fbbf24; font-size: 0.75rem; margin-bottom: 4px;">QUERIES</div>
-                                    <div style="color: #c4b5fd; font-size: 0.8rem;">INV-4589: £890.50 - not on our system, please resend</div>
-                                </div>
-
-                                <div style="background: #2e1065; border-radius: 6px; padding: 10px; margin: 10px 0;">
-                                    <div style="color: #60a5fa; font-size: 0.75rem; margin-bottom: 4px;">PAYMENT FORECAST</div>
-                                    <div style="color: #c4b5fd; font-size: 0.8rem;">Balance of £2,500.00 scheduled for payment 15 Mar 2026</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="info-box" style="margin-top: 12px;">
-                        <h4>Configurable Timing</h4>
-                        <p style="color: #c4b5fd; margin: 0;">Acknowledgment delay, processing SLA, query response deadline, and follow-up frequency are all configurable globally and per supplier.</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ============================================================ -->
-            <!-- Slide 8: SECURITY -->
-            <!-- ============================================================ -->
-            <div class="slide" data-slide="8">
-                <div class="slide-content">
-                    <div class="step-number" style="background: linear-gradient(135deg, #dc2626, #ef4444);">
-                        <svg width="18" height="18" fill="white" viewBox="0 0 24 24" style="vertical-align: middle;"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>
-                    </div>
-                    <h2>Security &amp; Fraud Prevention</h2>
-                    <p>The system monitors for suspicious activity and enforces strict security protocols. <strong>Automated emails never request or send bank details.</strong></p>
-
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
-                        <div>
-                            <div class="mock-ui" style="border: 2px solid #dc2626;">
-                                <div class="mock-header" style="border-bottom-color: #dc2626;">
-                                    <div class="mock-icon" style="background: #dc2626;">
-                                        <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
-                                    </div>
-                                    <span class="mock-title">Security Alerts</span>
-                                    <span class="badge badge-red" style="margin-left: auto;">2 Active</span>
-                                </div>
-
-                                <div style="background: rgba(127, 29, 29, 0.3); border: 1px solid #dc2626; border-radius: 8px; padding: 14px; margin-bottom: 10px;">
-                                    <strong style="color: #f87171; font-size: 0.9rem;">Bank Details Changed</strong>
-                                    <p style="color: #fca5a5; font-size: 0.8rem; margin: 6px 0 0 0;">Acme Supplies: New bank account detected. Sort: 20-45-67, Acc: 12345678. Previous: 12-34-56 / 87654321.</p>
-                                    <div style="margin-top: 8px;">
-                                        <span class="badge badge-red">Phone Verification Required</span>
-                                    </div>
-                                </div>
-
-                                <div style="background: rgba(120, 53, 15, 0.3); border: 1px solid #d97706; border-radius: 8px; padding: 14px;">
-                                    <strong style="color: #fbbf24; font-size: 0.9rem;">Unknown Sender</strong>
-                                    <p style="color: #fcd34d; font-size: 0.8rem; margin: 6px 0 0 0;">Statement from newaccounts@partsltd.net but supplier email on file is creditcontrol@partsltd.com.</p>
-                                    <div style="margin-top: 8px;">
-                                        <span class="badge badge-amber">Held for Verification</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div>
-                            <h3 style="color: #f87171; margin-bottom: 12px; font-size: 1rem;">Protection Layers</h3>
-                            <div class="feature-card" style="margin-bottom: 10px; text-align: left; padding: 14px;">
-                                <h4 style="color: #f87171; text-align: left;">Bank Detail Monitoring</h4>
-                                <p style="text-align: left;">Changes to sort code, account number, or payment method trigger immediate alerts to the Finance Director</p>
-                            </div>
-                            <div class="feature-card" style="margin-bottom: 10px; text-align: left; padding: 14px;">
-                                <h4 style="color: #fbbf24; text-align: left;">Verified Senders</h4>
-                                <p style="text-align: left;">Approved email addresses per supplier. First-time senders flagged and held</p>
-                            </div>
-                            <div class="feature-card" style="margin-bottom: 10px; text-align: left; padding: 14px;">
-                                <h4 style="color: #60a5fa; text-align: left;">Phone Verification Workflow</h4>
-                                <p style="text-align: left;">Any bank detail change request requires phone callback before actioning</p>
-                            </div>
-                            <div class="feature-card" style="text-align: left; padding: 14px;">
-                                <h4 style="color: #a78bfa; text-align: left;">Full Audit Trail</h4>
-                                <p style="text-align: left;">Who changed what, when, old vs new values. Complete communications history logged</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ============================================================ -->
-            <!-- Slide 9: AGED CREDITORS -->
-            <!-- ============================================================ -->
-            <div class="slide" data-slide="9">
-                <div class="slide-content">
-                    <div class="step-number">9</div>
-                    <h2>Aged Creditors Analysis</h2>
-                    <p>Real-time aging that matches Opera exactly. Drill down from summary to individual invoices. Spot trending problems before they escalate.</p>
+                    <h2>Intelligent Reconciliation</h2>
+                    <p>Every extracted line is matched against your Opera purchase ledger by reference. The result is a clear three-way classification.</p>
 
                     <div class="mock-ui">
                         <div class="mock-header">
-                            <div class="mock-icon" style="background: #8b5cf6;">
-                                <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z"/></svg>
-                            </div>
-                            <span class="mock-title">Aged Creditors Summary</span>
-                            <span style="margin-left: auto; color: #a78bfa; font-size: 0.85rem;">As at 25 Mar 2026</span>
+                            <div class="mock-icon">&#9989;</div>
+                            <div class="mock-title">Reconciliation &mdash; Acme Supplies Ltd</div>
                         </div>
 
-                        <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px;">
-                            <div class="kpi-card" style="padding: 14px;">
-                                <div class="kpi-value" style="font-size: 1.5rem; color: #4ade80;">£12,450</div>
-                                <div class="kpi-label">Current</div>
-                            </div>
-                            <div class="kpi-card" style="padding: 14px;">
-                                <div class="kpi-value" style="font-size: 1.5rem; color: #60a5fa;">£8,320</div>
-                                <div class="kpi-label">30 Days</div>
-                            </div>
-                            <div class="kpi-card" style="padding: 14px;">
-                                <div class="kpi-value" style="font-size: 1.5rem; color: #fbbf24;">£3,150</div>
-                                <div class="kpi-label">60 Days</div>
-                            </div>
-                            <div class="kpi-card" style="padding: 14px;">
-                                <div class="kpi-value" style="font-size: 1.5rem; color: #f87171;">£1,890</div>
-                                <div class="kpi-label">90 Days</div>
-                            </div>
-                            <div class="kpi-card" style="padding: 14px;">
-                                <div class="kpi-value" style="font-size: 1.5rem; color: #dc2626;">£640</div>
-                                <div class="kpi-label">120+ Days</div>
-                            </div>
+                        <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:24px;text-align:center;margin-bottom:20px;">
+                            <div class="mock-field"><label>Their Closing Balance</label><div class="value" style="font-size:1.2rem;">&pound;8,725.50</div></div>
+                            <div style="display:flex;align-items:center;font-size:1.5rem;color:#a78bfa;">vs</div>
+                            <div class="mock-field"><label>Our Outstanding Balance</label><div class="value" style="font-size:1.2rem;">&pound;9,045.50</div></div>
                         </div>
 
+                        <div class="reconcile-row">
+                            <div class="reconcile-side">INV-4521 &mdash; &pound;1,250.00</div>
+                            <span class="reconcile-match match-yes">&#10003; Agreed</span>
+                            <div class="reconcile-side" style="text-align:right;">INV-4521 &mdash; &pound;1,250.00</div>
+                        </div>
+                        <div class="reconcile-row">
+                            <div class="reconcile-side">CN-892 &mdash; -&pound;320.00</div>
+                            <span class="reconcile-match match-yes">&#10003; Agreed</span>
+                            <div class="reconcile-side" style="text-align:right;">CN-892 &mdash; -&pound;320.00</div>
+                        </div>
+                        <div class="reconcile-row">
+                            <div class="reconcile-side">INV-4598 &mdash; &pound;845.50</div>
+                            <span class="reconcile-match match-query">&#63; Amount Differs</span>
+                            <div class="reconcile-side" style="text-align:right;">INV-4598 &mdash; &pound;525.50</div>
+                        </div>
+                        <div class="reconcile-row">
+                            <div class="reconcile-side" style="color:#6b7280;">Not on their statement</div>
+                            <span class="reconcile-match match-ours">Our Record</span>
+                            <div class="reconcile-side" style="text-align:right;">INV-4610 &mdash; &pound;680.00</div>
+                        </div>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4 style="color:#34d399;">Agreed</h4>
+                            <p>Same reference, same amount on both sides. Confirmed correct.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4 style="color:#fbbf24;">Amount Difference</h4>
+                            <p>Same reference but amounts don't match. Flagged for investigation.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4 style="color:#60a5fa;">Unmatched</h4>
+                            <p>Items on one side only. On their statement not ours, or on our account not theirs.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 8: Smart Business Rules -->
+            <div class="slide" data-slide="8">
+                <div class="slide-content">
+                    <h2>Smart Business Rules</h2>
+                    <p>Not all differences are equal. The system applies intelligent rules to protect your cash position &mdash; only querying items that are not in your favour.</p>
+
+                    <div class="feature-grid" style="grid-template-columns:1fr 1fr 1fr;">
+                        <div class="rule-card">
+                            <h4 style="color:#fbbf24;">&#9888; Query (Not In Your Favour)</h4>
+                            <ul>
+                                <li style="padding-left:20px;">Invoice on their statement, not in your system<span style="position:absolute;left:0;top:10px;width:8px;height:8px;border-radius:50;background:#fbbf24;"></span></li>
+                                <li>Their amount is higher than yours</li>
+                                <li>Credit note they claim was sent but you haven't received</li>
+                                <li>Payment they say was received but you can't match</li>
+                            </ul>
+                            <div class="warning-box" style="margin-top:12px;">
+                                <p style="margin:0;font-size:0.8rem;">These items are raised as queries in the response email. The supplier is asked to provide documentation.</p>
+                            </div>
+                        </div>
+                        <div class="rule-card">
+                            <h4 style="color:#6ee7b7;">&#128566; Stay Quiet (In Your Favour)</h4>
+                            <ul>
+                                <li>Invoice on your records they've forgotten</li>
+                                <li>Their amount is lower than yours</li>
+                                <li>Credit note you haven't claimed</li>
+                                <li>Overpayment in your favour</li>
+                            </ul>
+                            <div class="success-box" style="margin-top:12px;">
+                                <p style="margin:0;font-size:0.8rem;">These items are not mentioned in the response. No point reminding a supplier about money they owe you or credits they've forgotten.</p>
+                            </div>
+                        </div>
+                        <div class="rule-card">
+                            <h4 style="color:#60a5fa;">&#128172; Always Notify</h4>
+                            <ul>
+                                <li>Payments made (always helpful to confirm)</li>
+                                <li>Upcoming payment schedule</li>
+                                <li>Large discrepancies (flagged for review)</li>
+                                <li>Unusual patterns (held for manual check)</li>
+                            </ul>
+                            <div class="info-box" style="margin-top:12px;">
+                                <p style="margin:0;font-size:0.8rem;">Payment notifications reduce inbound calls. Suppliers want to know when they're getting paid.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box" style="margin-top:16px;text-align:center;">
+                        <h4>The result: your cash position is protected</h4>
+                        <p style="margin:0;font-size:0.9rem;">The system never reminds a supplier about money they owe you, credits they've forgotten, or invoices they haven't billed. It only queries items where you might be overpaying or missing a credit you're entitled to.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 9: Auto-Acknowledgment -->
+            <div class="slide" data-slide="9">
+                <div class="slide-content">
+                    <h2>Instant Auto-Acknowledgment</h2>
+                    <p>As soon as a statement is received, the system sends a professional acknowledgment to the supplier. This reduces follow-up calls &mdash; the supplier knows their statement has been received and is being processed.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#128172;</div>
+                            <div class="mock-title">Auto-Acknowledgment Email</div>
+                            <span class="badge badge-green mock-badge">Sent Automatically</span>
+                        </div>
+
+                        <div style="padding:4px 0;">
+                            <div style="font-size:0.85rem;color:#a78bfa;margin-bottom:4px;">To: accounts@acmesupplies.co.uk</div>
+                            <div style="font-size:0.85rem;color:#a78bfa;margin-bottom:12px;">Subject: RE: Statement of Account - March 2026</div>
+                        </div>
+                        <div class="email-body">
+                            Dear Accounts Team,<br><br>
+                            Thank you for your statement dated 31 March 2026. We confirm receipt and are currently processing it against our records.<br><br>
+                            You can expect a full reconciliation response within 3 working days. If you have any urgent queries in the meantime, please don't hesitate to get in touch.<br><br>
+                            Kind regards,<br>
+                            Accounts Payable
+                        </div>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>Configurable Timing</h4>
+                            <p>Send immediately or after a delay. Set globally or per supplier.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Custom Templates</h4>
+                            <p>Edit the acknowledgment wording to match your company's tone and style.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Fewer Phone Calls</h4>
+                            <p>Suppliers know their statement has been received. No need to call and check.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 10: Response Generation -->
+            <div class="slide" data-slide="10">
+                <div class="slide-content">
+                    <h2>Automated Response Generation</h2>
+                    <p>After reconciliation, the system generates a professional response email. Two templates handle the two outcomes: full agreement or queries to raise.</p>
+
+                    <div class="feature-grid-2">
+                        <div class="mock-ui" style="margin:0;">
+                            <div class="mock-header">
+                                <div class="mock-icon" style="background:#059669;">&#10003;</div>
+                                <div class="mock-title">Agreed Template</div>
+                            </div>
+                            <div class="email-body" style="font-size:0.82rem;">
+                                Dear Accounts Team,<br><br>
+                                Thank you for your statement dated 31 March 2026.<br><br>
+                                We are pleased to confirm that our records agree with your closing balance of <strong>&pound;8,725.50</strong>.<br><br>
+                                Your account is scheduled for the next payment run on <strong>15 April 2026</strong>.<br><br>
+                                Kind regards,<br>
+                                Accounts Payable
+                            </div>
+                            <div class="success-box" style="margin-top:12px;">
+                                <p style="margin:0;font-size:0.8rem;">Sent when all items match. Includes payment schedule to pre-empt follow-up calls.</p>
+                            </div>
+                        </div>
+                        <div class="mock-ui" style="margin:0;">
+                            <div class="mock-header">
+                                <div class="mock-icon" style="background:#d97706;">&#63;</div>
+                                <div class="mock-title">Query Template</div>
+                            </div>
+                            <div class="email-body" style="font-size:0.82rem;">
+                                Dear Accounts Team,<br><br>
+                                Thank you for your statement dated 31 March 2026.<br><br>
+                                Your closing balance: <strong>&pound;8,725.50</strong><br>
+                                Our outstanding balance: <strong>&pound;9,045.50</strong><br><br>
+                                We have <strong>2 queries</strong> we'd like to raise:<br>
+                                &#8226; INV-4598: Your amount &pound;845.50, our records &pound;525.50<br>
+                                &#8226; CN-892: Credit note not yet received<br><br>
+                                Recent payments: BACS &pound;5,500.00 (15/03/2026)<br><br>
+                                Please respond by <strong>22 April 2026</strong>.
+                            </div>
+                            <div class="warning-box" style="margin-top:12px;">
+                                <p style="margin:0;font-size:0.8rem;">Includes balance comparison, auto-generated query table, recent payments, and response deadline.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 11: Email Templates & Customisation -->
+            <div class="slide" data-slide="11">
+                <div class="slide-content">
+                    <h2>Email Templates &mdash; Fully Customisable</h2>
+                    <p>Every email the system sends uses templates you control. Edit the wording, tone, and structure to match your company's communication style. Merge fields pull in live data automatically.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#9998;</div>
+                            <div class="mock-title">Template Editor &mdash; Query Response</div>
+                        </div>
+
+                        <div style="font-size:0.85rem;color:#c4b5fd;margin-bottom:12px;">Subject: <span style="color:#f1f5f9;">RE: Statement of Account - </span><span class="merge-field">{statement_date}</span></div>
+
+                        <div class="email-body" style="font-size:0.82rem;">
+                            Dear <span class="merge-field">{contact_name}</span>,<br><br>
+                            Thank you for your statement dated <span class="merge-field">{statement_date}</span> for <span class="merge-field">{supplier_name}</span>.<br><br>
+                            Your closing balance: <strong><span class="merge-field">{their_balance}</span></strong><br>
+                            Our outstanding balance: <strong><span class="merge-field">{our_balance}</span></strong><br>
+                            Difference: <strong><span class="merge-field">{difference}</span></strong><br><br>
+                            Agreed items: <span class="merge-field">{agreed_count}</span><br><br>
+                            We have the following queries (<span class="merge-field">{query_count}</span>):<br>
+                            <span class="merge-field">{query_table}</span><br><br>
+                            Recent payments made:<br>
+                            <span class="merge-field">{payment_table}</span><br><br>
+                            <span class="merge-field">{payment_schedule}</span><br><br>
+                            <span class="merge-field">{company_sign_off}</span>
+                        </div>
+                    </div>
+
+                    <h3 style="margin-top:20px;">Available Merge Fields</h3>
+                    <div class="feature-grid" style="grid-template-columns:repeat(4,1fr);gap:8px;">
+                        <div class="feature-card" style="padding:10px;"><p style="font-size:0.75rem;"><span class="merge-field">{contact_name}</span><br>Supplier contact</p></div>
+                        <div class="feature-card" style="padding:10px;"><p style="font-size:0.75rem;"><span class="merge-field">{supplier_name}</span><br>Account name</p></div>
+                        <div class="feature-card" style="padding:10px;"><p style="font-size:0.75rem;"><span class="merge-field">{their_balance}</span><br>Statement balance</p></div>
+                        <div class="feature-card" style="padding:10px;"><p style="font-size:0.75rem;"><span class="merge-field">{our_balance}</span><br>Ledger balance</p></div>
+                        <div class="feature-card" style="padding:10px;"><p style="font-size:0.75rem;"><span class="merge-field">{difference}</span><br>Variance amount</p></div>
+                        <div class="feature-card" style="padding:10px;"><p style="font-size:0.75rem;"><span class="merge-field">{query_table}</span><br>Auto-generated</p></div>
+                        <div class="feature-card" style="padding:10px;"><p style="font-size:0.75rem;"><span class="merge-field">{payment_table}</span><br>Recent payments</p></div>
+                        <div class="feature-card" style="padding:10px;"><p style="font-size:0.75rem;"><span class="merge-field">{payment_schedule}</span><br>Next payment date</p></div>
+                    </div>
+
+                    <div class="info-box" style="margin-top:16px;">
+                        <h4>How it works</h4>
+                        <p style="margin:0;font-size:0.85rem;">You edit the template text &mdash; the system fills in the data. Query tables and payment lists are generated automatically from the reconciliation results and cannot be edited (they reflect the actual data). Subject lines, body text, and sign-off are fully customisable. Separate templates for agreed and query responses.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 12: Approval Queue -->
+            <div class="slide" data-slide="12">
+                <div class="slide-content">
+                    <h2>Approval Queue &amp; Dashboard</h2>
+                    <p>Every response is held for human approval before being sent. Your team reviews the email, can edit if needed, and approves with one click. The dashboard gives instant visibility of your statement processing status.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#128202;</div>
+                            <div class="mock-title">Dashboard</div>
+                        </div>
+                        <div class="feature-grid-4" style="margin-top:0;">
+                            <div class="kpi-card">
+                                <div class="kpi-value">18</div>
+                                <div class="kpi-label">Statements This Month</div>
+                            </div>
+                            <div class="kpi-card">
+                                <div class="kpi-value" style="color:#fbbf24;">5</div>
+                                <div class="kpi-label">Pending Approval</div>
+                            </div>
+                            <div class="kpi-card">
+                                <div class="kpi-value" style="color:#f87171;">8</div>
+                                <div class="kpi-label">Open Queries</div>
+                            </div>
+                            <div class="kpi-card">
+                                <div class="kpi-value" style="color:#34d399;">94%</div>
+                                <div class="kpi-label">Match Rate</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#128203;</div>
+                            <div class="mock-title">Pending Approvals</div>
+                        </div>
                         <table class="mock-table">
-                            <thead>
-                                <tr>
-                                    <th>Supplier</th>
-                                    <th style="text-align: right;">Current</th>
-                                    <th style="text-align: right;">30 Days</th>
-                                    <th style="text-align: right;">60 Days</th>
-                                    <th style="text-align: right;">90+ Days</th>
-                                    <th style="text-align: right;">Total</th>
-                                    <th>Trend</th>
-                                </tr>
-                            </thead>
+                            <thead><tr><th>Supplier</th><th>Statement Date</th><th>Balance</th><th>Agreed</th><th>Queries</th><th>Status</th><th>Action</th></tr></thead>
+                            <tbody>
+                                <tr><td>Acme Supplies</td><td>31/03/2026</td><td>&pound;8,725.50</td><td>18</td><td>2</td><td><span class="badge badge-amber">Pending</span></td><td><button class="action-btn">Review</button></td></tr>
+                                <tr><td>BuildRight Ltd</td><td>31/03/2026</td><td>&pound;3,200.00</td><td>12</td><td>0</td><td><span class="badge badge-green">Agreed</span></td><td><button class="action-btn">Approve</button></td></tr>
+                                <tr><td>Office Plus</td><td>28/03/2026</td><td>&pound;1,540.00</td><td>8</td><td>1</td><td><span class="badge badge-amber">Pending</span></td><td><button class="action-btn">Review</button></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>One-Click Approve</h4>
+                            <p>Fully agreed statements can be approved and sent instantly. No editing needed.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Edit Before Send</h4>
+                            <p>Review and modify the response email before approving. Full control retained.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Auto-Approve Option</h4>
+                            <p>Fully reconciled statements can optionally skip approval and send automatically.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 13: Query Management -->
+            <div class="slide" data-slide="13">
+                <div class="slide-content">
+                    <h2>Query Management &amp; Follow-Up</h2>
+                    <p>Every unmatched item becomes a tracked query with a deadline. If the supplier doesn't respond, the system sends follow-up reminders automatically &mdash; escalating in tone from friendly to firm.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#128269;</div>
+                            <div class="mock-title">Open Queries</div>
+                        </div>
+                        <table class="mock-table">
+                            <thead><tr><th>Supplier</th><th>Reference</th><th>Amount</th><th>Query Type</th><th>Days Open</th><th>Reminders</th><th>Status</th></tr></thead>
+                            <tbody>
+                                <tr><td>Acme Supplies</td><td>INV-4598</td><td>&pound;320.00</td><td>Amount difference</td><td>5</td><td>0</td><td><span class="badge badge-green">Open</span></td></tr>
+                                <tr><td>Acme Supplies</td><td>CN-892</td><td>&pound;320.00</td><td>Credit not received</td><td>5</td><td>0</td><td><span class="badge badge-green">Open</span></td></tr>
+                                <tr><td>Metro Parts</td><td>INV-7823</td><td>&pound;1,200.00</td><td>Invoice not received</td><td>12</td><td>1</td><td><span class="badge badge-amber">Overdue</span></td></tr>
+                                <tr><td>DataCorp</td><td>INV-3301</td><td>&pound;450.00</td><td>Request copy</td><td>21</td><td>2</td><td><span class="badge badge-red">Escalated</span></td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>Automatic Reminders</h4>
+                            <p>Configurable intervals (e.g. 7 days). System sends follow-up reminders until resolved or maximum reached.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Escalating Tone</h4>
+                            <p>First reminder is friendly. Second is firm. Third is urgent. Professional throughout.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Resolution Tracking</h4>
+                            <p>Mark queries resolved when supplier responds. Auto-resolve when next statement shows the item.</p>
+                        </div>
+                    </div>
+
+                    <div class="info-box" style="margin-top:12px;">
+                        <h4>Benefit to your team</h4>
+                        <p style="margin:0;font-size:0.85rem;">No more manual follow-up spreadsheets. No more forgetting to chase. Every query is tracked, every deadline monitored, every reminder sent automatically. Your team only gets involved when a query needs human judgement.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 14: Security & Fraud Prevention -->
+            <div class="slide" data-slide="14">
+                <div class="slide-content">
+                    <h2>Security &amp; Fraud Prevention</h2>
+                    <p>Supplier bank fraud is one of the fastest-growing threats to UK businesses. The system monitors for suspicious changes and alerts your team immediately.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon" style="background:#dc2626;">&#128274;</div>
+                            <div class="mock-title">Security Alerts</div>
+                        </div>
+
+                        <div class="danger-box">
+                            <div style="display:flex;justify-content:space-between;align-items:center;">
+                                <div>
+                                    <h4 style="color:#f87171;">&#9888; Bank Details Changed &mdash; Acme Supplies Ltd</h4>
+                                    <p style="margin:0;font-size:0.85rem;">Sort code changed from 20-45-67 to 30-12-89. Account number changed.</p>
+                                    <p style="margin:4px 0 0;font-size:0.8rem;color:#fca5a5;">Requires phone verification before next payment</p>
+                                </div>
+                                <span class="badge badge-red">Unverified</span>
+                            </div>
+                        </div>
+                        <div class="warning-box">
+                            <div style="display:flex;justify-content:space-between;align-items:center;">
+                                <div>
+                                    <h4 style="color:#fbbf24;">&#128232; Unknown Sender &mdash; Metro Parts</h4>
+                                    <p style="margin:0;font-size:0.85rem;">Statement received from accounts-new@metro-parts.co.uk (not in approved list)</p>
+                                    <p style="margin:4px 0 0;font-size:0.8rem;color:#fde68a;">Statement held for review until sender approved</p>
+                                </div>
+                                <span class="badge badge-amber">Held</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="feature-grid-2">
+                        <div class="feature-card">
+                            <h4>Change Audit Trail</h4>
+                            <p>Every change to sensitive supplier fields is logged: old value, new value, who changed it, when. Complete traceability.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Phone Verification</h4>
+                            <p>Bank detail changes require phone verification using the supplier's known number. No payments until confirmed.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Approved Sender List</h4>
+                            <p>Per-supplier whitelist of authorised email addresses. New senders must be explicitly approved.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Automated Emails Never Expose Data</h4>
+                            <p>System emails never request or include bank details. All bank-related changes go through the verified workflow.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 15: Aged Creditors -->
+            <div class="slide" data-slide="15">
+                <div class="slide-content">
+                    <h2>Aged Creditors Analysis</h2>
+                    <p>Real-time aging analysis reading directly from your Opera purchase ledger. Drill down from summary to individual invoices. Spot suppliers with increasing aged debt.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#128202;</div>
+                            <div class="mock-title">Aged Creditors Summary</div>
+                        </div>
+                        <table class="mock-table">
+                            <thead><tr><th>Supplier</th><th>Current</th><th>30 Days</th><th>60 Days</th><th>90 Days</th><th>120+ Days</th><th>Total</th><th>Trend</th></tr></thead>
                             <tbody>
                                 <tr>
-                                    <td>Acme Supplies</td>
-                                    <td style="text-align: right;">£3,390</td>
-                                    <td style="text-align: right;">£1,200</td>
-                                    <td style="text-align: right;">-</td>
-                                    <td style="text-align: right;">-</td>
-                                    <td style="text-align: right; font-weight: 600;">£4,590</td>
-                                    <td><span style="color: #4ade80;">Stable</span></td>
+                                    <td>Acme Supplies</td><td>&pound;3,200</td><td>&pound;2,450</td><td>&pound;1,800</td><td>&pound;750</td><td>&pound;525</td><td><strong>&pound;8,725</strong></td>
+                                    <td><span class="badge badge-green">Stable</span></td>
                                 </tr>
                                 <tr>
-                                    <td>Parts Ltd</td>
-                                    <td style="text-align: right;">£1,875</td>
-                                    <td style="text-align: right;">£2,400</td>
-                                    <td style="text-align: right;">£980</td>
-                                    <td style="text-align: right;">-</td>
-                                    <td style="text-align: right; font-weight: 600;">£5,255</td>
-                                    <td><span style="color: #fbbf24;">Increasing</span></td>
+                                    <td>BuildRight Ltd</td><td>&pound;1,800</td><td>&pound;1,400</td><td>&pound;0</td><td>&pound;0</td><td>&pound;0</td><td><strong>&pound;3,200</strong></td>
+                                    <td><span class="badge badge-green">Stable</span></td>
                                 </tr>
                                 <tr>
-                                    <td>Tech Solutions</td>
-                                    <td style="text-align: right;">£5,240</td>
-                                    <td style="text-align: right;">-</td>
-                                    <td style="text-align: right;">-</td>
-                                    <td style="text-align: right;">-</td>
-                                    <td style="text-align: right; font-weight: 600;">£5,240</td>
-                                    <td><span style="color: #4ade80;">Stable</span></td>
+                                    <td>Metro Parts</td><td>&pound;600</td><td>&pound;1,200</td><td>&pound;2,400</td><td>&pound;1,800</td><td>&pound;3,200</td><td><strong>&pound;9,200</strong></td>
+                                    <td><span class="badge badge-red">Increasing</span></td>
                                 </tr>
                                 <tr>
-                                    <td>Global Freight</td>
-                                    <td style="text-align: right;">£1,945</td>
-                                    <td style="text-align: right;">£4,720</td>
-                                    <td style="text-align: right;">£2,170</td>
-                                    <td style="text-align: right; color: #f87171;">£2,530</td>
-                                    <td style="text-align: right; font-weight: 600; color: #f87171;">£11,365</td>
-                                    <td><span style="color: #f87171;">Overdue</span></td>
+                                    <td>Office Plus</td><td>&pound;540</td><td>&pound;1,000</td><td>&pound;0</td><td>&pound;0</td><td>&pound;0</td><td><strong>&pound;1,540</strong></td>
+                                    <td><span class="badge badge-green">Stable</span></td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
 
-                    <div class="feature-grid" style="margin-top: 12px;">
+                    <div class="feature-grid">
                         <div class="feature-card">
-                            <h4>Opera Exact Match</h4>
-                            <p>Reads ptran for outstanding balances - matches Opera reports exactly</p>
+                            <h4>Live Opera Data</h4>
+                            <p>Reads directly from your purchase ledger. Always current, always accurate.</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Foreign Currency</h4>
-                            <p>Multi-currency support with conversion at current rates</p>
+                            <h4>Drill-Down Detail</h4>
+                            <p>Click any supplier to see individual invoices, dates, and amounts in each aging bucket.</p>
                         </div>
                         <div class="feature-card">
-                            <h4>Invoice Drill-Down</h4>
-                            <p>Click any supplier to see individual invoices and credit notes</p>
+                            <h4>Trend Indicators</h4>
+                            <p>Spot suppliers where aged debt is growing. Take action before it becomes a problem.</p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 10: REMITTANCE ADVICE -->
-            <!-- ============================================================ -->
-            <div class="slide" data-slide="10">
+            <!-- SLIDE 16: Remittance Advice -->
+            <div class="slide" data-slide="16">
                 <div class="slide-content">
-                    <div class="step-number">10</div>
-                    <h2>Remittance Advice</h2>
-                    <p>Automated remittance generation after payment runs. Suppliers know exactly what has been paid, reducing follow-up calls. <strong>All communications are automated.</strong></p>
+                    <h2>Automated Remittance Advice</h2>
+                    <p>After every payment run, suppliers receive a detailed remittance showing exactly which invoices and credit notes were included. This is the single biggest reducer of inbound "where's my payment?" calls.</p>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
-                        <div class="mock-ui" style="padding: 20px;">
-                            <div style="color: #a78bfa; font-size: 0.75rem; margin-bottom: 12px; text-transform: uppercase;">Auto-Generated Remittance</div>
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#128176;</div>
+                            <div class="mock-title">Remittance Advice &mdash; Acme Supplies Ltd</div>
+                            <span class="badge badge-green mock-badge">Auto-Generated</span>
+                        </div>
 
-                            <div style="background: #2e1065; border-radius: 8px; padding: 16px; margin-bottom: 12px;">
-                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85rem;">
-                                    <div>
-                                        <span style="color: #a78bfa;">Payment Date:</span>
-                                        <span style="color: #f1f5f9;"> 15 Mar 2026</span>
-                                    </div>
-                                    <div>
-                                        <span style="color: #a78bfa;">Method:</span>
-                                        <span style="color: #f1f5f9;"> BACS</span>
-                                    </div>
-                                    <div>
-                                        <span style="color: #a78bfa;">Reference:</span>
-                                        <span style="color: #f1f5f9;"> BAC-20260315</span>
-                                    </div>
-                                    <div>
-                                        <span style="color: #a78bfa;">Total:</span>
-                                        <span style="color: #4ade80; font-weight: 600;"> £2,500.00</span>
-                                    </div>
+                        <div class="mock-form" style="margin-bottom:16px;">
+                            <div class="mock-field"><label>Payment Date</label><div class="value">15 April 2026</div></div>
+                            <div class="mock-field"><label>Payment Method</label><div class="value">BACS Transfer</div></div>
+                            <div class="mock-field"><label>Payment Reference</label><div class="value">PMT-2026-0415-ACM</div></div>
+                            <div class="mock-field"><label>Total Amount</label><div class="value" style="color:#34d399;font-size:1.1rem;">&pound;5,180.00</div></div>
+                        </div>
+
+                        <table class="mock-table">
+                            <thead><tr><th>Type</th><th>Reference</th><th>Date</th><th>Amount</th></tr></thead>
+                            <tbody>
+                                <tr><td>Invoice</td><td>INV-4401</td><td>15/02/2026</td><td>&pound;2,400.00</td></tr>
+                                <tr><td>Invoice</td><td>INV-4455</td><td>28/02/2026</td><td>&pound;1,250.00</td></tr>
+                                <tr><td>Invoice</td><td>INV-4478</td><td>07/03/2026</td><td>&pound;1,850.00</td></tr>
+                                <tr><td style="color:#f87171;">Credit Note</td><td>CN-881</td><td>10/03/2026</td><td style="color:#f87171;">-&pound;320.00</td></tr>
+                                <tr style="border-top:2px solid #3b2f5e;"><td colspan="3" style="font-weight:600;">Net Payment</td><td style="font-weight:600;color:#34d399;">&pound;5,180.00</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>Auto-Send After Payment</h4>
+                            <p>Triggered automatically after each payment run. No manual generation needed.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Contact Routing</h4>
+                            <p>Sent to the designated payment contact for each supplier. Right person, right information.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Fewer Inbound Calls</h4>
+                            <p>Suppliers know exactly what was paid and when. No need to call and ask.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 17: Statement Detail View -->
+            <div class="slide" data-slide="17">
+                <div class="slide-content">
+                    <h2>Statement Detail &amp; History</h2>
+                    <p>Every statement is stored with full detail &mdash; the original PDF, extracted data, reconciliation results, response sent, and complete timeline. Nothing is lost.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#128196;</div>
+                            <div class="mock-title">Acme Supplies &mdash; Statement 31/03/2026</div>
+                        </div>
+
+                        <div style="display:flex;gap:8px;margin-bottom:16px;">
+                            <span class="badge badge-purple">Received 01/04</span>
+                            <span class="badge badge-blue">Acknowledged 01/04</span>
+                            <span class="badge badge-green">Reconciled 01/04</span>
+                            <span class="badge badge-green">Approved 02/04</span>
+                            <span class="badge badge-green">Sent 02/04</span>
+                        </div>
+
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                            <div>
+                                <h3 style="font-size:0.95rem;color:#a78bfa;margin-bottom:12px;">Reconciliation Summary</h3>
+                                <div class="stat-row"><span class="stat-label">Their balance</span><span class="stat-value">&pound;8,725.50</span></div>
+                                <div class="stat-row"><span class="stat-label">Our balance</span><span class="stat-value">&pound;9,045.50</span></div>
+                                <div class="stat-row"><span class="stat-label">Variance</span><span class="stat-value" style="color:#fbbf24;">&pound;320.00</span></div>
+                                <div class="stat-row"><span class="stat-label">Agreed items</span><span class="stat-value positive">18</span></div>
+                                <div class="stat-row"><span class="stat-label">Queries raised</span><span class="stat-value" style="color:#fbbf24;">2</span></div>
+                            </div>
+                            <div>
+                                <h3 style="font-size:0.95rem;color:#a78bfa;margin-bottom:12px;">Processing Timeline</h3>
+                                <div class="timeline">
+                                    <div class="timeline-item completed"><strong style="color:#f1f5f9;">Received</strong><br><span style="color:#c4b5fd;font-size:0.85rem;">01/04/2026 10:24 AM</span></div>
+                                    <div class="timeline-item completed"><strong style="color:#f1f5f9;">Acknowledged</strong><br><span style="color:#c4b5fd;font-size:0.85rem;">01/04/2026 10:25 AM (auto)</span></div>
+                                    <div class="timeline-item completed"><strong style="color:#f1f5f9;">Reconciled</strong><br><span style="color:#c4b5fd;font-size:0.85rem;">01/04/2026 10:26 AM (auto)</span></div>
+                                    <div class="timeline-item completed"><strong style="color:#f1f5f9;">Approved</strong><br><span style="color:#c4b5fd;font-size:0.85rem;">02/04/2026 09:15 AM (J. Smith)</span></div>
+                                    <div class="timeline-item completed"><strong style="color:#f1f5f9;">Sent</strong><br><span style="color:#c4b5fd;font-size:0.85rem;">02/04/2026 09:15 AM (auto)</span></div>
                                 </div>
                             </div>
-
-                            <table class="mock-table" style="margin-top: 0;">
-                                <thead>
-                                    <tr>
-                                        <th>Invoice</th>
-                                        <th>Date</th>
-                                        <th style="text-align: right;">Amount</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr>
-                                        <td>INV-4567</td>
-                                        <td>03 Feb 2026</td>
-                                        <td style="text-align: right;">£1,200.00</td>
-                                    </tr>
-                                    <tr>
-                                        <td>INV-4523</td>
-                                        <td>18 Jan 2026</td>
-                                        <td style="text-align: right;">£2,150.00</td>
-                                    </tr>
-                                    <tr>
-                                        <td>CN-0234</td>
-                                        <td>20 Feb 2026</td>
-                                        <td style="text-align: right; color: #f87171;">-£850.00</td>
-                                    </tr>
-                                    <tr style="border-top: 2px solid #3b2f5e;">
-                                        <td colspan="2" style="font-weight: 600;">Total Paid</td>
-                                        <td style="text-align: right; font-weight: 600; color: #4ade80;">£2,500.00</td>
-                                    </tr>
-                                </tbody>
-                            </table>
                         </div>
+                    </div>
 
-                        <div>
-                            <h3 style="color: #a78bfa; margin-bottom: 12px; font-size: 1rem;">How It Works</h3>
-                            <div class="feature-card" style="margin-bottom: 10px; text-align: left; padding: 14px;">
-                                <h4 style="color: #4ade80; text-align: left;">Triggered by Payment Run</h4>
-                                <p style="text-align: left;">Automatically detects when Opera completes a payment run and generates remittances for all paid suppliers</p>
-                            </div>
-                            <div class="feature-card" style="margin-bottom: 10px; text-align: left; padding: 14px;">
-                                <h4 style="color: #60a5fa; text-align: left;">Allocation Detail</h4>
-                                <p style="text-align: left;">Shows exactly which invoices and credit notes were included in the payment, from palloc</p>
-                            </div>
-                            <div class="feature-card" style="margin-bottom: 10px; text-align: left; padding: 14px;">
-                                <h4 style="color: #a78bfa; text-align: left;">Configurable Delivery</h4>
-                                <p style="text-align: left;">Auto-send immediately, or queue for approval. Email body or PDF attachment</p>
-                            </div>
-                            <div class="feature-card" style="text-align: left; padding: 14px;">
-                                <h4 style="color: #fbbf24; text-align: left;">Contact Routing</h4>
-                                <p style="text-align: left;">Sent to the designated payment contact from zcontacts, with optional CC to internal address</p>
-                            </div>
-                        </div>
+                    <div class="info-box">
+                        <h4>Full Traceability</h4>
+                        <p style="margin:0;font-size:0.85rem;">View the original PDF, the extracted data, what was matched, what was queried, the exact email sent, who approved it, and when. Every statement has a complete, auditable history. Essential for compliance and dispute resolution.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 11: CONTACT MANAGEMENT -->
-            <!-- ============================================================ -->
-            <div class="slide" data-slide="11">
+            <!-- SLIDE 18: Per-Supplier Configuration -->
+            <div class="slide" data-slide="18">
                 <div class="slide-content">
-                    <div class="step-number">11</div>
-                    <h2>Contact Management</h2>
-                    <p>Full read/write integration with Opera <strong>zcontacts</strong>. Security clearances, communication roles, and verified sender status ensure the right people get the right information.</p>
+                    <h2>Per-Supplier Configuration</h2>
+                    <p>Global settings apply to all suppliers by default, but every setting can be overridden per supplier. High-value suppliers get different treatment. Trusted suppliers can be auto-approved.</p>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
-                        <div class="mock-ui">
+                    <div class="feature-grid-2">
+                        <div class="mock-ui" style="margin:0;">
                             <div class="mock-header">
-                                <div class="mock-icon" style="background: #8b5cf6;">
-                                    <svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-                                </div>
-                                <span class="mock-title">Acme Supplies - Contacts</span>
+                                <div class="mock-icon">&#9881;</div>
+                                <div class="mock-title">Acme Supplies &mdash; Overrides</div>
                             </div>
-
-                            <div class="contact-card" style="margin-bottom: 10px;">
-                                <div style="display: flex; justify-content: space-between; align-items: start;">
-                                    <div>
-                                        <h4>Jane Smith</h4>
-                                        <div class="role">Credit Controller</div>
-                                    </div>
-                                    <span class="badge badge-green">Verified</span>
-                                </div>
-                                <div class="detail">jane.smith@acmesupplies.co.uk</div>
-                                <div class="detail">01234 567890</div>
-                                <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
-                                    <span class="badge badge-purple">Statements</span>
-                                    <span class="badge badge-blue">Queries</span>
-                                    <span class="badge badge-emerald">Payments</span>
-                                </div>
-                            </div>
-
-                            <div class="contact-card">
-                                <div style="display: flex; justify-content: space-between; align-items: start;">
-                                    <div>
-                                        <h4>Mike Johnson</h4>
-                                        <div class="role">Finance Director</div>
-                                    </div>
-                                    <span class="badge badge-green">Verified</span>
-                                </div>
-                                <div class="detail">m.johnson@acmesupplies.co.uk</div>
-                                <div class="detail">01234 567891</div>
-                                <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
-                                    <span class="badge badge-red">Bank Auth</span>
-                                    <span class="badge badge-purple">Director</span>
-                                </div>
-                            </div>
+                            <div class="toggle-row"><span class="label">Auto-respond if reconciled</span><div class="toggle-track on"></div></div>
+                            <div class="toggle-row"><span class="label">Require approval for queries</span><div class="toggle-track on"></div></div>
+                            <div class="toggle-row"><span class="label">Send acknowledgment</span><div class="toggle-track on"></div></div>
+                            <div class="toggle-row"><span class="label">Send follow-up reminders</span><div class="toggle-track on"></div></div>
+                            <div class="toggle-row"><span class="label">Active for reconciliation</span><div class="toggle-track on"></div></div>
+                            <div class="mock-field" style="margin-top:8px;"><label>Query deadline (days)</label><div class="value">7</div></div>
+                            <div class="mock-field" style="margin-top:8px;"><label>Reminder interval (days)</label><div class="value">5</div></div>
                         </div>
 
-                        <div>
-                            <h3 style="color: #a78bfa; margin-bottom: 12px; font-size: 1rem;">Contact Attributes (zc_attr1-6)</h3>
-
-                            <table class="mock-table" style="margin-top: 0;">
-                                <thead>
-                                    <tr>
-                                        <th>Attribute</th>
-                                        <th>Purpose</th>
-                                        <th>Values</th>
-                                    </tr>
-                                </thead>
+                        <div class="mock-ui" style="margin:0;">
+                            <div class="mock-header">
+                                <div class="mock-icon">&#128101;</div>
+                                <div class="mock-title">Supplier Directory</div>
+                            </div>
+                            <table class="mock-table" style="margin-top:0;">
+                                <thead><tr><th>Supplier</th><th>Auto-Respond</th><th>Active</th><th>Contact</th></tr></thead>
                                 <tbody>
-                                    <tr>
-                                        <td style="color: #a78bfa;">attr1</td>
-                                        <td>Communication Role</td>
-                                        <td><span class="badge badge-purple" style="font-size: 0.7rem;">STMT</span> <span class="badge badge-blue" style="font-size: 0.7rem;">PYMT</span> <span class="badge badge-amber" style="font-size: 0.7rem;">QURY</span></td>
-                                    </tr>
-                                    <tr>
-                                        <td style="color: #a78bfa;">attr2</td>
-                                        <td>Security Clearance</td>
-                                        <td><span class="badge badge-green" style="font-size: 0.7rem;">STD</span> <span class="badge badge-amber" style="font-size: 0.7rem;">ELVT</span> <span class="badge badge-red" style="font-size: 0.7rem;">DIR</span></td>
-                                    </tr>
-                                    <tr>
-                                        <td style="color: #a78bfa;">attr3</td>
-                                        <td>Verified Status</td>
-                                        <td><span class="badge badge-green" style="font-size: 0.7rem;">VRFD</span> <span class="badge badge-amber" style="font-size: 0.7rem;">PEND</span></td>
-                                    </tr>
-                                    <tr>
-                                        <td style="color: #a78bfa;">attr4</td>
-                                        <td>Contact Preference</td>
-                                        <td><span class="badge badge-blue" style="font-size: 0.7rem;">EMAL</span> <span class="badge badge-purple" style="font-size: 0.7rem;">PHON</span> <span class="badge badge-emerald" style="font-size: 0.7rem;">PORT</span></td>
-                                    </tr>
+                                    <tr><td>Acme Supplies</td><td><span class="badge badge-green">Yes</span></td><td><span class="badge badge-green">Active</span></td><td>J. Andrews</td></tr>
+                                    <tr><td>BuildRight Ltd</td><td><span class="badge badge-green">Yes</span></td><td><span class="badge badge-green">Active</span></td><td>S. Wright</td></tr>
+                                    <tr><td>Metro Parts</td><td><span class="badge badge-gray">No</span></td><td><span class="badge badge-green">Active</span></td><td>P. Davis</td></tr>
+                                    <tr><td>DataCorp</td><td><span class="badge badge-gray">No</span></td><td><span class="badge badge-red">Excluded</span></td><td>&mdash;</td></tr>
                                 </tbody>
                             </table>
-
-                            <div class="info-box" style="margin-top: 14px;">
-                                <h4>Opera Integration</h4>
-                                <p style="color: #c4b5fd; margin: 0; font-size: 0.85rem;">Reads directly from Opera zcontacts table. Extended security fields stored locally. Changes can optionally write back to Opera. All contact changes logged in audit trail.</p>
+                            <div class="info-box" style="margin-top:12px;">
+                                <p style="margin:0;font-size:0.8rem;">Supplier data synced from Opera. Automation flags are local &mdash; they never write back to your Opera system.</p>
                             </div>
+                        </div>
+                    </div>
+
+                    <div class="highlight-box" style="margin-top:16px;">
+                        <h4>Why this matters</h4>
+                        <p style="margin:0;font-size:0.85rem;">Not all suppliers are the same. A trusted supplier with a perfect track record might have auto-approved responses. A high-value supplier might need manual review every time. A dormant supplier can be excluded entirely. You set the rules once &mdash; the system follows them every time.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 19: Settings & Configuration -->
+            <div class="slide" data-slide="19">
+                <div class="slide-content">
+                    <h2>Settings &amp; Configuration</h2>
+                    <p>One-time setup that controls the entire automation. Configure timing, thresholds, communication preferences, and test mode &mdash; all from a single settings page.</p>
+
+                    <div class="feature-grid" style="grid-template-columns:1fr 1fr 1fr;">
+                        <div class="mock-ui" style="margin:0;">
+                            <h3 style="color:#a78bfa;font-size:0.95rem;margin-bottom:12px;">Timing</h3>
+                            <div class="mock-field" style="margin-bottom:8px;"><label>Acknowledgment delay</label><div class="value">Immediate</div></div>
+                            <div class="mock-field" style="margin-bottom:8px;"><label>Query response deadline</label><div class="value">7 days</div></div>
+                            <div class="mock-field" style="margin-bottom:8px;"><label>Follow-up reminder interval</label><div class="value">5 days</div></div>
+                            <div class="mock-field"><label>Maximum reminders</label><div class="value">3</div></div>
+                        </div>
+                        <div class="mock-ui" style="margin:0;">
+                            <h3 style="color:#a78bfa;font-size:0.95rem;margin-bottom:12px;">Thresholds</h3>
+                            <div class="mock-field" style="margin-bottom:8px;"><label>Large discrepancy threshold</label><div class="value">&pound;5,000.00</div></div>
+                            <div class="mock-field" style="margin-bottom:8px;"><label>Auto-approve below</label><div class="value">&pound;500.00</div></div>
+                            <div class="mock-field" style="margin-bottom:8px;"><label>Old statement warning</label><div class="value">30 days</div></div>
+                            <div class="mock-field"><label>Next payment run date</label><div class="value">15 April 2026</div></div>
+                        </div>
+                        <div class="mock-ui" style="margin:0;">
+                            <h3 style="color:#a78bfa;font-size:0.95rem;margin-bottom:12px;">Communications</h3>
+                            <div class="toggle-row" style="margin-bottom:4px;"><span class="label" style="font-size:0.82rem;">Send acknowledgments</span><div class="toggle-track on"></div></div>
+                            <div class="toggle-row" style="margin-bottom:4px;"><span class="label" style="font-size:0.82rem;">Send agreed responses</span><div class="toggle-track on"></div></div>
+                            <div class="toggle-row" style="margin-bottom:4px;"><span class="label" style="font-size:0.82rem;">Send query responses</span><div class="toggle-track on"></div></div>
+                            <div class="toggle-row" style="margin-bottom:4px;"><span class="label" style="font-size:0.82rem;">Send follow-up reminders</span><div class="toggle-track on"></div></div>
+                            <div class="toggle-row" style="margin-bottom:4px;"><span class="label" style="font-size:0.82rem;">Auto-respond if reconciled</span><div class="toggle-track off"></div></div>
+                            <div class="toggle-row"><span class="label" style="font-size:0.82rem;">Require approval for queries</span><div class="toggle-track on"></div></div>
+                        </div>
+                    </div>
+
+                    <div class="warning-box" style="margin-top:16px;">
+                        <h4>&#128272; Test Mode</h4>
+                        <p style="margin:0;font-size:0.85rem;">Enable test mode to redirect all outgoing emails to a test address. Process real statements, generate real responses &mdash; but nothing reaches your suppliers until you're confident the system is configured correctly. Zero production risk during setup.</p>
+                    </div>
+
+                    <div class="info-box" style="margin-top:8px;">
+                        <h4>Security & Audit</h4>
+                        <p style="margin:0;font-size:0.85rem;">Configure security alert recipients, response CC addresses for audit copies, and the company sign-off used in all outbound emails. All settings changes are logged.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SLIDE 20: Contact Management -->
+            <div class="slide" data-slide="20">
+                <div class="slide-content">
+                    <h2>Contact Management</h2>
+                    <p>The right information reaches the right person. Extend Opera's contact records with automation-specific roles so statements, payments, and queries go to the correct contact at each supplier.</p>
+
+                    <div class="mock-ui">
+                        <div class="mock-header">
+                            <div class="mock-icon">&#128101;</div>
+                            <div class="mock-title">Acme Supplies &mdash; Contacts</div>
+                        </div>
+
+                        <div class="feature-grid" style="grid-template-columns:repeat(3,1fr);margin-top:0;">
+                            <div class="contact-card">
+                                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                                    <h4 style="margin:0;">Jane Andrews</h4>
+                                    <span class="badge badge-green">Verified</span>
+                                </div>
+                                <div class="role">STATEMENT CONTACT</div>
+                                <p style="font-size:0.85rem;margin:8px 0 0;">accounts@acmesupplies.co.uk<br>020 7946 0321</p>
+                            </div>
+                            <div class="contact-card">
+                                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                                    <h4 style="margin:0;">Mark Thompson</h4>
+                                    <span class="badge badge-green">Verified</span>
+                                </div>
+                                <div class="role">PAYMENT CONTACT</div>
+                                <p style="font-size:0.85rem;margin:8px 0 0;">payments@acmesupplies.co.uk<br>020 7946 0322</p>
+                            </div>
+                            <div class="contact-card">
+                                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                                    <h4 style="margin:0;">Sarah Miller</h4>
+                                    <span class="badge badge-amber">Pending</span>
+                                </div>
+                                <div class="role">QUERY CONTACT</div>
+                                <p style="font-size:0.85rem;margin:8px 0 0;">queries@acmesupplies.co.uk<br>020 7946 0323</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>Role-Based Routing</h4>
+                            <p>Statements go to statement contacts. Remittances go to payment contacts. Queries go to query contacts.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Opera Integration</h4>
+                            <p>Reads from Opera zcontacts. Extended contact data stored locally &mdash; never modifies your Opera system.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>Verification Status</h4>
+                            <p>Track which contacts are verified. Unverified contacts flagged before security-sensitive communications.</p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 12: SUPPLIER PORTAL -->
-            <!-- ============================================================ -->
-            <div class="slide" data-slide="12">
+            <!-- SLIDE 21: Time Savings & ROI -->
+            <div class="slide" data-slide="21">
                 <div class="slide-content">
-                    <div class="step-number" style="background: linear-gradient(135deg, #0891b2, #06b6d4);">
-                        <svg width="18" height="18" fill="white" viewBox="0 0 24 24" style="vertical-align: middle;"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
-                    </div>
-                    <h2>Supplier Portal <span style="font-size: 0.8rem; color: #06b6d4; font-weight: normal;">(Coming Soon)</span></h2>
-                    <p>Self-service portal for suppliers to manage their own information, respond to queries, and submit statements directly. <strong>No completed registration = no payment setup.</strong></p>
+                    <h2>The Numbers</h2>
+                    <p>Real, measurable savings for your finance team. Here's what automation delivers compared to the manual process.</p>
 
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 20px;">
-                        <div class="portal-feature">
-                            <div class="icon">
-                                <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+                    <div class="feature-grid-2">
+                        <div>
+                            <div class="mock-ui" style="margin:0;">
+                                <h3 style="color:#f87171;font-size:1rem;margin-bottom:16px;">&#9202; Manual Process (Monthly)</h3>
+                                <div class="stat-row"><span class="stat-label">Receive & file statements</span><span class="stat-value">1.5 hrs</span></div>
+                                <div class="stat-row"><span class="stat-label">Line-by-line reconciliation</span><span class="stat-value">6.0 hrs</span></div>
+                                <div class="stat-row"><span class="stat-label">Draft query emails</span><span class="stat-value">2.0 hrs</span></div>
+                                <div class="stat-row"><span class="stat-label">Chase unanswered queries</span><span class="stat-value">1.5 hrs</span></div>
+                                <div class="stat-row"><span class="stat-label">Generate remittances</span><span class="stat-value">1.5 hrs</span></div>
+                                <div class="stat-row"><span class="stat-label">Answer supplier calls</span><span class="stat-value">3.0 hrs</span></div>
+                                <div class="stat-row" style="border-top:2px solid #3b2f5e;"><span class="stat-label"><strong>Total per month</strong></span><span class="stat-value" style="color:#f87171;"><strong>15.5 hrs</strong></span></div>
                             </div>
-                            <h4>Contact Management</h4>
-                            <p>Suppliers add and update their own contacts</p>
                         </div>
-                        <div class="portal-feature">
-                            <div class="icon" style="background: linear-gradient(135deg, #dc2626, #ef4444);">
-                                <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M21 18v1c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V5c0-1.1.9-2 2-2h14c1.1 0 2 .9 2 2v1h-9c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
+                        <div>
+                            <div class="mock-ui" style="margin:0;">
+                                <h3 style="color:#4ade80;font-size:1rem;margin-bottom:16px;">&#9889; With Automation (Monthly)</h3>
+                                <div class="stat-row"><span class="stat-label">Receive & file statements</span><span class="stat-value positive">0 hrs (auto)</span></div>
+                                <div class="stat-row"><span class="stat-label">Review reconciliation results</span><span class="stat-value positive">0.5 hrs</span></div>
+                                <div class="stat-row"><span class="stat-label">Approve response emails</span><span class="stat-value positive">0.5 hrs</span></div>
+                                <div class="stat-row"><span class="stat-label">Review flagged queries</span><span class="stat-value positive">0.5 hrs</span></div>
+                                <div class="stat-row"><span class="stat-label">Generate remittances</span><span class="stat-value positive">0 hrs (auto)</span></div>
+                                <div class="stat-row"><span class="stat-label">Answer supplier calls</span><span class="stat-value positive">0.5 hrs</span></div>
+                                <div class="stat-row" style="border-top:2px solid #3b2f5e;"><span class="stat-label"><strong>Total per month</strong></span><span class="stat-value positive"><strong>2.0 hrs</strong></span></div>
                             </div>
-                            <h4>Bank Details</h4>
-                            <p>Submit changes (triggers phone verification, never auto-applied)</p>
-                        </div>
-                        <div class="portal-feature">
-                            <div class="icon" style="background: linear-gradient(135deg, #059669, #10b981);">
-                                <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>
-                            </div>
-                            <h4>Certifications</h4>
-                            <p>Upload insurance, compliance docs, accreditations</p>
-                        </div>
-                        <div class="portal-feature">
-                            <div class="icon" style="background: linear-gradient(135deg, #d97706, #f59e0b);">
-                                <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z"/></svg>
-                            </div>
-                            <h4>Query Response</h4>
-                            <p>Respond to reconciliation queries directly online</p>
-                        </div>
-                        <div class="portal-feature">
-                            <div class="icon" style="background: linear-gradient(135deg, #7c3aed, #a78bfa);">
-                                <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
-                            </div>
-                            <h4>Statement Upload</h4>
-                            <p>Upload statements directly instead of email</p>
-                        </div>
-                        <div class="portal-feature">
-                            <div class="icon" style="background: linear-gradient(135deg, #3b82f6, #60a5fa);">
-                                <svg width="20" height="20" fill="white" viewBox="0 0 24 24"><path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z"/></svg>
-                            </div>
-                            <h4>Payment Status</h4>
-                            <p>View payment forecasts and remittance history</p>
                         </div>
                     </div>
 
-                    <div class="highlight-box" style="margin-top: 16px;">
-                        <h4>Security First</h4>
-                        <p style="color: #c4b5fd; margin: 0;">Unique token-based portal links per supplier (time-limited). All changes queued for internal approval before applying to Opera. Bank detail changes always require phone verification. Complete audit trail of all portal activity.</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ============================================================ -->
-            <!-- Slide 13: KEY BENEFITS -->
-            <!-- ============================================================ -->
-            <div class="slide" data-slide="13">
-                <div class="slide-content">
-                    <div class="step-number" style="background: linear-gradient(135deg, #059669, #10b981);">
-                        <svg width="18" height="18" fill="white" viewBox="0 0 24 24" style="vertical-align: middle;"><path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z"/></svg>
-                    </div>
-                    <h2>Key Benefits</h2>
-                    <p>Suppliers get answers without calling. Finance team freed from routine enquiries. Full visibility of all supplier communications.</p>
-
-                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 24px; margin-bottom: 24px;">
-                        <div class="kpi-card" style="border-color: #4ade80;">
-                            <div class="kpi-value" style="color: #4ade80;">80%</div>
-                            <div class="kpi-label">Fewer Inbound Supplier Calls</div>
+                    <div class="feature-grid-4" style="margin-top:20px;">
+                        <div class="kpi-card">
+                            <div class="kpi-value" style="color:#4ade80;">87%</div>
+                            <div class="kpi-label">Time Reduction</div>
                         </div>
-                        <div class="kpi-card" style="border-color: #60a5fa;">
-                            <div class="kpi-value" style="color: #60a5fa;">90%</div>
-                            <div class="kpi-label">Faster Supplier Responses</div>
+                        <div class="kpi-card">
+                            <div class="kpi-value">162</div>
+                            <div class="kpi-label">Hours Saved / Year</div>
                         </div>
-                        <div class="kpi-card" style="border-color: #a78bfa;">
-                            <div class="kpi-value" style="color: #a78bfa;">100%</div>
-                            <div class="kpi-label">Communication Audit Trail</div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" style="color:#4ade80;">100%</div>
+                            <div class="kpi-label">Audit Trail</div>
                         </div>
-                        <div class="kpi-card" style="border-color: #fbbf24;">
-                            <div class="kpi-value" style="color: #fbbf24;">24/7</div>
+                        <div class="kpi-card">
+                            <div class="kpi-value">24/7</div>
                             <div class="kpi-label">Inbox Monitoring</div>
                         </div>
                     </div>
 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                        <div>
-                            <div class="success-box">
-                                <h4>Operational Benefits</h4>
-                                <ul style="color: #c4b5fd; padding-left: 20px; font-size: 0.9rem; line-height: 2; margin: 0;">
-                                    <li>Suppliers get answers without calling</li>
-                                    <li>Finance team freed from routine enquiries</li>
-                                    <li>Proactive payment information reduces inbound queries</li>
-                                    <li>Consistent, professional communications every time</li>
-                                    <li>Automatic query tracking and follow-up</li>
-                                </ul>
-                            </div>
-                        </div>
-                        <div>
-                            <div class="info-box">
-                                <h4>Strategic Benefits</h4>
-                                <ul style="color: #c4b5fd; padding-left: 20px; font-size: 0.9rem; line-height: 2; margin: 0;">
-                                    <li>Full visibility of all supplier communications</li>
-                                    <li>Protected cash position - smart business rules</li>
-                                    <li>Fraud prevention with bank detail monitoring</li>
-                                    <li>Complete audit trail for compliance</li>
-                                    <li>Better supplier relationships through proactive management</li>
-                                </ul>
-                            </div>
-                        </div>
+                    <div class="highlight-box" style="margin-top:16px;text-align:center;">
+                        <p style="margin:0;color:#f1f5f9;font-size:1rem;"><strong>13.5 hours freed up every month.</strong> That's time your team can spend on analysis, cash management, and work that actually needs a human.</p>
                     </div>
                 </div>
             </div>
 
-            <!-- ============================================================ -->
-            <!-- Slide 14: SUMMARY -->
-            <!-- ============================================================ -->
-            <div class="slide" data-slide="14">
-                <div class="slide-content" style="text-align: center; padding: 60px 40px;">
+            <!-- SLIDE 22: Summary -->
+            <div class="slide" data-slide="22">
+                <div class="slide-content" style="text-align:center;padding:50px 40px;">
+                    <h2 style="font-size:2.2rem;margin-bottom:8px;">Suppliers Informed. Finance Team Freed.</h2>
+                    <h2 style="font-size:2.2rem;margin-bottom:24px;color:#a78bfa;">Everything Audited.</h2>
 
-                    <div style="display: inline-block; background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.25); padding: 8px 20px; border-radius: 50px; font-size: 0.85rem; color: #a78bfa; font-weight: 500; margin-bottom: 24px;">
-                        Automated Supplier Account Management
-                    </div>
-
-                    <h2 style="font-size: 2.4rem; margin-bottom: 16px; letter-spacing: -0.02em;">
-                        Suppliers Informed. Finance Team Freed. Everything Audited.
-                    </h2>
-                    <p style="font-size: 1.15rem; color: rgba(255,255,255,0.55); max-width: 650px; margin: 0 auto 12px;">
-                        The complete supplier account management solution.
-                    </p>
-                    <p style="color: #c4b5fd; max-width: 650px; margin: 0 auto 36px; font-size: 0.95rem;">
-                        Automated email monitoring. AI-powered statement processing. Automated responses to routine enquiries. Payment forecasts and remittance automation. Full audit trail of every communication.
-                    </p>
-
-                    <div class="feature-grid-4" style="max-width: 900px; margin: 0 auto 36px;">
+                    <div class="feature-grid-4" style="max-width:900px;margin:0 auto 30px;">
                         <div class="feature-card">
-                            <h4 style="font-size: 1.6rem; margin-bottom: 4px; color: #4ade80;">Monitor</h4>
-                            <p>Auto-detect all supplier communications</p>
+                            <h4>&#128231; Monitor</h4>
+                            <p>Auto-detect supplier statements from your inbox</p>
                         </div>
                         <div class="feature-card">
-                            <h4 style="font-size: 1.6rem; margin-bottom: 4px; color: #60a5fa;">Manage</h4>
-                            <p>Enquiries, statements, and reconciliation</p>
+                            <h4>&#129302; Process</h4>
+                            <p>AI extraction, reconciliation, and business rule analysis</p>
                         </div>
                         <div class="feature-card">
-                            <h4 style="font-size: 1.6rem; margin-bottom: 4px; color: #fbbf24;">Inform</h4>
-                            <p>Payment forecasts, remittances, status updates</p>
+                            <h4>&#128172; Respond</h4>
+                            <p>Professional emails with queries, payments, and forecasts</p>
                         </div>
                         <div class="feature-card">
-                            <h4 style="font-size: 1.6rem; margin-bottom: 4px; color: #a78bfa;">Protect</h4>
-                            <p>Security alerts, audit trail, fraud prevention</p>
+                            <h4>&#128274; Protect</h4>
+                            <p>Security alerts, fraud detection, and complete audit trail</p>
                         </div>
                     </div>
 
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; max-width: 600px; margin: 0 auto 36px;">
+                    <div class="feature-grid" style="max-width:800px;margin:0 auto 30px;">
                         <div class="feature-card">
-                            <h4 style="font-size: 2rem; margin-bottom: 4px;">80%</h4>
-                            <p>Less Manual Work</p>
+                            <h4>&#128176; Remittance</h4>
+                            <p>Auto-generated after every payment run</p>
                         </div>
                         <div class="feature-card">
-                            <h4 style="font-size: 2rem; margin-bottom: 4px;">100%</h4>
-                            <p>Audit Trail</p>
+                            <h4>&#128269; Query Tracking</h4>
+                            <p>Automatic follow-up reminders with escalation</p>
                         </div>
                         <div class="feature-card">
-                            <h4 style="font-size: 2rem; margin-bottom: 4px;">24/7</h4>
-                            <p>Monitoring</p>
+                            <h4>&#9998; Custom Templates</h4>
+                            <p>Full control over every email your system sends</p>
                         </div>
                     </div>
 
-                    <div style="margin-top: 16px;">
-                        <p style="color: #a78bfa; font-size: 0.9rem;">Works seamlessly with <strong style="color: #f59e0b;">Pegasus Opera SQL SE</strong> and <strong style="color: #f59e0b;">Opera 3</strong></p>
+                    <div class="highlight-box" style="max-width:700px;margin:0 auto;">
+                        <div class="feature-grid" style="grid-template-columns:repeat(4,1fr);gap:12px;margin-top:0;">
+                            <div style="text-align:center;">
+                                <div style="font-size:1.8rem;font-weight:700;color:#4ade80;">87%</div>
+                                <div style="font-size:0.8rem;color:#c4b5fd;">Less Manual Work</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:1.8rem;font-weight:700;color:#f1f5f9;">162 hrs</div>
+                                <div style="font-size:0.8rem;color:#c4b5fd;">Saved Per Year</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:1.8rem;font-weight:700;color:#60a5fa;">100%</div>
+                                <div style="font-size:0.8rem;color:#c4b5fd;">Audit Trail</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:1.8rem;font-weight:700;color:#a78bfa;">24/7</div>
+                                <div style="font-size:0.8rem;color:#c4b5fd;">Monitoring</div>
+                            </div>
+                        </div>
                     </div>
+
+                    <p style="margin-top:24px;color:#a78bfa;font-size:0.95rem;">Seamless integration with Pegasus Opera SQL SE and Opera 3</p>
                 </div>
             </div>
 
-        </div>
+        </div><!-- slides-container -->
 
         <div class="controls">
-            <button class="btn btn-secondary" id="prevBtn">&#8592; Previous</button>
+            <button class="btn btn-secondary" id="prevBtn">Previous</button>
             <button class="btn btn-primary" id="pauseBtn">Pause</button>
-            <button class="btn btn-secondary" id="nextBtn">Next &#8594;</button>
+            <button class="btn btn-secondary" id="nextBtn">Next</button>
         </div>
-
         <div class="auto-play-indicator" id="autoPlayIndicator">
             Auto-advancing in <span id="countdown">20</span>s &nbsp;|&nbsp; Press Space to pause &nbsp;|&nbsp; Arrow keys to navigate
         </div>
@@ -1644,7 +1855,7 @@
 
     <script>
         let currentSlide = 1;
-        const totalSlides = 14;
+        const totalSlides = 22;
         let autoPlayTimer;
         let countdownInterval;
         let remainingTime;
@@ -1664,20 +1875,28 @@
         const slideCounter = document.getElementById('slideCounter');
 
         const narration = {
-            1: "Welcome to Automated Supplier Account Management. This demo shows how we transform the way you manage supplier relationships for Pegasus Opera. Automated email monitoring, AI-powered statement processing, smart reconciliation, automated responses to routine enquiries, payment forecasts, and remittance automation. Suppliers informed, finance team freed, everything audited.",
-            2: "Managing supplier relationships consumes the accounts department. Suppliers calling asking where is my payment. Finance team spending hours on the phone answering routine queries. Manual statement reconciliation when statements arrive. No automated response to supplier communications. No visibility of what has been communicated. The cost is a finance team tied up on routine work, accidental overpayments, fraud risk, and inconsistent responses.",
-            3: "The solution is automated management of all supplier interactions. The system monitors your email inbox for all supplier communications, processes statements automatically when they arrive, reconciles with smart business rules, and responds to routine enquiries without human intervention. Payment forecasts and remittance automation mean suppliers get the information they need proactively. Human approval is required only where it matters.",
-            4: "Here is the complete 10-step automated enquiry workflow. Receive the communication. Validate the sender. Acknowledge receipt automatically. Extract data using AI. Reconcile against Opera. Analyse differences with business rules. Generate the response. Queue for approval. An authorised user reviews and approves. Then the response is sent. Only step 9 requires human intervention. The system does the work.",
-            5: "Using AI vision capabilities, the system reads any supplier statement PDF regardless of format. Opening balance, invoices, credits, payments and closing balance are all captured accurately. Balance chain validation ensures the numbers add up. The extracted supplier details are cross-referenced against Opera records.",
-            6: "This is where the smart business rules protect your cash position. The system only queries items not in your favour. If a supplier has forgotten a credit, we stay quiet. If they are charging more than expected, we query it. Payments made are always notified. Large discrepancies are flagged for internal review. This is a finance system and figures must be accurate.",
-            7: "All communications are automated. Instant acknowledgment on receipt. Detailed reconciliation responses with matched items, specific queries, and payment forecasts. Automatic follow-up reminders for unanswered queries. Timing is fully configurable globally and per supplier.",
-            8: "Security is paramount. The system monitors for bank detail changes and alerts the Finance Director immediately. Unknown senders are held for verification. Automated emails never request or send bank details. Any bank detail change requires phone verification. Every communication is logged with a complete audit trail.",
-            9: "The aged creditors analysis matches Opera exactly, reading from the purchase transaction table for outstanding balances. Drill down from summary to individual invoices. Spot suppliers with increasing aged debt. Foreign currency is fully supported.",
-            10: "Automated remittance advice is generated after payment runs. Suppliers receive detailed breakdowns showing exactly which invoices and credit notes were included. This is sent to the designated payment contact from Opera contacts, reducing follow-up phone calls.",
-            11: "Contact management integrates directly with Opera zcontacts. Security clearances, communication roles, and verified sender status ensure the right people receive the right information. Contact attributes control who can discuss bank details, who receives statements, and who handles queries.",
-            12: "Coming soon, a self-service supplier portal. Suppliers can manage their own contacts, submit bank detail changes through a verified workflow, upload certifications, respond to queries, and view payment status. No completed registration means no payment setup. Suppliers are motivated to keep information accurate.",
-            13: "The key benefits are clear. Suppliers get answers without calling. Finance team freed from routine enquiries. Full visibility of all supplier communications. Proactive payment information reduces inbound queries. 90% faster supplier responses. 100% communication audit trail. 24/7 inbox monitoring. Better supplier relationships through proactive account management.",
-            14: "Automated Supplier Account Management. Suppliers informed. Finance team freed. Everything audited. Automated email monitoring. AI-powered statement processing. Automated responses to routine enquiries. Payment forecasts and remittance automation. Full audit trail of every communication. For Pegasus Opera SQL SE and Opera 3."
+            1: "Welcome to Automated Supplier Account Management. This comprehensive demo walks through every feature of the system, from automatic email detection through to professional response generation, query tracking, remittance advice, and security monitoring. The system handles the entire supplier account management workflow for Pegasus Opera SQL SE and Opera 3. Suppliers informed, finance team freed, everything audited.",
+            2: "Every finance team knows this problem. Supplier statements arrive by email and pile up. Someone has to download the PDF, print it out, and reconcile line by line against the purchase ledger. Then draft emails to query differences, chase suppliers who don't respond, and somehow keep track of what was communicated and when. The average accounts team spends 12 to 16 hours per month on this alone. That's two full working days every month on repetitive manual work. And through all of this, bank fraud attempts go undetected and accidental overpayments slip through.",
+            3: "The solution automates every step. Inbound automation monitors your inbox, detects statements, validates senders, and acknowledges receipt. Intelligent processing extracts every line item using AI, reconciles against Opera, and classifies differences using business rules that protect your cash position. Query management tracks open items with deadlines and sends automatic follow-up reminders. Outbound automation generates professional response emails, remittance advice, and payment notifications. Security and compliance monitors for bank detail fraud, maintains approved sender lists, and logs every communication for audit.",
+            4: "Here is the complete 10-step automated workflow. Receive the email. Validate the sender against the approved list. Acknowledge receipt automatically. Extract every line item using AI vision. Reconcile against your Opera purchase ledger. Analyse differences with smart business rules. Generate the response email from your templates. Queue it for approval. An authorised user reviews and approves. Then the response is sent and logged. Only step 9 requires human intervention. The system does all the heavy lifting.",
+            5: "The system monitors your email inbox continuously. When an email arrives with a PDF attachment, AI identifies whether it's a supplier statement. Verified senders are processed automatically. Unknown senders are held for review and approval before their statements are processed. Duplicate emails are tracked so the same statement is never processed twice. Your team starts each day with statements already reconciled and responses ready for approval. No more downloading, printing, or forwarding.",
+            6: "Using AI vision, the system reads any supplier statement PDF regardless of format or layout. No setup required per supplier. Opening balance, every transaction line, closing balance, supplier details, all captured accurately. Balance chain validation ensures the numbers add up. If the opening balance plus debits minus credits doesn't equal the closing balance, it's flagged immediately. The extracted supplier name and reference are cross-checked against your Opera records.",
+            7: "Every extracted line is matched against your Opera purchase ledger by reference. The result is a clear three-way classification. Agreed items have the same reference and same amount on both sides. Amount differences have the same reference but different amounts. Unmatched items appear on one side only, either on their statement but not in your system, or on your records but not on their statement. The variance between their closing balance and your outstanding balance is explained by the sum of these differences.",
+            8: "This is where the smart business rules protect your cash position. The system applies three tiers of logic. Query items not in your favour, such as invoices you haven't received, amounts higher than expected, or credits they claim you should have. Stay quiet on items in your favour, such as invoices they've forgotten, amounts lower than expected, or overpayments. Always notify about payments made and upcoming payment schedules. The result is that the system never reminds a supplier about money they owe you or credits they've forgotten to claim.",
+            9: "As soon as a statement is received and validated, the system sends a professional acknowledgment to the supplier. This simple step significantly reduces follow-up calls. The supplier knows their statement has been received and is being processed. Timing is configurable, either immediately or after a delay, and can be set globally or per supplier. The template is fully customisable to match your company's tone.",
+            10: "After reconciliation, the system generates a professional response email. Two templates handle the two outcomes. The agreed template confirms the balance matches and includes the next payment date. The query template shows the balance comparison, an auto-generated table of specific queries with amounts and types, a list of recent payments made, and a response deadline. Both templates are designed to be clear, professional, and complete, so the supplier has everything they need in a single email.",
+            11: "Every email the system sends uses templates you control. The template editor lets you customise the wording, tone, and structure of each email type. Merge fields pull in live data automatically. Supplier name, contact name, statement date, balances, differences, query tables, payment lists, and payment schedules are all available as merge fields. Query tables and payment lists are generated automatically from the reconciliation results. Subject lines, body text, and company sign-off are fully editable. You set the template once and the system uses it consistently for every response.",
+            12: "Every response is held for human approval before being sent. The dashboard shows your key metrics at a glance: statements received this month, pending approvals, open queries, and match rate. The approval queue shows each statement with its supplier, balance, number of agreed items, number of queries, and a review or approve button. Fully agreed statements can be approved with one click. Responses with queries can be reviewed and edited before sending. For fully reconciled statements, auto-approval can optionally be enabled to skip the queue entirely.",
+            13: "Every unmatched item becomes a tracked query with a deadline and status. If the supplier doesn't respond within the configured deadline, the system sends follow-up reminders automatically. The tone escalates from friendly to firm to urgent. The number of reminders, the interval between them, and the escalation thresholds are all configurable. Queries are resolved when the supplier responds, or auto-resolved when the next statement shows the item has been addressed. No more manual follow-up spreadsheets or forgotten chases.",
+            14: "Supplier bank fraud is one of the fastest-growing threats to UK businesses. The system monitors for bank detail changes and alerts your team immediately. Any change to sort code or account number triggers a security alert requiring phone verification using the supplier's known contact number. Unknown email senders are held for review before their statements are processed. Automated emails never request or include bank details. Every change to sensitive supplier fields is logged with old value, new value, who changed it, and when.",
+            15: "The aged creditors analysis reads directly from your Opera purchase ledger, so the figures always match Opera exactly. Five aging buckets from current to 120 plus days. Drill down from the summary to individual invoices per supplier. Trend indicators highlight suppliers where aged debt is growing so you can take action before it becomes a problem. Foreign currency is fully supported.",
+            16: "After every payment run, the system automatically generates detailed remittance advice for each supplier. The remittance shows the payment date, method, reference, total amount, and a line-by-line breakdown of every invoice and credit note included. Sent to the designated payment contact for each supplier. This is the single biggest reducer of inbound calls. Suppliers know exactly what was paid and when. No need to call and ask.",
+            17: "Every statement is stored with its complete history. The original PDF, extracted data, reconciliation results, the exact email that was sent, who approved it, and when. The timeline shows every step from received through acknowledged, reconciled, approved, and sent, with timestamps. Essential for compliance, dispute resolution, and audit. Nothing is lost.",
+            18: "Global settings apply to all suppliers by default, but every setting can be overridden per supplier. Trusted suppliers with consistent track records can have auto-approved responses. High-value suppliers might require manual review every time. Suppliers you don't want to communicate with can be excluded entirely. The supplier directory shows each supplier's automation status, active flag, and designated contacts. Supplier data syncs from Opera but automation flags are stored locally and never written back to your Opera system.",
+            19: "One-time setup controls the entire automation. Timing settings for acknowledgment delay, query deadlines, reminder intervals, and maximum escalations. Threshold settings for large discrepancy alerts and auto-approval limits. Communication toggles for each email type. Security settings for alert recipients and audit CC addresses. And critically, test mode. Enable test mode to redirect all outgoing emails to a test address. Process real statements, generate real responses, but nothing reaches your suppliers until you're confident everything is configured correctly.",
+            20: "The right information reaches the right person. The system reads from Opera's contact records and extends them with automation-specific roles. Statement contacts receive reconciliation responses. Payment contacts receive remittance advice. Query contacts handle follow-up correspondence. Each contact has a verification status. Unverified contacts are flagged before security-sensitive communications are sent. All contact data is stored locally and never modifies your Opera system.",
+            21: "Here are the real, measurable savings. The manual process takes approximately 15 and a half hours per month across receiving, reconciling, drafting emails, chasing queries, generating remittances, and answering calls. With automation, that drops to approximately 2 hours per month, mostly reviewing and approving. That's an 87 percent time reduction. 162 hours saved per year. 100 percent audit trail on every communication. 24/7 inbox monitoring. 13 and a half hours freed up every month for your team to spend on analysis, cash management, and work that actually needs a human.",
+            22: "Automated Supplier Account Management. Suppliers informed. Finance team freed. Everything audited. Automatic email monitoring and statement detection. AI extraction and smart reconciliation. Professional responses with customisable templates. Security alerts and fraud prevention. Automated remittance advice. Query tracking with escalation. Per-supplier configuration. Complete audit trail. 87 percent less manual work. 162 hours saved per year. Seamless integration with Pegasus Opera SQL SE and Opera 3."
         };
 
         function showSlide(n) {

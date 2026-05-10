@@ -69,6 +69,19 @@ import {
   updateRepeatEntryDate,
   listRepeatEntries,
 } from './services/repeat-entries.js';
+import {
+  postCashbookEntry,
+  type CashbookKind,
+  type CashbookPostInput,
+} from './services/cashbook-poster.js';
+import { getReconcileBankView } from './services/reconcile-view.js';
+import {
+  importFromStatementPreview,
+  type StatementTxnInput,
+} from './services/import-from-statement.js';
+import { scanEmailsForBankStatements } from './services/scan-emails.js';
+import { withImportLock, ImportLockError } from './services/import-lock.js';
+import { importBankTransfer } from '@sqlrag/sam-shared';
 
 export function createRouter(ctx: AppContext): Router {
   const router = Router();
@@ -1296,16 +1309,233 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
+  // -------------------------------------------------------------------
+  // Cashbook posting endpoints — sales receipt / refund and purchase
+  // payment / refund. Each is a thin wrapper over postCashbookEntry,
+  // wrapped with the bank-level import lock so the same Opera bank
+  // can't have two concurrent imports clobbering nbank.nk_recbal.
+  // -------------------------------------------------------------------
+  const buildCashbookHandler = (kind: CashbookKind) =>
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const bankCode = String(
+          body.bank_account ?? body.bankAccount ?? '',
+        );
+        const partner = String(
+          body.customer_account ??
+            body.supplier_account ??
+            body.partnerAccount ??
+            '',
+        );
+        const input: CashbookPostInput = {
+          kind,
+          bankAccount: bankCode,
+          partnerAccount: partner,
+          amountPounds: Number(body.amount_pounds ?? body.amount ?? 0),
+          reference: String(body.reference ?? ''),
+          postDate: String(body.post_date ?? body.postDate ?? ''),
+          ...(body.input_by !== undefined ? { inputBy: String(body.input_by) } : {}),
+          ...(body.control_account !== undefined
+            ? { controlAccount: String(body.control_account) }
+            : {}),
+          ...(body.payment_method !== undefined
+            ? { paymentMethod: String(body.payment_method) }
+            : {}),
+          ...(body.cbtype !== undefined ? { cbtype: String(body.cbtype) } : {}),
+          ...(body.validate_only !== undefined
+            ? { validateOnly: !!body.validate_only }
+            : {}),
+          ...(body.comment !== undefined ? { comment: String(body.comment) } : {}),
+        };
+        const result = await withImportLock(
+          appDb,
+          input.bankAccount,
+          { locked_by: 'api', endpoint: kind.replace('_', '-') },
+          () => postCashbookEntry(operaDb, input),
+        );
+        res.json(result);
+      } catch (err: any) {
+        if (err instanceof ImportLockError) {
+          res.status(409).json({ success: false, error: err.message });
+          return;
+        }
+        ctx.logger.error(`${kind} import failed`, err);
+        res
+          .status(500)
+          .json({ success: false, error: err?.message ?? String(err) });
+      }
+    };
+
+  /**
+   * GET /api/bank-import/scan-emails
+   *
+   * Lists candidate bank-statement emails captured by the SAM
+   * email-ingest handler. Read-only against the scanned_statements
+   * table populated by the handler.
+   */
+  router.get(
+    '/api/bank-import/scan-emails',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const q = (req.query ?? {}) as Record<string, string | undefined>;
+        const result = await scanEmailsForBankStatements(appDb, operaDb, {
+          bankCode: q.bank_code ?? '',
+          ...(q.days_back !== undefined ? { daysBack: Number(q.days_back) } : {}),
+          ...(q.include_processed !== undefined
+            ? { includeProcessed: q.include_processed === 'true' }
+            : {}),
+          ...(q.validate_balances !== undefined
+            ? { validateBalances: q.validate_balances === 'true' }
+            : {}),
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('scan-emails failed', err);
+        res
+          .status(500)
+          .json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/import-from-statement
+   *
+   * Match-preview only. Takes already-extracted bank-statement txns
+   * and returns matched/unmatched groups. The actual posting flows
+   * through `/api/bank-import/sales-receipt` etc. once the operator
+   * confirms.
+   */
+  router.post(
+    '/api/reconcile/bank/:bank_code/import-from-statement',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const txns = Array.isArray(body.transactions)
+          ? (body.transactions as StatementTxnInput[])
+          : [];
+        const result = await importFromStatementPreview(
+          appDb,
+          operaDb,
+          String(req.params.bank_code ?? ''),
+          txns,
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('import-from-statement preview failed', err);
+        res
+          .status(500)
+          .json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * GET /api/reconcile/bank/:bank_code
+   *
+   * Reconcile view — compares cashbook (atran), bank master (nbank),
+   * and nominal ledger (ntran) for one Opera bank account. Faithful
+   * port of the 380-LOC Python endpoint at
+   * apps/bank_reconcile/api/routes.py:320-705.
+   */
+  router.get(
+    '/api/reconcile/bank/:bank_code',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      try {
+        const result = await getReconcileBankView(
+          operaDb,
+          String(req.params.bank_code ?? ''),
+        );
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('Reconcile view failed', err);
+        res
+          .status(500)
+          .json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  router.post('/api/bank-import/sales-receipt', buildCashbookHandler('sales_receipt'));
+  router.post('/api/bank-import/sales-refund', buildCashbookHandler('sales_refund'));
+  router.post('/api/bank-import/purchase-payment', buildCashbookHandler('purchase_payment'));
+  router.post('/api/bank-import/purchase-refund', buildCashbookHandler('purchase_refund'));
+
+  /**
+   * POST /api/bank-import/bank-transfer
+   *
+   * Faithful port of the bank-transfer endpoint. Locks BOTH banks
+   * (alphabetical order in `importBankTransfer` itself) and runs the
+   * paired-entry posting in a single transaction.
+   */
+  router.post('/api/bank-import/bank-transfer', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const sourceBank = String(body.source_bank ?? body.sourceBank ?? '');
+      const destBank = String(body.dest_bank ?? body.destBank ?? '');
+      // Alphabetical order ensures the lock acquires deterministically
+      const banksOrdered = [sourceBank, destBank]
+        .filter((b) => b)
+        .sort();
+      const firstBank = banksOrdered[0] ?? sourceBank;
+      const result = await withImportLock(
+        appDb,
+        firstBank,
+        { locked_by: 'api', endpoint: 'bank-transfer' },
+        () =>
+          importBankTransfer(operaDb, {
+            sourceBank,
+            destBank,
+            amountPounds: Number(body.amount_pounds ?? body.amount ?? 0),
+            reference: String(body.reference ?? ''),
+            postDate: String(body.post_date ?? body.postDate ?? ''),
+            ...(body.comment !== undefined ? { comment: String(body.comment) } : {}),
+            ...(body.input_by !== undefined
+              ? { inputBy: String(body.input_by) }
+              : {}),
+            ...(body.cbtype !== undefined ? { cbtype: String(body.cbtype) } : {}),
+          }),
+      );
+      res.json(result);
+    } catch (err: any) {
+      if (err instanceof ImportLockError) {
+        res.status(409).json({ success: false, error: err.message });
+        return;
+      }
+      ctx.logger.error('Bank transfer failed', err);
+      res
+        .status(500)
+        .json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
   // Many more endpoints to port from apps/bank_reconcile/api/routes.py
   // (127 routes total). Future-session priorities:
   //   - GET  /api/reconcile/bank/{bank_code} — full reconcile (~600 LOC)
   //   - GET  /api/reconcile/bank/{bank_code}/status
-  //   - GET  /api/reconcile/bank/{bank_code}/unreconciled
-  //   - POST /api/reconcile/bank/{bank_code}/mark-reconciled
   //   - POST /api/bank-import/scan-emails (via SAM email service)
-  //   - POST /api/bank-import/preview-from-pdf (Gemini extraction)
-  //   - POST /api/bank-import/import (the big posting flow)
-  //   - ~120 more
+  //   - POST /api/bank-import/preview-from-pdf (AI extraction)
+  //   - POST /api/bank-import/import (the orchestration over the above)
+  //   - ~115 more
 
   return router;
 }

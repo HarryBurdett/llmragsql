@@ -36,6 +36,78 @@ const cache = new WeakMap<Knex, OperaControlAccounts>();
  * @returns The debtors and creditors control account codes
  * @throws Error if neither sprfls/pprfls nor nparm have valid values
  */
+export async function getCustomerControlAccount(
+  operaDb: import('knex').Knex,
+  customerAccount: string,
+): Promise<string> {
+  const acct = (customerAccount ?? '').trim();
+  if (!acct) {
+    const defaults = await getControlAccounts(operaDb);
+    return defaults.debtorsControl;
+  }
+  try {
+    const rows = (await operaDb.raw(
+      `SELECT
+         RTRIM(ISNULL(s.sn_cprfl, '')) AS profile_code,
+         RTRIM(ISNULL(sp.sc_dbtctrl, '')) AS control_account
+       FROM sname s WITH (NOLOCK)
+       LEFT JOIN sprfls sp WITH (NOLOCK) ON RTRIM(s.sn_cprfl) = RTRIM(sp.sc_code)
+       WHERE RTRIM(s.sn_account) = ?`,
+      [acct],
+    )) as unknown as Array<{
+      profile_code: string | null;
+      control_account: string | null;
+    }>;
+    if (Array.isArray(rows) && rows.length > 0) {
+      const ctrl = (rows[0]?.control_account ?? '').trim();
+      if (ctrl) return ctrl;
+    }
+  } catch {
+    // best-effort — fall through to company default
+  }
+  const defaults = await getControlAccounts(operaDb);
+  return defaults.debtorsControl;
+}
+
+/**
+ * Faithful port of `get_supplier_control_account` in
+ * `sql_rag/opera_config.py`. Resolves a supplier's creditors control
+ * account via pname.pn_sprfl → pprfls.pc_crdctrl, falling back to the
+ * company default.
+ */
+export async function getSupplierControlAccount(
+  operaDb: import('knex').Knex,
+  supplierAccount: string,
+): Promise<string> {
+  const acct = (supplierAccount ?? '').trim();
+  if (!acct) {
+    const defaults = await getControlAccounts(operaDb);
+    return defaults.creditorsControl;
+  }
+  try {
+    const rows = (await operaDb.raw(
+      `SELECT
+         RTRIM(ISNULL(p.pn_sprfl, '')) AS profile_code,
+         RTRIM(ISNULL(pp.pc_crdctrl, '')) AS control_account
+       FROM pname p WITH (NOLOCK)
+       LEFT JOIN pprfls pp WITH (NOLOCK) ON RTRIM(p.pn_sprfl) = RTRIM(pp.pc_code)
+       WHERE RTRIM(p.pn_account) = ?`,
+      [acct],
+    )) as unknown as Array<{
+      profile_code: string | null;
+      control_account: string | null;
+    }>;
+    if (Array.isArray(rows) && rows.length > 0) {
+      const ctrl = (rows[0]?.control_account ?? '').trim();
+      if (ctrl) return ctrl;
+    }
+  } catch {
+    // best-effort
+  }
+  const defaults = await getControlAccounts(operaDb);
+  return defaults.creditorsControl;
+}
+
 export async function getControlAccounts(
   db: Knex,
   useCache = true,

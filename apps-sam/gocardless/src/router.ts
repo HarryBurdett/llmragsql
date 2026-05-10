@@ -74,6 +74,12 @@ import {
 } from './services/mandate-setups.js';
 import { getEligibleCustomers } from './services/eligible-customers.js';
 import {
+  importGocardlessRoute,
+  type ImportRouteInput,
+  type ImportPayloadPayment,
+} from './services/import-route.js';
+import { scanEmailsForGocardless } from './services/scan-emails.js';
+import {
   validatePostingPeriod,
   getCurrentPeriodInfo,
 } from '@sqlrag/sam-shared';
@@ -1546,10 +1552,114 @@ export function createRouter(ctx: AppContext): Router {
     }
   });
 
+  /**
+   * GET /api/gocardless/scan-emails
+   *
+   * Lists candidate GoCardless payout emails captured by the SAM
+   * email-ingest handler. Read-only against the `scanned_payouts`
+   * table populated by the handler.
+   */
+  router.get(
+    '/api/gocardless/scan-emails',
+    async (req: Request, res: Response) => {
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        const q = (req.query ?? {}) as Record<string, string | undefined>;
+        const result = await scanEmailsForGocardless(appDb, {
+          ...(q.days_back !== undefined ? { daysBack: Number(q.days_back) } : {}),
+          ...(q.include_processed !== undefined
+            ? { includeProcessed: q.include_processed === 'true' }
+            : {}),
+        });
+        res.json(result);
+      } catch (err: any) {
+        ctx.logger.error('GoCardless scan-emails failed', err);
+        res
+          .status(500)
+          .json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/import
+   *
+   * Import a GoCardless batch into Opera as a batch receipt. Faithful
+   * port of apps/gocardless/api/routes.py:621-949.
+   *
+   * Query parameters:
+   *   bank_code, post_date, reference, complete_batch, cbtype,
+   *   gocardless_fees, vat_on_fees, fees_nominal_account, fees_vat_code,
+   *   fees_payment_type, currency, payout_id, source,
+   *   dest_bank_account, dest_bank_sort_code
+   *
+   * Body: array of payment objects:
+   *   { customer_account, customer_name?, opera_customer_name?, amount,
+   *     description?, auto_allocate?, gc_payment_id?, mandate_id? }
+   */
+  router.post('/api/gocardless/import', async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const q = (req.query ?? {}) as Record<string, string | undefined>;
+      const body = req.body;
+      const payments: ImportPayloadPayment[] = Array.isArray(body)
+        ? (body as ImportPayloadPayment[])
+        : Array.isArray((body as any)?.payments)
+          ? ((body as any).payments as ImportPayloadPayment[])
+          : [];
+
+      const inputBase: Partial<ImportRouteInput> = {
+        bankCode: q.bank_code ?? '',
+        postDate: q.post_date ?? '',
+        completeBatch: q.complete_batch === 'true' || q.complete_batch === '1',
+        payments,
+      };
+      const optional = (k: keyof ImportRouteInput, v: unknown) =>
+        v === undefined || v === null || v === ''
+          ? null
+          : ({ [k]: v } as Partial<ImportRouteInput>);
+
+      const input = {
+        ...inputBase,
+        ...optional('reference', q.reference),
+        ...optional('cbtype', q.cbtype),
+        ...optional('feesNominalAccount', q.fees_nominal_account),
+        ...optional('feesVatCode', q.fees_vat_code),
+        ...optional('feesPaymentType', q.fees_payment_type),
+        ...optional('currency', q.currency),
+        ...optional('payoutId', q.payout_id),
+        ...optional('source', q.source),
+        ...optional('destBankAccount', q.dest_bank_account),
+        ...optional('destBankSortCode', q.dest_bank_sort_code),
+        ...(q.gocardless_fees !== undefined &&
+        q.gocardless_fees !== null &&
+        q.gocardless_fees !== ''
+          ? { goCardlessFees: Number(q.gocardless_fees) }
+          : {}),
+        ...(q.vat_on_fees !== undefined &&
+        q.vat_on_fees !== null &&
+        q.vat_on_fees !== ''
+          ? { vatOnFees: Number(q.vat_on_fees) }
+          : {}),
+      } as ImportRouteInput;
+
+      const result = await importGocardlessRoute(appDb, operaDb, input);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('GoCardless import failed', err);
+      res
+        .status(500)
+        .json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
   // Many more endpoints to port from apps/gocardless/api/routes.py:
   //   /api/gocardless/scan-emails        — IMAP/Graph scan via SAM email service
   //   /api/gocardless/preview-batch      — match payments to Opera customers
-  //   /api/gocardless/import             — post sales receipts to Opera
   //   /api/gocardless/remittance/*       — generate / send remittance emails
   //   /api/gocardless/partner/*          — partner portal flows
   //   /api/gocardless/update-subscription-tags
