@@ -308,3 +308,92 @@ The minimum sequence when production is degraded and you need to ship fast:
 If the fix turns out to be wrong, roll back via Section 1.5 Option A, then go back to Step 1 with the new evidence.
 
 ---
+
+## Section 2 — Debugging
+
+When something breaks in SAM, find the symptom in the table below, follow the diagnostic, apply the fix.
+
+### 2.1 — Symptom lookup table
+
+| Symptom | Most likely cause | Where to look | First fix to try |
+|---|---|---|---|
+| Plugin doesn't appear in SAM Admin after sync | Manifest validation failed | `docker logs ai-sam \| grep PluginLoader` on SAM Mac | Compare `manifest.json` to a working plugin's manifest |
+| Plugin appears in Admin but endpoints return 500 | Knex query error (typo in column or table name) | `docker logs ai-sam \| grep <plugin>` | Cross-check column names against `scripts/opera_snapshot.json` |
+| Plugin appears but data is empty | `ctx.db.opera` not wired or wrong company | `req.operaCompany` middleware logs | SAM Admin → Opera Connections — confirm company is selected |
+| `[PluginLoader] migration failed` | A migration is broken or per-app DB unreachable | `docker logs ai-sam \| grep migration` | Re-run the migration locally against a clean SQLite to find the error |
+| `[GitInstall] git: authentication required` | SAM host's GitHub PAT lost access | SAM host → Settings → Integrations → GitHub | Re-issue PAT with `repo` scope on `intsysuk` |
+| Plugin logs `503 — ctx.llm not wired` | SAM hasn't injected the LLM service | SAM host config | SAM Admin → AI Settings — confirm Claude Vision or Gemini key is set |
+| Plugin logs `503 — bankPdfExtractor missing` | Same as above for the PDF extractor | SAM host config | Same — `ctx.llm` enables this; if absent, the PDF flow can't run |
+| Bank statement mailbox not picking up new emails | `owner_app_id` not set, or adapter is checking too slowly | SAM Admin → Email Mailboxes | Confirm `owner_app_id: bank-reconcile` on the right mailbox; wait 60 seconds |
+| GoCardless API returns 401 | Token typo, environment mismatch, or revoked token | Plugin Settings page | Re-paste sandbox token from GoCardless dashboard |
+| GoCardless import double-posted | Idempotency check failed (rare) | Plugin's `gocardless_import_idempotency` table | Compare matching logic to legacy `sql_rag/opera_sql_import.py` |
+| Endpoint suddenly slow (> 2s) | Knex query missing an index, or Opera-side lock | Plugin logs + Opera SQL Server activity | See 2.5 below |
+| Supplier statement reconcile gives wrong matches | Drift between SAM and legacy matcher | Compare service file's cited Python line numbers | Re-port the diff from `sql_rag/...` |
+
+### 2.2 — How to inspect what SAM passes to a plugin (ctx inspection)
+
+When a plugin behaves unexpectedly, you often need to know what SAM is actually passing in at runtime. Add a temporary log statement to the relevant service file:
+
+```ts
+// Inside a service or router handler
+console.log("[ctx-inspect]", {
+  user: ctx.user,
+  operaCompany: ctx.operaCompany,
+  hasOpera: !!ctx.db.opera,
+  hasApp: !!ctx.db.app,
+  hasLlm: !!ctx.llm,
+  hasEmailIngest: !!ctx.emailIngest,
+});
+```
+
+Then redeploy (Section 1.6 hotfix flow), trigger the failing endpoint, watch the logs on the SAM Mac. Remove the log line and ship again once you have your answer.
+
+### 2.3 — Migration failure recovery
+
+A failed migration can leave the per-app database half-applied. Recovery:
+
+1. **Look at the actual error in the SAM logs** — Knex prints the failing SQL.
+
+```
+# Terminal — SAM Mac
+docker logs ai-sam | grep -A 5 "migration failed"
+```
+
+2. **Identify which migration file failed** (the log shows e.g. `005_align_imports_history.ts`).
+
+3. **Inspect the per-app DB to see how far it got**:
+
+```
+# Terminal — SAM Mac
+# (Use whatever client SAM uses for its MSSQL — sqlcmd or a GUI)
+SELECT * FROM <plugin>_app.knex_migrations ORDER BY id DESC;
+```
+
+This shows which migrations did succeed. The failed one is missing from the list but its DDL may be partly applied.
+
+4. **Two recovery paths:**
+   - **Roll back the migration manually** (write a corrective SQL by hand to undo whatever the failed migration partially applied), then fix the migration code locally, ship the fix per Section 1.6.
+   - **Drop and recreate the per-app DB** (only if no production data — likely safe early in deployment). Then re-trigger SAM install to rebuild from scratch.
+
+### 2.4 — Mailbox-not-scanning checklist
+
+When you assigned a mailbox to a plugin but emails aren't being processed:
+
+1. **Mailbox `owner_app_id` matches the plugin's app id** — SAM Admin → Email Mailboxes.
+2. **Microsoft Graph connection is `Active`** — SAM Admin → Email Settings.
+3. **Adapter scan interval has elapsed** — default is 60 seconds. Wait, then trigger from the plugin's UI.
+4. **Plugin can actually call `listMyMailboxes()`** — add a temporary `console.log` on the adapter init (see 2.2) and confirm it returns the mailbox row.
+5. **The email is in the mailbox's inbox**, not a sub-folder — by default the adapter scans the inbox.
+
+### 2.5 — Slow / hanging queries
+
+A few patterns to recognise:
+
+| Pattern | Cause | Fix |
+|---|---|---|
+| Endpoint suddenly slow after a release | Missing or wrong index on a column you started filtering on | Add an index migration. Test locally to confirm. |
+| Endpoint slow only on one company | Opera DB has different volume on that company | Profile the Knex query (`db.raw('...')` with `EXPLAIN`) — usually a join order issue |
+| Endpoint hangs indefinitely | Opera-side lock from a long-running posting job | Wait, retry. If reproducible, add `NOLOCK` hints on reads (per locking rules). |
+| Migration takes minutes | Backfill on a large table | Move backfill out of the migration to a one-off script; the migration just creates the structure |
+
+---
