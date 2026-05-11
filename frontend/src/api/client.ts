@@ -175,7 +175,15 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(url, { ...options, headers });
+  // In test mode, rewrite plugin-path URLs to the standalone runner.
+  let target = url;
+  if (TEST_MODE && url.startsWith('/api/')) {
+    if (PLUGIN_PATH_PREFIXES.some((p) => url.startsWith(p))) {
+      target = `${SAM_TEST_BACKEND}${url}`;
+    }
+  }
+
+  const response = await fetch(target, { ...options, headers });
 
   // Handle 401 - redirect to login
   if (response.status === 401) {
