@@ -176,8 +176,8 @@ The project is considered done when:
 - [ ] All four plugins appear in the local SAM Admin → Apps list as Installed
 - [ ] Each plugin's main UI loads without errors
 - [ ] **Legacy Python data is migrated** for both `intsys` and `cloudsis` companies — accumulated bank aliases, GoCardless mandates, supplier statements visible in the plugin UIs
-- [ ] A representative smoke-test passes for each plugin against live Opera SE + migrated state (specifics in the implementation plan)
-- [ ] No double-posts to Opera detected during validation
+- [ ] **Smoke-tests pass for BOTH companies** — each plugin validated against live Opera SE data + migrated state for `intsys` AND `cloudsis` (not just one). Each company's values match the respective legacy Python view.
+- [ ] No double-posts to Opera detected during validation (per company)
 - [ ] Final `.sap` files exist and are ready for Jonathan
 - [ ] Maintenance doc updated to reference local SAM in the release flow
 - [ ] Draft email to Jonathan prepared (sending is Harry's call)

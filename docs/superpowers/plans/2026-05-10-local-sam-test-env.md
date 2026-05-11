@@ -730,7 +730,22 @@ Open `suppliers` → **Dashboard**. Then **Supplier list**.
 - Supplier list loads from Opera (real Intsys suppliers)
 - The dashboard shows aged debt / reconciliation status without errors
 
-- [ ] **Step 5: Document any issues found.**
+- [ ] **Step 5: Repeat all four plugin smoke-tests for the OTHER company.**
+
+⚠ **Important** — every smoke test in Steps 1-4 above must be run against BOTH `intsys` AND `cloudsis`. The data migration in Task 8 brought both companies' data in; both must be verified.
+
+In SAM Admin, switch the active company (typically via a company selector dropdown in the UI, or by sending `X-Opera-Company: <company>` on API calls). Then re-run Steps 1-4:
+
+- balance-check pages — load against the other company
+- bank-reconcile email scan — load against the other company
+- gocardless test API + scan — should work the same regardless of company
+- suppliers dashboard — load against the other company
+
+**✓ Looks good if:** both companies produce sensible data, with the values matching the respective company's legacy Python view. They should differ (different customers, different transactions, different aliases) — that's correct.
+
+**✗ If only one company shows data and the other is empty** — the company switching mechanism isn't working, OR the migration only succeeded for one company. Check Task 8's migration output for both companies, and check SAM's company list.
+
+- [ ] **Step 6: Document any issues found.**
 
 Create a file `/tmp/local-sam-smoke-test-results.md`:
 
@@ -738,29 +753,43 @@ Create a file `/tmp/local-sam-smoke-test-results.md`:
 # Local SAM smoke-test results — 2026-05-XX
 
 ## balance-check
-- Cashbook reconcile: ✓
-- Debtors: ✗ (numbers off by £X.XX from legacy — investigate)
-- Creditors: ✓
-- VAT: ✓
+- intsys / Cashbook reconcile: ✓
+- intsys / Debtors: ✗ (numbers off by £X.XX from legacy — investigate)
+- intsys / Creditors: ✓
+- intsys / VAT: ✓
+- cloudsis / Cashbook reconcile: ✓
+- cloudsis / Debtors: ✓
+- cloudsis / Creditors: ✓
+- cloudsis / VAT: ✓
 
 ## bank-reconcile
-- Email scan: ✓
-- Statement display: ✓
-- Duplicate detection: <observed/needs check>
+- intsys / Email scan: ✓
+- intsys / Statement display: ✓
+- intsys / Duplicate detection: <observed/needs check>
+- cloudsis / Email scan: ✓
+- cloudsis / Statement display: ✓
 
 ## gocardless
-- API test: ✓
-- Email scan: ✓
+- intsys / API test: ✓
+- intsys / Email scan: ✓
+- intsys / Mandate list (from migrated data): ✓
+- cloudsis / API test: ✓
+- cloudsis / Email scan: ✓
+- cloudsis / Mandate list (from migrated data): ✓
 
 ## suppliers
-- Dashboard: ✓
-- Supplier list: ✓
+- intsys / Dashboard: ✓
+- intsys / Supplier list: ✓
+- intsys / Migrated statements visible: ✓
+- cloudsis / Dashboard: ✓
+- cloudsis / Supplier list: ✓
+- cloudsis / Migrated statements visible: ✓
 - <issue: ...>
 ```
 
-**If everything passed cleanly** — skip Task 10 and go straight to Task 11.
+**If everything passed cleanly for BOTH companies** — skip Task 10 and go straight to Task 11.
 
-**If anything failed** — proceed to Task 10 for the iteration loop.
+**If anything failed for either company** — proceed to Task 10 for the iteration loop.
 
 ---
 
