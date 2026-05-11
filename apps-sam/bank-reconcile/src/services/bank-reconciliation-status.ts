@@ -129,13 +129,17 @@ export async function getUnreconciledEntriesForBank(
 export interface StatementTransaction {
   line_number: number;
   date: string | null;
-  name: string | null;
-  memo: string | null;
+  description: string | null;
   amount: number;
+  balance: number | null;
   type: string;
-  matched_account: string | null;
-  matched_name: string | null;
-  reconciled: boolean;
+  reference: string | null;
+  matched_entry: string | null;
+  match_confidence: number | null;
+  match_type: string | null;
+  is_reconciled: boolean;
+  posted_entry_number: string | null;
+  posted_at: string | null;
 }
 
 export async function getStatementTransactionsForImport(
@@ -150,36 +154,63 @@ export async function getStatementTransactionsForImport(
     return { success: false, transactions: [], error: 'invalid import_id' };
   }
   try {
+    // Columns mirror the SAM migration 013 schema. Frontend
+    // (Imports.tsx alreadyPostedRows loader) reads `line_number` +
+    // `posted_entry_number`; the matching view also consumes the
+    // per-line matched_entry/match_* fields so re-opening a statement
+    // shows prior analysis. Omitting `posted_entry_number` here was
+    // why orphan-recovery cleared SAM tracking but the UI continued
+    // to show every line as Posted — alreadyPostedRows was being
+    // populated from legacy email_data.db instead.
     const rows = (await appDb('bank_statement_transactions')
       .where({ import_id: importId })
       .orderBy('line_number', 'asc')) as unknown as Array<{
       line_number: number;
-      transaction_date: string | Date | null;
-      name: string | null;
-      memo: string | null;
+      post_date: string | Date | null;
+      description: string | null;
       amount: number | string | null;
+      balance: number | string | null;
       transaction_type: string | null;
-      matched_account: string | null;
-      matched_name: string | null;
-      reconciled: number | boolean | null;
+      reference: string | null;
+      matched_entry: string | null;
+      match_confidence: number | string | null;
+      match_type: string | null;
+      is_reconciled: number | boolean | null;
+      posted_entry_number: string | null;
+      posted_at: string | Date | null;
     }>;
     return {
       success: true,
       transactions: rows.map((r) => ({
         line_number: Number(r.line_number),
         date:
-          r.transaction_date instanceof Date
-            ? r.transaction_date.toISOString().slice(0, 10)
-            : r.transaction_date
-            ? String(r.transaction_date).slice(0, 10)
+          r.post_date instanceof Date
+            ? r.post_date.toISOString().slice(0, 10)
+            : r.post_date
+            ? String(r.post_date).slice(0, 10)
             : null,
-        name: r.name,
-        memo: r.memo,
+        description: r.description ?? null,
         amount: Number(r.amount ?? 0),
+        balance:
+          r.balance === null || r.balance === undefined
+            ? null
+            : Number(r.balance),
         type: r.transaction_type ?? 'credit',
-        matched_account: r.matched_account,
-        matched_name: r.matched_name,
-        reconciled: !!r.reconciled,
+        reference: r.reference ?? null,
+        matched_entry: r.matched_entry ?? null,
+        match_confidence:
+          r.match_confidence === null || r.match_confidence === undefined
+            ? null
+            : Number(r.match_confidence),
+        match_type: r.match_type ?? null,
+        is_reconciled: !!r.is_reconciled,
+        posted_entry_number: (r.posted_entry_number ?? '').toString().trim() || null,
+        posted_at:
+          r.posted_at instanceof Date
+            ? r.posted_at.toISOString()
+            : r.posted_at
+            ? String(r.posted_at)
+            : null,
       })),
     };
   } catch (err: any) {

@@ -30,6 +30,13 @@ const SAM_TEST_BACKEND = 'http://localhost:3001';
 const PLUGIN_PATH_PREFIXES = [
   '/api/reconcile/',
   '/api/bank-reconcile/',
+  // SAM serves the full /api/bank-reconciliation/* surface but in test
+  // mode we only redirect the statement-transactions read because that
+  // one drives the matching view's alreadyPostedRows state. The other
+  // endpoints (/complete, /match-statement, /validate-statement) stay
+  // on legacy where they're battle-tested. Add them here individually
+  // when SAM parity for each is verified end-to-end.
+  '/api/bank-reconciliation/statement-transactions',
   '/api/bank-import/',
   '/api/gocardless/',
   '/api/suppliers/',
