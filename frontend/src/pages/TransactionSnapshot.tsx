@@ -38,6 +38,13 @@ export function TransactionSnapshot() {
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
   const [entryDetail, setEntryDetail] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  // Opera 3 data path — empty means Opera SE (default). Non-empty forces
+  // Opera 3 mode against the supplied DBF directory. Persisted across
+  // sessions so the path you type once stays after refresh.
+  const [opera3Path, setOpera3Path] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('opera3_snapshot_data_path') || '';
+  });
 
   const { data: modulesData } = useQuery({
     queryKey: ['snapshotModules'],
@@ -62,6 +69,7 @@ export function TransactionSnapshot() {
   const beforeMutation = useMutation({
     mutationFn: async () => {
       const params = new URLSearchParams({ module, name, description });
+      if (opera3Path.trim()) params.set('data_path', opera3Path.trim());
       const r = await authFetch(`${API}/before?${params}`, { method: 'POST' });
       return r.json();
     },
@@ -150,6 +158,36 @@ export function TransactionSnapshot() {
         title="Transaction Snapshot Tool"
         subtitle="Capture before/after snapshots of Opera to identify exactly which tables and fields are updated for each transaction type"
       />
+
+      {/* Engine selection — Opera SE (default) or Opera 3 via explicit path */}
+      <Card>
+        <div className="p-4 space-y-2">
+          <label className="block text-sm font-medium text-gray-700">
+            Opera 3 data path <span className="text-gray-400 font-normal">(leave blank to snapshot Opera SE)</span>
+          </label>
+          <input
+            type="text"
+            className="w-full border rounded px-3 py-2 font-mono text-sm"
+            placeholder="/Volumes/Opera3/COMPANY  —  or any local DBF folder"
+            value={opera3Path}
+            onChange={(e) => {
+              const v = e.target.value;
+              setOpera3Path(v);
+              if (typeof window !== 'undefined') {
+                if (v.trim()) localStorage.setItem('opera3_snapshot_data_path', v);
+                else localStorage.removeItem('opera3_snapshot_data_path');
+              }
+            }}
+            disabled={phase !== 'idle'}
+          />
+          <p className="text-xs text-gray-500">
+            {opera3Path.trim()
+              ? <>Engine: <span className="font-semibold text-amber-700">Opera 3 (FoxPro)</span> — snapshots will read DBF files from this path.</>
+              : <>Engine: <span className="font-semibold text-blue-700">Opera SE (SQL Server)</span> — paste an Opera 3 DATA folder above to switch.</>
+            }
+          </p>
+        </div>
+      </Card>
 
       {/* Capture Panel */}
       <Card>

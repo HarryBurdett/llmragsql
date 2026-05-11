@@ -837,41 +837,55 @@ async def take_before_snapshot(
     module: str = Query(..., description="Module category (cashbook, sales_ledger, etc.)"),
     name: str = Query(..., description="Transaction type name (e.g., 'Sales Receipt — BACS')"),
     description: str = Query("", description="Detailed description of the transaction being entered"),
+    data_path: str = Query("", description="Opera 3 data folder path. When non-empty, forces Opera 3 mode and points the snapshot at this DBF directory. Empty → fall back to config.ini detection (Opera SE by default)."),
 ):
     """
     Take a BEFORE snapshot of all Opera tables.
     Call this, then enter the transaction in Opera, then call /after.
-    Automatically detects Opera SE (SQL) vs Opera 3 (FoxPro/SMB).
+    Engine selection: a non-empty `data_path` query param forces Opera 3
+    against that path. Otherwise the engine is read from
+    `config.ini` `[opera] version` (default `sql_se` → Opera SE).
     """
-    # Detect Opera version and take appropriate snapshot
+    # Engine resolution: explicit data_path wins; otherwise read config.
     opera_version = 'opera_se'
+    explicit_opera3_path = (data_path or '').strip()
     try:
         import configparser
         cfg = configparser.ConfigParser()
         cfg.read(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'config.ini'))
-        opera_version = cfg.get('opera', 'version', fallback='sql_se')
+        if not explicit_opera3_path:
+            opera_version = cfg.get('opera', 'version', fallback='sql_se')
     except Exception:
         pass
+    if explicit_opera3_path:
+        opera_version = 'opera3'
 
     try:
         if opera_version == 'opera3':
-            # Opera 3 — snapshot DBF files via SMB
+            # Opera 3 — snapshot DBF files
             try:
-                from sql_rag.smb_access import get_smb_manager
-                smb = get_smb_manager()
-                if smb and smb.is_connected():
-                    data_path = str(smb.get_local_base())
-                    # Use opera3_base_path from config if set
-                    try:
-                        base_path = cfg.get('opera', 'opera3_base_path', fallback='')
-                        if base_path:
-                            data_path = base_path
-                    except Exception:
-                        pass
-                    logger.info(f"Taking BEFORE snapshot (Opera 3) for: {module}/{name} at {data_path}")
-                    snapshot = take_snapshot_opera3(data_path)
-                else:
-                    raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available")
+                resolved_path = explicit_opera3_path
+                if not resolved_path:
+                    # No explicit path — fall back to SMB-managed mount
+                    # behaviour (existing path before this endpoint was
+                    # parameterised).
+                    from sql_rag.smb_access import get_smb_manager
+                    smb = get_smb_manager()
+                    if smb and smb.is_connected():
+                        resolved_path = str(smb.get_local_base())
+                        try:
+                            base_path = cfg.get('opera', 'opera3_base_path', fallback='')
+                            if base_path:
+                                resolved_path = base_path
+                        except Exception:
+                            pass
+                    else:
+                        raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available (and no explicit data_path supplied)")
+                logger.info(f"Taking BEFORE snapshot (Opera 3) for: {module}/{name} at {resolved_path} (source={'explicit' if explicit_opera3_path else 'smb-managed'})")
+                snapshot = take_snapshot_opera3(resolved_path)
+                # Stash the resolved path so /after can reuse it without
+                # needing the caller to re-supply it.
+                snapshot['_resolved_data_path'] = resolved_path
             except ImportError:
                 raise HTTPException(status_code=503, detail="SMB access module not available")
         else:
@@ -901,6 +915,9 @@ async def take_before_snapshot(
             'description': description,
             'before_timestamp': snapshot['timestamp'],
             'source': snapshot.get('source', 'opera_se'),
+            # Persist the resolved Opera 3 path so /after uses the same
+            # one without needing the caller to re-supply it.
+            'opera3_data_path': snapshot.get('_resolved_data_path', '') if snapshot.get('source') == 'opera3' else '',
         }
         with open(meta_file, 'w') as f:
             json.dump(meta, f)
@@ -945,18 +962,24 @@ async def take_after_snapshot(request: Request):
         logger.info(f"Taking AFTER snapshot ({source}) for: {meta['module']}/{meta['name']}")
 
         if source == 'opera3':
-            # Opera 3 — snapshot DBF files
+            # Opera 3 — snapshot DBF files. Prefer the resolved path
+            # that /before recorded (so the AFTER snapshot definitely
+            # reads from the same place); fall back to SMB-managed
+            # mount or config.ini if meta wasn't tagged (older snaps).
             try:
-                import configparser
-                cfg = configparser.ConfigParser()
-                cfg.read(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'config.ini'))
-                from sql_rag.smb_access import get_smb_manager
-                smb = get_smb_manager()
-                if smb and smb.is_connected():
-                    data_path = cfg.get('opera', 'opera3_base_path', fallback=str(smb.get_local_base()))
-                    after = take_snapshot_opera3(data_path)
-                else:
-                    raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available")
+                resolved_path = (meta.get('opera3_data_path') or '').strip()
+                if not resolved_path:
+                    import configparser
+                    cfg = configparser.ConfigParser()
+                    cfg.read(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'config.ini'))
+                    from sql_rag.smb_access import get_smb_manager
+                    smb = get_smb_manager()
+                    if smb and smb.is_connected():
+                        resolved_path = cfg.get('opera', 'opera3_base_path', fallback=str(smb.get_local_base()))
+                    else:
+                        raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available")
+                logger.info(f"Taking AFTER snapshot (Opera 3) at {resolved_path}")
+                after = take_snapshot_opera3(resolved_path)
             except ImportError:
                 raise HTTPException(status_code=503, detail="SMB access module not available")
         else:
