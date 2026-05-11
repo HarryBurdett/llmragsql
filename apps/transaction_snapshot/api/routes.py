@@ -214,13 +214,14 @@ def take_snapshot_opera3(data_path: str, file_filter: str = '') -> Dict[str, Any
     Returns row counts and checksums for every table, plus full row data
     for tables with < 50,000 rows (for detailed diffing).
 
-    `file_filter` (optional): a glob pattern applied to filenames in the
-    company data folder only. For Opera 3 installs that share a single
-    Data/ folder across multiple companies using a prefix convention
-    (e.g. `A_PNAME.DBF`, `Z_PNAME.DBF`), pass `Z_*` to restrict the scan
-    to one company. The System folder is always fully scanned because
-    its tables (`seqco`, `NextID`, `LastVer`, …) are unprefixed and
-    needed in every trace regardless of company.
+    `file_filter` (optional): accepts either
+      - a short company identifier like `Z` or `INT`  → automatically
+        expanded to the glob `Z_*` / `INT_*`, OR
+      - a full glob (`Z_*`, `Z_PNAME.*`, etc.) — used as-is when the
+        string contains glob characters (`*`, `?`, `[`).
+    Applied to the company data folder only. System folder always fully
+    scanned (its tables — `seqco`, `NextID`, `LastVer`, … — are
+    unprefixed and needed in every trace regardless of company).
     """
     from pathlib import Path
     import fnmatch
@@ -229,6 +230,7 @@ def take_snapshot_opera3(data_path: str, file_filter: str = '') -> Dict[str, Any
         'timestamp': datetime.now().isoformat(),
         'source': 'opera3',
         'databases': {},
+        'tables_per_folder': {},
     }
 
     try:
@@ -248,9 +250,17 @@ def take_snapshot_opera3(data_path: str, file_filter: str = '') -> Dict[str, Any
     if system_path.exists():
         folders_to_scan['system'] = system_path
 
-    pattern = (file_filter or '').strip()
+    raw_pattern = (file_filter or '').strip()
+    # If the user typed a short identifier like "Z" with no glob
+    # characters, interpret it as a company-code prefix and expand to
+    # `Z_*`. Anything containing *, ?, or [ is used verbatim.
+    if raw_pattern and not any(ch in raw_pattern for ch in '*?['):
+        pattern = f"{raw_pattern}_*"
+    else:
+        pattern = raw_pattern
     if pattern:
         snapshot['file_filter'] = pattern
+        snapshot['file_filter_raw'] = raw_pattern
 
     for folder_label, folder_path in folders_to_scan.items():
         db_snapshot = {}
@@ -260,6 +270,7 @@ def take_snapshot_opera3(data_path: str, file_filter: str = '') -> Dict[str, Any
 
         # Find all DBF files
         dbf_files = list(folder_path.glob('*.dbf')) + list(folder_path.glob('*.DBF'))
+        scanned_before_filter = len({f.stem.lower() for f in dbf_files})
 
         # Apply the optional filter — company folder only. System DBFs
         # always come through so the trace has full sequence/parameter
@@ -267,6 +278,12 @@ def take_snapshot_opera3(data_path: str, file_filter: str = '') -> Dict[str, Any
         if pattern and folder_label == 'company':
             up = pattern.upper()
             dbf_files = [f for f in dbf_files if fnmatch.fnmatch(f.name.upper(), up)]
+
+        scanned_after_filter = len({f.stem.lower() for f in dbf_files})
+        snapshot['tables_per_folder'][folder_label] = {
+            'matched': scanned_after_filter,
+            'available_in_folder': scanned_before_filter,
+        }
         # Deduplicate (case-insensitive)
         seen = set()
         unique_dbfs = []
@@ -948,11 +965,31 @@ async def take_before_snapshot(
 
         total_tables = sum(len(db) for db in snapshot.get('databases', {}).values())
 
+        # Opera 3 only — expose the per-folder filter result so the UI
+        # can warn if the company filter matched zero tables (the most
+        # common cause of "no changes detected" later).
+        tables_per_folder = snapshot.get('tables_per_folder') if snapshot.get('source') == 'opera3' else None
+        effective_filter = snapshot.get('file_filter') if snapshot.get('source') == 'opera3' else None
+
+        warning = None
+        if tables_per_folder:
+            company_match = tables_per_folder.get('company', {}).get('matched', 0)
+            company_total = tables_per_folder.get('company', {}).get('available_in_folder', 0)
+            if effective_filter and company_match == 0 and company_total > 0:
+                warning = (
+                    f"Filter '{effective_filter}' matched 0 of {company_total} DBF files in the company folder. "
+                    "The AFTER snapshot will also be empty — no changes can be detected. "
+                    "Check the prefix you entered against what's actually in the folder."
+                )
+
         return {
             "success": True,
             "message": f"Before snapshot captured — {total_tables} tables across {len(snapshot.get('databases', {}))} database(s)",
             "tables_scanned": total_tables,
             "databases": list(snapshot.get('databases', {}).keys()),
+            "tables_per_folder": tables_per_folder,
+            "effective_filter": effective_filter,
+            "warning": warning,
             "timestamp": snapshot['timestamp'],
         }
     except Exception as e:

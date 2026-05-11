@@ -38,6 +38,12 @@ export function TransactionSnapshot() {
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
   const [entryDetail, setEntryDetail] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [beforeSummary, setBeforeSummary] = useState<{
+    tables_scanned: number;
+    tables_per_folder?: Record<string, { matched: number; available_in_folder: number }>;
+    effective_filter?: string | null;
+    warning?: string | null;
+  } | null>(null);
   // Opera 3 data path — empty means Opera SE (default). Non-empty forces
   // Opera 3 mode against the supplied DBF directory. Persisted across
   // sessions so the path you type once stays after refresh.
@@ -85,8 +91,15 @@ export function TransactionSnapshot() {
       if (data.success) {
         setPhase('before_taken');
         setError(null);
+        setBeforeSummary({
+          tables_scanned: data.tables_scanned ?? 0,
+          tables_per_folder: data.tables_per_folder ?? undefined,
+          effective_filter: data.effective_filter ?? null,
+          warning: data.warning ?? null,
+        });
       } else {
         setError(data.error || 'Failed to take before snapshot');
+        setBeforeSummary(null);
       }
     },
     onError: (err: any) => setError(err.message),
@@ -105,6 +118,7 @@ export function TransactionSnapshot() {
         setModule('');
         setName('');
         setDescription('');
+        setBeforeSummary(null);
         refetchLibrary();
       } else {
         setError(data.error || 'Failed to take after snapshot');
@@ -193,12 +207,12 @@ export function TransactionSnapshot() {
           {opera3Path.trim() && (
             <div>
               <label className="block text-sm font-medium text-gray-700">
-                Filename filter <span className="text-gray-400 font-normal">(optional — e.g. <code>Z_*</code> for installs that share a Data/ folder across companies)</span>
+                Company identifier <span className="text-gray-400 font-normal">(optional — e.g. <code>Z</code> or <code>A</code> for installs that share one Data/ folder across companies)</span>
               </label>
               <input
                 type="text"
                 className="w-full border rounded px-3 py-2 font-mono text-sm"
-                placeholder="Z_*  or  *.dbf  or leave blank to scan every DBF"
+                placeholder="Z   (just the prefix — no underscore, no glob)"
                 value={opera3Filter}
                 onChange={(e) => {
                   const v = e.target.value;
@@ -211,7 +225,7 @@ export function TransactionSnapshot() {
                 disabled={phase !== 'idle'}
               />
               <p className="text-xs text-gray-500 mt-1">
-                Applied to the company Data/ folder only. The System/ folder (seqco, NextID, …) is always fully captured so the trace has complete sequence/parameter context.
+                Type just the company prefix (e.g. <code>Z</code>). The tool expands that to <code>Z_*</code> internally and limits the company-folder scan to those DBFs. System tables are always captured. Power users can paste a raw glob (e.g. <code>Z_PNAME.*</code>) and it'll be used verbatim.
               </p>
             </div>
           )}
@@ -309,6 +323,28 @@ export function TransactionSnapshot() {
                 <p className="text-green-800 font-medium">Before snapshot taken for: <b>{module}/{name}</b></p>
                 <p className="text-green-700 text-sm mt-1">Now enter the transaction/record in Opera. When done, click "Take After Snapshot".</p>
               </div>
+
+              {beforeSummary && beforeSummary.tables_per_folder && (
+                <div className={`p-3 rounded-lg border text-sm ${beforeSummary.warning ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-blue-50 border-blue-200 text-blue-900'}`}>
+                  <div className="font-medium">Captured tables (Opera 3)</div>
+                  <ul className="mt-1 ml-4 list-disc">
+                    {Object.entries(beforeSummary.tables_per_folder).map(([folder, info]) => (
+                      <li key={folder}>
+                        <code>{folder}</code>: <b>{info.matched}</b> matched / {info.available_in_folder} present
+                        {folder === 'company' && beforeSummary.effective_filter && (
+                          <> — filter <code>{beforeSummary.effective_filter}</code></>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  {beforeSummary.warning && (
+                    <p className="mt-2 font-medium flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                      <span>{beforeSummary.warning}</span>
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="flex gap-3">
                 <button
                   onClick={() => afterMutation.mutate()}
