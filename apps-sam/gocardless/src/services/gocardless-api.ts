@@ -63,7 +63,7 @@ export class GoCardlessClient {
   async getPayouts(opts: {
     status?: string;
     limit?: number;
-    createdAtGte?: string; // ISO date 'YYYY-MM-DD'
+    createdAtGte?: string; // ISO datetime 'YYYY-MM-DDTHH:MM:SSZ' — GoCardless rejects bare dates
     before?: string;
   } = {}): Promise<{
     success: boolean;

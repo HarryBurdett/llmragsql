@@ -614,10 +614,13 @@ export function createRouter(ctx: AppContext): Router {
         ? daysBackOverride
         : Number(settings.payout_lookback_days ?? 30);
 
-      // Compute YYYY-MM-DD created_at_gte (mirrors Python's
-      // (datetime.now() - timedelta(days=days_back)).date()).
+      // Compute created_at_gte as full ISO datetime — GoCardless API
+      // rejects bare YYYY-MM-DD with "is not a valid date-time".
+      // Python does the same: params["created_at[gte]"] = date.isoformat() + "T00:00:00Z"
+      // (sql_rag/gocardless_api.py:213). The previous version of this code
+      // emitted only the date portion which causes a 422 from the API.
       const cutoff = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
-      const createdAtGte = cutoff.toISOString().slice(0, 10);
+      const createdAtGte = `${cutoff.toISOString().slice(0, 10)}T00:00:00Z`;
 
       const client = createClientFromSettings(settings);
       if (!client) {
