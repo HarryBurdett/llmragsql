@@ -8,48 +8,70 @@ import axios from 'axios';
 // Default '/' (relative path) preserves today's behaviour for the
 // un-containerised Vite dev server with Python API on the same host.
 //
-// LEVEL-2 TEST-MODE TOGGLE:
-// If the URL contains `?test=1` (or `?backend=test`), or if a previous
-// page load set the choice in localStorage, route API calls to the
-// standalone TypeScript backend at http://localhost:3001 instead of
-// the legacy Python backend. This lets Harry test the rewritten apps
-// side-by-side with the legacy system without changing any code.
+// LEVEL-2 TEST-MODE TOGGLE — per-path routing:
+// If the URL contains `?test=1` (or previous load persisted the choice
+// to localStorage), route **plugin API calls** to the standalone
+// TypeScript backend at http://localhost:3001, while leaving legacy
+// infrastructure calls (auth, admin, systems, companies) going to the
+// default (port 8000 via Vite proxy).
 //
-// Switch back at any time with `?test=0`.
+// Plugin path prefixes — owned by the rewritten SAM plugins:
+//   /api/reconcile/        — balance-check + bank-reconcile
+//   /api/bank-reconcile/   — bank-reconcile status
+//   /api/bank-import/      — bank-reconcile import flows
+//   /api/gocardless/       — gocardless
+//   /api/suppliers/        — suppliers
+//
+// Everything else (/api/auth/*, /api/systems, /api/licenses,
+// /api/companies, /api/email/*, etc.) stays on the legacy backend.
+//
+// Switch off with `?test=0`.
 const SAM_TEST_BACKEND = 'http://localhost:3001';
+const PLUGIN_PATH_PREFIXES = [
+  '/api/reconcile/',
+  '/api/bank-reconcile/',
+  '/api/bank-import/',
+  '/api/gocardless/',
+  '/api/suppliers/',
+];
 
-function resolveApiRoot(): string {
-  const buildTimeOverride = import.meta.env.VITE_API_BASE_URL as string | undefined;
-  if (buildTimeOverride) return buildTimeOverride;
-
-  // Only run the URL/localStorage check in the browser
-  if (typeof window === 'undefined') return '';
-
+function isTestMode(): boolean {
+  if (typeof window === 'undefined') return false;
   const params = new URLSearchParams(window.location.search);
   const explicit = params.get('test') ?? params.get('backend');
   if (explicit === '1' || explicit === 'test' || explicit === 'sam') {
     localStorage.setItem('samTestMode', 'true');
-    return SAM_TEST_BACKEND;
+    return true;
   }
   if (explicit === '0' || explicit === 'legacy') {
     localStorage.removeItem('samTestMode');
-    return '';
+    return false;
   }
-
-  if (localStorage.getItem('samTestMode') === 'true') {
-    return SAM_TEST_BACKEND;
-  }
-  return '';
+  return localStorage.getItem('samTestMode') === 'true';
 }
 
-const API_ROOT = resolveApiRoot();
+const TEST_MODE = isTestMode();
+const BUILD_TIME_API = import.meta.env.VITE_API_BASE_URL as string | undefined;
+const API_ROOT = BUILD_TIME_API ?? '';
 const API_BASE_URL = `${API_ROOT}/api`;
 
-// One-time console hint so it's obvious which backend is in use
+/**
+ * Resolve where a given API path should be sent.
+ * In test mode, plugin paths go to port 3001; everything else stays default.
+ */
+export function resolveApiTarget(path: string): string {
+  if (!TEST_MODE) return `${API_ROOT}${path}`;
+  if (PLUGIN_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+    return `${SAM_TEST_BACKEND}${path}`;
+  }
+  return `${API_ROOT}${path}`;
+}
+
+// One-time console hint
 if (typeof window !== 'undefined') {
   // eslint-disable-next-line no-console
   console.info(
-    `[api/client] using backend: ${API_ROOT || '(legacy Python, default)'}`,
+    `[api/client] mode: ${TEST_MODE ? 'TEST (plugin paths → :3001, others → legacy)' : 'legacy (Python on :8000)'}`,
   );
 }
 
@@ -97,11 +119,28 @@ const api = axios.create({
   },
 });
 
-// Add auth token to requests
+// Add auth token to requests, and (in test mode) rewrite plugin paths
+// to the standalone TypeScript backend on port 3001.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('auth_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  // Per-path routing for test mode
+  if (TEST_MODE && config.url) {
+    // axios resolves url against baseURL; the actual full path is /api/...
+    // (because baseURL is /api). Check if the full path (baseURL + url)
+    // matches a plugin prefix.
+    const fullPath = config.url.startsWith('http')
+      ? config.url
+      : `/api${config.url.startsWith('/') ? config.url : '/' + config.url}`;
+    const matches = PLUGIN_PATH_PREFIXES.some((p) => fullPath.includes(p) || fullPath.startsWith(p));
+    if (matches) {
+      // Strip any existing host and re-target to test backend
+      const pathOnly = fullPath.replace(/^https?:\/\/[^/]+/, '');
+      config.baseURL = SAM_TEST_BACKEND;
+      config.url = pathOnly;
+    }
   }
   return config;
 });

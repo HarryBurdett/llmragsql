@@ -155,6 +155,146 @@ async function main(): Promise<void> {
   });
 
   // -----------------------------------------------------------------
+  // Legacy-shape stubs — endpoints the existing React frontend expects
+  // before it'll show the main pages. These are NOT what SAM provides
+  // in production (SAM has its own auth + tenant model); they exist
+  // only so the standalone runner can be tested using the existing
+  // frontend without standing up the whole legacy auth stack.
+  // -----------------------------------------------------------------
+
+  // /api/systems — the company/system list shown in the login dropdown.
+  app.get('/api/systems', (_req, res) => {
+    const systems = Object.entries(companyDbNameByCode)
+      .filter(([code]) => code.length === 1) // skip lowercase friendly aliases
+      .map(([code, dbName]) => ({
+        id: code.toLowerCase(),
+        name: `Opera SE — ${dbName}`,
+        is_default: code === 'I',
+        database: {
+          type: 'mssql',
+          server: operaCfg.server,
+          port: String(operaCfg.port),
+          database: dbName,
+          username: operaCfg.username,
+        },
+        opera: { version: 'sql_se' },
+      }));
+    res.json({ systems });
+  });
+
+  // /api/auth/login — accept any credentials and return a fake JWT.
+  // The runner is intentionally unauthenticated; anything goes.
+  // Response shape matches frontend/src/context/AuthContext.tsx expectations.
+  app.post('/api/auth/login', (req, res) => {
+    const username = (req.body?.username as string) ?? 'harry';
+    res.json({
+      success: true,
+      token: 'standalone-runner-stub-jwt',
+      user: {
+        id: 1,
+        username,
+        display_name: 'Harry Burdett',
+        email: 'harry@intsysuk.com',
+        role: 'admin',
+      },
+      permissions: ['*'],
+      license: {
+        id: 1,
+        valid: true,
+        expires: '2099-12-31',
+        apps: ['*'],
+      },
+    });
+  });
+
+  // /api/auth/me — confirms the current user
+  app.get('/api/auth/me', (_req, res) => {
+    res.json({
+      username: 'harry',
+      email: 'harry@intsysuk.com',
+      role: 'admin',
+    });
+  });
+
+  app.post('/api/auth/logout', (_req, res) => {
+    res.json({ success: true });
+  });
+
+  // /api/companies — list of Opera companies the user can switch between.
+  // Drives the company switcher in the legacy frontend's header.
+  app.get('/api/companies', (_req, res) => {
+    const FRIENDLY: Record<string, string> = {
+      I: 'Intsys UK Ltd',
+      C: 'Cloudsis Limited',
+      K: 'Crakd.ai',
+      Z: 'Orion Vehicles Leasing',
+    };
+    const companies = Object.keys(companyDbNameByCode)
+      .filter((c) => c.length === 1)
+      .map((code) => ({
+        code,
+        name: FRIENDLY[code] ?? code,
+      }));
+    res.json({ companies });
+  });
+
+  // /api/auth/switch-company — the legacy switches active company via this
+  app.post('/api/auth/switch-company', (req, res) => {
+    const company = (req.body?.company as string) ?? 'I';
+    res.json({ success: true, company });
+  });
+
+  // /api/auth/active-company — confirm current company
+  app.get('/api/auth/active-company', (_req, res) => {
+    res.json({ company: 'I' });
+  });
+
+  // /api/licenses — stub: always valid in test mode
+  app.get('/api/licenses', (_req, res) => {
+    res.json({
+      valid: true,
+      licenses: [{ app: 'all', valid: true, expires: '2099-12-31' }],
+    });
+  });
+
+  // /api/systems/:id/activate — frontend POSTs this when a system is selected
+  app.post('/api/systems/:id/activate', (req, res) => {
+    res.json({ success: true, active: req.params.id });
+  });
+
+  // /api/auth/user-default-company — pre-fill company dropdown based on username
+  app.get('/api/auth/user-default-company', (req, res) => {
+    res.json({
+      username: req.query.username ?? 'harry',
+      default_company: 'I',
+      name: 'Intsys UK Ltd',
+    });
+  });
+
+  // /api/companies/list — fuller company list used by Login.tsx
+  app.get('/api/companies/list', (_req, res) => {
+    const FRIENDLY: Record<string, string> = {
+      I: 'Intsys UK Ltd',
+      C: 'Cloudsis Limited',
+      K: 'Crakd.ai',
+      Z: 'Orion Vehicles Leasing',
+    };
+    const companies = Object.keys(companyDbNameByCode)
+      .filter((c) => c.length === 1)
+      .map((code) => ({
+        code,
+        name: FRIENDLY[code] ?? code,
+        is_default: code === 'I',
+      }));
+    res.json({ companies });
+  });
+
+  // Force-clear-session — legacy endpoint the frontend hits on errors.
+  app.post('/api/auth/force-clear-session', (_req, res) => {
+    res.json({ success: true });
+  });
+
+  // -----------------------------------------------------------------
   // 3. Load each plugin and mount its router
   // -----------------------------------------------------------------
   for (const plugin of PLUGINS) {

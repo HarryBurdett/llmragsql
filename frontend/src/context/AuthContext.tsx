@@ -1,6 +1,10 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 import axios from 'axios';
 
+// Auth always uses the default API base — the test-mode toggle routes
+// plugin paths (/api/reconcile/, /api/bank-import/, /api/gocardless/,
+// /api/suppliers/) to the standalone TypeScript backend, but auth and
+// system endpoints continue to go to the legacy Python on port 8000.
 const API_BASE_URL = '/api';
 
 // Types
