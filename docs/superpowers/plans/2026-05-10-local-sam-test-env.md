@@ -548,11 +548,145 @@ If only one mailbox exists and all three plugins need it, three separate assignm
 
 ---
 
-## Task 8: Smoke-test each plugin end-to-end against live data
+## Task 8: Migrate legacy Python app data into local SAM
+
+**Files:** none new (uses existing `apps-sam/scripts/migrate-from-python/migrate.ts`)
+
+**What this task produces:** The accumulated learned data from months of legacy Python app use (bank aliases, GoCardless mandates, supplier statements, etc.) migrated from SQLite files at `/Users/maccb/llmragsql/data/<company>/` into the per-app MSSQL databases that local SAM created when the plugins installed.
+
+**Why this matters:** the plugins were ported faithfully but they start with empty per-app databases. Without migrating the legacy state, smoke tests in Task 9 will see a "clean room" environment that doesn't reflect real usage. Migrating gives us realistic testing conditions and validates the migration tool itself before we use it for the eventual live SAM cutover.
+
+**What's migrated, per the migration tool's header docstring:**
+
+| Plugin | Source files | Target tables |
+|---|---|---|
+| bank-reconcile | `data/<company>/bank_reconcile/bank_aliases.db`, `bank_patterns.db`, `deferred_transactions.db` | `bank_import_aliases`, `repeat_entry_aliases`, `match_config`, `duplicate_overrides`, `bank_import_patterns`, `deferred_transactions` |
+| gocardless | `data/<company>/gocardless/gocardless_payments.db`, `gocardless_settings.json` | `gocardless_mandates`, `gocardless_payment_requests`, `gocardless_subscriptions`, `gocardless_subscription_documents`, `gocardless_partner_signups`, `mandate_setup_requests`, `settings` |
+| suppliers | `data/<company>/suppliers/supplier_statements.db` | `supplier_statements` + supporting tables |
+| balance-check | (none — read-only plugin, nothing to migrate) | — |
+
+Each combination of company × plugin is a separate migration run.
+
+- [ ] **Step 1: Install migration tool dependencies.**
+
+```bash
+cd /Users/maccb/llmragsql/apps-sam/scripts/migrate-from-python
+npm install
+```
+
+**✓ Looks good if you see:** `node_modules` populated, `tsx` available in `node_modules/.bin/`.
+
+- [ ] **Step 2: Identify the per-app database names SAM created.**
+
+When each plugin installed in Tasks 6-7, SAM created a per-app MSSQL database for it. The migration tool needs the exact database name as `--target-db`.
+
+```bash
+# Terminal — your Mac
+# Query the SAM MSSQL container directly to list databases
+docker exec -it $(cd ~/.local/sam-test && docker compose ps -q db) \
+  /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$DB_PASSWORD" -C \
+  -Q "SELECT name FROM sys.databases WHERE name LIKE 'ai_sam_app%' OR name LIKE '%bank%' OR name LIKE '%gocardless%' OR name LIKE '%suppliers%';"
+```
+
+**✓ Looks good if you see:** three database names returned, one per plugin that has data to migrate. Likely candidates:
+- `ai_sam_app_bank_reconcile` (or similar)
+- `ai_sam_app_gocardless`
+- `ai_sam_app_suppliers`
+
+**Note the exact names.** They'll be used in Step 4 onward as `--target-db` values.
+
+**✗ If no matching databases appear** — the plugins may not have completed their migrations on install. Check `docker logs ai-sam | grep migration` for any errors. Don't proceed until all three per-app DBs exist.
+
+- [ ] **Step 3: Dry-run migration for each company × plugin combination.**
+
+There are six combinations: `intsys` and `cloudsis` × `bank-reconcile`, `gocardless`, `suppliers`. Run dry-run for all six first so we see expected row counts before writing anything:
+
+```bash
+cd /Users/maccb/llmragsql/apps-sam/scripts/migrate-from-python
+DB_PASSWORD=<the SAM admin DB_PASSWORD from .env>
+
+for company in intsys cloudsis; do
+  for plugin in bank-reconcile gocardless suppliers; do
+    echo "=== $company × $plugin (DRY-RUN) ==="
+    npx tsx migrate.ts \
+      --company $company \
+      --plugin $plugin \
+      --data-root /Users/maccb/llmragsql/data \
+      --target-host localhost --target-port 1433 \
+      --target-user sa --target-password "$DB_PASSWORD" \
+      --target-db ai_sam_app_$(echo $plugin | tr '-' '_') \
+      --dry-run
+  done
+done
+```
+
+**✓ Looks good if you see** (approximate row counts per the existing MIGRATION.md notes — actual counts may differ on current data):
+
+```
+intsys × bank-reconcile:  ~161 aliases, ~95 patterns, ~10 deferred
+intsys × gocardless:      ~39 mandates, ~27 payment_requests, ~78 subscriptions
+intsys × suppliers:       ~9 supplier_statements
+cloudsis × bank-reconcile: ~1 alias, ~7 patterns
+cloudsis × gocardless:    ~35 mandates, ~3 payment_requests, ~66 subscriptions
+cloudsis × suppliers:     ~5 supplier_statements
+```
+
+**✗ If any combination shows `0 rows ready` and you know there's data** — the source path is wrong, or the legacy file naming doesn't match what the tool expects. Check `ls /Users/maccb/llmragsql/data/$company/$plugin/` to see what's actually there.
+
+**✗ If you see `Cannot find target database`** — the `--target-db` name is wrong. Re-check Step 2's database list and adjust the `target-db` template above.
+
+- [ ] **Step 4: Run real migration for each combination.**
+
+Once the dry-run counts look right, remove `--dry-run` and rerun:
+
+```bash
+cd /Users/maccb/llmragsql/apps-sam/scripts/migrate-from-python
+
+for company in intsys cloudsis; do
+  for plugin in bank-reconcile gocardless suppliers; do
+    echo "=== $company × $plugin (REAL RUN) ==="
+    npx tsx migrate.ts \
+      --company $company \
+      --plugin $plugin \
+      --data-root /Users/maccb/llmragsql/data \
+      --target-host localhost --target-port 1433 \
+      --target-user sa --target-password "$DB_PASSWORD" \
+      --target-db ai_sam_app_$(echo $plugin | tr '-' '_')
+  done
+done
+```
+
+**✓ Looks good if you see:** for each combination, `inserted: X rows` matching the dry-run count (or close to it — re-runs may show fewer if idempotent inserts skip duplicates).
+
+**✗ If you see `duplicate key` errors** — the script uses MERGE / idempotent inserts per its docstring, so duplicates should be skipped silently. If they're surfacing as errors, something about the schema doesn't match expectation; send the full error to investigate.
+
+- [ ] **Step 5: Verify migrated data is visible in local SAM.**
+
+Open the local SAM UI for each plugin and confirm the migrated data appears:
+
+```
+# Browser — Local SAM admin
+```
+
+- **bank-reconcile** → check the alias list / pattern list — should show the migrated entries
+- **gocardless** → check the mandate list — should show the migrated mandates
+- **suppliers** → check the supplier list / statement history — should show the migrated statements
+
+**✓ Looks good if you see:** in each plugin's UI, you can see records that originated in the legacy Python data (recognise customer names, dates, etc.).
+
+**✗ If a plugin's UI is empty despite the migration reporting success** — the data went into the wrong table or the plugin queries from a different table name than the migration target. Check `docker exec ... sqlcmd ...` to list tables and row counts in the per-app DB.
+
+- [ ] **Step 6: Commit nothing — this task changed no files in the repo.**
+
+The migration writes to SAM's data volume (not the SQLRAG repo). No commit needed. Move on to Task 9.
+
+---
+
+## Task 9: Smoke-test each plugin end-to-end against live data
 
 **Files:** none (interactive validation, Harry's involvement needed)
 
-**What this task produces:** Confidence that all four plugins behave correctly against live Intsys data. Any bugs surface here, get fixed via Task 9's iteration loop.
+**What this task produces:** Confidence that all four plugins behave correctly against live Intsys data. Any bugs surface here, get fixed via Task 10's iteration loop.
 
 - [ ] **Step 1: Smoke-test `balance-check`.**
 
@@ -563,7 +697,7 @@ In the browser, open `balance-check` → **Cashbook reconcile**. Then **Debtors 
 - Numbers appear (real Opera balances from Intsys)
 - The numbers match what the legacy Python app shows for the same date range (cross-check by running the legacy app at `http://localhost:8000` simultaneously)
 
-**Note any discrepancies.** Don't fix them yet — collect first, fix in Task 9.
+**Note any discrepancies.** Don't fix them yet — collect first, fix in Task 10.
 
 - [ ] **Step 2: Smoke-test `bank-reconcile`.**
 
@@ -624,13 +758,13 @@ Create a file `/tmp/local-sam-smoke-test-results.md`:
 - <issue: ...>
 ```
 
-**If everything passed cleanly** — skip Task 9 and go straight to Task 10.
+**If everything passed cleanly** — skip Task 10 and go straight to Task 11.
 
-**If anything failed** — proceed to Task 9 for the iteration loop.
+**If anything failed** — proceed to Task 10 for the iteration loop.
 
 ---
 
-## Task 9: Iterate — fix any issues, rebuild, re-upload, retest
+## Task 10: Iterate — fix any issues, rebuild, re-upload, retest
 
 **Files:** depends on what's broken; will edit `apps-sam/<plugin>/src/...` files
 
@@ -700,7 +834,7 @@ Mark every plugin's items as resolved. This file becomes part of the proof-of-re
 
 ---
 
-## Task 10: Tag final verified versions and produce handoff `.sap` files
+## Task 11: Tag final verified versions and produce handoff `.sap` files
 
 **Files:** none new; potentially version bumps in `package.json` / `manifest.json` if needed
 
@@ -716,7 +850,7 @@ for p in balance-check bank-reconcile gocardless suppliers; do
 done
 ```
 
-**✓ Looks good if you see:** the version in `package.json` and `manifest.json` matches for each plugin, and the versions reflect any bumps from Task 9.
+**✓ Looks good if you see:** the version in `package.json` and `manifest.json` matches for each plugin, and the versions reflect any bumps from Task 10.
 
 - [ ] **Step 2: Rebuild all four `.sap` files one final time.**
 
@@ -755,7 +889,7 @@ git commit -m "chore: bump plugin versions to v1.0.x after local SAM validation"
 
 ---
 
-## Task 11: Create the "update test sam" automation
+## Task 12: Create the "update test sam" automation
 
 **Files:**
 - Create: `apps-sam/scripts/update-local-sam.sh`
@@ -886,7 +1020,7 @@ EOF
 
 ---
 
-## Task 12: Update `MAINTAIN-SAM-PLUGINS.md` to include local SAM steps
+## Task 13: Update `MAINTAIN-SAM-PLUGINS.md` to include local SAM steps
 
 **Files:**
 - Modify: `apps-sam/MAINTAIN-SAM-PLUGINS.md`
@@ -970,7 +1104,7 @@ EOF
 
 ---
 
-## Task 13: Draft the message to Jonathan
+## Task 14: Draft the message to Jonathan
 
 **Files:**
 - Create: `docs/sam-rewrite/jonathan-pause-message.md`
@@ -1040,7 +1174,7 @@ In chat, paste the body of `docs/sam-rewrite/jonathan-pause-message.md` and ask 
 
 ---
 
-## Task 14: Final acceptance check, README update, push to origin/main
+## Task 15: Final acceptance check, README update, push to origin/main
 
 **Files:**
 - Modify: `apps-sam/README.md`
@@ -1138,20 +1272,20 @@ Commit the memory update separately (memory lives outside the repo, no git track
 - ✅ Live Opera SE + live mailbox wired — Task 4
 - ✅ Build .sap for each plugin — Tasks 5-7
 - ✅ Upload all four to local SAM — Tasks 6-7
-- ✅ Smoke-test end-to-end — Task 8
-- ✅ Iterate on bugs — Task 9
-- ✅ Final tagged .sap files for handoff — Task 10
-- ✅ "Update test sam" script + memory — Task 11
-- ✅ MAINTAIN doc updated — Task 12
-- ✅ Jonathan message drafted (not sent) — Task 13
-- ✅ Final commit + push + memory update — Task 14
+- ✅ Smoke-test end-to-end — Task 9
+- ✅ Iterate on bugs — Task 10
+- ✅ Final tagged .sap files for handoff — Task 11
+- ✅ "Update test sam" script + memory — Task 12
+- ✅ MAINTAIN doc updated — Task 13
+- ✅ Jonathan message drafted (not sent) — Task 14
+- ✅ Final commit + push + memory update — Task 15
 - ✅ Isolation guarantee respected — standalone mode throughout
 - ✅ Team context — Jonathan referred to as teammate, message is internal-tone
 
 ### Placeholder scan
 
 - No "TBD"/"TODO"/"implement later" — every step has actual commands
-- Task 9 is open-ended by design (iteration depends on what's found) but the structure shows how to handle each issue concretely
+- Task 10 is open-ended by design (iteration depends on what's found) but the structure shows how to handle each issue concretely
 - Auth tokens are obtained explicitly (Task 5 Step 3) and reused via `SAM_TOKEN` env var
 - Build approach (A vs B) is decided in Task 5, then Tasks 6-7 reference the chosen approach
 
@@ -1164,9 +1298,9 @@ Commit the memory update separately (memory lives outside the repo, no git track
 
 ### Gaps (acknowledged)
 
-- **Task 9 has variable scope** — by design. Iteration time depends on what's found. Acceptable for a validation pass.
+- **Task 10 has variable scope** — by design. Iteration time depends on what's found. Acceptable for a validation pass.
 - **Task 5 has investigation rather than fixed commands** — by design. We confirm the build mechanism on the day rather than guessing now.
-- **Task 8 needs Harry's involvement** — interactive validation. Marked explicitly.
+- **Task 9 needs Harry's involvement** — interactive validation. Marked explicitly.
 
 ---
 

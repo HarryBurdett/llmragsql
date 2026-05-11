@@ -116,11 +116,12 @@ A SAM platform update touches layer 1 only. Layers 2 and 3 are untouched. There 
 3. Wiring local SAM to live `intsys@wimbledoncloud.net` mailbox
 4. Building `.sap` package for each of the four plugins
 5. Uploading the four `.sap` files into local SAM via the admin UI
-6. End-to-end smoke-testing each plugin against live data
-7. Iterating on fixes — repackage + re-upload loop
-8. Tagging final verified versions and producing the proven `.sap` files for handoff
-9. Updating `apps-sam/MAINTAIN-SAM-PLUGINS.md` Section 1 release flow to include the local-SAM validation step
-10. Drafting the email to Jonathan asking him to hold the existing deployment plan
+6. **Migrating accumulated legacy Python app data** from `/Users/maccb/llmragsql/data/<company>/` into local SAM's per-app MSSQL databases — uses the existing migration tool at `apps-sam/scripts/migrate-from-python/`. Covers bank-reconcile aliases/patterns, GoCardless mandates/subscriptions, supplier statements. Both `intsys` and `cloudsis` companies. balance-check is read-only and has nothing to migrate.
+7. End-to-end smoke-testing each plugin against live data + migrated state
+8. Iterating on fixes — repackage + re-upload loop
+9. Tagging final verified versions and producing the proven `.sap` files for handoff
+10. Updating `apps-sam/MAINTAIN-SAM-PLUGINS.md` Section 1 release flow to include the local-SAM validation step
+11. Drafting the email to Jonathan asking him to hold the existing deployment plan
 
 ## What's out of scope
 
@@ -138,13 +139,14 @@ A SAM platform update touches layer 1 only. Layers 2 and 3 are untouched. There 
 | 2 | Setup wizard — wire to live Opera SE + live mailbox | 30 min |
 | 3 | Build `.sap` package for each of the four plugins | 30 min |
 | 4 | Upload all four `.sap` files into local SAM via admin UI | 15 min |
-| 5 | Smoke-test each plugin end-to-end against live data | 60-90 min |
-| 6 | Iterate on any failures — fix in `apps-sam/<plugin>/`, rebuild `.sap`, re-upload, retest | TBD |
-| 7 | Once all four pass: tag final versions, produce handoff `.sap` files | 15 min |
-| 8 | Update `MAINTAIN-SAM-PLUGINS.md` to include the new local-SAM validation step in the release flow | 15 min |
-| 9 | Draft (don't send) the email to Jonathan asking him to hold the existing deployment until we have proven artifacts | 5 min |
+| 5 | **Migrate legacy Python app data** into local SAM's per-app MSSQL databases (bank aliases, GoCardless mandates, supplier statements — both `intsys` and `cloudsis`) | 30 min |
+| 6 | Smoke-test each plugin end-to-end against live data + migrated state | 60-90 min |
+| 7 | Iterate on any failures — fix in `apps-sam/<plugin>/`, rebuild `.sap`, re-upload, retest | TBD |
+| 8 | Once all four pass: tag final versions, produce handoff `.sap` files | 15 min |
+| 9 | Update `MAINTAIN-SAM-PLUGINS.md` to include the new local-SAM validation step in the release flow | 15 min |
+| 10 | Draft (don't send) the email to Jonathan asking him to hold the existing deployment until we have proven artifacts | 5 min |
 
-**Total active work for initial setup:** ~3-4 hours, comfortably spread over a couple of days.
+**Total active work for initial setup:** ~4-5 hours, comfortably spread over a couple of days.
 
 ## Risks and mitigations
 
@@ -173,7 +175,8 @@ The project is considered done when:
 - [ ] Local SAM admin UI loads at the expected URL on Harry's Mac
 - [ ] All four plugins appear in the local SAM Admin → Apps list as Installed
 - [ ] Each plugin's main UI loads without errors
-- [ ] A representative smoke-test passes for each plugin against live Opera SE (specifics in the implementation plan)
+- [ ] **Legacy Python data is migrated** for both `intsys` and `cloudsis` companies — accumulated bank aliases, GoCardless mandates, supplier statements visible in the plugin UIs
+- [ ] A representative smoke-test passes for each plugin against live Opera SE + migrated state (specifics in the implementation plan)
 - [ ] No double-posts to Opera detected during validation
 - [ ] Final `.sap` files exist and are ready for Jonathan
 - [ ] Maintenance doc updated to reference local SAM in the release flow
