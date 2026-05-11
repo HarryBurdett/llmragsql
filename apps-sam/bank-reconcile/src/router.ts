@@ -15,6 +15,7 @@ import {
 import {
   getUnreconciledEntries,
   getReconciliationStatus,
+  recoverFromOperaDivergence,
 } from './services/reconciliation-status.js';
 import {
   ignoreTransaction,
@@ -441,6 +442,42 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Get reconciliation status failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/recover-from-restore
+   *
+   * SAM enhancement — if Opera SQL is restored to an earlier backup
+   * (or someone unreconciles directly in Opera Cashbook), SAM's
+   * `bank_statement_imports` history may show statements as
+   * reconciled that Opera no longer reflects. This endpoint detects
+   * the divergence (any SAM row whose closing balance > Opera's
+   * `nk_recbal`) and marks those rows un-reconciled so they can be
+   * re-processed via the normal import flow.
+   *
+   * Body: none. Returns the cleared imports so the UI can list them.
+   */
+  router.post('/api/reconcile/bank/:bank_code/recover-from-restore', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      if (!bankCode) {
+        res.status(400).json({ success: false, error: 'Missing bank_code' });
+        return;
+      }
+      const result = await recoverFromOperaDivergence(operaDb, appDb, bankCode);
+      if (!result.success) {
+        res.status(500).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Recover from restore failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

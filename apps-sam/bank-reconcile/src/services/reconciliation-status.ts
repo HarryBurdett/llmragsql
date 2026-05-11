@@ -103,6 +103,13 @@ export async function getUnreconciledEntries(
 // get_reconciliation_status
 // =====================================================================
 
+export interface StaleReconciledStatement {
+  import_id: number;
+  filename: string | null;
+  statement_date: string | null;
+  closing_balance: number;
+}
+
 export interface ReconciliationStatus {
   success: boolean;
   bank_account?: string;
@@ -122,6 +129,14 @@ export interface ReconciliationStatus {
   partial_entries?: number;
   sequential_gating?: boolean;
   sequential_gating_self?: boolean;
+  // SAM-enhancement: Opera-restore detection. When Opera SQL is rolled
+  // back to an earlier backup, SAM's `bank_statement_imports` history
+  // can disagree with Opera's reconciled balance (`nbank.nk_recbal`).
+  // This block surfaces the divergence so the user (or a recovery
+  // endpoint) can re-process the affected statements.
+  opera_divergence_detected?: boolean;
+  opera_divergence_message?: string | null;
+  stale_reconciled_statements?: StaleReconciledStatement[];
   error?: string;
 }
 
@@ -275,6 +290,67 @@ export async function getReconciliationStatus(
       }
     }
 
+    // ============================================================
+    // SAM enhancement — Opera divergence / restore detection
+    // ============================================================
+    // SAM's `bank_statement_imports` records the closing balance of
+    // every statement it has reconciled. Opera's `nk_recbal` should
+    // never drop BELOW the highest closing balance SAM has marked as
+    // reconciled. If it does, Opera was rolled back to an earlier
+    // backup (or someone unreconciled directly in Opera Cashbook),
+    // and the SAM history is now stale. Surface the affected rows so
+    // the user can re-process them.
+    let operaDivergenceDetected = false;
+    let operaDivergenceMessage: string | null = null;
+    let staleStatements: StaleReconciledStatement[] = [];
+    if (appDb) {
+      try {
+        const rows = (await appDb('bank_statement_imports')
+          .select(
+            'id',
+            'filename',
+            'statement_date',
+            'closing_balance',
+          )
+          .where('bank_code', bankCode)
+          .andWhere('is_reconciled', 1)
+          .andWhere('closing_balance', '>', reconciledBalance + 0.005)
+          .orderBy('closing_balance', 'asc')) as unknown as Array<{
+          id: number;
+          filename: string | null;
+          statement_date: Date | string | null;
+          closing_balance: number | string | null;
+        }>;
+        if (rows.length > 0) {
+          staleStatements = rows.map((r) => ({
+            import_id: Number(r.id),
+            filename: r.filename,
+            statement_date: dateToYmd(r.statement_date) || null,
+            closing_balance: Number(r.closing_balance ?? 0),
+          }));
+          operaDivergenceDetected = true;
+          const names = staleStatements
+            .map((s) => s.filename || `import_id=${s.import_id}`)
+            .slice(0, 3)
+            .join(', ');
+          const more =
+            staleStatements.length > 3
+              ? ` (+${staleStatements.length - 3} more)`
+              : '';
+          operaDivergenceMessage =
+            `Opera's reconciled balance (£${reconciledBalance.toFixed(2)}) is ` +
+            `lower than the closing balance of ${staleStatements.length} ` +
+            `statement(s) SAM has marked as reconciled: ${names}${more}. ` +
+            `This usually means Opera was restored from a backup or those ` +
+            `reconciliations were undone directly in Opera Cashbook. ` +
+            `Use the recovery endpoint to mark these statements ` +
+            `unreconciled so they can be re-processed.`;
+        }
+      } catch {
+        // detection is advisory — never block the status response
+      }
+    }
+
     return {
       success: true,
       bank_account: bankCode,
@@ -293,8 +369,87 @@ export async function getReconciliationStatus(
       partial_entries: partialEntries,
       sequential_gating: sequentialGating,
       sequential_gating_self: sequentialGatingSelf,
+      opera_divergence_detected: operaDivergenceDetected,
+      opera_divergence_message: operaDivergenceMessage,
+      stale_reconciled_statements: staleStatements,
     };
   } catch (err: any) {
     return { success: false, error: err?.message ?? String(err) };
+  }
+}
+
+// =====================================================================
+// Recovery — clear stale `is_reconciled` flags after Opera restore
+// =====================================================================
+
+export interface OperaDivergenceRecoveryResult {
+  success: boolean;
+  cleared: number;
+  cleared_imports?: StaleReconciledStatement[];
+  error?: string;
+}
+
+/**
+ * Mark every `bank_statement_imports` row whose closing balance is
+ * higher than Opera's current `nk_recbal` as un-reconciled, so they
+ * can be re-imported. Called by the user after confirming an Opera
+ * restore has put SAM and Opera out of sync.
+ *
+ * Returns the rows that were cleared so the caller can list them in
+ * the UI.
+ */
+export async function recoverFromOperaDivergence(
+  operaDb: Knex,
+  appDb: Knex,
+  bankCode: string,
+): Promise<OperaDivergenceRecoveryResult> {
+  try {
+    const nbank = (await operaDb('nbank')
+      .select(operaDb.raw('nk_recbal / 100.0 AS reconciled_balance'))
+      .where('nk_acnt', bankCode)
+      .first()) as { reconciled_balance: number | string | null } | undefined;
+    if (!nbank) {
+      return { success: false, cleared: 0, error: `Bank ${bankCode} not found in nbank` };
+    }
+    const reconciledBalance = Number(nbank.reconciled_balance ?? 0);
+
+    const stale = (await appDb('bank_statement_imports')
+      .select('id', 'filename', 'statement_date', 'closing_balance')
+      .where('bank_code', bankCode)
+      .andWhere('is_reconciled', 1)
+      .andWhere('closing_balance', '>', reconciledBalance + 0.005)) as unknown as Array<{
+      id: number;
+      filename: string | null;
+      statement_date: Date | string | null;
+      closing_balance: number | string | null;
+    }>;
+    if (stale.length === 0) {
+      return { success: true, cleared: 0, cleared_imports: [] };
+    }
+
+    const ids = stale.map((s) => s.id);
+    const cleared = Number(
+      await appDb('bank_statement_imports')
+        .whereIn('id', ids)
+        .update({
+          is_reconciled: 0,
+          reconciled_count: 0,
+          reconciled_at: null,
+          reconciled_by: null,
+        }),
+    );
+
+    return {
+      success: true,
+      cleared,
+      cleared_imports: stale.map((s) => ({
+        import_id: Number(s.id),
+        filename: s.filename,
+        statement_date: dateToYmd(s.statement_date) || null,
+        closing_balance: Number(s.closing_balance ?? 0),
+      })),
+    };
+  } catch (err: any) {
+    return { success: false, cleared: 0, error: err?.message ?? String(err) };
   }
 }
