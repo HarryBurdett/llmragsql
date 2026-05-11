@@ -207,20 +207,20 @@ export async function completeReconciliation(
 
   // 6. Enrich response
   if (result.success) {
-    const warnings = [...(result.warnings ?? [])];
+    const details = [...(result.details ?? [])];
     if (partial) {
-      warnings.push(
+      details.push(
         'Partial reconciliation - matched entries posted with line numbers. ' +
           'Complete remaining items in Opera Cashbook > Reconcile.',
       );
     } else {
-      warnings.push(
+      details.push(
         `Closing balance validated: £${input.closingBalance.toFixed(2)}`,
       );
     }
     return {
       ...result,
-      warnings,
+      details,
       entries_reconciled: result.records_reconciled ?? 0,
       partial,
       partial_auto_detected: partialAutoDetected || undefined,

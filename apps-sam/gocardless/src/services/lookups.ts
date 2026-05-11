@@ -181,11 +181,10 @@ export interface GcVatCode {
 
 export interface VatCodesResponse {
   success: boolean;
-  vat_codes: GcVatCode[];
-  /** Legacy alias for `vat_codes` — kept for any external caller
-   *  that read the original `/api/gocardless/vat-codes` contract. */
+  /** Legacy shape — `codes` is the canonical key (matches
+   *  apps/gocardless/api/routes.py:1875 exactly). Frontend reads this. */
   codes: GcVatCode[];
-  /** ISO date the rates were evaluated against. Legacy parity. */
+  /** ISO date the rates were evaluated against. */
   as_of_date: string;
   error?: string;
 }
@@ -204,9 +203,7 @@ export async function getVatCodes(
     }
 
     const result = await fetchVatCodesWithRates(operaDb, refDate);
-    // Shared returns vatCodes (camelCase). Map to the snake_case shape
-    // the Python endpoint emits (frontend depends on it).
-    const vatCodes: GcVatCode[] = result.vatCodes.map((c) => ({
+    const codes: GcVatCode[] = result.vatCodes.map((c) => ({
       code: c.code,
       description: c.description,
       rate: c.rate,
@@ -215,14 +212,12 @@ export async function getVatCodes(
     }));
     return {
       success: true,
-      vat_codes: vatCodes,
-      codes: vatCodes,
+      codes,
       as_of_date: refDate.toISOString().slice(0, 10),
     };
   } catch (err: any) {
     return {
       success: false,
-      vat_codes: [],
       codes: [],
       as_of_date: new Date().toISOString().slice(0, 10),
       error: err?.message ?? String(err),
@@ -276,6 +271,7 @@ export interface ImportConfigResponse {
   batch_types_recommended: BatchType | null;
   nominal_accounts: NominalAccount[];
   vat_codes: GcVatCode[];
+  vat_as_of_date: string;
   error?: string;
 }
 
@@ -283,7 +279,11 @@ export interface ImportConfigResponse {
  * Consolidated endpoint returning batch_types, nominal_accounts, and
  * vat_codes in a single response to reduce frontend round-trips.
  *
- * Faithful port of `get_gocardless_import_config`.
+ * Faithful port of `get_gocardless_import_config`
+ * (apps/gocardless/api/routes.py:1881). Note the consolidated
+ * endpoint renames the per-endpoint `codes` to `vat_codes` (and
+ * `as_of_date` to `vat_as_of_date`) to avoid name collisions with
+ * batch_types — matches the legacy contract exactly.
  */
 export async function getImportConfig(
   operaDb: Knex,
@@ -301,7 +301,8 @@ export async function getImportConfig(
       batch_types: batches.batch_types,
       batch_types_recommended: batches.recommended ?? null,
       nominal_accounts: accounts.accounts,
-      vat_codes: vat.vat_codes,
+      vat_codes: vat.codes,
+      vat_as_of_date: vat.as_of_date,
     };
   } catch (err: any) {
     return {
@@ -310,6 +311,7 @@ export async function getImportConfig(
       batch_types_recommended: null,
       nominal_accounts: [],
       vat_codes: [],
+      vat_as_of_date: new Date().toISOString().slice(0, 10),
       error: err?.message ?? String(err),
     };
   }

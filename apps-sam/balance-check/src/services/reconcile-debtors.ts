@@ -39,20 +39,23 @@ import {
 import { analyseVariance, type VarianceAnalysisResult } from './variance-analysis.js';
 
 /**
- * Translate the shared variance-analysis result (creditors-shape with
- * `pl_*` keys) into the debtors-shape with `sl_*` keys + flat
- * top-level totals matching the legacy Python `reconcile_debtors`
- * response (apps/balance_check/api/routes.py).
+ * Translate the shared variance-analysis result (which uses the
+ * creditors `pl_*` key names) into the canonical debtors response
+ * shape — exactly as legacy `reconcile_debtors` emits
+ * (apps/balance_check/api/routes.py).
  *
- * Legacy debtors fields:
- *   value_diff_total, value_diff_count
- *   nl_only_total, nl_only_count
- *   sl_only_total, sl_only_count
+ * Legacy debtors fields (flat — no `summary` nesting):
+ *   items[], count
+ *   value_diff_count, value_diff_total
+ *   nl_only_count,   nl_only_total
+ *   sl_only_count,   sl_only_total
  *   small_balance_count
- *   nl_total_check, sl_total_check
- *   items[], note
+ *   nl_total_check,  sl_total_check
+ *   note
  */
-function adaptForDebtors(v: VarianceAnalysisResult | undefined): Record<string, unknown> | undefined {
+function adaptForDebtors(
+  v: VarianceAnalysisResult | undefined,
+): Record<string, unknown> | undefined {
   if (!v) return undefined;
   return {
     items: v.items,
@@ -66,13 +69,7 @@ function adaptForDebtors(v: VarianceAnalysisResult | undefined): Record<string, 
     small_balance_count: v.small_balance_count,
     nl_total_check: v.nl_total_check,
     sl_total_check: v.pl_total_check,
-    // Keep the nested `summary` for backwards compatibility with any
-    // caller that has already migrated to the SAM-port shape.
-    summary: {
-      nl_only: v.summary.nl_only,
-      sl_only: v.summary.pl_only,
-      value_differences: v.summary.value_differences,
-    },
+    note: null,
   };
 }
 
