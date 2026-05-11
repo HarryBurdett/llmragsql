@@ -149,53 +149,86 @@ export async function processStatement(
     ctx = null;
   }
 
-  // Load SAM's per-line tracking for this bank. When a preview line
-  // matches a stored row, the stored `posted_entry_number` is the
-  // authoritative "is this posted to Opera" signal — Opera-side
+  // Load SAM's per-line tracking for this bank, scoped to imports
+  // whose statement_date overlaps the preview window. When a preview
+  // line matches a stored row, the stored `posted_entry_number` is
+  // the authoritative "is this posted to Opera" signal — Opera-side
   // findDuplicates is a fallback only for lines SAM has never seen
   // before. Critical for the post-restore recovery flow: after we
   // clear orphan posted_entry_number values, re-analysis must respect
   // that and not re-flag the lines as posted just because findDuplicates
   // grabs an unrelated Opera entry within ±14 days.
-  const trackedByKey = new Map<string, { posted_entry_number: string | null }>();
+  //
+  // Scope guard: we only look at imports whose statement_date falls
+  // within ±7 days of the preview's statement_date / period bounds.
+  // Without this scope, a brand-new statement could pick up unrelated
+  // tracking from a different statement that happened to have a line
+  // with the same (date, amount), producing wrong is_duplicate flags.
+  // With the scope, we only override findDuplicates for tracking that
+  // genuinely belongs to the statement being re-analysed.
+  const trackedByKey = new Map<
+    string,
+    { posted_entry_number: string | null; count: number }
+  >();
   if (appDb) {
     try {
-      const stored = (await appDb('bank_statement_transactions')
-        .join(
-          'bank_statement_imports',
-          'bank_statement_transactions.import_id',
-          'bank_statement_imports.id',
-        )
-        .where('bank_statement_imports.bank_code', input.bankCode)
-        .select(
-          'bank_statement_transactions.post_date as post_date',
-          'bank_statement_transactions.amount as amount',
-          'bank_statement_transactions.posted_entry_number as posted_entry_number',
-        )) as unknown as Array<{
-        post_date: Date | string | null;
-        amount: number | string | null;
-        posted_entry_number: string | null;
-      }>;
-      for (const row of stored) {
-        const ymd =
-          row.post_date instanceof Date
-            ? row.post_date.toISOString().slice(0, 10)
-            : String(row.post_date ?? '').slice(0, 10);
-        if (!ymd) continue;
-        const amt = Number(row.amount ?? 0);
-        const key = `${ymd}|${amt.toFixed(2)}`;
-        // If multiple stored rows share (date, amount), prefer the one
-        // that has a posted_entry_number — it represents real posting
-        // state. Otherwise the most recently cleared row wins, which
-        // correctly says "not posted".
-        const existing = trackedByKey.get(key);
-        if (
-          !existing ||
-          (!existing.posted_entry_number && row.posted_entry_number)
-        ) {
-          trackedByKey.set(key, {
-            posted_entry_number: (row.posted_entry_number ?? null) || null,
-          });
+      const info = preview.statement_info ?? null;
+      const scopeAnchor =
+        info?.statement_date ?? info?.period_end ?? info?.period_start ?? null;
+      // Only apply tracking override when we have an anchor date to
+      // scope it. Without an anchor we can't safely distinguish the
+      // current statement from historical ones, so fall back to the
+      // pre-existing Opera-only path for every line.
+      if (scopeAnchor) {
+        const anchorMs = Date.parse(scopeAnchor);
+        if (Number.isFinite(anchorMs)) {
+          const lo = new Date(anchorMs - 7 * 86400000).toISOString().slice(0, 10);
+          const hi = new Date(anchorMs + 7 * 86400000).toISOString().slice(0, 10);
+          const stored = (await appDb('bank_statement_transactions')
+            .join(
+              'bank_statement_imports',
+              'bank_statement_transactions.import_id',
+              'bank_statement_imports.id',
+            )
+            .where('bank_statement_imports.bank_code', input.bankCode)
+            .andWhere('bank_statement_imports.statement_date', '>=', lo)
+            .andWhere('bank_statement_imports.statement_date', '<=', hi)
+            .select(
+              'bank_statement_transactions.post_date as post_date',
+              'bank_statement_transactions.amount as amount',
+              'bank_statement_transactions.posted_entry_number as posted_entry_number',
+            )) as unknown as Array<{
+            post_date: Date | string | null;
+            amount: number | string | null;
+            posted_entry_number: string | null;
+          }>;
+          for (const row of stored) {
+            const ymd =
+              row.post_date instanceof Date
+                ? row.post_date.toISOString().slice(0, 10)
+                : String(row.post_date ?? '').slice(0, 10);
+            if (!ymd) continue;
+            const amt = Number(row.amount ?? 0);
+            const key = `${ymd}|${amt.toFixed(2)}`;
+            const existing = trackedByKey.get(key);
+            const pen = (row.posted_entry_number ?? '').trim() || null;
+            if (!existing) {
+              trackedByKey.set(key, {
+                posted_entry_number: pen,
+                count: 1,
+              });
+            } else {
+              // Multiple stored rows share this (date, amount) — we
+              // can't safely pick one to override findDuplicates, so
+              // we increment the count and the per-line decision
+              // logic will skip the override entirely. Old behaviour
+              // preserved for ambiguous keys.
+              existing.count += 1;
+              if (pen && !existing.posted_entry_number) {
+                existing.posted_entry_number = pen;
+              }
+            }
+          }
         }
       }
     } catch {
@@ -221,14 +254,18 @@ export async function processStatement(
       bank_code: input.bankCode,
     });
     const top = candidates.find((c) => c.confidence >= 0.85);
-    // SAM-side per-line tracking is the source of truth when present.
-    // A tracked row with posted_entry_number set → posted. A tracked
-    // row with it cleared (e.g. after orphan recovery) → explicitly
-    // not posted, ignore the Opera-side findDuplicates result. Lines
-    // SAM has never seen still defer to findDuplicates as before.
-    const isDup = tracked
-      ? !!(tracked.posted_entry_number && tracked.posted_entry_number.trim())
-      : !!top;
+    // SAM-side per-line tracking is the source of truth when present
+    // AND unambiguous (exactly one stored row matches this date+amount
+    // within the statement scope). A tracked row with posted_entry_number
+    // set → posted. A tracked row with it cleared (e.g. after orphan
+    // recovery) → explicitly not posted, ignore the Opera-side
+    // findDuplicates result. Multiple stored rows for the same
+    // date+amount fall back to findDuplicates so we don't make a wrong
+    // override.
+    const isDup =
+      tracked && tracked.count === 1
+        ? !!(tracked.posted_entry_number && tracked.posted_entry_number.trim())
+        : !!top;
     if (isDup) duplicateCount += 1;
 
     let suggestedAccount: ProcessTransaction['suggested_account'] = null;
