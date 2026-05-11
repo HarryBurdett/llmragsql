@@ -174,16 +174,51 @@ export async function scanAllBanks(
   operaDb: Knex,
 ): Promise<{
   success: boolean;
-  banks: Array<{ bank_code: string; description: string }>;
+  banks: Array<{
+    bank_code: string;
+    description: string;
+    sort_code: string;
+    account_number: string;
+    reconciled_balance: number | null;
+    current_balance: number | null;
+    type: string | null;
+    statements: unknown[];
+    statement_count: number;
+  }>;
   error?: string;
 }> {
+  // Legacy response shape: each bank includes statements: [] (always an array)
+  // plus reconciliation balances. The frontend iterates over bank.statements,
+  // so omitting it causes a runtime crash in PendingStatementsTab.
+  // See apps/bank_reconcile/api/routes.py:6688 for the canonical legacy shape.
+  // Email scanning + extraction + balance validation are NOT ported in this
+  // pass (they're the heavy AI/email-ingest flows deferred from the rewrite);
+  // we return the bank list with empty statements arrays so the page renders.
   try {
     const rows = (await operaDb.raw(
-      `SELECT RTRIM(nk_acnt) AS bank_code, RTRIM(nk_desc) AS description
+      `SELECT RTRIM(nk_acnt) AS bank_code,
+              RTRIM(nk_desc) AS description,
+              RTRIM(ISNULL(nk_sort, '')) AS sort_code,
+              RTRIM(ISNULL(nk_number, '')) AS account_number,
+              ISNULL(nk_recbal, 0) / 100.0 AS reconciled_balance,
+              ISNULL(nk_curbal, 0) / 100.0 AS current_balance
        FROM nbank WITH (NOLOCK)
        ORDER BY nk_acnt`,
-    )) as unknown as Array<{ bank_code: string; description: string }>;
-    return { success: true, banks: rows ?? [] };
+    )) as unknown as Array<{
+      bank_code: string;
+      description: string;
+      sort_code: string;
+      account_number: string;
+      reconciled_balance: number | null;
+      current_balance: number | null;
+    }>;
+    const banks = (rows ?? []).map((r) => ({
+      ...r,
+      type: null,
+      statements: [],
+      statement_count: 0,
+    }));
+    return { success: true, banks };
   } catch (err: any) {
     return { success: false, banks: [], error: err?.message ?? String(err) };
   }
