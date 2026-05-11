@@ -149,11 +149,70 @@ export async function processStatement(
     ctx = null;
   }
 
+  // Load SAM's per-line tracking for this bank. When a preview line
+  // matches a stored row, the stored `posted_entry_number` is the
+  // authoritative "is this posted to Opera" signal — Opera-side
+  // findDuplicates is a fallback only for lines SAM has never seen
+  // before. Critical for the post-restore recovery flow: after we
+  // clear orphan posted_entry_number values, re-analysis must respect
+  // that and not re-flag the lines as posted just because findDuplicates
+  // grabs an unrelated Opera entry within ±14 days.
+  const trackedByKey = new Map<string, { posted_entry_number: string | null }>();
+  if (appDb) {
+    try {
+      const stored = (await appDb('bank_statement_transactions')
+        .join(
+          'bank_statement_imports',
+          'bank_statement_transactions.import_id',
+          'bank_statement_imports.id',
+        )
+        .where('bank_statement_imports.bank_code', input.bankCode)
+        .select(
+          'bank_statement_transactions.post_date as post_date',
+          'bank_statement_transactions.amount as amount',
+          'bank_statement_transactions.posted_entry_number as posted_entry_number',
+        )) as unknown as Array<{
+        post_date: Date | string | null;
+        amount: number | string | null;
+        posted_entry_number: string | null;
+      }>;
+      for (const row of stored) {
+        const ymd =
+          row.post_date instanceof Date
+            ? row.post_date.toISOString().slice(0, 10)
+            : String(row.post_date ?? '').slice(0, 10);
+        if (!ymd) continue;
+        const amt = Number(row.amount ?? 0);
+        const key = `${ymd}|${amt.toFixed(2)}`;
+        // If multiple stored rows share (date, amount), prefer the one
+        // that has a posted_entry_number — it represents real posting
+        // state. Otherwise the most recently cleared row wins, which
+        // correctly says "not posted".
+        const existing = trackedByKey.get(key);
+        if (
+          !existing ||
+          (!existing.posted_entry_number && row.posted_entry_number)
+        ) {
+          trackedByKey.set(key, {
+            posted_entry_number: (row.posted_entry_number ?? null) || null,
+          });
+        }
+      }
+    } catch {
+      // Tracking lookup is best-effort; fall through to Opera-only
+      // findDuplicates if anything goes wrong.
+    }
+  }
+
   const matched: ProcessTransaction[] = [];
   let duplicateCount = 0;
   let matchedCount = 0;
 
   for (const txn of preview.transactions) {
+    const dateYmd = (txn.date ?? '').slice(0, 10);
+    const amtKey = Number(txn.amount ?? 0).toFixed(2);
+    const tracked = trackedByKey.get(`${dateYmd}|${amtKey}`);
+
     // Duplicate detection (preserved from prior implementation)
     const candidates = await findDuplicates(operaDb, {
       name: txn.name ?? '',
@@ -162,7 +221,14 @@ export async function processStatement(
       bank_code: input.bankCode,
     });
     const top = candidates.find((c) => c.confidence >= 0.85);
-    const isDup = !!top;
+    // SAM-side per-line tracking is the source of truth when present.
+    // A tracked row with posted_entry_number set → posted. A tracked
+    // row with it cleared (e.g. after orphan recovery) → explicitly
+    // not posted, ignore the Opera-side findDuplicates result. Lines
+    // SAM has never seen still defer to findDuplicates as before.
+    const isDup = tracked
+      ? !!(tracked.posted_entry_number && tracked.posted_entry_number.trim())
+      : !!top;
     if (isDup) duplicateCount += 1;
 
     let suggestedAccount: ProcessTransaction['suggested_account'] = null;
