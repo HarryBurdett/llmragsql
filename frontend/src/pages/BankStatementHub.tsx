@@ -121,6 +121,25 @@ interface ReconcileHandoff {
 
 // ---- Component ----
 
+interface RestoreCheckBank {
+  bank_code: string;
+  description: string;
+  reconciled_balance: number;
+  divergence_detected: boolean;
+  divergence_message: string | null;
+  orphan_line_count: number;
+  orphan_statement_count: number;
+  needs_recovery: boolean;
+}
+interface RestoreCheckResponse {
+  success: boolean;
+  detected: boolean;
+  total_banks_checked: number;
+  affected_banks: number;
+  banks: RestoreCheckBank[];
+  summary_message: string | null;
+}
+
 export function BankStatementHub() {
   const [activeTab, setActiveTab] = useState<TabType>('pending');
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
@@ -128,6 +147,8 @@ export function BankStatementHub() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [lastScanTime, setLastScanTime] = useState<string | null>(null);
   const [daysBack, setDaysBack] = useState(30);
+  const [restoreCheck, setRestoreCheck] = useState<RestoreCheckResponse | null>(null);
+  const [restoreBannerDismissed, setRestoreBannerDismissed] = useState(false);
 
   const [selectedStatement, setSelectedStatement] = useState<{
     bankCode: string;
@@ -256,15 +277,31 @@ export function BankStatementHub() {
   const handleScan = useCallback(async () => {
     setScanning(true);
     setScanError(null);
+    setRestoreBannerDismissed(false);
     try {
-      const resp = await authFetch(`/api/bank-import/scan-all-banks?days_back=${daysBack}&validate_balances=true`);
-      const data: ScanResult = await resp.json();
+      // Run scan + tenant-wide Opera-restore detection in parallel.
+      // The restore-check looks at every bank's most-recent reconciled
+      // statement vs Opera nk_recbal, plus every posted statement line
+      // against Opera atran/aentry — if Opera was restored from a
+      // backup since the last scan, the banner fires with a list of
+      // affected banks and a Recover prompt.
+      const [scanResp, restoreResp] = await Promise.all([
+        authFetch(`/api/bank-import/scan-all-banks?days_back=${daysBack}&validate_balances=true`),
+        authFetch('/api/bank-import/restore-check'),
+      ]);
+      const data: ScanResult = await scanResp.json();
       if (data.success) {
         setScanResult(data);
         setLastScanTime(new Date().toLocaleTimeString());
         setExpandedBanks(new Set(Object.keys(data.banks)));
       } else {
         setScanError(friendlyError(data.error || 'Scan failed'));
+      }
+      try {
+        const rc = (await restoreResp.json()) as RestoreCheckResponse;
+        setRestoreCheck(rc.success ? rc : null);
+      } catch {
+        setRestoreCheck(null);
       }
     } catch (err: any) {
       setScanError(friendlyError(err.message || 'Network error'));
@@ -629,6 +666,47 @@ export function BankStatementHub() {
           </button>
         ))}
       </div>
+
+      {restoreCheck?.detected && !restoreBannerDismissed && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-4 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span className="text-2xl text-amber-600">⚠</span>
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-amber-900">
+                Opera restore likely detected — {restoreCheck.affected_banks} bank account(s) need review
+              </div>
+              <div className="mt-1 text-sm text-amber-800">
+                {restoreCheck.summary_message ??
+                  'SAM has tracking for statements or lines that no longer exist in Opera.'}
+              </div>
+              <ul className="mt-2 list-disc pl-5 text-sm text-amber-800">
+                {restoreCheck.banks
+                  .filter((b) => b.needs_recovery)
+                  .map((b) => (
+                    <li key={b.bank_code}>
+                      <span className="font-medium">{b.bank_code}</span>{' '}
+                      {b.description} — rec balance £{b.reconciled_balance.toFixed(2)}
+                      {b.orphan_line_count > 0 && (
+                        <> · {b.orphan_line_count} orphaned line(s) across {b.orphan_statement_count} statement(s)</>
+                      )}
+                      {b.divergence_detected && <> · statement-level divergence</>}
+                    </li>
+                  ))}
+              </ul>
+              <div className="mt-2 text-xs text-amber-700">
+                Open each affected bank's reconcile page to review the details and confirm recovery.
+              </div>
+            </div>
+            <button
+              onClick={() => setRestoreBannerDismissed(true)}
+              className="text-amber-500 hover:text-amber-700"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {activeTab === 'pending' && (
         <PendingStatementsTab

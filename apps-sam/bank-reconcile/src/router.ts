@@ -21,6 +21,7 @@ import {
   checkOrphanedTransactions,
   recoverOrphanedTransactions,
 } from './services/transaction-orphan-check.js';
+import { checkRestoreAcrossAllBanks } from './services/restore-check-all.js';
 import {
   ignoreTransaction,
   listIgnoredTransactions,
@@ -3070,6 +3071,30 @@ export function createRouter(ctx: AppContext): Router {
     const operaDb = getOperaDb(req, res);
     if (!operaDb) return;
     res.json(await scanAllBanks(operaDb));
+  });
+
+  /**
+   * GET /api/bank-import/restore-check
+   *
+   * Tenant-wide Opera-restore detection — runs the per-bank
+   * divergence + per-line orphan checks across every bank in nbank
+   * and returns one aggregated summary. The Bank Statement Hub
+   * page calls this on load (alongside scan-all-banks) so the user
+   * sees a single banner when ANY bank's SAM tracking is out of
+   * sync with Opera. Read-only.
+   */
+  router.get('/api/bank-import/restore-check', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const result = await checkRestoreAcrossAllBanks(operaDb, appDb);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Restore-check failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
   });
 
   // ---------------------------------------------------------------
