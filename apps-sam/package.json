@@ -9,7 +9,8 @@
     "balance-check",
     "gocardless",
     "bank-reconcile",
-    "suppliers"
+    "suppliers",
+    "standalone-runner"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
