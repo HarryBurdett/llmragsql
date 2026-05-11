@@ -5,132 +5,28 @@ import axios from 'axios';
 // at build time so the frontend talks to the gateway. SAM deployment:
 // VITE_API_BASE_URL is set to SAM's ingress URL.
 //
-// Default '/' (relative path) preserves today's behaviour for the
+// Default '' (relative path) preserves today's behaviour for the
 // un-containerised Vite dev server with Python API on the same host.
-//
-// LEVEL-2 TEST-MODE TOGGLE — per-path routing:
-// If the URL contains `?test=1` (or previous load persisted the choice
-// to localStorage), route **plugin API calls** to the standalone
-// TypeScript backend at http://localhost:3001, while leaving legacy
-// infrastructure calls (auth, admin, systems, companies) going to the
-// default (port 8000 via Vite proxy).
-//
-// Plugin path prefixes — owned by the rewritten SAM plugins:
-//   /api/reconcile/        — balance-check + bank-reconcile
-//   /api/bank-reconcile/   — bank-reconcile status
-//   /api/bank-import/      — bank-reconcile import flows
-//   /api/gocardless/       — gocardless
-//   /api/suppliers/        — suppliers
-//
-// Everything else (/api/auth/*, /api/systems, /api/licenses,
-// /api/companies, /api/email/*, etc.) stays on the legacy backend.
-//
-// Switch off with `?test=0`.
-const SAM_TEST_BACKEND = 'http://localhost:3001';
-const PLUGIN_PATH_PREFIXES = [
-  '/api/reconcile/',
-  '/api/bank-reconcile/',
-  // SAM serves the full /api/bank-reconciliation/* surface but in test
-  // mode we only redirect the statement-transactions read because that
-  // one drives the matching view's alreadyPostedRows state. The other
-  // endpoints (/complete, /match-statement, /validate-statement) stay
-  // on legacy where they're battle-tested. Add them here individually
-  // when SAM parity for each is verified end-to-end.
-  '/api/bank-reconciliation/statement-transactions',
-  '/api/bank-import/',
-  '/api/gocardless/',
-  '/api/suppliers/',
-];
 
-// Paths the SAM plugins handle, but which depend on SAM platform
-// services (ctx.emailIngest, ctx.llm, ctx.graph) that the standalone
-// runner doesn't provide. Route to legacy backend so end-to-end email
-// → PDF extraction → posting still works in test mode. In real SAM,
-// these will be served by the .sap plugins backed by SAM's services.
-// Keep this list narrow — anything not here uses the new backend.
-const LEGACY_FALLBACK_PREFIXES = [
-  '/api/bank-import/scan-emails',
-  '/api/bank-import/scan-all-banks',
-  '/api/bank-import/preview-from-email',
-  '/api/bank-import/import-from-email',
-  '/api/bank-import/raw-preview-email',
-  '/api/bank-import/fetch-emails-to-folder',
-  '/api/bank-import/email-import-history',
-];
-
-function isPluginPath(path: string): boolean {
-  if (LEGACY_FALLBACK_PREFIXES.some((p) => path.startsWith(p))) return false;
-  return PLUGIN_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
-}
-
-function isTestMode(): boolean {
-  if (typeof window === 'undefined') return false;
-  const params = new URLSearchParams(window.location.search);
-  const explicit = params.get('test') ?? params.get('backend');
-  if (explicit === '1' || explicit === 'test' || explicit === 'sam') {
-    localStorage.setItem('samTestMode', 'true');
-    return true;
-  }
-  if (explicit === '0' || explicit === 'legacy') {
-    localStorage.removeItem('samTestMode');
-    return false;
-  }
-  return localStorage.getItem('samTestMode') === 'true';
-}
-
-const TEST_MODE = isTestMode();
 const BUILD_TIME_API = import.meta.env.VITE_API_BASE_URL as string | undefined;
 const API_ROOT = BUILD_TIME_API ?? '';
 const API_BASE_URL = `${API_ROOT}/api`;
 
 /**
- * Resolve where a given API path should be sent.
- * In test mode, plugin paths go to port 3001; everything else stays default.
+ * Resolve where a given API path should be sent. Single backend —
+ * always returns API_ROOT + path.
  */
 export function resolveApiTarget(path: string): string {
-  if (!TEST_MODE) return `${API_ROOT}${path}`;
-  if (isPluginPath(path)) {
-    return `${SAM_TEST_BACKEND}${path}`;
-  }
   return `${API_ROOT}${path}`;
 }
 
-// One-time console hint
+// One-time cleanup: a previous build supported a `?test=1` toggle
+// stored in localStorage that routed plugin paths to a standalone SAM
+// runner. That mode has been removed. If the flag is still set from a
+// previous session, clear it so the user isn't carrying stale state.
 if (typeof window !== 'undefined') {
-  // eslint-disable-next-line no-console
-  console.info(
-    `[api/client] mode: ${TEST_MODE ? 'TEST (plugin paths → :3001, others → legacy)' : 'legacy (Python on :8000)'}`,
-  );
-
-  // Visible on-screen banner so you can always see which backend is serving plugin data.
-  // The legacy mode stays clean (no banner) — banner only appears in TEST mode.
-  if (TEST_MODE) {
-    const showBanner = () => {
-      if (document.getElementById('sam-test-banner')) return; // already added
-      const banner = document.createElement('div');
-      banner.id = 'sam-test-banner';
-      banner.textContent = '⚠ TEST MODE — plugin pages use new TypeScript backend (port 3001). Click to exit.';
-      banner.style.cssText = `
-        position: fixed; top: 0; left: 0; right: 0;
-        background: #f97316; color: #fff;
-        font-weight: 600; font-family: system-ui, -apple-system, sans-serif;
-        font-size: 13px; line-height: 1.4;
-        padding: 6px 16px; text-align: center;
-        z-index: 999999; cursor: pointer;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-      `;
-      banner.onclick = () => {
-        localStorage.removeItem('samTestMode');
-        window.location.href = window.location.pathname;
-      };
-      document.body.appendChild(banner);
-      document.body.style.paddingTop = '32px';
-    };
-    if (document.body) {
-      showBanner();
-    } else {
-      document.addEventListener('DOMContentLoaded', showBanner);
-    }
+  if (localStorage.getItem('samTestMode')) {
+    localStorage.removeItem('samTestMode');
   }
 }
 
@@ -178,29 +74,11 @@ const api = axios.create({
   },
 });
 
-// Add auth token to requests, and (in test mode) rewrite plugin paths
-// to the standalone TypeScript backend on port 3001.
+// Add auth token to requests.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('auth_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
-  }
-  // Per-path routing for test mode
-  if (TEST_MODE && config.url) {
-    // axios resolves url against baseURL; the actual full path is /api/...
-    // (because baseURL is /api). Check if the full path (baseURL + url)
-    // matches a plugin prefix.
-    const fullPath = config.url.startsWith('http')
-      ? config.url
-      : `/api${config.url.startsWith('/') ? config.url : '/' + config.url}`;
-    // Strip host first, then check against the path-only form.
-    const pathOnlyForMatch = fullPath.replace(/^https?:\/\/[^/]+/, '');
-    if (isPluginPath(pathOnlyForMatch)) {
-      // Strip any existing host and re-target to test backend
-      const pathOnly = fullPath.replace(/^https?:\/\/[^/]+/, '');
-      config.baseURL = SAM_TEST_BACKEND;
-      config.url = pathOnly;
-    }
   }
   return config;
 });
@@ -235,15 +113,7 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
     headers.set('Content-Type', 'application/json');
   }
 
-  // In test mode, rewrite plugin-path URLs to the standalone runner.
-  let target = url;
-  if (TEST_MODE && url.startsWith('/api/')) {
-    if (isPluginPath(url)) {
-      target = `${SAM_TEST_BACKEND}${url}`;
-    }
-  }
-
-  const response = await fetch(target, { ...options, headers });
+  const response = await fetch(url, { ...options, headers });
 
   // Handle 401 - redirect to login
   if (response.status === 401) {
