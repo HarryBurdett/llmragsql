@@ -16,6 +16,17 @@ import {
 import { listSupplierDirectory } from './services/supplier-directory.js';
 import { getAgedDebtSummary, getAgedDebtBySupplier } from './services/aged-debt.js';
 import {
+  getAgedCreditorsSummary,
+  getAgedCreditorsTrend,
+  getAgedCreditorsDetail,
+} from './services/aged-creditors.js';
+import {
+  getMergedContacts,
+  createOperaContact,
+  updateOperaContact,
+  deleteOperaContact,
+} from './services/opera-contacts.js';
+import {
   listContacts,
   addContact,
   deleteContact,
@@ -354,6 +365,166 @@ export function createRouter(ctx: AppContext): Router {
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Aged-debt by-supplier failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // Legacy /api/creditors/aged* paths (SupplierDashboard.tsx +
+  // SupplierAgedCreditors.tsx call these — faithful ports of
+  // apps/suppliers/api/routes_aged.py).
+  // ---------------------------------------------------------------
+
+  router.get('/api/creditors/aged', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      res.json(await getAgedCreditorsSummary(operaDb));
+    } catch (err: any) {
+      ctx.logger.error('Aged creditors summary failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  router.get('/api/creditors/aged/trend', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const months = req.query.months ? Number(req.query.months) : 6;
+      res.json(await getAgedCreditorsTrend(operaDb, months));
+    } catch (err: any) {
+      ctx.logger.error('Aged creditors trend failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  router.get('/api/creditors/aged/:account', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await getAgedCreditorsDetail(
+        operaDb,
+        String(req.params.account ?? ''),
+      );
+      if (!result.success) {
+        const status = /not found/i.test(result.error ?? '') ? 404 : 500;
+        res.status(status).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Aged creditors detail failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // Legacy /api/supplier-contacts/* paths
+  // ---------------------------------------------------------------
+
+  // GET /api/supplier-contacts/:account — Opera zcontacts merged with
+  // local extensions
+  router.get('/api/supplier-contacts/:account', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const result = await getMergedContacts(
+        operaDb,
+        ctx.db.app,
+        String(req.params.account ?? ''),
+      );
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Get supplier contacts failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  // POST /api/supplier-contacts/:account/opera — create Opera zcontact
+  router.post('/api/supplier-contacts/:account/opera', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const body = (req.body ?? {}) as {
+        name?: string;
+        title?: string;
+        role?: string;
+        email?: string;
+        phone?: string;
+        mobile?: string;
+        fax?: string;
+      };
+      const result = await createOperaContact(
+        operaDb,
+        ctx.db.app,
+        String(req.params.account ?? ''),
+        body,
+      );
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Create Opera contact failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  // PUT /api/supplier-contacts/:account/opera/:contact_id — update
+  router.put('/api/supplier-contacts/:account/opera/:contact_id', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const contactId = Number(req.params.contact_id);
+      const body = (req.body ?? {}) as {
+        name?: string;
+        title?: string;
+        role?: string;
+        email?: string;
+        phone?: string;
+        mobile?: string;
+        fax?: string;
+      };
+      const result = await updateOperaContact(
+        operaDb,
+        ctx.db.app,
+        String(req.params.account ?? ''),
+        contactId,
+        body,
+      );
+      if (!result.success) {
+        const status = /not found/i.test(result.error ?? '') ? 404 : 400;
+        res.status(status).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Update Opera contact failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  // DELETE /api/supplier-contacts/:account/opera/:contact_id — delete
+  router.delete('/api/supplier-contacts/:account/opera/:contact_id', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    try {
+      const contactId = Number(req.params.contact_id);
+      const result = await deleteOperaContact(
+        operaDb,
+        ctx.db.app,
+        String(req.params.account ?? ''),
+        contactId,
+      );
+      if (!result.success) {
+        const status = /not found/i.test(result.error ?? '') ? 404 : 400;
+        res.status(status).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Delete Opera contact failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
@@ -1488,34 +1659,33 @@ export function createRouter(ctx: AppContext): Router {
     },
   );
 
-  router.post(
-    '/api/supplier-queries/:query_id/send-reminder',
-    async (req: Request, res: Response) => {
-      const appDb = getAppDb(req, res);
-      if (!appDb) return;
-      try {
-        const queryId = Number(req.params.query_id);
-        const body = (req.body ?? {}) as { triggered_by?: string };
-        const result = await recordReminderSent(appDb, {
-          queryId,
-          triggeredBy: body.triggered_by ?? 'system',
-        });
-        if (!result.success) {
-          res.status(400).json(result);
-          return;
-        }
-        // Email send itself is the SAM team's wiring — we record the
-        // audit row + reminder counter; ctx.email is the bridge.
-        res.json(result);
-      } catch (err: any) {
-        ctx.logger.error('Send reminder failed', err);
-        res.status(500).json({
-          success: false,
-          error: err?.message ?? String(err),
-        });
+  // Legacy aliased as `/remind` — frontend SupplierQueries.tsx uses
+  // the short form. Both paths hit the same handler.
+  const sendReminderHandler = async (req: Request, res: Response) => {
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const queryId = Number(req.params.query_id);
+      const body = (req.body ?? {}) as { triggered_by?: string };
+      const result = await recordReminderSent(appDb, {
+        queryId,
+        triggeredBy: body.triggered_by ?? 'system',
+      });
+      if (!result.success) {
+        res.status(400).json(result);
+        return;
       }
-    },
-  );
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Send reminder failed', err);
+      res.status(500).json({
+        success: false,
+        error: err?.message ?? String(err),
+      });
+    }
+  };
+  router.post('/api/supplier-queries/:query_id/send-reminder', sendReminderHandler);
+  router.post('/api/supplier-queries/:query_id/remind', sendReminderHandler);
 
   // ---------------------------------------------------------------
   // Statement state-transition actions (process / acknowledge /

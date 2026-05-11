@@ -38,6 +38,44 @@ import {
 } from './control-account-details.js';
 import { analyseVariance, type VarianceAnalysisResult } from './variance-analysis.js';
 
+/**
+ * Translate the shared variance-analysis result (creditors-shape with
+ * `pl_*` keys) into the debtors-shape with `sl_*` keys + flat
+ * top-level totals matching the legacy Python `reconcile_debtors`
+ * response (apps/balance_check/api/routes.py).
+ *
+ * Legacy debtors fields:
+ *   value_diff_total, value_diff_count
+ *   nl_only_total, nl_only_count
+ *   sl_only_total, sl_only_count
+ *   small_balance_count
+ *   nl_total_check, sl_total_check
+ *   items[], note
+ */
+function adaptForDebtors(v: VarianceAnalysisResult | undefined): Record<string, unknown> | undefined {
+  if (!v) return undefined;
+  return {
+    items: v.items,
+    count: v.count,
+    value_diff_count: v.value_diff_count,
+    value_diff_total: v.summary.value_differences.total,
+    nl_only_count: v.nl_only_count,
+    nl_only_total: v.summary.nl_only.total,
+    sl_only_count: v.pl_only_count,
+    sl_only_total: v.summary.pl_only.total,
+    small_balance_count: v.small_balance_count,
+    nl_total_check: v.nl_total_check,
+    sl_total_check: v.pl_total_check,
+    // Keep the nested `summary` for backwards compatibility with any
+    // caller that has already migrated to the SAM-port shape.
+    summary: {
+      nl_only: v.summary.nl_only,
+      sl_only: v.summary.pl_only,
+      value_differences: v.summary.value_differences,
+    },
+  };
+}
+
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -113,7 +151,13 @@ export interface ReconcileDebtorsResponse {
   message?: string;
   details: unknown[];
   control_account_used: string;
-  variance_analysis?: VarianceAnalysisResult;
+  /**
+   * Debtors-shape variance analysis: flat top-level `sl_*` /
+   * `value_diff_*` / `nl_only_*` keys per legacy
+   * `reconcile_debtors`. The nested `summary.{nl_only,sl_only,
+   * value_differences}` block is included for backwards-compat.
+   */
+  variance_analysis?: Record<string, unknown>;
   aged_analysis?: AgedAnalysisRow[];
   top_customers?: TopCustomer[];
   error?: string;
@@ -327,7 +371,7 @@ export async function reconcileDebtors(db: Knex): Promise<ReconcileDebtorsRespon
       message,
       details: [],
       control_account_used: debtorsControl,
-      variance_analysis: varianceAnalysis,
+      variance_analysis: adaptForDebtors(varianceAnalysis),
       aged_analysis: agedAnalysis,
       top_customers: topCustomers,
     };
