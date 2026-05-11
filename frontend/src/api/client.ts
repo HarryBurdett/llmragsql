@@ -7,8 +7,51 @@ import axios from 'axios';
 //
 // Default '/' (relative path) preserves today's behaviour for the
 // un-containerised Vite dev server with Python API on the same host.
-const API_ROOT = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '';
+//
+// LEVEL-2 TEST-MODE TOGGLE:
+// If the URL contains `?test=1` (or `?backend=test`), or if a previous
+// page load set the choice in localStorage, route API calls to the
+// standalone TypeScript backend at http://localhost:3001 instead of
+// the legacy Python backend. This lets Harry test the rewritten apps
+// side-by-side with the legacy system without changing any code.
+//
+// Switch back at any time with `?test=0`.
+const SAM_TEST_BACKEND = 'http://localhost:3001';
+
+function resolveApiRoot(): string {
+  const buildTimeOverride = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (buildTimeOverride) return buildTimeOverride;
+
+  // Only run the URL/localStorage check in the browser
+  if (typeof window === 'undefined') return '';
+
+  const params = new URLSearchParams(window.location.search);
+  const explicit = params.get('test') ?? params.get('backend');
+  if (explicit === '1' || explicit === 'test' || explicit === 'sam') {
+    localStorage.setItem('samTestMode', 'true');
+    return SAM_TEST_BACKEND;
+  }
+  if (explicit === '0' || explicit === 'legacy') {
+    localStorage.removeItem('samTestMode');
+    return '';
+  }
+
+  if (localStorage.getItem('samTestMode') === 'true') {
+    return SAM_TEST_BACKEND;
+  }
+  return '';
+}
+
+const API_ROOT = resolveApiRoot();
 const API_BASE_URL = `${API_ROOT}/api`;
+
+// One-time console hint so it's obvious which backend is in use
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line no-console
+  console.info(
+    `[api/client] using backend: ${API_ROOT || '(legacy Python, default)'}`,
+  );
+}
 
 /**
  * Translate raw database/technical error messages into user-friendly text.
