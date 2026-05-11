@@ -24,6 +24,10 @@ import {
   getSetupStatus,
 } from './services/lookups.js';
 import { getImportHistory } from './services/import-history.js';
+import {
+  checkOrphanedImports,
+  recoverGocardlessFromRestore,
+} from './services/restore-recovery.js';
 import { skipPayout } from './services/skip-payout.js';
 import { createClientFromSettings } from './services/gocardless-api.js';
 import { fetchGocardlessApiPayouts } from './services/fetch-api-payouts.js';
@@ -711,6 +715,56 @@ export function createRouter(ctx: AppContext): Router {
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });
+
+  /**
+   * GET /api/gocardless/orphan-check
+   *
+   * SAM enhancement — detect `gocardless_imports` rows whose
+   * underlying Opera atran/aentry no longer exist. Triggered by an
+   * Opera restore (or by anyone deleting the receipt in Opera
+   * Cashbook). Read-only; does not modify anything. Surface the
+   * result to the user with a "Recover" prompt; only then call the
+   * recovery endpoint below.
+   */
+  router.get(
+    '/api/gocardless/orphan-check',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        res.json(await checkOrphanedImports(operaDb, appDb));
+      } catch (err: any) {
+        ctx.logger.error('GoCardless orphan check failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
+
+  /**
+   * POST /api/gocardless/recover-from-restore
+   *
+   * Delete the orphaned `gocardless_imports` rows surfaced by the
+   * orphan-check endpoint, so the normal API-payouts flow can
+   * re-import the underlying payouts. Requires explicit user
+   * confirmation (this is an explicit POST), never auto-runs.
+   */
+  router.post(
+    '/api/gocardless/recover-from-restore',
+    async (req: Request, res: Response) => {
+      const operaDb = getOperaDb(req, res);
+      if (!operaDb) return;
+      const appDb = getAppDb(req, res);
+      if (!appDb) return;
+      try {
+        res.json(await recoverGocardlessFromRestore(operaDb, appDb));
+      } catch (err: any) {
+        ctx.logger.error('GoCardless recover-from-restore failed', err);
+        res.status(500).json({ success: false, error: err?.message ?? String(err) });
+      }
+    },
+  );
 
   /**
    * DELETE /api/gocardless/import-history
