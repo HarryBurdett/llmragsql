@@ -149,6 +149,8 @@ export function BankStatementHub() {
   const [daysBack, setDaysBack] = useState(30);
   const [restoreCheck, setRestoreCheck] = useState<RestoreCheckResponse | null>(null);
   const [restoreBannerDismissed, setRestoreBannerDismissed] = useState(false);
+  const [restoreRecovering, setRestoreRecovering] = useState(false);
+  const [restoreRecoveryResult, setRestoreRecoveryResult] = useState<string | null>(null);
 
   const [selectedStatement, setSelectedStatement] = useState<{
     bankCode: string;
@@ -273,6 +275,58 @@ export function BankStatementHub() {
     fetchCompleted();
     fetchArchived();
   }, [fetchInProgress, fetchCompleted, fetchArchived]);
+
+  const handleRestoreRecovery = useCallback(async () => {
+    if (!restoreCheck?.banks) return;
+    const affected = restoreCheck.banks.filter((b) => b.needs_recovery);
+    if (affected.length === 0) return;
+    const confirmed = window.confirm(
+      `This will clear the 'already posted' tracking on ${affected
+        .reduce((s, b) => s + b.orphan_line_count, 0)
+        .toString()} statement line(s) across ${affected.length} bank account(s) ` +
+        `so the underlying statements can be re-imported and re-posted to Opera.\n\n` +
+        `Only confirm if Opera was actually restored from a backup ` +
+        `(NOT if entries were deleted on purpose). Continue?`,
+    );
+    if (!confirmed) return;
+    setRestoreRecovering(true);
+    setRestoreRecoveryResult(null);
+    try {
+      let totalLines = 0;
+      const errors: string[] = [];
+      for (const b of affected) {
+        try {
+          const resp = await authFetch(
+            `/api/reconcile/bank/${encodeURIComponent(b.bank_code)}/recover-orphan-transactions`,
+            { method: 'POST' },
+          );
+          const data = await resp.json();
+          if (data.success) {
+            totalLines += Number(data.cleared_lines ?? 0);
+          } else {
+            errors.push(`${b.bank_code}: ${data.error ?? 'unknown error'}`);
+          }
+        } catch (err: any) {
+          errors.push(`${b.bank_code}: ${err?.message ?? String(err)}`);
+        }
+      }
+      setRestoreRecoveryResult(
+        errors.length === 0
+          ? `Cleared ${totalLines} line(s) across ${affected.length} bank(s). Re-import the affected statements to re-post them to Opera.`
+          : `Recovery completed with errors: ${errors.join('; ')}`,
+      );
+      // Re-run the check so banner clears
+      try {
+        const rcResp = await authFetch('/api/bank-import/restore-check');
+        const rc = (await rcResp.json()) as RestoreCheckResponse;
+        setRestoreCheck(rc.success ? rc : null);
+      } catch {
+        setRestoreCheck(null);
+      }
+    } finally {
+      setRestoreRecovering(false);
+    }
+  }, [restoreCheck]);
 
   const handleScan = useCallback(async () => {
     setScanning(true);
@@ -693,9 +747,23 @@ export function BankStatementHub() {
                     </li>
                   ))}
               </ul>
-              <div className="mt-2 text-xs text-amber-700">
-                Open each affected bank's reconcile page to review the details and confirm recovery.
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  onClick={handleRestoreRecovery}
+                  disabled={restoreRecovering}
+                  className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {restoreRecovering ? 'Recovering…' : 'Clear stale tracking and re-enable re-import'}
+                </button>
+                <span className="text-xs text-amber-700">
+                  Only click this if Opera was actually restored from a backup.
+                </span>
               </div>
+              {restoreRecoveryResult && (
+                <div className="mt-2 rounded border border-amber-200 bg-white p-2 text-sm text-amber-900">
+                  {restoreRecoveryResult}
+                </div>
+              )}
             </div>
             <button
               onClick={() => setRestoreBannerDismissed(true)}
