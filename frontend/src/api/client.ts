@@ -73,6 +73,37 @@ if (typeof window !== 'undefined') {
   console.info(
     `[api/client] mode: ${TEST_MODE ? 'TEST (plugin paths → :3001, others → legacy)' : 'legacy (Python on :8000)'}`,
   );
+
+  // Visible on-screen banner so you can always see which backend is serving plugin data.
+  // The legacy mode stays clean (no banner) — banner only appears in TEST mode.
+  if (TEST_MODE) {
+    const showBanner = () => {
+      if (document.getElementById('sam-test-banner')) return; // already added
+      const banner = document.createElement('div');
+      banner.id = 'sam-test-banner';
+      banner.textContent = '⚠ TEST MODE — plugin pages use new TypeScript backend (port 3001). Click to exit.';
+      banner.style.cssText = `
+        position: fixed; top: 0; left: 0; right: 0;
+        background: #f97316; color: #fff;
+        font-weight: 600; font-family: system-ui, -apple-system, sans-serif;
+        font-size: 13px; line-height: 1.4;
+        padding: 6px 16px; text-align: center;
+        z-index: 999999; cursor: pointer;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      `;
+      banner.onclick = () => {
+        localStorage.removeItem('samTestMode');
+        window.location.href = window.location.pathname;
+      };
+      document.body.appendChild(banner);
+      document.body.style.paddingTop = '32px';
+    };
+    if (document.body) {
+      showBanner();
+    } else {
+      document.addEventListener('DOMContentLoaded', showBanner);
+    }
+  }
 }
 
 /**
