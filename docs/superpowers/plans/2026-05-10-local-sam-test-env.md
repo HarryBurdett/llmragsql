@@ -125,7 +125,7 @@ cp ~/opera-knowledge-ref/.env.example ~/.local/sam-test/.env
 
 - [ ] **Step 3: Edit `~/.local/sam-test/.env` and set the required values.**
 
-Edit the file to look like this (substitute Harry's chosen passwords for `DB_PASSWORD` and the JWT secret):
+Edit the file to look like this (substitute Harry's chosen passwords for `DB_PASSWORD`, the JWT secret, and `SETUP_USER_PASSWORD`):
 
 ```ini
 # AI-SAM Environment Configuration (LOCAL TEST INSTANCE — STANDALONE)
@@ -153,9 +153,22 @@ SAM_DATA_DIR=/data/sam
 LICENSE_SERVER_URL=
 LICENSE_HMAC_SECRET=
 LICENSE_KEY=
+
+# Auto-setup — provisions tenant + admin user on first boot.
+# Read by SAM's 003_auto_setup.ts seed during DB migration.
+# This eliminates the need to run the setup wizard at port 9999 —
+# the admin user is created automatically with the password below.
+SETUP_TENANT_NAME=IntSys-Test
+SETUP_TENANT_SLUG=intsys-test
+SETUP_USER_EMAIL=admin@intsysuk.com
+SETUP_USER_PASSWORD=<strong password Harry chooses for SAM admin login>
+SETUP_USER_NAME=Harry Burdett
+SETUP_USER_ROLE=sam-admin
 ```
 
 **Why we leave the license fields empty:** SAM treats blank `LICENSE_SERVER_URL` as "no Central, run in dev/standalone mode". See `.env.example` comment: *"License (optional - leave empty for dev mode)"*.
+
+**Why we set SETUP_USER_* env vars:** This automates the first part of the SAM setup wizard (tenant + admin user creation). When SAM boots for the first time and runs its `003_auto_setup.ts` seed, it sees these env vars and provisions the admin account directly — no browser wizard needed. Opera + email config still need to be added (automated via admin API in Task 4).
 
 - [ ] **Step 4: Verify the file is created and not accidentally committed to git.**
 
@@ -245,57 +258,179 @@ open http://localhost:3001
 
 ---
 
-## Task 4: Run SAM setup wizard
+## Task 4: Configure SAM via admin API (automated — no wizard)
 
-**Files:** none (interactive setup via browser)
+**Files:** none (uses SAM admin API endpoints; Claude reads credentials from `systems.json` and `config.ini`)
 
-**What this task produces:** SAM configured with admin user, Opera SE connection, and email provider — ready to receive plugin uploads.
+**What this task produces:** SAM configured with Opera SE connection, email provider, and mailbox assignments — ready to receive plugin uploads. Fully scripted; no interactive wizard. Tenant + admin user already provisioned automatically by SAM's `003_auto_setup.ts` seed at first boot using the `SETUP_*` env vars set in Task 2.
 
-- [ ] **Step 1: Open the SAM Admin UI and complete first-time setup.**
-
-In the browser at `http://localhost:3001`:
-
-1. **Admin password** — set a strong password for `admin@intsysuk.com` (the default admin email). Save this somewhere safe.
-2. **Tenant info** — the wizard may prompt for a tenant name. Use something descriptive like `IntSys-Test`.
-3. **Save and proceed.**
-
-**✓ Looks good if you see:** you're logged in as `admin@intsysuk.com`, with the SAM Admin dashboard visible.
-
-- [ ] **Step 2: Configure the Opera SE connection.**
-
-In SAM Admin → **Opera Connections** → **+ Add Connection**:
-
-| Field | Value |
-|---|---|
-| Type | Opera SE (SQL Server) |
-| Host | (the MSSQL host from Task 1 Step 4) |
-| Port | 1433 (or whatever Intsys uses) |
-| Username | (Opera SE username) |
-| Password | (Opera SE password) |
-
-Save. SAM auto-discovers companies from Opera's `seqco` system table.
-
-**✓ Looks good if you see:** `Intsys` and `CloudSiS` both appear in the company list after save.
-
-**✗ If you see `Cannot connect`** — host/port/credentials wrong, or the network from Docker to Opera is blocked. Test with `docker compose exec ai-sam ping <opera-host>` to check reachability.
-
-- [ ] **Step 3: Configure the Microsoft Graph / IMAP email provider.**
-
-In SAM Admin → **Email Settings**:
-
-Configure the provider for `intsys@wimbledoncloud.net`. The exact wizard fields depend on whether you're using Microsoft Graph (OAuth) or IMAP. Pick the same option that the legacy Python uses (whichever is in `/Users/maccb/llmragsql/config.ini`).
-
-**✓ Looks good if you see:** status `Active` and a recent successful sync timestamp.
-
-- [ ] **Step 4: Confirm SAM is in standalone mode (no Central).**
+- [ ] **Step 1: Confirm auto-setup created the admin user.**
 
 ```bash
-docker logs $(cd ~/.local/sam-test && docker compose ps -q ai-sam) | grep -i "central\|license"
+docker logs $(cd ~/.local/sam-test && docker compose ps -q ai-sam) 2>&1 | grep "Auto-Setup"
 ```
 
-**✓ Looks good if you see:** messages like `License server not configured — running in standalone mode` (or similar). No outbound calls to a license server.
+**✓ Looks good if you see:** `[Auto-Setup] Created tenant: IntSys-Test (intsys-test)` and `[Auto-Setup] Created user: admin@intsysuk.com` and `[Auto-Setup] Created sam_admin: admin@intsysuk.com`.
 
-**✗ If you see** `License validation failed: <something>` — your `.env` license vars may not actually be empty. Recheck `~/.local/sam-test/.env`.
+**✗ If you see no auto-setup logs** — the `SETUP_TENANT_NAME` env var wasn't set in `.env`. Recheck Task 2, then `docker compose down && docker compose up -d` to re-trigger first-boot seeds.
+
+- [ ] **Step 2: Login via API to get an admin JWT token.**
+
+```bash
+SAM_ADMIN_PASSWORD="<the SETUP_USER_PASSWORD value from .env>"
+TOKEN=$(curl -s -X POST http://localhost:3001/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"admin@intsysuk.com\",\"password\":\"$SAM_ADMIN_PASSWORD\"}" \
+  | jq -r '.token')
+echo "TOKEN length: ${#TOKEN}"
+export SAM_TOKEN="$TOKEN"
+```
+
+**✓ Looks good if you see:** TOKEN length around 200-300 characters.
+
+**✗ If TOKEN is empty or short** — login failed. Check the password in `.env` matches what you typed here.
+
+- [ ] **Step 3: Read Opera SE credentials from `systems.json`.**
+
+```bash
+OPERA=$(python3 -c "
+import json
+s = json.load(open('/Users/maccb/llmragsql/systems.json'))
+default = next(x for x in s if x.get('is_default'))
+db = default['database']
+print(json.dumps({
+  'name': default['name'],
+  'host': db['server'],
+  'port': int(db['port']),
+  'username': db['username'],
+  'password': db['password'],
+  'database': db['database'],
+  'trust_certificate': db.get('trust_server_certificate','true') == 'true',
+}))
+")
+echo "Opera config (password masked): $(echo $OPERA | jq 'del(.password) + {password: "***"}')"
+```
+
+**✓ Looks good if you see:** a JSON blob with host `172.17.172.99`, port `1433`, username `n8n`, database `Opera3SECompany00I` (or whatever the current values are).
+
+- [ ] **Step 4: Create the Opera SE connection via admin API.**
+
+```bash
+CONNECTION_RESP=$(curl -s -X POST http://localhost:3001/api/admin/connections \
+  -H "Authorization: Bearer $SAM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$(echo $OPERA | jq '{
+    name: .name,
+    type: "opera-se",
+    host: .host,
+    port: .port,
+    username: .username,
+    password: .password,
+    database: .database,
+    trust_server_certificate: .trust_certificate
+  }')")
+echo "$CONNECTION_RESP" | jq .
+CONNECTION_ID=$(echo "$CONNECTION_RESP" | jq -r '.id')
+echo "Connection ID: $CONNECTION_ID"
+```
+
+**✓ Looks good if you see:** a JSON response with an `id` field. Save it as `CONNECTION_ID`.
+
+**✗ If validation error** — the request body shape may not match what SAM expects. Run `cat ~/opera-knowledge-ref/packages/backend/src/routes/admin/connections.ts | sed -n '100,160p'` to see the actual schema, adjust the jq mapping accordingly.
+
+- [ ] **Step 5: Sync companies from the connection (auto-discover Intsys + CloudSiS).**
+
+```bash
+curl -s -X POST "http://localhost:3001/api/admin/connections/$CONNECTION_ID/sync" \
+  -H "Authorization: Bearer $SAM_TOKEN" | jq .
+
+# Verify the companies appeared
+curl -s "http://localhost:3001/api/admin/connections/$CONNECTION_ID/companies" \
+  -H "Authorization: Bearer $SAM_TOKEN" | jq '.[] | .code + " — " + .name'
+```
+
+**✓ Looks good if you see:** at minimum `Intsys` and `CloudSiS` listed (auto-discovered from Opera's `seqco`).
+
+**✗ If empty list** — the connection isn't reaching Opera. Run the test endpoint: `curl -X POST "http://localhost:3001/api/admin/connections/$CONNECTION_ID/test" -H "Authorization: Bearer $SAM_TOKEN"`.
+
+- [ ] **Step 6: Read email config from `config.ini` and configure the email provider.**
+
+```bash
+EMAIL=$(python3 -c "
+import configparser
+c = configparser.ConfigParser()
+c.read('/Users/maccb/llmragsql/config.ini')
+# Determine which provider is configured — prefer microsoft if present
+provider = 'microsoft' if c.has_section('email_microsoft') and c['email_microsoft'].get('client_id') else 'imap'
+import json
+if provider == 'microsoft':
+    section = c['email_microsoft']
+    print(json.dumps({
+      'provider': 'microsoft-graph',
+      'tenant_id': section.get('tenant_id',''),
+      'client_id': section.get('client_id',''),
+      'client_secret': section.get('client_secret',''),
+      'user_email': section.get('user_email','intsys@wimbledoncloud.net'),
+    }))
+else:
+    section = c['email_imap']
+    print(json.dumps({
+      'provider': 'imap',
+      'host': section.get('host',''),
+      'port': int(section.get('port','993')),
+      'username': section.get('username',''),
+      'password': section.get('password',''),
+      'use_ssl': section.get('use_ssl','true') == 'true',
+    }))
+")
+echo "Email config (secrets masked): $(echo $EMAIL | jq 'del(.client_secret, .password) + {secret: "***"}')"
+
+curl -s -X PUT http://localhost:3001/api/admin/email/config \
+  -H "Authorization: Bearer $SAM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$EMAIL" | jq .
+```
+
+**✓ Looks good if you see:** a 200 response with `success: true` or the updated config.
+
+**✗ If the body schema doesn't match** — read `~/opera-knowledge-ref/packages/backend/src/routes/admin/email.ts` lines 49-68 (PUT /config handler) to see the expected shape, adjust the python mapping.
+
+- [ ] **Step 7: Add the mailbox via the mailboxes admin endpoint.**
+
+```bash
+curl -s -X POST http://localhost:3001/api/admin/mailboxes \
+  -H "Authorization: Bearer $SAM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "intsys@wimbledoncloud.net",
+    "display_name": "IntSys mailbox"
+  }' | jq .
+```
+
+**Note:** `owner_app_id` assignments per-plugin are done in Task 7 Step 5 (after the plugins are installed and SAM knows their app_ids).
+
+**✓ Looks good if you see:** a JSON response with an `id` field for the new mailbox.
+
+- [ ] **Step 8: Confirm SAM is in standalone mode (no Central phone-home).**
+
+```bash
+docker logs $(cd ~/.local/sam-test && docker compose ps -q ai-sam) 2>&1 | grep -i "central\|license" | tail -10
+```
+
+**✓ Looks good if you see:** messages indicating no license server configured. No outbound calls to a license server.
+
+**✗ If you see** `License validation failed` — your `.env` license vars may not actually be empty. Recheck `~/.local/sam-test/.env`.
+
+- [ ] **Step 9: Sanity check — Opera connection works end-to-end.**
+
+```bash
+curl -s -X POST "http://localhost:3001/api/admin/connections/$CONNECTION_ID/test" \
+  -H "Authorization: Bearer $SAM_TOKEN" | jq .
+```
+
+**✓ Looks good if you see:** `success: true` and any "connected" message.
+
+> **Manual fallback if anything in this task fails repeatedly:** The setup wizard at port 9999 (via `docker-compose.setup.yml`) is always available as a backup. `cd ~/.local/sam-test && cp ~/opera-knowledge-ref/docker-compose.setup.yml ./docker-compose.setup.yml && docker compose -f docker-compose.setup.yml up`, then open `http://localhost:9999` and step through interactively. The wizard targets the same database as the main SAM and is idempotent.
 
 ---
 
