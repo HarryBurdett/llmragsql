@@ -61,6 +61,10 @@ export interface MarkReconciledResponse {
   message?: string;
   records_reconciled?: number;
   new_reconciled_balance?: number | null;
+  /** Legacy frontend reads `details` (frontend/src/api/client.ts:MarkReconciledResponse). */
+  details?: string[];
+  /** SAM-port additive alias kept for any downstream caller that
+   *  has already migrated to `warnings`. */
   warnings?: string[];
   errors?: string[];
   error?: string;
@@ -372,35 +376,39 @@ export async function markEntriesReconciled(
           const remainingPounds = (currentBalance - newRecBalance) / 100;
 
           if (partial) {
+            const partialDetails = [
+              `Partial reconciliation: ${entries.length} entries marked with statement line numbers`,
+              verified !== null
+                ? `Reconciled balance unchanged: ${formatGbp(currentRecBalance)}`
+                : 'Reconciled balance unchanged',
+              'Complete remaining items in Opera Cashbook > Reconcile',
+              `Statement number: ${statementNumber}`,
+              `Reconciliation batch: ${recBatchNumber}`,
+            ];
             return {
               success: true,
               records_reconciled: entries.length,
               new_reconciled_balance: verified,
               message: `Partial reconciliation: ${entries.length} entries marked`,
-              warnings: [
-                `Partial reconciliation: ${entries.length} entries marked with statement line numbers`,
-                verified !== null
-                  ? `Reconciled balance unchanged: ${formatGbp(currentRecBalance)}`
-                  : 'Reconciled balance unchanged',
-                'Complete remaining items in Opera Cashbook > Reconcile',
-                `Statement number: ${statementNumber}`,
-                `Reconciliation batch: ${recBatchNumber}`,
-              ],
+              details: partialDetails,
+              warnings: partialDetails,
             };
           }
 
+          const fullDetails = [
+            `Reconciled ${entries.length} entries totalling ${formatGbp(totalValue)}`,
+            `New reconciled balance: ${formatGbp(Math.trunc(newRecPounds * 100))}`,
+            `Remaining unreconciled: ${formatGbp(Math.trunc(remainingPounds * 100))}`,
+            `Statement number: ${statementNumber}`,
+            `Reconciliation batch: ${recBatchNumber}`,
+          ];
           return {
             success: true,
             records_reconciled: entries.length,
             new_reconciled_balance: verified,
             message: `Reconciled ${entries.length} entries`,
-            warnings: [
-              `Reconciled ${entries.length} entries totalling ${formatGbp(totalValue)}`,
-              `New reconciled balance: ${formatGbp(Math.trunc(newRecPounds * 100))}`,
-              `Remaining unreconciled: ${formatGbp(Math.trunc(remainingPounds * 100))}`,
-              `Statement number: ${statementNumber}`,
-              `Reconciliation batch: ${recBatchNumber}`,
-            ],
+            details: fullDetails,
+            warnings: fullDetails,
           };
         }),
     );

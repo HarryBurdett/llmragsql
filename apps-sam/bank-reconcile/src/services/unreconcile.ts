@@ -85,33 +85,24 @@ export async function unreconcileEntries(
       { locked_by: 'api', endpoint: 'unreconcile' },
       async () => {
         return operaDb.transaction(async (trx) => {
-          const placeholders = entryNumbers.map(() => '?').join(',');
-
           // Stage A — reset per-aentry rec fields with ROWLOCK.
-          const resetSql = `
-            UPDATE aentry WITH (ROWLOCK)
-            SET ae_reclnum = 0,
-                ae_recdate = NULL,
-                ae_recbal = 0,
-                ae_statln = 0,
-                ae_frstat = 0,
-                ae_tostat = 0,
-                ae_tmpstat = 0,
-                datemodified = GETDATE()
-            WHERE ae_acnt = ?
-              AND ae_entry IN (${placeholders})
-              AND ae_reclnum > 0
-          `;
-          const resetResult = (await trx.raw(resetSql, [
-            bankCode,
-            ...entryNumbers,
-          ])) as unknown as { rowCount?: number } | Array<{ rowCount?: number }>;
-          const rowsAffected =
-            typeof resetResult === 'object' && resetResult !== null
-              ? Array.isArray(resetResult)
-                ? Number(resetResult[0]?.rowCount ?? 0)
-                : Number(resetResult.rowCount ?? 0)
-              : 0;
+          // Query-builder form so rowsAffected is real on every driver.
+          const rowsAffected = Number(
+            await trx('aentry')
+              .where('ae_acnt', bankCode)
+              .whereIn('ae_entry', entryNumbers)
+              .andWhere('ae_reclnum', '>', 0)
+              .update({
+                ae_reclnum: 0,
+                ae_recdate: null,
+                ae_recbal: 0,
+                ae_statln: 0,
+                ae_frstat: 0,
+                ae_tostat: 0,
+                ae_tmpstat: 0,
+                datemodified: trx.raw('GETDATE()'),
+              }),
+          );
 
           // Recalculate the bank's reconciled total. Open-items rule:
           // exclude ae_remove=1 entries. Returns POUNDS even though

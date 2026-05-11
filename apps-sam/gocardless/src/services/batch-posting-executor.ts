@@ -60,6 +60,7 @@ import type {
   ValidatedPayment,
   ValidatedRequest,
 } from './import-batch.js';
+import { autoAllocateReceipt } from './allocate-receipt.js';
 
 interface CustomerInfo {
   account: string;
@@ -1218,7 +1219,7 @@ async function postDestinationTransfer(
 // ---------------------------------------------------------------------
 
 export const gocardlessBatchPostingExecutor: BatchPostingExecutor = {
-  async postBatch(operaDb, request): Promise<{
+  async postBatch(operaDb, request, appDb = null): Promise<{
     success: boolean;
     records_imported: number;
     batch_ref?: string | null;
@@ -1324,6 +1325,30 @@ export const gocardlessBatchPostingExecutor: BatchPostingExecutor = {
             type: cust.type,
             nowIso: now.iso,
           });
+
+          // Auto-allocate the receipt to outstanding invoices when the
+          // caller asked us to. Faithful port of legacy
+          // `auto_allocate_receipt` (sql_rag/opera_sql_import.py:7017+).
+          // Failures are non-fatal — the receipt remains on account and
+          // we surface a warning so the user can allocate manually in
+          // Opera.
+          if (p.auto_allocate) {
+            const allocResult = await autoAllocateReceipt(trx, appDb, {
+              customerAccount: cust.account,
+              receiptRef: request.reference,
+              receiptAmount: amountPounds,
+              allocationDate: request.postDateString,
+              bankAccount: request.postingBank,
+              description: p.description,
+              gcPaymentId: p.gc_payment_id || null,
+              nowIso: now.iso,
+            });
+            if (!allocResult.success && allocResult.message) {
+              warnings.push(
+                `Auto-allocate ${cust.account}: ${allocResult.message}`,
+              );
+            }
+          }
 
           // Bank balance update — always
           await updateNbankBalance(trx, request.postingBank, amountPounds);

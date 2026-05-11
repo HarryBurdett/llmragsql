@@ -428,7 +428,16 @@ export function createRouter(ctx: AppContext): Router {
         res.status(400).json({ success: false, error: 'Missing bank_code' });
         return;
       }
-      const result = await getReconciliationStatus(operaDb, bankCode);
+      const currentFilename =
+        typeof req.query.current_filename === 'string'
+          ? req.query.current_filename
+          : null;
+      const result = await getReconciliationStatus(
+        operaDb,
+        bankCode,
+        ctx.db.app,
+        currentFilename,
+      );
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Get reconciliation status failed', err);
@@ -2586,10 +2595,15 @@ export function createRouter(ctx: AppContext): Router {
     }
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
-      const result = await processStatement(operaDb, llm, {
-        filePath: String(req.query.file_path ?? body.file_path ?? '') || undefined,
-        bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
-      });
+      const result = await processStatement(
+        operaDb,
+        llm,
+        {
+          filePath: String(req.query.file_path ?? body.file_path ?? '') || undefined,
+          bankCode: String(req.query.bank_code ?? body.bank_code ?? ''),
+        },
+        ctx.db.app,
+      );
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('process-statement failed', err);

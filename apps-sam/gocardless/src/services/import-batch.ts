@@ -424,6 +424,13 @@ export interface BatchPostingExecutor {
   postBatch(
     operaDb: Knex,
     request: ValidatedRequest,
+    /**
+     * Per-app SQLite — used by auto-allocation to read
+     * `gocardless_payment_requests` for invoice_refs (legacy Rule 0,
+     * `auto_allocate_receipt`). Optional so the mock in tests can omit
+     * it; production callers always supply it.
+     */
+    appDb?: Knex | null,
   ): Promise<{
     success: boolean;
     records_imported: number;
@@ -529,7 +536,7 @@ export async function importGocardlessBatch(
   }
 
   try {
-    const result = await executor.postBatch(operaDb, request);
+    const result = await executor.postBatch(operaDb, request, appDb);
     if (!result.success) {
       return {
         success: false,

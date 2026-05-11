@@ -239,23 +239,19 @@ export async function updateRepeatEntryDate(
               : null;
         const description = (existing.ae_desc ?? '').toString().trim();
 
-        // UPDATE arhead with audit fields
-        const result = (await operaDb.raw(
-          `UPDATE arhead WITH (ROWLOCK)
-           SET ae_nxtpost = ?,
-               sq_amdate = CONVERT(varchar(10), GETDATE(), 23),
-               sq_amtime = CONVERT(varchar(8), GETDATE(), 108),
-               sq_amuser = 'BANKIMP'
-           WHERE RTRIM(ae_entry) = ?
-             AND RTRIM(ae_acnt) = ?`,
-          [newDate, entryRef, bankCode],
-        )) as unknown as { rowCount?: number } | Array<{ rowCount?: number }>;
-        const rowsAffected =
-          typeof result === 'object' && result !== null
-            ? Array.isArray(result)
-              ? Number(result[0]?.rowCount ?? 0)
-              : Number(result.rowCount ?? 0)
-            : 0;
+        // UPDATE arhead with audit fields — query-builder form so
+        // rowsAffected is driver-agnostic (mssql/foxpro/sqlite).
+        const rowsAffected = Number(
+          await operaDb('arhead')
+            .whereRaw('RTRIM(ae_entry) = ?', [entryRef])
+            .andWhereRaw('RTRIM(ae_acnt) = ?', [bankCode])
+            .update({
+              ae_nxtpost: newDate,
+              sq_amdate: operaDb.raw('CONVERT(varchar(10), GETDATE(), 23)'),
+              sq_amtime: operaDb.raw('CONVERT(varchar(8), GETDATE(), 108)'),
+              sq_amuser: 'BANKIMP',
+            }),
+        );
         if (rowsAffected === 0) {
           return {
             success: false,

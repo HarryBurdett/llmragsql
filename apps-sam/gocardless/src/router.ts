@@ -26,6 +26,7 @@ import {
 import { getImportHistory } from './services/import-history.js';
 import { skipPayout } from './services/skip-payout.js';
 import { createClientFromSettings } from './services/gocardless-api.js';
+import { fetchGocardlessApiPayouts } from './services/fetch-api-payouts.js';
 import { searchReceipts } from './services/receipt-search.js';
 import {
   clearImportHistory,
@@ -169,6 +170,31 @@ export function createRouter(ctx: AppContext): Router {
       return null;
     }
     return ctx.db.app;
+  }
+
+  /**
+   * Several legacy GoCardless endpoints (e.g. POST /api/gocardless/import,
+   * /import-from-email, /match-customers, /revalidate-batches) declare
+   * the request body as a bare JSON array via FastAPI's
+   * `payments: List[Dict] = Body(...)` (apps/gocardless/api/routes.py).
+   * The browser frontend therefore POSTs `JSON.stringify(payments)`,
+   * not `{payments: [...]}`. Treat both shapes as valid so the SAM
+   * port matches legacy semantics exactly.
+   */
+  function readArrayBody<T = unknown>(req: Request, key: string): T[] {
+    const raw = req.body;
+    if (Array.isArray(raw)) return raw as T[];
+    if (raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>)[key])) {
+      return ((raw as Record<string, unknown>)[key] as unknown[]) as T[];
+    }
+    return [];
+  }
+
+  function readObjectBody(req: Request): Record<string, unknown> {
+    const raw = req.body;
+    if (Array.isArray(raw) || raw === null || raw === undefined) return {};
+    if (typeof raw !== 'object') return {};
+    return raw as Record<string, unknown>;
   }
 
   function getOperaDb(req: Request, res: Response): import('knex').Knex | null {
@@ -592,6 +618,8 @@ export function createRouter(ctx: AppContext): Router {
   router.get('/api/gocardless/api-payouts', async (req: Request, res: Response) => {
     const appDb = getAppDb(req, res);
     if (!appDb) return;
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
     try {
       const settings = await loadSettings(appDb);
       const accessToken = settings.api_access_token ?? '';
@@ -614,39 +642,34 @@ export function createRouter(ctx: AppContext): Router {
         ? daysBackOverride
         : Number(settings.payout_lookback_days ?? 30);
 
-      // Compute created_at_gte as full ISO datetime — GoCardless API
-      // rejects bare YYYY-MM-DD with "is not a valid date-time".
-      // Python does the same: params["created_at[gte]"] = date.isoformat() + "T00:00:00Z"
-      // (sql_rag/gocardless_api.py:213). The previous version of this code
-      // emitted only the date portion which causes a 422 from the API.
-      const cutoff = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
-      const createdAtGte = `${cutoff.toISOString().slice(0, 10)}T00:00:00Z`;
-
       const client = createClientFromSettings(settings);
       if (!client) {
         res.json({ success: false, error: 'No API access token configured' });
         return;
       }
 
-      const result = await client.getPayouts({
-        status,
-        limit,
-        createdAtGte,
-      });
+      const environment: 'sandbox' | 'live' = settings.api_sandbox
+        ? 'sandbox'
+        : 'live';
 
-      if (!result.success) {
-        res.json(result);
-        return;
-      }
+      const result = await fetchGocardlessApiPayouts(
+        appDb,
+        operaDb,
+        client,
+        environment,
+        {
+          status,
+          limit,
+          daysBack,
+          companyReference: (settings.company_reference ?? '').toString(),
+          gcBankCode: (settings.gocardless_bank_code ?? '').toString() || null,
+          destBankCode: (settings.default_bank_code ?? '').toString() || null,
+          targetSystem:
+            ctx.operaType === 'opera-3' ? 'opera3' : 'opera_se',
+        },
+      );
 
-      res.json({
-        success: true,
-        payouts: result.payouts,
-        before: result.before,
-        days_back: daysBack,
-        status,
-        limit,
-      });
+      res.json(result);
     } catch (err: any) {
       ctx.logger.error('GoCardless api-payouts failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
@@ -2012,16 +2035,23 @@ export function createRouter(ctx: AppContext): Router {
     async (req: Request, res: Response) => {
       const appDb = getAppDb(req, res);
       if (!appDb) return;
+      // Opera DB is optional — enrichment is a best-effort overlay.
+      const company = req.operaCompany;
+      const operaDb = company ? ctx.db.getCompanyDb(company) : null;
       try {
-        const result = await listSubscriptions(appDb, {
-          status:
-            typeof req.query.status === 'string' ? req.query.status : null,
-          operaAccount:
-            typeof req.query.opera_account === 'string'
-              ? req.query.opera_account
-              : null,
-          limit: req.query.limit ? Number(req.query.limit) : undefined,
-        });
+        const result = await listSubscriptions(
+          appDb,
+          {
+            status:
+              typeof req.query.status === 'string' ? req.query.status : null,
+            operaAccount:
+              typeof req.query.opera_account === 'string'
+                ? req.query.opera_account
+                : null,
+            limit: req.query.limit ? Number(req.query.limit) : undefined,
+          },
+          operaDb,
+        );
         res.json(result);
       } catch (err: any) {
         ctx.logger.error('List subscriptions failed', err);
@@ -2341,10 +2371,13 @@ export function createRouter(ctx: AppContext): Router {
     async (req: Request, res: Response) => {
       const appDb = getAppDb(req, res);
       if (!appDb) return;
+      const company = req.operaCompany;
+      const operaDb = company ? ctx.db.getCompanyDb(company) : null;
       try {
         const result = await getSubscription(
           appDb,
           String(req.params.subscription_id ?? ''),
+          operaDb,
         );
         if (!result.success) {
           const isMissing =
@@ -3317,10 +3350,8 @@ export function createRouter(ctx: AppContext): Router {
       const executor = adapter.gocardlessBatchExecutor ?? gocardlessBatchPostingExecutor;
       const lock = adapter.gocardlessImportLock ?? inMemoryImportLock;
       try {
-        const body = (req.body ?? {}) as Record<string, unknown>;
-        const payments = Array.isArray(body.payments)
-          ? (body.payments as IncomingPayment[])
-          : [];
+        const body = readObjectBody(req);
+        const payments = readArrayBody<IncomingPayment>(req, 'payments');
         const settings = await loadSettings(appDb);
         const known = (await appDb('gocardless_mandates')
           .select(
@@ -3425,10 +3456,8 @@ export function createRouter(ctx: AppContext): Router {
       const executor = adapter.gocardlessBatchExecutor ?? gocardlessBatchPostingExecutor;
       const lock = adapter.gocardlessImportLock ?? inMemoryImportLock;
       try {
-        const body = (req.body ?? {}) as Record<string, unknown>;
-        const payments = Array.isArray(body.payments)
-          ? (body.payments as IncomingPayment[])
-          : [];
+        const body = readObjectBody(req);
+        const payments = readArrayBody<IncomingPayment>(req, 'payments');
         const settings = await loadSettings(appDb);
         const known = (await appDb('gocardless_mandates').select(
           'mandate_id',

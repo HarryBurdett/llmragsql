@@ -30,6 +30,10 @@ export interface EligibleCustomersResponse {
   success: boolean;
   customers: EligibleCustomer[];
   count: number;
+  /** Number of customers already linked to a mandate. */
+  with_mandate: number;
+  /** Number of customers flagged for GC but without a mandate yet. */
+  without_mandate: number;
   error?: string;
 }
 
@@ -124,12 +128,25 @@ export async function getEligibleCustomers(
         mandate_status: m?.mandate_status ?? null,
       });
     }
-    return { success: true, customers, count: customers.length };
+    const withMandate = customers.reduce(
+      (n, c) => n + (c.has_mandate ? 1 : 0),
+      0,
+    );
+    const withoutMandate = customers.length - withMandate;
+    return {
+      success: true,
+      customers,
+      count: customers.length,
+      with_mandate: withMandate,
+      without_mandate: withoutMandate,
+    };
   } catch (err: any) {
     return {
       success: false,
       customers: [],
       count: 0,
+      with_mandate: 0,
+      without_mandate: 0,
       error: err?.message ?? String(err),
     };
   }

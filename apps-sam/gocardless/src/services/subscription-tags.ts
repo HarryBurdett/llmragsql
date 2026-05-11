@@ -164,46 +164,35 @@ export async function updateSubscriptionTags(
       };
     }
 
-    // Apply mode — write with ROWLOCK as Python does.
-    // Two distinct UPDATEs faithful to the Python source.
-    let updateSql: string;
+    // Apply mode — query-builder form so rowsAffected is real on
+    // every driver (mssql/foxpro/sqlite). Faithful to legacy filter
+    // semantics in apps/gocardless/api/routes.py.
+    const placeholders = frequencies.map(() => '?').join(',');
+    let baseQuery = operaDb('ihead')
+      .where('ih_docstat', 'U')
+      .andWhere(function notExpired(this: Knex.QueryBuilder) {
+        this.whereNull('ih_econtr').orWhereRaw('ih_econtr >= GETDATE()');
+      })
+      .whereRaw(`RTRIM(ih_ignore) IN (${placeholders})`, frequencies);
+
     if (overwrite) {
-      updateSql = `
-        UPDATE ihead WITH (ROWLOCK)
-        SET ih_analsys = ?, datemodified = GETDATE()
-        WHERE ih_docstat = 'U'
-          AND (ih_econtr IS NULL OR ih_econtr >= GETDATE())
-          AND RTRIM(ih_ignore) IN (${frequencies.map(() => '?').join(',')})
-          AND (RTRIM(ih_analsys) != ? OR ih_analsys IS NULL OR RTRIM(ih_analsys) = '')
-      `;
+      baseQuery = baseQuery.andWhere(function differentTag(this: Knex.QueryBuilder) {
+        this.whereRaw('RTRIM(ih_analsys) != ?', [tag])
+          .orWhereNull('ih_analsys')
+          .orWhereRaw("RTRIM(ih_analsys) = ''");
+      });
     } else {
-      updateSql = `
-        UPDATE ihead WITH (ROWLOCK)
-        SET ih_analsys = ?, datemodified = GETDATE()
-        WHERE ih_docstat = 'U'
-          AND (ih_econtr IS NULL OR ih_econtr >= GETDATE())
-          AND RTRIM(ih_ignore) IN (${frequencies.map(() => '?').join(',')})
-          AND (ih_analsys IS NULL OR RTRIM(ih_analsys) = '')
-      `;
+      baseQuery = baseQuery.andWhere(function unset(this: Knex.QueryBuilder) {
+        this.whereNull('ih_analsys').orWhereRaw("RTRIM(ih_analsys) = ''");
+      });
     }
 
-    const params: string[] = overwrite
-      ? [tag, ...frequencies, tag]
-      : [tag, ...frequencies];
-
-    const result = (await operaDb.raw(updateSql, params)) as unknown as
-      | { rowCount?: number }
-      | Array<{ rowCount?: number }>
-      | number;
-
-    let updated = 0;
-    if (typeof result === 'number') {
-      updated = result;
-    } else if (Array.isArray(result)) {
-      updated = result[0]?.rowCount ?? 0;
-    } else if (result && typeof result === 'object' && 'rowCount' in result) {
-      updated = result.rowCount ?? 0;
-    }
+    const updated = Number(
+      await baseQuery.update({
+        ih_analsys: tag,
+        datemodified: operaDb.raw('GETDATE()'),
+      }),
+    );
 
     return {
       success: true,

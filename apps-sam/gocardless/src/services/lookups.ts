@@ -182,6 +182,11 @@ export interface GcVatCode {
 export interface VatCodesResponse {
   success: boolean;
   vat_codes: GcVatCode[];
+  /** Legacy alias for `vat_codes` — kept for any external caller
+   *  that read the original `/api/gocardless/vat-codes` contract. */
+  codes: GcVatCode[];
+  /** ISO date the rates were evaluated against. Legacy parity. */
+  as_of_date: string;
   error?: string;
 }
 
@@ -208,9 +213,20 @@ export async function getVatCodes(
       type: c.type,
       nominal_account: c.nominal_account,
     }));
-    return { success: true, vat_codes: vatCodes };
+    return {
+      success: true,
+      vat_codes: vatCodes,
+      codes: vatCodes,
+      as_of_date: refDate.toISOString().slice(0, 10),
+    };
   } catch (err: any) {
-    return { success: false, vat_codes: [], error: err?.message ?? String(err) };
+    return {
+      success: false,
+      vat_codes: [],
+      codes: [],
+      as_of_date: new Date().toISOString().slice(0, 10),
+      error: err?.message ?? String(err),
+    };
   }
 }
 

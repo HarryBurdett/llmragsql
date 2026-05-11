@@ -971,6 +971,315 @@ export class GoCardlessClient {
       };
     }
   }
+
+  /**
+   * GET /payouts/:id — fetch a single payout, parsed.
+   * Faithful port of `GoCardlessClient.get_payout`.
+   */
+  private async _fetchRaw(path: string): Promise<Record<string, unknown> | null> {
+    const res = await this.request('GET', path);
+    if (!res.ok) return null;
+    return (await res.json()) as Record<string, unknown>;
+  }
+
+  async getPayout(payoutId: string): Promise<FullPayout | null> {
+    if (!payoutId) return null;
+    const data = await this._fetchRaw(`/payouts/${encodeURIComponent(payoutId)}`);
+    if (!data) return null;
+    const p = (data.payouts ?? {}) as Record<string, unknown>;
+    return this._parsePayout(p);
+  }
+
+  /**
+   * GET /payout_items?payout=:id — payment + fee items for one payout.
+   * Faithful port of `GoCardlessClient.get_payout_items`.
+   */
+  async getPayoutItems(
+    payoutId: string,
+    limit = 500,
+  ): Promise<Array<Record<string, unknown>>> {
+    if (!payoutId) return [];
+    const params = new URLSearchParams({
+      payout: payoutId,
+      limit: String(Math.min(limit, 500)),
+    });
+    const data = await this._fetchRaw(`/payout_items?${params.toString()}`);
+    if (!data) return [];
+    const items = (data.payout_items ?? []) as Array<Record<string, unknown>>;
+    return Array.isArray(items) ? items : [];
+  }
+
+  /**
+   * GET /creditor_bank_accounts/:id — cached.
+   * Used by _parsePayout to fill in destination account / sort code.
+   */
+  private _creditorBankCache = new Map<string, Record<string, unknown>>();
+  async getCreditorBankAccount(
+    accountId: string,
+  ): Promise<Record<string, unknown>> {
+    if (!accountId) return {} as Record<string, unknown>;
+    const cached = this._creditorBankCache.get(accountId);
+    if (cached) return cached;
+    const data = await this._fetchRaw(
+      `/creditor_bank_accounts/${encodeURIComponent(accountId)}`,
+    );
+    const acc = (data?.creditor_bank_accounts ?? {}) as Record<string, unknown>;
+    this._creditorBankCache.set(accountId, acc);
+    return acc;
+  }
+
+  /**
+   * GET /payments/:id — internal helper that returns the raw record
+   * (the existing public `getPayment` returns a wrapped envelope).
+   */
+  private async _getPaymentRaw(
+    paymentId: string,
+  ): Promise<Record<string, unknown> | null> {
+    if (!paymentId) return null;
+    const data = await this._fetchRaw(`/payments/${encodeURIComponent(paymentId)}`);
+    return data ? ((data.payments ?? {}) as Record<string, unknown>) : null;
+  }
+
+  private async _getMandateRaw(
+    mandateId: string,
+  ): Promise<Record<string, unknown> | null> {
+    if (!mandateId) return null;
+    const data = await this._fetchRaw(`/mandates/${encodeURIComponent(mandateId)}`);
+    return data ? ((data.mandates ?? {}) as Record<string, unknown>) : null;
+  }
+
+  private async _getCustomerRaw(
+    customerId: string,
+  ): Promise<Record<string, unknown> | null> {
+    if (!customerId) return null;
+    const data = await this._fetchRaw(
+      `/customers/${encodeURIComponent(customerId)}`,
+    );
+    return data ? ((data.customers ?? {}) as Record<string, unknown>) : null;
+  }
+
+  /**
+   * Composite fetch: payout + all payments + mandates + customer names.
+   *
+   * Faithful port of `GoCardlessClient.get_payout_with_payments`
+   * (sql_rag/gocardless_api.py:660-766). Phase 1 fetches payments;
+   * phase 2 fetches unique mandates; phase 3 fetches unique customers.
+   * Phases run with bounded concurrency (10) to mirror Python's
+   * ThreadPoolExecutor(max_workers=10).
+   *
+   * `fees_vat` is computed from the payout_items taxes (gocardless_fee /
+   * app_fee item types) the same way Python does it.
+   */
+  async getPayoutWithPayments(payoutId: string): Promise<FullPayout | null> {
+    const payout = await this.getPayout(payoutId);
+    if (!payout) return null;
+    const items = await this.getPayoutItems(payoutId);
+
+    let feesVat = 0;
+    const paymentIds: string[] = [];
+    for (const item of items) {
+      const itemType = String(item.type ?? '');
+      const links = (item.links ?? {}) as Record<string, unknown>;
+      if (itemType === 'payment_paid_out') {
+        const pid = links.payment;
+        if (typeof pid === 'string' && pid) paymentIds.push(pid);
+      } else if (itemType === 'gocardless_fee' || itemType === 'app_fee') {
+        const taxes = Array.isArray(item.taxes) ? (item.taxes as Array<Record<string, unknown>>) : [];
+        for (const tax of taxes) {
+          feesVat += Math.abs(Number(tax.amount ?? 0)) / 100;
+        }
+      }
+    }
+
+    // Phase 1: payments
+    const paymentMap = new Map<string, Record<string, unknown>>();
+    await runPool(10, paymentIds, async (pid) => {
+      const data = await this._getPaymentRaw(pid).catch(() => null);
+      if (data) paymentMap.set(pid, data);
+    });
+
+    // Phase 2: mandates
+    const mandateIds = new Set<string>();
+    for (const pd of paymentMap.values()) {
+      const mid = (pd.links as Record<string, unknown> | undefined)?.mandate;
+      if (typeof mid === 'string' && mid) mandateIds.add(mid);
+    }
+    const mandateMap = new Map<string, Record<string, unknown>>();
+    await runPool(10, Array.from(mandateIds), async (mid) => {
+      const m = await this._getMandateRaw(mid).catch(() => null);
+      if (m) mandateMap.set(mid, m);
+    });
+
+    // Phase 3: customers
+    const customerIds = new Set<string>();
+    for (const mid of mandateIds) {
+      const m = mandateMap.get(mid);
+      const cid = (m?.links as Record<string, unknown> | undefined)?.customer;
+      if (typeof cid === 'string' && cid) customerIds.add(cid);
+    }
+    const customerMap = new Map<string, Record<string, unknown>>();
+    await runPool(10, Array.from(customerIds), async (cid) => {
+      const c = await this._getCustomerRaw(cid).catch(() => null);
+      if (c) customerMap.set(cid, c);
+    });
+
+    // Phase 4: assemble structured payments.
+    const payments: FullPayment[] = [];
+    for (const pid of paymentIds) {
+      const pd = paymentMap.get(pid);
+      if (!pd) continue;
+      const mid =
+        ((pd.links as Record<string, unknown> | undefined)?.mandate as string | undefined) ??
+        null;
+      let cid: string | null = null;
+      let customerName: string | null = null;
+      if (mid) {
+        const m = mandateMap.get(mid);
+        cid = ((m?.links as Record<string, unknown> | undefined)?.customer as string | undefined) ?? null;
+        if (cid) {
+          const c = customerMap.get(cid);
+          const company = (c?.company_name as string | undefined) ?? '';
+          if (company) {
+            customerName = company;
+          } else {
+            const given = (c?.given_name as string | undefined) ?? '';
+            const family = (c?.family_name as string | undefined) ?? '';
+            const full = `${given} ${family}`.trim();
+            customerName = full || null;
+          }
+        }
+      }
+      payments.push({
+        id: (pd.id as string | undefined) ?? '',
+        amount: Number(pd.amount ?? 0) / 100,
+        currency: (pd.currency as string | undefined) ?? 'GBP',
+        status: (pd.status as string | undefined) ?? null,
+        charge_date: (pd.charge_date as string | undefined) ?? null,
+        customer_name: customerName,
+        customer_id: cid,
+        mandate_id: mid,
+        description: (pd.description as string | undefined) ?? null,
+        reference: (pd.reference as string | undefined) ?? null,
+        metadata: (pd.metadata as Record<string, unknown> | undefined) ?? {},
+      });
+    }
+
+    payout.payments = payments;
+    payout.fees_vat = feesVat;
+    // gross_amount as in Python @property: sum of payments
+    payout.gross_amount = payments.reduce((s, p) => s + p.amount, 0);
+    return payout;
+  }
+
+  /**
+   * Internal: structured parse of a `/payouts` record, matching the
+   * Python `_parse_payout` shape. Async because it follows the
+   * creditor_bank_account link to populate sort code / account number.
+   */
+  private async _parsePayout(
+    data: Record<string, unknown>,
+  ): Promise<FullPayout> {
+    const fx = ((data.fx as Record<string, unknown> | undefined) ?? {}) as Record<string, unknown>;
+    const fxAmountPence = fx.fx_amount;
+    const fxAmount =
+      typeof fxAmountPence === 'number' ? fxAmountPence / 100 :
+      typeof fxAmountPence === 'string' && fxAmountPence ? Number(fxAmountPence) / 100 :
+      null;
+
+    let bankAccountNumber: string | null = null;
+    let bankSortCode: string | null = null;
+    const cbaId = ((data.links as Record<string, unknown> | undefined)?.creditor_bank_account as string | undefined) ?? '';
+    if (cbaId) {
+      const cba = await this.getCreditorBankAccount(cbaId).catch(
+        () => ({} as Record<string, unknown>),
+      );
+      bankAccountNumber =
+        ((cba['account_number_ending'] as string | undefined) ??
+        (cba['account_number'] as string | undefined)) ?? null;
+      bankSortCode = (cba['bank_code'] as string | undefined) ?? null;
+    }
+
+    return {
+      id: (data.id as string | undefined) ?? '',
+      amount: Number(data.amount ?? 0) / 100,
+      currency: (data.currency as string | undefined) ?? 'GBP',
+      status: (data.status as string | undefined) ?? null,
+      reference: (data.reference as string | undefined) ?? '',
+      arrival_date: (data.arrival_date as string | undefined) ?? null,
+      created_at: (data.created_at as string | undefined) ?? null,
+      deducted_fees: Number(data.deducted_fees ?? 0) / 100,
+      payout_type: (data.payout_type as string | undefined) ?? '',
+      payments: [],
+      fees_vat: 0,
+      gross_amount: 0,
+      fx_amount: fxAmount,
+      fx_currency: (fx.fx_currency as string | undefined) ?? null,
+      exchange_rate: (fx.exchange_rate as string | undefined) ?? null,
+      bank_account_number: bankAccountNumber,
+      bank_sort_code: bankSortCode,
+    };
+  }
+}
+
+/**
+ * Run an async task across `items` with bounded concurrency.
+ * Mirrors Python's ThreadPoolExecutor(max_workers=N) pattern.
+ */
+async function runPool<T>(
+  concurrency: number,
+  items: T[],
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  const queue = items.slice();
+  const inflight: Array<Promise<void>> = [];
+  while (queue.length > 0 || inflight.length > 0) {
+    while (inflight.length < concurrency && queue.length > 0) {
+      const it = queue.shift() as T;
+      const p = worker(it).finally(() => {
+        const idx = inflight.indexOf(p);
+        if (idx >= 0) inflight.splice(idx, 1);
+      });
+      inflight.push(p);
+    }
+    if (inflight.length > 0) await Promise.race(inflight);
+  }
+}
+
+/** Structured payment record, parallel to Python's GoCardlessPayment. */
+export interface FullPayment {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string | null;
+  charge_date: string | null;
+  customer_name: string | null;
+  customer_id: string | null;
+  mandate_id: string | null;
+  description: string | null;
+  reference: string | null;
+  metadata: Record<string, unknown>;
+}
+
+/** Structured payout record, parallel to Python's GoCardlessPayout. */
+export interface FullPayout {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string | null;
+  reference: string;
+  arrival_date: string | null;
+  created_at: string | null;
+  deducted_fees: number;
+  payout_type: string;
+  payments: FullPayment[];
+  fees_vat: number;
+  gross_amount: number;
+  fx_amount: number | null;
+  fx_currency: string | null;
+  exchange_rate: string | null;
+  bank_account_number: string | null;
+  bank_sort_code: string | null;
 }
 
 /**

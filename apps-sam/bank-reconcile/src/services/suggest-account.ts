@@ -54,7 +54,10 @@ async function loadCustomers(operaDb: Knex): Promise<CustomerRow[]> {
         operaDb.raw('RTRIM(sn_name) as name'),
       )
       .where(function notStopped(this: Knex.QueryBuilder) {
-        this.where('sn_stop', 'N').orWhereNull('sn_stop');
+        this.where('sn_stop', 0).orWhereNull('sn_stop');
+      })
+      .andWhere(function notDormant(this: Knex.QueryBuilder) {
+        this.where('sn_dormant', 0).orWhereNull('sn_dormant');
       })
       .orderBy('sn_name')) as unknown as CustomerRow[];
   } catch {
@@ -70,7 +73,10 @@ async function loadSuppliers(operaDb: Knex): Promise<CustomerRow[]> {
         operaDb.raw('RTRIM(pn_name) as name'),
       )
       .where(function notStopped(this: Knex.QueryBuilder) {
-        this.where('pn_stop', 'N').orWhereNull('pn_stop');
+        this.where('pn_stop', 0).orWhereNull('pn_stop');
+      })
+      .andWhere(function notDormant(this: Knex.QueryBuilder) {
+        this.where('pn_dormant', 0).orWhereNull('pn_dormant');
       })
       .orderBy('pn_name')) as unknown as CustomerRow[];
   } catch {

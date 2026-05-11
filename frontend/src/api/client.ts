@@ -35,6 +35,27 @@ const PLUGIN_PATH_PREFIXES = [
   '/api/suppliers/',
 ];
 
+// Paths the SAM plugins handle, but which depend on SAM platform
+// services (ctx.emailIngest, ctx.llm, ctx.graph) that the standalone
+// runner doesn't provide. Route to legacy backend so end-to-end email
+// → PDF extraction → posting still works in test mode. In real SAM,
+// these will be served by the .sap plugins backed by SAM's services.
+// Keep this list narrow — anything not here uses the new backend.
+const LEGACY_FALLBACK_PREFIXES = [
+  '/api/bank-import/scan-emails',
+  '/api/bank-import/scan-all-banks',
+  '/api/bank-import/preview-from-email',
+  '/api/bank-import/import-from-email',
+  '/api/bank-import/raw-preview-email',
+  '/api/bank-import/fetch-emails-to-folder',
+  '/api/bank-import/email-import-history',
+];
+
+function isPluginPath(path: string): boolean {
+  if (LEGACY_FALLBACK_PREFIXES.some((p) => path.startsWith(p))) return false;
+  return PLUGIN_PATH_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
 function isTestMode(): boolean {
   if (typeof window === 'undefined') return false;
   const params = new URLSearchParams(window.location.search);
@@ -61,7 +82,7 @@ const API_BASE_URL = `${API_ROOT}/api`;
  */
 export function resolveApiTarget(path: string): string {
   if (!TEST_MODE) return `${API_ROOT}${path}`;
-  if (PLUGIN_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+  if (isPluginPath(path)) {
     return `${SAM_TEST_BACKEND}${path}`;
   }
   return `${API_ROOT}${path}`;
@@ -165,8 +186,9 @@ api.interceptors.request.use((config) => {
     const fullPath = config.url.startsWith('http')
       ? config.url
       : `/api${config.url.startsWith('/') ? config.url : '/' + config.url}`;
-    const matches = PLUGIN_PATH_PREFIXES.some((p) => fullPath.includes(p) || fullPath.startsWith(p));
-    if (matches) {
+    // Strip host first, then check against the path-only form.
+    const pathOnlyForMatch = fullPath.replace(/^https?:\/\/[^/]+/, '');
+    if (isPluginPath(pathOnlyForMatch)) {
       // Strip any existing host and re-target to test backend
       const pathOnly = fullPath.replace(/^https?:\/\/[^/]+/, '');
       config.baseURL = SAM_TEST_BACKEND;
@@ -209,7 +231,7 @@ export async function authFetch(url: string, options: RequestInit = {}): Promise
   // In test mode, rewrite plugin-path URLs to the standalone runner.
   let target = url;
   if (TEST_MODE && url.startsWith('/api/')) {
-    if (PLUGIN_PATH_PREFIXES.some((p) => url.startsWith(p))) {
+    if (isPluginPath(url)) {
       target = `${SAM_TEST_BACKEND}${url}`;
     }
   }

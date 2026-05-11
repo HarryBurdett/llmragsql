@@ -32,8 +32,10 @@ export interface ImportHistoryRecord {
 
 export interface ImportHistoryResponse {
   success: boolean;
-  history: ImportHistoryRecord[];
-  count: number;
+  /** Legacy key (read by frontend). */
+  imports: ImportHistoryRecord[];
+  /** Legacy total count (matches `len(history)` in Python). */
+  total: number;
   error?: string;
 }
 
@@ -102,7 +104,7 @@ export async function getImportHistory(
     }>;
 
     if (!rows.length) {
-      return { success: true, history: [], count: 0 };
+      return { success: true, imports: [], total: 0 };
     }
 
     // Collect unique customer accounts for Opera-name enrichment
@@ -202,13 +204,65 @@ export async function getImportHistory(
       };
     });
 
-    return { success: true, history, count: history.length };
+    return { success: true, imports: history, total: history.length };
   } catch (err: any) {
     return {
       success: false,
-      history: [],
-      count: 0,
+      imports: [],
+      total: 0,
       error: err?.message ?? String(err),
     };
+  }
+}
+
+/**
+ * Has this payout already been imported (by payout_id)?
+ *
+ * Faithful port of `is_gocardless_payout_imported`
+ * (api/email/storage.py). Optionally restricts to a specific
+ * target_system ('opera_se' / 'opera3').
+ */
+export async function isGocardlessPayoutImported(
+  appDb: Knex,
+  payoutId: string,
+  targetSystem?: 'opera_se' | 'opera_3' | 'opera3',
+): Promise<boolean> {
+  if (!payoutId) return false;
+  try {
+    let q = appDb('gocardless_imports').where({ payout_id: payoutId });
+    if (targetSystem) q = q.andWhere({ target_system: targetSystem });
+    const row = await q.first();
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Has this bank reference already been imported?
+ *
+ * Matches exact reference, or reference with a currency-suffix
+ * (e.g. `INTSYSUKLTD-XYZ (EUR)`), exactly like the Python port.
+ */
+export async function isGocardlessReferenceImported(
+  appDb: Knex,
+  bankReference: string,
+  targetSystem?: 'opera_se' | 'opera_3' | 'opera3',
+): Promise<boolean> {
+  if (!bankReference) return false;
+  const refLike = `${bankReference} (%`;
+  try {
+    let q = appDb('gocardless_imports').where(function (this: Knex.QueryBuilder) {
+      this.where('bank_reference', bankReference).orWhere(
+        'bank_reference',
+        'like',
+        refLike,
+      );
+    });
+    if (targetSystem) q = q.andWhere({ target_system: targetSystem });
+    const row = await q.first();
+    return !!row;
+  } catch {
+    return false;
   }
 }

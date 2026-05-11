@@ -27,6 +27,20 @@ import type { Knex } from 'knex';
 // Types
 // ---------------------------------------------------------------------
 
+export interface OperaLinkedDocument {
+  doc_ref: string;
+  ex_vat: number;
+  vat: number;
+  total_inc_vat: number;
+  amount_pence: number;
+  amount_formatted: string;
+  frequency_code: string;
+  frequency: string;
+  interval_unit: string;
+  interval_count: number;
+  has_sub_tag: boolean;
+}
+
 export interface Subscription {
   id: number;
   subscription_id: string;
@@ -52,6 +66,14 @@ export interface Subscription {
   synced_at: string;
   /** Used by listSubscriptions for back-compat with the dashboard. */
   customer_name: string;
+  // -- Opera-enrichment fields (legacy parity, frontend reads these) --
+  linked_documents: OperaLinkedDocument[];
+  linked_document_count: number;
+  opera_amount_pence: number | null;
+  opera_amount_formatted: string | null;
+  opera_frequency: string | null;
+  has_sub_tag: boolean | null;
+  mismatch: { details: string[] } | null;
 }
 
 export interface ListSubscriptionsOptions {
@@ -66,6 +88,8 @@ export interface ListSubscriptionsResponse {
   success: boolean;
   subscriptions: Subscription[];
   count: number;
+  /** Number of subscriptions where GC and Opera disagree. */
+  with_mismatch?: number;
   error?: string;
 }
 
@@ -145,6 +169,7 @@ function rowToSubscription(
   row: SubscriptionRow,
   sourceDocs: string[],
   mandateNameLookup: Map<string, string>,
+  operaDocs: Map<string, OperaLinkedDocument>,
 ): Subscription {
   const operaAccount = (row.opera_account ?? '').trim();
   const operaName = (row.opera_name ?? '').trim();
@@ -155,10 +180,47 @@ function rowToSubscription(
     row.day_of_month === null || row.day_of_month === undefined
       ? null
       : Number(row.day_of_month);
-  // Python returns null for empty values; we normalise to '' for
-  // string fields that are guaranteed non-null in the response shape.
   const customerName =
     operaName || mandateNameLookup.get(operaAccount) || operaAccount;
+
+  // Build per-document enrichment for this subscription's linked docs.
+  // Faithful to legacy lines 8953-8984.
+  const linkedDocs: OperaLinkedDocument[] = [];
+  let totalOperaPence = 0;
+  for (const docRef of sourceDocs) {
+    const opera = operaDocs.get(docRef);
+    if (opera) {
+      linkedDocs.push(opera);
+      totalOperaPence += opera.amount_pence;
+    }
+  }
+
+  let operaAmountPence: number | null = null;
+  let operaAmountFormatted: string | null = null;
+  let operaFrequency: string | null = null;
+  let hasSubTag: boolean | null = null;
+  let mismatchDetails: string[] = [];
+
+  if (linkedDocs.length > 0) {
+    operaAmountPence = totalOperaPence;
+    operaAmountFormatted = formatPounds(totalOperaPence);
+    operaFrequency = linkedDocs[0]!.frequency;
+    hasSubTag = linkedDocs.every((d) => d.has_sub_tag);
+    if (amountPence !== totalOperaPence) {
+      mismatchDetails.push(
+        `Amount: GC ${formatPounds(amountPence)} vs Opera ${formatPounds(totalOperaPence)} (${linkedDocs.length} doc${linkedDocs.length > 1 ? 's' : ''})`,
+      );
+    }
+    if (
+      intervalUnit !== linkedDocs[0]!.interval_unit ||
+      intervalCount !== linkedDocs[0]!.interval_count
+    ) {
+      mismatchDetails.push(
+        `Frequency: GC ${frequencyLabel(intervalUnit, intervalCount)} vs Opera ${linkedDocs[0]!.frequency}`,
+      );
+    }
+  }
+
   return {
     id: row.id,
     subscription_id: row.subscription_id ?? '',
@@ -183,6 +245,13 @@ function rowToSubscription(
     updated_at: dateToIso(row.updated_at),
     synced_at: dateToIso(row.synced_at),
     customer_name: customerName,
+    linked_documents: linkedDocs,
+    linked_document_count: sourceDocs.length,
+    opera_amount_pence: operaAmountPence,
+    opera_amount_formatted: operaAmountFormatted,
+    opera_frequency: operaFrequency,
+    has_sub_tag: hasSubTag,
+    mismatch: mismatchDetails.length > 0 ? { details: mismatchDetails } : null,
   };
 }
 
@@ -206,6 +275,111 @@ async function fetchSourceDocs(
     const arr = map.get(sid) ?? [];
     arr.push(doc);
     map.set(sid, arr);
+  }
+  return map;
+}
+
+/**
+ * Look up the `subscription_tag` setting from the gocardless settings
+ * row — defaults to 'SUB'. Used by the Opera-doc enrichment to flag
+ * which documents are tagged for subscription auto-collection.
+ */
+async function loadSubscriptionTag(appDb: Knex): Promise<string> {
+  try {
+    const row = (await appDb('settings')
+      .select('value')
+      .where({ key: 'subscription_tag' })
+      .first()) as { value?: string } | undefined;
+    const v = (row?.value ?? '').trim();
+    return v || 'SUB';
+  } catch {
+    return 'SUB';
+  }
+}
+
+interface IheadRow {
+  ih_doc: string | null;
+  ih_ignore: string | null;
+  ih_analsys: string | null;
+  line_nett: number | string | null;
+  line_vat: number | string | null;
+}
+
+/**
+ * Fetch Opera document metadata (amount, frequency, has_sub_tag) for
+ * the linked source-docs across a batch of subscriptions. Mirrors the
+ * legacy `opera_docs` enrichment block (routes.py:8911-8951).
+ *
+ * Returns a map keyed by doc_ref → OperaLinkedDocument.
+ */
+async function fetchOperaDocs(
+  operaDb: Knex | null,
+  docRefs: string[],
+  subscriptionTag: string,
+): Promise<Map<string, OperaLinkedDocument>> {
+  const map = new Map<string, OperaLinkedDocument>();
+  const docs = Array.from(new Set(docRefs.map((d) => d.trim()).filter(Boolean)));
+  if (docs.length === 0 || !operaDb) return map;
+
+  // Frequency label table — mirrors legacy freq_labels.
+  const FREQ_LABELS: Record<string, string> = {
+    W: 'Weekly',
+    F: 'Fortnightly',
+    M: 'Monthly',
+    B: 'Bi-monthly',
+    Q: 'Quarterly',
+    H: 'Half-yearly',
+    A: 'Annual',
+  };
+
+  try {
+    // Query ihead + itran summed by doc. Knex builder + subquery so the
+    // SQL stays portable across mssql and foxpro drivers.
+    const linesSub = operaDb('itran')
+      .select('it_doc')
+      .sum({ line_nett: 'it_exvat' })
+      .sum({ line_vat: 'it_vatval' })
+      .groupBy('it_doc')
+      .as('lines');
+
+    const rows = (await operaDb({ h: 'ihead' })
+      .leftJoin(linesSub, 'lines.it_doc', 'h.ih_doc')
+      .select(
+        'h.ih_doc',
+        'h.ih_ignore',
+        'h.ih_analsys',
+        operaDb.raw('COALESCE(lines.line_nett, 0) AS line_nett'),
+        operaDb.raw('COALESCE(lines.line_vat, 0) AS line_vat'),
+      )
+      .whereIn('h.ih_doc', docs)
+      .andWhere('h.ih_docstat', 'U')) as unknown as IheadRow[];
+
+    for (const r of rows ?? []) {
+      const docRef = (r.ih_doc ?? '').trim();
+      if (!docRef) continue;
+      const lineNettPence = Number(r.line_nett ?? 0);
+      const lineVatPence = Number(r.line_vat ?? 0);
+      const exVat = lineNettPence / 100;
+      const vat = lineVatPence / 100;
+      const total = exVat + vat;
+      const freqCode = (r.ih_ignore ?? 'M').toString().trim() || 'M';
+      const freqMap = FREQUENCY_MAP[freqCode] ?? { unit: 'monthly', count: 1 };
+      map.set(docRef, {
+        doc_ref: docRef,
+        ex_vat: exVat,
+        vat,
+        total_inc_vat: total,
+        amount_pence: Math.round(lineNettPence + lineVatPence),
+        amount_formatted: formatPounds(Math.round(lineNettPence + lineVatPence)),
+        frequency_code: freqCode,
+        frequency: FREQ_LABELS[freqCode] ?? freqCode,
+        interval_unit: freqMap.unit,
+        interval_count: freqMap.count,
+        has_sub_tag: (r.ih_analsys ?? '').toString().trim() === subscriptionTag,
+      });
+    }
+  } catch {
+    // best-effort — enrichment is non-essential
   }
   return map;
 }
@@ -240,6 +414,7 @@ async function fetchMandateNames(
 export async function listSubscriptions(
   appDb: Knex,
   opts: ListSubscriptionsOptions = {},
+  operaDb: Knex | null = null,
 ): Promise<ListSubscriptionsResponse> {
   try {
     let query = appDb('gocardless_subscriptions').orderBy('created_at', 'desc');
@@ -262,19 +437,48 @@ export async function listSubscriptions(
     const accounts = Array.from(
       new Set(rows.map((r) => (r.opera_account ?? '').trim()).filter(Boolean)),
     );
+    const subscriptionTag = await loadSubscriptionTag(appDb);
+
     const [docsBySub, mandateNames] = await Promise.all([
       fetchSourceDocs(appDb, subIds),
       fetchMandateNames(appDb, accounts),
     ]);
+
+    // Collect all source-docs across all subscriptions for the
+    // Opera lookup.
+    const allDocs = new Set<string>();
+    for (const docs of docsBySub.values()) {
+      for (const d of docs) allDocs.add(d);
+    }
+    // Fall back to source_doc on the row when the docs join is empty.
+    for (const r of rows) {
+      const fallback = (r.source_doc ?? '').trim();
+      if (fallback) allDocs.add(fallback);
+    }
+    const operaDocs = await fetchOperaDocs(
+      operaDb,
+      Array.from(allDocs),
+      subscriptionTag,
+    );
 
     const subscriptions = rows.map((r) =>
       rowToSubscription(
         r,
         docsBySub.get((r.subscription_id ?? '').trim()) ?? [],
         mandateNames,
+        operaDocs,
       ),
     );
-    return { success: true, subscriptions, count: subscriptions.length };
+    const withMismatch = subscriptions.reduce(
+      (n, s) => n + (s.mismatch ? 1 : 0),
+      0,
+    );
+    return {
+      success: true,
+      subscriptions,
+      count: subscriptions.length,
+      with_mismatch: withMismatch,
+    };
   } catch (err: any) {
     return {
       success: false,
@@ -292,6 +496,7 @@ export async function listSubscriptions(
 export async function getSubscription(
   appDb: Knex,
   subscriptionId: string,
+  operaDb: Knex | null = null,
 ): Promise<GetSubscriptionResponse> {
   const id = (subscriptionId ?? '').trim();
   if (!id) return { success: false, error: 'subscription_id is required' };
@@ -303,14 +508,26 @@ export async function getSubscription(
       return { success: false, error: `Subscription ${id} not found` };
     }
     const account = (row.opera_account ?? '').trim();
+    const subscriptionTag = await loadSubscriptionTag(appDb);
     const [docsBySub, mandateNames] = await Promise.all([
       fetchSourceDocs(appDb, [id]),
       fetchMandateNames(appDb, account ? [account] : []),
     ]);
+    const linkedDocs = docsBySub.get(id) ?? [];
+    const allDocs = new Set<string>(linkedDocs);
+    if ((row.source_doc ?? '').trim()) {
+      allDocs.add((row.source_doc ?? '').trim());
+    }
+    const operaDocs = await fetchOperaDocs(
+      operaDb,
+      Array.from(allDocs),
+      subscriptionTag,
+    );
     const subscription = rowToSubscription(
       row,
-      docsBySub.get(id) ?? [],
+      linkedDocs,
       mandateNames,
+      operaDocs,
     );
     return { success: true, subscription };
   } catch (err: any) {

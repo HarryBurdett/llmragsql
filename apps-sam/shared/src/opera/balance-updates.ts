@@ -32,6 +32,12 @@ import type { Knex } from 'knex';
  * Throws when the bank account isn't found in nbank — caller is in a
  * transaction and the throw forces a rollback rather than commit
  * with an out-of-sync bank balance.
+ *
+ * Implementation note: uses Knex's query builder `.update()` which
+ * returns the actual rowsAffected as a number on every Knex driver
+ * (mssql/tedious, sqlite, foxpro etc.). Using `trx.raw(UPDATE ...)`
+ * here would silently return 0 on MSSQL because tedious doesn't
+ * surface rowsAffected for raw statements — that bit us before.
  */
 export async function updateNbankBalance(
   trx: Knex,
@@ -39,20 +45,13 @@ export async function updateNbankBalance(
   amountPounds: number,
 ): Promise<void> {
   const amountPence = Math.round(amountPounds * 100);
-  const result = (await trx.raw(
-    `UPDATE nbank WITH (ROWLOCK)
-     SET nk_curbal = ISNULL(nk_curbal, 0) + ?,
-         datemodified = GETDATE()
-     WHERE RTRIM(nk_acnt) = ?`,
-    [amountPence, bankAccount],
-  )) as unknown as { rowCount?: number } | Array<{ rowCount?: number }>;
-  const rows =
-    typeof result === 'object' && result !== null
-      ? Array.isArray(result)
-        ? Number(result[0]?.rowCount ?? 0)
-        : Number(result.rowCount ?? 0)
-      : 0;
-  if (rows === 0) {
+  const rows = await trx('nbank')
+    .whereRaw('RTRIM(nk_acnt) = ?', [bankAccount])
+    .update({
+      nk_curbal: trx.raw('ISNULL(nk_curbal, 0) + ?', [amountPence]),
+      datemodified: trx.raw('GETDATE()'),
+    });
+  if (Number(rows) === 0) {
     throw new Error(
       `nbank balance update failed: bank account '${bankAccount}' not found ` +
         `in nbank. Attempted to adjust by ${amountPence} pence ` +
@@ -150,40 +149,23 @@ export async function updateNacntBalance(
   const v = Number(value);
   const absV = Math.abs(v);
 
-  // 1. Update nacnt
-  let nacntSql: string;
-  let nacntParams: Array<string | number>;
+  // 1. Update nacnt — query-builder form so rowsAffected is real
+  // across every Knex driver (mssql, sqlite, foxpro etc).
+  const nacntUpdate: Record<string, Knex.Raw> = {
+    [periodCol]: trx.raw(`ISNULL(${periodCol}, 0) + ?`, [v]),
+    datemodified: trx.raw('GETDATE()'),
+  };
   if (v >= 0) {
-    nacntSql = `
-      UPDATE nacnt WITH (ROWLOCK)
-      SET na_ptddr = ISNULL(na_ptddr, 0) + ?,
-          na_ytddr = ISNULL(na_ytddr, 0) + ?,
-          ${periodCol} = ISNULL(${periodCol}, 0) + ?,
-          datemodified = GETDATE()
-      WHERE RTRIM(na_acnt) = ?
-    `;
-    nacntParams = [v, v, v, account_];
+    nacntUpdate.na_ptddr = trx.raw('ISNULL(na_ptddr, 0) + ?', [v]);
+    nacntUpdate.na_ytddr = trx.raw('ISNULL(na_ytddr, 0) + ?', [v]);
   } else {
-    nacntSql = `
-      UPDATE nacnt WITH (ROWLOCK)
-      SET na_ptdcr = ISNULL(na_ptdcr, 0) + ?,
-          na_ytdcr = ISNULL(na_ytdcr, 0) + ?,
-          ${periodCol} = ISNULL(${periodCol}, 0) + ?,
-          datemodified = GETDATE()
-      WHERE RTRIM(na_acnt) = ?
-    `;
-    nacntParams = [absV, absV, v, account_];
+    nacntUpdate.na_ptdcr = trx.raw('ISNULL(na_ptdcr, 0) + ?', [absV]);
+    nacntUpdate.na_ytdcr = trx.raw('ISNULL(na_ytdcr, 0) + ?', [absV]);
   }
-  const result = (await trx.raw(nacntSql, nacntParams)) as unknown as
-    | { rowCount?: number }
-    | Array<{ rowCount?: number }>;
-  const rows =
-    typeof result === 'object' && result !== null
-      ? Array.isArray(result)
-        ? Number(result[0]?.rowCount ?? 0)
-        : Number(result.rowCount ?? 0)
-      : 0;
-  if (rows === 0) {
+  const rows = await trx('nacnt')
+    .whereRaw('RTRIM(na_acnt) = ?', [account_])
+    .update(nacntUpdate);
+  if (Number(rows) === 0) {
     throw new Error(
       `nacnt update affected 0 rows for account ${account_} - ` +
         'account may not exist in nacnt table',

@@ -116,12 +116,31 @@ export interface ReconciliationStatus {
   last_stmt_date?: string | null;
   last_rec_date?: string | null;
   rec_cfwd_balance?: number;
+  // Partial-reconciliation / sequential gating fields (legacy parity).
+  reconciliation_in_progress?: boolean;
+  reconciliation_in_progress_message?: string | null;
+  partial_entries?: number;
+  sequential_gating?: boolean;
+  sequential_gating_self?: boolean;
   error?: string;
+}
+
+/**
+ * Normalise a filename for case + whitespace-insensitive comparison.
+ * Mirrors the legacy `_norm_fn` helper that lets a stored
+ * "Statement 17-APR-26 AC X  Y.pdf" (double space) match an inbound
+ * "Statement 17-APR-26 AC X Y.pdf" (single space).
+ */
+function normFilename(fn: string | null | undefined): string {
+  if (!fn) return '';
+  return fn.split(/\s+/).filter(Boolean).join(' ').trim().toLowerCase();
 }
 
 export async function getReconciliationStatus(
   operaDb: Knex,
   bankCode: string,
+  appDb: Knex | null = null,
+  currentFilename: string | null = null,
 ): Promise<ReconciliationStatus> {
   try {
     const nbankRows = (await operaDb.raw(
@@ -168,9 +187,93 @@ export async function getReconciliationStatus(
 
     const reconciledBalance = Number(nbank.reconciled_balance ?? 0);
     const unreconciledTotal = Number(unrec.total ?? 0);
-    // Derive current balance from reconciled + actual unreconciled entries
-    // (matches Python: avoids reliance on nk_curbal which may have history)
     const currentBalance = reconciledBalance + unreconciledTotal;
+
+    // Partial-reconciliation check — ae_tmpstat is non-zero when Opera
+    // has half-reconciled entries waiting for the user to finish a
+    // deferred row. Faithful port of
+    // `StatementReconciler.check_reconciliation_in_progress`
+    // (sql_rag/statement_reconcile.py:266-299).
+    let partialEntries = 0;
+    let inProgressMessage: string | null = null;
+    let sequentialGating = false;
+    let sequentialGatingSelf = false;
+    try {
+      const partialRows = (await operaDb.raw(
+        `
+        SELECT COUNT(*) AS partial_count
+        FROM aentry WITH (NOLOCK)
+        WHERE ae_acnt = ?
+          AND ae_tmpstat <> 0
+          AND ae_tmpstat IS NOT NULL
+        `,
+        [bankCode],
+      )) as unknown as Array<{ partial_count: number | string | null }>;
+      partialEntries = Number(partialRows?.[0]?.partial_count ?? 0);
+    } catch {
+      partialEntries = 0;
+    }
+
+    if (partialEntries > 0) {
+      // Default message — pre-gating.
+      inProgressMessage =
+        `${partialEntries} entries have partial reconciliation markers from ` +
+        `Opera or a previous session. These will be cleared automatically ` +
+        `when you reconcile.`;
+
+      // Sequential gating: differentiate the message based on whether
+      // the user is processing the deferred-row statement itself
+      // (sequential_gating_self) vs a subsequent statement in the
+      // chain. Faithful port of routes.py:743-797.
+      if (appDb) {
+        try {
+          const pendingRows = (await appDb('bank_statement_imports')
+            .distinct('filename')
+            .where('bank_code', bankCode)
+            .andWhere(function notReconciled(this: Knex.QueryBuilder) {
+              this.where('is_reconciled', 0).orWhereNull('is_reconciled');
+            })
+            .andWhere(function notArchived(this: Knex.QueryBuilder) {
+              this.whereNotIn('target_system', [
+                'archived',
+                'deleted',
+                'retained',
+              ]).orWhereNull('target_system');
+            })
+            .whereNotNull('filename')) as unknown as Array<{ filename: string | null }>;
+          const pendingFiles = (pendingRows ?? [])
+            .map((r) => (r.filename ?? '').toString())
+            .filter((f) => f.length > 0);
+          if (pendingFiles.length > 0) {
+            const names = pendingFiles.slice(0, 2).join(', ');
+            const more =
+              pendingFiles.length > 2 ? ` (+${pendingFiles.length - 2} more)` : '';
+            const curNorm = normFilename(currentFilename);
+            const isSelf = !!(
+              curNorm && pendingFiles.some((p) => normFilename(p) === curNorm)
+            );
+            if (isSelf) {
+              inProgressMessage =
+                `This statement has ${partialEntries} partial reconciliation ` +
+                `markers from a previous session and is awaiting a ` +
+                `deferred-row resolution. Resolve the deferred row, then ` +
+                `reconcile — the markers will clear automatically.`;
+            } else {
+              inProgressMessage =
+                `This statement cannot be fully reconciled until ` +
+                `statement ${names}${more} is completed (it's awaiting a ` +
+                `deferred-row resolution). You can still process and ` +
+                `import this statement to keep Opera up to date — ` +
+                `reconciliation will run once the prior statement is done.`;
+            }
+            sequentialGating = true;
+            sequentialGatingSelf = isSelf;
+          }
+        } catch {
+          // best-effort — sequential-gating message is advisory
+        }
+      }
+    }
 
     return {
       success: true,
@@ -185,6 +288,11 @@ export async function getReconciliationStatus(
       last_stmt_date: dateToYmd(nbank.last_stmt_date) || null,
       last_rec_date: dateToYmd(nbank.last_rec_date) || null,
       rec_cfwd_balance: Number(nbank.rec_cfwd_balance ?? 0),
+      reconciliation_in_progress: partialEntries > 0,
+      reconciliation_in_progress_message: inProgressMessage,
+      partial_entries: partialEntries,
+      sequential_gating: sequentialGating,
+      sequential_gating_self: sequentialGatingSelf,
     };
   } catch (err: any) {
     return { success: false, error: err?.message ?? String(err) };
