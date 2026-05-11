@@ -6,14 +6,14 @@
 
 ## Goal
 
-Install a standalone local SAM on Harry's Mac, install the four plugins (`bank-reconcile`, `gocardless`, `suppliers`, `balance-check`) via `.sap` upload, validate them end-to-end against live Intsys Opera SE and the live mailbox, iterate until proven, then produce final `.sap` packages for Jonathan to install into Charlie's live SAM. Local SAM persists on Harry's Mac as the permanent dev/test environment for all future plugin work.
+Install a standalone local SAM on Harry's Mac, install the four plugins (`bank-reconcile`, `gocardless`, `suppliers`, `balance-check`) via `.sap` upload, validate them end-to-end against live Intsys Opera SE and the live mailbox, iterate until proven, then produce final `.sap` packages for Jonathan to install into the live SAM. Local SAM persists on Harry's Mac as the permanent dev/test environment for all future plugin work.
 
 ## Why
 
-The four plugins currently have no test environment between development and live SAM. Every fix or enhancement would otherwise ship straight to Charlie's production SAM with rollback as the only safety net — operationally risky for a finance application where transactions are real money. Bug fixes typically take several iterations to be correct; doing those iterations in production is unsafe.
+The four plugins currently have no test environment between development and live SAM. Every fix or enhancement would otherwise ship straight to the live SAM with rollback as the only safety net — operationally risky for a finance application where transactions are real money. Bug fixes typically take several iterations to be correct; doing those iterations in production is unsafe.
 
 Local SAM becomes:
-1. **Pre-deployment proof.** The four plugins cross the line to Charlie's Mac only after they've been shown to work end-to-end on Harry's Mac. The first time live SAM ever sees a plugin, it works.
+1. **Pre-deployment proof.** The four plugins cross the line to the live SAM only after they've been shown to work end-to-end on Harry's Mac. The first time live SAM ever sees a plugin, it works.
 2. **Ongoing staging.** Every future fix and enhancement is validated locally before being promoted to live.
 3. **Independent dev platform.** Standalone (no Central), Harry controls what gets installed and when, no auto-sync from anywhere.
 
@@ -74,7 +74,7 @@ In a future phase, the four plugins from this project + Jonathan's apps + the SA
                        │ files for Jonathan
                        ▼
               ┌────────────────────┐
-              │ Charlie's live SAM │
+              │   the live SAM     │
               │ (existing path —   │
               │ DEPLOY-TO-SAM.md)  │
               └────────────────────┘
@@ -128,7 +128,7 @@ A SAM platform update touches layer 1 only. Layers 2 and 3 are untouched. There 
 - Automated CI/build pipeline (manual `.sap` builds are fine to start)
 - Monitoring / alerting on local SAM (it's a dev env, manual log inspection suffices)
 - A staging mailbox or test Opera (we're using live data per Harry's decision)
-- Re-doing the install on Charlie's Mac (that's Jonathan's job once we hand off proven artifacts)
+- Re-doing the install on the live SAM (that's Jonathan's job once we hand off proven artifacts)
 
 ## Plan phases (high level — implementation plan will expand)
 
@@ -195,7 +195,7 @@ The local-SAM step is mandatory per `feedback_test_before_live_sam.md`. No relea
 
 The implementation plan will include drafting a message to Jonathan (team-mate, internal — informal tone) saying:
 
-1. **Pause** the deployment guide we sent him today (don't install the four plugins on Charlie's Mac yet)
+1. **Pause** the deployment guide we sent him today (don't install the four plugins on the live SAM yet)
 2. **Why:** changing approach — we're standing up a local test SAM here first, will hand him proven `.sap` files when ready
 3. **Timeframe:** ~few days
 4. **No coordination needed from him** during this period — we'll run our local SAM independently and ping him when artifacts are ready

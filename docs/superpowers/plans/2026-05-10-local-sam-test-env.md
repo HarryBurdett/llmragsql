@@ -933,7 +933,7 @@ Specifically: replace the existing Section 1.2 with a version that adds Step 1.2
 ```markdown
 #### Step 1.2.3.5 — Validate the fix in local SAM first
 
-Before pushing to GitHub (where it could be pulled by Charlie's live SAM):
+Before pushing to GitHub (where it could be pulled by the live SAM):
 
 ```
 # Terminal — your Mac
@@ -992,19 +992,19 @@ Hi Jonathan,
 
 Quick change of plan on the SAM plugin deployment.
 
-I sent over `DEPLOY-TO-SAM.md` on Saturday — please **hold off** installing the four plugins on Charlie's SAM for now.
+I sent over `DEPLOY-TO-SAM.md` on Saturday — please **hold off** installing the four plugins on the live SAM for now.
 
-I'm going to stand up a local SAM here on my Mac as a test environment first (standalone, no Central). I'll get the four plugins (`bank-reconcile`, `gocardless`, `suppliers`, `balance-check`) working end-to-end against live Intsys Opera SE here, iterate on anything that's broken, and only then hand you the proven `.sap` files for installation on Charlie's live SAM.
+I'm going to stand up a local SAM here on my Mac as a test environment first (standalone, no Central). I'll get the four plugins (`bank-reconcile`, `gocardless`, `suppliers`, `balance-check`) working end-to-end against live Intsys Opera SE here, iterate on anything that's broken, and only then hand you the proven `.sap` files for installation on the live SAM.
 
 Operationally this gives us:
 
-- Fewer surprises in live — the first time Charlie's SAM sees a plugin, we already know it works
+- Fewer surprises in live — the first time the live SAM sees a plugin, we already know it works
 - A permanent dev/test environment for me to use for ongoing fixes and new plugins
 - No more "ship to live and hope" — every release gets validated locally before it crosses over
 
 **Timeframe:** ~few days for the initial setup + validation pass. I'll ping you when the proven `.sap` files are ready.
 
-**Nothing needed from you in the meantime** — no licence, no Central work, nothing. I'm running local SAM standalone. When I'm ready to hand off, it'll be the four proven `.sap` files for you to install on Charlie's SAM (or push to the `intsysuk/sam-*` repos with verified tags — whichever path you prefer).
+**Nothing needed from you in the meantime** — no licence, no Central work, nothing. I'm running local SAM standalone. When I'm ready to hand off, it'll be the four proven `.sap` files for you to install on the live SAM (or push to the `intsysuk/sam-*` repos with verified tags — whichever path you prefer).
 
 When the apps are ready for live, we can also start thinking about the eventual merge with your apps + SAM platform updates.
 
@@ -1056,7 +1056,7 @@ Edit `apps-sam/README.md`. After the "Deploying and maintaining SAM plugins" sec
 
 Harry runs a local standalone SAM on his Mac for development and testing.
 All fixes and enhancements go through there before any release crosses
-to Charlie's live SAM. See
+to the live SAM. See
 [apps-sam/MAINTAIN-SAM-PLUGINS.md](MAINTAIN-SAM-PLUGINS.md) Section 1.7
 for how to update local SAM to the latest platform version, and
 [docs/superpowers/specs/2026-05-10-local-sam-test-env-design.md](../docs/superpowers/specs/2026-05-10-local-sam-test-env-design.md)
@@ -1122,7 +1122,7 @@ Edit `/Users/maccb/.claude/projects/-Users-maccb-llmragsql/memory/project_local_
 
 **Followups (when convenient):**
 - Harry sends the drafted Jonathan message
-- Harry signals "ready" → Jonathan installs the four `.sap` files on Charlie's live SAM
+- Harry signals "ready" → Jonathan installs the four `.sap` files on the live SAM
 - Add Opera 3 test connection (deferred phase — needs Pegasus Agent on Windows)
 ```
 
