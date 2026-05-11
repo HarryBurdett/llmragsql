@@ -32,6 +32,7 @@ import {
   isGocardlessPayoutImported,
   isGocardlessReferenceImported,
 } from './import-history.js';
+import { checkOrphanedImports } from './restore-recovery.js';
 import {
   matchPaymentsHelper,
   type PaymentInput,
@@ -100,6 +101,18 @@ export interface FetchApiPayoutsResponse {
   total_payouts?: number;
   filter_stats?: FilterStats;
   batches?: PayoutBatch[];
+  /**
+   * SAM enhancement — when the user lands on the GoCardless page,
+   * surface any `gocardless_imports` rows whose Opera atran/aentry
+   * is gone. Strong signal of an Opera restore: the UI can render a
+   * banner asking the user to confirm and trigger
+   * /recover-from-restore. Always returned (count=0 means clean).
+   */
+  orphan_check?: {
+    detected: boolean;
+    count: number;
+    summary: Array<{ bank_reference: string; gross_amount: number }>;
+  };
   error?: string;
 }
 
@@ -524,6 +537,29 @@ export async function fetchGocardlessApiPayouts(
     }
   }
 
+  // Surface any orphaned `gocardless_imports` rows so the UI can show
+  // a restore-detected banner without needing a separate call.
+  let orphanCheck: FetchApiPayoutsResponse['orphan_check'] = {
+    detected: false,
+    count: 0,
+    summary: [],
+  };
+  try {
+    const result = await checkOrphanedImports(operaDb, appDb);
+    if (result.success && result.orphans.length > 0) {
+      orphanCheck = {
+        detected: true,
+        count: result.orphans.length,
+        summary: result.orphans.slice(0, 10).map((o) => ({
+          bank_reference: o.bank_reference,
+          gross_amount: o.gross_amount,
+        })),
+      };
+    }
+  } catch {
+    // best-effort — never block the payouts response on orphan check
+  }
+
   return {
     success: true,
     source: 'api',
@@ -531,5 +567,6 @@ export async function fetchGocardlessApiPayouts(
     total_payouts: batches.length,
     filter_stats: filterStats,
     batches,
+    orphan_check: orphanCheck,
   };
 }
