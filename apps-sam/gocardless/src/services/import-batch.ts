@@ -468,19 +468,36 @@ async function recordImportHistory(
       bank_reference: args.bankReference,
       gross_amount: args.grossAmount,
       net_amount: args.netAmount,
-      gocardless_fees: args.goCardlessFees,
+      // SAM schema column is `fees_amount` (per migration 001); the
+      // legacy column name was `gocardless_fees`. Use the SAM name —
+      // an earlier version of this insert silently failed on every
+      // GoCardless import because SQLite/MSSQL rejected the unknown
+      // column and the try/catch swallowed it. That left
+      // gocardless_imports empty and the idempotency gate inert.
+      fees_amount: args.goCardlessFees,
       vat_on_fees: args.vatOnFees,
       payment_count: args.paymentCount,
       payments_json: args.paymentsJson,
       batch_ref: args.batchRef,
       imported_by: args.importedBy,
       post_date: args.postDate,
+      // payment_date drives the bank-code + date index used by the
+      // history list endpoint; legacy set it from post_date.
+      payment_date: args.postDate,
       email_id: args.emailId ?? null,
       imported_at: appDb.fn.now(),
     });
-  } catch {
-    // History write failure is non-fatal — Python logs warning then
-    // proceeds.
+  } catch (err) {
+    // History write failure is non-fatal at the import level (Python
+    // logs warning then proceeds), but we DO surface the error so it
+    // can be picked up in logs rather than silently dropping every
+    // import row like the previous version did.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[gocardless] recordImportHistory failed for payout ${args.payoutId}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }
 
