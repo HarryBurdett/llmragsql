@@ -344,7 +344,11 @@ export async function recoverOrphanedTransactions(
 
     // Clear the orphaned line tracking + the parent statement's
     // reconciliation flag in a single transaction to keep them
-    // consistent.
+    // consistent. Also re-sync each affected statement's stored
+    // `transactions_imported` count to the live count of lines that
+    // still have a `posted_entry_number` — otherwise the Hub display
+    // ("N/M posted") stays frozen at the pre-recovery count and the
+    // statement looks like it's still partially posted to Opera.
     await appDb.transaction(async (trx) => {
       await trx('bank_statement_transactions')
         .whereIn('id', txIds)
@@ -353,14 +357,22 @@ export async function recoverOrphanedTransactions(
           posted_at: null,
           is_reconciled: 0,
         });
-      await trx('bank_statement_imports')
-        .whereIn('id', Array.from(importIds))
-        .update({
+      for (const importId of importIds) {
+        const row = await trx('bank_statement_transactions')
+          .where({ import_id: importId })
+          .whereNotNull('posted_entry_number')
+          .andWhereRaw("TRIM(posted_entry_number) <> ''")
+          .count<{ c: number | string }[]>({ c: '*' })
+          .first();
+        const remainingPosted = Number(row?.c ?? 0);
+        await trx('bank_statement_imports').where({ id: importId }).update({
           is_reconciled: 0,
           reconciled_count: 0,
           reconciled_at: null,
           reconciled_by: null,
+          transactions_imported: remainingPosted,
         });
+      }
     });
 
     return {
