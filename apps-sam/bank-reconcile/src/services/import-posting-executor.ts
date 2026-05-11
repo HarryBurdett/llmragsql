@@ -1283,6 +1283,14 @@ export const bankImportPostingExecutor: ImportPostingExecutor = {
   }) {
     const errors: string[] = [];
     const warnings: string[] = [];
+    const posted_lines: Array<{
+      line_number: number;
+      post_date: string;
+      amount: number;
+      posted_entry_number: string;
+      description: string;
+      at_type: number;
+    }> = [];
     let imported = 0;
     let failed = 0;
     let skipped = 0;
@@ -1348,16 +1356,33 @@ export const bankImportPostingExecutor: ImportPostingExecutor = {
       };
 
       try {
+        let entryNumber: string | null = null;
         await operaDb.transaction(async (trx) => {
+          let result: { entry_number: string };
           if (action === 'nominal_payment' || action === 'nominal_receipt') {
-            await postNominalEntry({ trx, bankCode, txn: prepared, defaults });
+            result = await postNominalEntry({ trx, bankCode, txn: prepared, defaults });
           } else if (action === 'bank_transfer') {
-            await postBankTransfer({ trx, bankCode, txn: prepared, defaults });
+            result = await postBankTransfer({ trx, bankCode, txn: prepared, defaults });
           } else {
-            await postOneTransaction({ trx, bankCode, txn: prepared, defaults });
+            result = await postOneTransaction({ trx, bankCode, txn: prepared, defaults });
           }
+          entryNumber = result.entry_number;
         });
         imported += 1;
+        // Capture per-line record for production-correct restore
+        // detection (bank_statement_transactions row written by the
+        // import flow). The entry_number lets us validate later that
+        // Opera still has this posting.
+        if (entryNumber) {
+          posted_lines.push({
+            line_number: i + 1,
+            post_date: prepared.date,
+            amount: prepared.amount,
+            posted_entry_number: entryNumber,
+            description: prepared.memo || prepared.name || '',
+            at_type: AT_TYPE_FOR_ACTION[action]!,
+          });
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         errors.push(`Row ${i + 1}: ${msg}`);
@@ -1373,6 +1398,7 @@ export const bankImportPostingExecutor: ImportPostingExecutor = {
       errors,
       warnings,
       import_id: null,
+      posted_lines,
     };
   },
 };

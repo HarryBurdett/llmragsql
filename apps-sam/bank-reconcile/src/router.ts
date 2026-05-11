@@ -18,6 +18,10 @@ import {
   recoverFromOperaDivergence,
 } from './services/reconciliation-status.js';
 import {
+  checkOrphanedTransactions,
+  recoverOrphanedTransactions,
+} from './services/transaction-orphan-check.js';
+import {
   ignoreTransaction,
   listIgnoredTransactions,
   unignoreTransactionById,
@@ -439,9 +443,101 @@ export function createRouter(ctx: AppContext): Router {
         ctx.db.app,
         currentFilename,
       );
+      // Per-line orphan check — wider net than the statement-level
+      // divergence check above. Catches the case where lines were
+      // posted to Opera but the underlying entries are gone (e.g.
+      // Opera restored before the statement was marked reconciled).
+      if (ctx.db.app) {
+        try {
+          const orphans = await checkOrphanedTransactions(
+            operaDb,
+            ctx.db.app,
+            bankCode,
+          );
+          if (orphans.success && orphans.orphan_line_count > 0) {
+            (result as unknown as Record<string, unknown>).orphan_transactions = {
+              detected: true,
+              line_count: orphans.orphan_line_count,
+              statement_count: orphans.statement_count,
+              statements: orphans.orphan_statements,
+              message:
+                `${orphans.orphan_line_count} statement line(s) across ` +
+                `${orphans.statement_count} statement(s) reference Opera ` +
+                `entries that no longer exist (Opera restore likely). ` +
+                `Use the recovery endpoint to clear so they can be re-posted.`,
+            };
+          } else {
+            (result as unknown as Record<string, unknown>).orphan_transactions = {
+              detected: false,
+              line_count: 0,
+              statement_count: 0,
+              statements: [],
+            };
+          }
+        } catch {
+          // best-effort — never block the status response
+        }
+      }
       res.json(result);
     } catch (err: any) {
       ctx.logger.error('Get reconciliation status failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * GET /api/reconcile/bank/:bank_code/orphan-transactions
+   *
+   * Read-only per-line orphan check — surfaces every
+   * `bank_statement_transactions` row whose `posted_entry_number`
+   * doesn't match an Opera `aentry` for this bank. Triggers: Opera
+   * was restored from backup, or the Cashbook entry was deleted
+   * directly in Opera. The recovery endpoint clears the stale
+   * tracking only after explicit user confirmation.
+   */
+  router.get('/api/reconcile/bank/:bank_code/orphan-transactions', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      if (!bankCode) {
+        res.status(400).json({ success: false, error: 'Missing bank_code' });
+        return;
+      }
+      const result = await checkOrphanedTransactions(operaDb, appDb, bankCode);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Orphan transactions check failed', err);
+      res.status(500).json({ success: false, error: err?.message ?? String(err) });
+    }
+  });
+
+  /**
+   * POST /api/reconcile/bank/:bank_code/recover-orphan-transactions
+   *
+   * Clear `posted_entry_number` + `posted_at` on every line whose
+   * Opera entry is gone, plus reset the parent statement's
+   * `is_reconciled` flag. Subsequent re-import of the statement will
+   * re-post the cleared lines. Requires explicit confirmation —
+   * never auto-runs.
+   */
+  router.post('/api/reconcile/bank/:bank_code/recover-orphan-transactions', async (req, res) => {
+    const operaDb = getOperaDb(req, res);
+    if (!operaDb) return;
+    const appDb = getAppDb(req, res);
+    if (!appDb) return;
+    try {
+      const bankCode = String(req.params.bank_code ?? '').trim();
+      if (!bankCode) {
+        res.status(400).json({ success: false, error: 'Missing bank_code' });
+        return;
+      }
+      const result = await recoverOrphanedTransactions(operaDb, appDb, bankCode);
+      res.json(result);
+    } catch (err: any) {
+      ctx.logger.error('Orphan transactions recovery failed', err);
       res.status(500).json({ success: false, error: err?.message ?? String(err) });
     }
   });

@@ -62,6 +62,20 @@ export interface PdfExtractor {
   }): Promise<PdfExtractionResult>;
 }
 
+export interface PostedLine {
+  line_number: number;
+  post_date: string;
+  amount: number;
+  posted_entry_number: string;
+  description: string;
+  /**
+   * The Opera at_type that was posted (1 nom-pay, 2 nom-rec, 3 sale-
+   * refund, 4 sale-rec, 5 pur-pay, 6 pur-refund, 8 transfer). Used by
+   * later validation passes.
+   */
+  at_type: number;
+}
+
 export interface ImportPostingExecutor {
   postBankImport(opts: {
     operaDb: Knex;
@@ -80,6 +94,13 @@ export interface ImportPostingExecutor {
     errors: string[];
     warnings: string[];
     import_id?: number | null;
+    /**
+     * Per-line posted-entry record — populated by the executor for
+     * every line that posted successfully. Used by the import flow to
+     * write `bank_statement_transactions` rows so subsequent
+     * Opera-restore detection can validate per-line. New in SAM port.
+     */
+    posted_lines?: PostedLine[];
   }>;
 }
 
@@ -229,18 +250,52 @@ export async function importBankStatementFromPdf(
 
     if (result.success) {
       try {
-        await appDb('bank_statement_imports').insert({
-          bank_code: bankCode,
-          source: 'file',
-          source_ref: input.filename ?? input.filePath,
-          opening_balance: extracted.opening_balance,
-          closing_balance: extracted.closing_balance,
-          imported_at: appDb.fn.now(),
-          import_status: 'imported',
-          records_imported: result.records_imported,
-        });
-      } catch {
-        // history write failure is non-fatal
+        const [insertedId] = (await appDb('bank_statement_imports')
+          .insert({
+            bank_code: bankCode,
+            source: 'file',
+            source_ref: input.filename ?? input.filePath,
+            opening_balance: extracted.opening_balance,
+            closing_balance: extracted.closing_balance,
+            imported_at: appDb.fn.now(),
+            import_status: 'imported',
+            records_imported: result.records_imported,
+            filename: input.filename ?? null,
+          })
+          .returning('id')) as unknown as Array<{ id: number } | number>;
+        const importId =
+          typeof insertedId === 'number'
+            ? insertedId
+            : (insertedId as { id: number })?.id;
+
+        // Per-line tracking — write one row per posted statement
+        // line so subsequent Opera-restore detection can verify the
+        // posting still exists. New in SAM port (legacy had this
+        // table but the SAM port omitted it until 2026-05; see
+        // bank_statement_transactions migration 013).
+        if (importId && Array.isArray(result.posted_lines) && result.posted_lines.length > 0) {
+          const rows = result.posted_lines.map((line) => ({
+            import_id: importId,
+            line_number: line.line_number,
+            post_date: line.post_date,
+            description: line.description,
+            amount: line.amount,
+            transaction_type: String(line.at_type),
+            posted_entry_number: line.posted_entry_number,
+            posted_at: appDb.fn.now(),
+            is_reconciled: 0,
+          }));
+          await appDb('bank_statement_transactions').insert(rows);
+        }
+      } catch (writeErr) {
+        // History write failure is non-fatal at the import level —
+        // log so it's visible, then proceed. (Legacy did the same.)
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[bank-reconcile] persist post-import tracking failed: ${
+            writeErr instanceof Error ? writeErr.message : String(writeErr)
+          }`,
+        );
       }
       return {
         success: true,
