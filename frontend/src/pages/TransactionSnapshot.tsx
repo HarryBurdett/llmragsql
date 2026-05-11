@@ -45,6 +45,13 @@ export function TransactionSnapshot() {
     if (typeof window === 'undefined') return '';
     return localStorage.getItem('opera3_snapshot_data_path') || '';
   });
+  // Optional filename filter for Opera 3 mode. Applied to the company
+  // data folder only — useful for installs that share one Data/ folder
+  // across companies via a prefix convention (e.g. `Z_*` for Company Z).
+  const [opera3Filter, setOpera3Filter] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('opera3_snapshot_file_filter') || '';
+  });
 
   const { data: modulesData } = useQuery({
     queryKey: ['snapshotModules'],
@@ -70,6 +77,7 @@ export function TransactionSnapshot() {
     mutationFn: async () => {
       const params = new URLSearchParams({ module, name, description });
       if (opera3Path.trim()) params.set('data_path', opera3Path.trim());
+      if (opera3Filter.trim()) params.set('file_filter', opera3Filter.trim());
       const r = await authFetch(`${API}/before?${params}`, { method: 'POST' });
       return r.json();
     },
@@ -161,28 +169,55 @@ export function TransactionSnapshot() {
 
       {/* Engine selection — Opera SE (default) or Opera 3 via explicit path */}
       <Card>
-        <div className="p-4 space-y-2">
-          <label className="block text-sm font-medium text-gray-700">
-            Opera 3 data path <span className="text-gray-400 font-normal">(leave blank to snapshot Opera SE)</span>
-          </label>
-          <input
-            type="text"
-            className="w-full border rounded px-3 py-2 font-mono text-sm"
-            placeholder="/Volumes/Opera3/COMPANY  —  or any local DBF folder"
-            value={opera3Path}
-            onChange={(e) => {
-              const v = e.target.value;
-              setOpera3Path(v);
-              if (typeof window !== 'undefined') {
-                if (v.trim()) localStorage.setItem('opera3_snapshot_data_path', v);
-                else localStorage.removeItem('opera3_snapshot_data_path');
-              }
-            }}
-            disabled={phase !== 'idle'}
-          />
+        <div className="p-4 space-y-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">
+              Opera 3 data path <span className="text-gray-400 font-normal">(leave blank to snapshot Opera SE)</span>
+            </label>
+            <input
+              type="text"
+              className="w-full border rounded px-3 py-2 font-mono text-sm"
+              placeholder="/Volumes/Opera3/COMPANY  —  or any local DBF folder"
+              value={opera3Path}
+              onChange={(e) => {
+                const v = e.target.value;
+                setOpera3Path(v);
+                if (typeof window !== 'undefined') {
+                  if (v.trim()) localStorage.setItem('opera3_snapshot_data_path', v);
+                  else localStorage.removeItem('opera3_snapshot_data_path');
+                }
+              }}
+              disabled={phase !== 'idle'}
+            />
+          </div>
+          {opera3Path.trim() && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">
+                Filename filter <span className="text-gray-400 font-normal">(optional — e.g. <code>Z_*</code> for installs that share a Data/ folder across companies)</span>
+              </label>
+              <input
+                type="text"
+                className="w-full border rounded px-3 py-2 font-mono text-sm"
+                placeholder="Z_*  or  *.dbf  or leave blank to scan every DBF"
+                value={opera3Filter}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setOpera3Filter(v);
+                  if (typeof window !== 'undefined') {
+                    if (v.trim()) localStorage.setItem('opera3_snapshot_file_filter', v);
+                    else localStorage.removeItem('opera3_snapshot_file_filter');
+                  }
+                }}
+                disabled={phase !== 'idle'}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Applied to the company Data/ folder only. The System/ folder (seqco, NextID, …) is always fully captured so the trace has complete sequence/parameter context.
+              </p>
+            </div>
+          )}
           <p className="text-xs text-gray-500">
             {opera3Path.trim()
-              ? <>Engine: <span className="font-semibold text-amber-700">Opera 3 (FoxPro)</span> — snapshots will read DBF files from this path.</>
+              ? <>Engine: <span className="font-semibold text-amber-700">Opera 3 (FoxPro)</span> — snapshots will read DBF files from this path{opera3Filter.trim() ? <> matching <code>{opera3Filter.trim()}</code></> : <></>}.</>
               : <>Engine: <span className="font-semibold text-blue-700">Opera SE (SQL Server)</span> — paste an Opera 3 DATA folder above to switch.</>
             }
           </p>

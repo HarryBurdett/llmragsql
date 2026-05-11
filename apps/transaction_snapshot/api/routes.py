@@ -207,14 +207,23 @@ def take_snapshot_se(sql_connector, max_rows_for_full_data: int = 500000) -> Dic
     return snapshot
 
 
-def take_snapshot_opera3(data_path: str) -> Dict[str, Any]:
+def take_snapshot_opera3(data_path: str, file_filter: str = '') -> Dict[str, Any]:
     """
-    Take a complete snapshot of ALL Opera 3 FoxPro DBF tables.
+    Take a complete snapshot of Opera 3 FoxPro DBF tables.
     Scans both the company data folder and the System folder.
     Returns row counts and checksums for every table, plus full row data
     for tables with < 50,000 rows (for detailed diffing).
+
+    `file_filter` (optional): a glob pattern applied to filenames in the
+    company data folder only. For Opera 3 installs that share a single
+    Data/ folder across multiple companies using a prefix convention
+    (e.g. `A_PNAME.DBF`, `Z_PNAME.DBF`), pass `Z_*` to restrict the scan
+    to one company. The System folder is always fully scanned because
+    its tables (`seqco`, `NextID`, `LastVer`, …) are unprefixed and
+    needed in every trace regardless of company.
     """
     from pathlib import Path
+    import fnmatch
 
     snapshot = {
         'timestamp': datetime.now().isoformat(),
@@ -239,6 +248,10 @@ def take_snapshot_opera3(data_path: str) -> Dict[str, Any]:
     if system_path.exists():
         folders_to_scan['system'] = system_path
 
+    pattern = (file_filter or '').strip()
+    if pattern:
+        snapshot['file_filter'] = pattern
+
     for folder_label, folder_path in folders_to_scan.items():
         db_snapshot = {}
 
@@ -247,6 +260,13 @@ def take_snapshot_opera3(data_path: str) -> Dict[str, Any]:
 
         # Find all DBF files
         dbf_files = list(folder_path.glob('*.dbf')) + list(folder_path.glob('*.DBF'))
+
+        # Apply the optional filter — company folder only. System DBFs
+        # always come through so the trace has full sequence/parameter
+        # context.
+        if pattern and folder_label == 'company':
+            up = pattern.upper()
+            dbf_files = [f for f in dbf_files if fnmatch.fnmatch(f.name.upper(), up)]
         # Deduplicate (case-insensitive)
         seen = set()
         unique_dbfs = []
@@ -838,6 +858,7 @@ async def take_before_snapshot(
     name: str = Query(..., description="Transaction type name (e.g., 'Sales Receipt — BACS')"),
     description: str = Query("", description="Detailed description of the transaction being entered"),
     data_path: str = Query("", description="Opera 3 data folder path. When non-empty, forces Opera 3 mode and points the snapshot at this DBF directory. Empty → fall back to config.ini detection (Opera SE by default)."),
+    file_filter: str = Query("", description="Optional glob filter applied to the company data folder only (System folder always fully scanned). Useful for Opera 3 installs that share one Data/ folder across multiple companies via a prefix convention — e.g. `Z_*` captures only Company Z's tables."),
 ):
     """
     Take a BEFORE snapshot of all Opera tables.
@@ -881,11 +902,13 @@ async def take_before_snapshot(
                             pass
                     else:
                         raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available (and no explicit data_path supplied)")
-                logger.info(f"Taking BEFORE snapshot (Opera 3) for: {module}/{name} at {resolved_path} (source={'explicit' if explicit_opera3_path else 'smb-managed'})")
-                snapshot = take_snapshot_opera3(resolved_path)
-                # Stash the resolved path so /after can reuse it without
-                # needing the caller to re-supply it.
+                filter_pattern = (file_filter or '').strip()
+                logger.info(f"Taking BEFORE snapshot (Opera 3) for: {module}/{name} at {resolved_path} (source={'explicit' if explicit_opera3_path else 'smb-managed'}, file_filter={filter_pattern or '<none>'})")
+                snapshot = take_snapshot_opera3(resolved_path, file_filter=filter_pattern)
+                # Stash the resolved path + filter so /after can reuse
+                # them without needing the caller to re-supply them.
                 snapshot['_resolved_data_path'] = resolved_path
+                snapshot['_file_filter'] = filter_pattern
             except ImportError:
                 raise HTTPException(status_code=503, detail="SMB access module not available")
         else:
@@ -915,9 +938,10 @@ async def take_before_snapshot(
             'description': description,
             'before_timestamp': snapshot['timestamp'],
             'source': snapshot.get('source', 'opera_se'),
-            # Persist the resolved Opera 3 path so /after uses the same
-            # one without needing the caller to re-supply it.
+            # Persist the resolved Opera 3 path + file filter so /after
+            # uses the same ones without needing the caller to re-supply.
             'opera3_data_path': snapshot.get('_resolved_data_path', '') if snapshot.get('source') == 'opera3' else '',
+            'opera3_file_filter': snapshot.get('_file_filter', '') if snapshot.get('source') == 'opera3' else '',
         }
         with open(meta_file, 'w') as f:
             json.dump(meta, f)
@@ -978,8 +1002,9 @@ async def take_after_snapshot(request: Request):
                         resolved_path = cfg.get('opera', 'opera3_base_path', fallback=str(smb.get_local_base()))
                     else:
                         raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available")
-                logger.info(f"Taking AFTER snapshot (Opera 3) at {resolved_path}")
-                after = take_snapshot_opera3(resolved_path)
+                filter_pattern = (meta.get('opera3_file_filter') or '').strip()
+                logger.info(f"Taking AFTER snapshot (Opera 3) at {resolved_path} (file_filter={filter_pattern or '<none>'})")
+                after = take_snapshot_opera3(resolved_path, file_filter=filter_pattern)
             except ImportError:
                 raise HTTPException(status_code=503, detail="SMB access module not available")
         else:
