@@ -99,6 +99,45 @@ def _get_library_path():
     return LIBRARY_DIR
 
 
+# Engine-specific subfolders added 2026-05-12 so SE and Opera 3
+# traces stay separated and can be diffed directly.
+_LIBRARY_SUBDIRS = ('opera_se', 'opera_3')
+
+
+def _iter_library_files():
+    """Yield (full_path, filename) for every entry in the library,
+    scanning both the engine-specific subfolders (opera_se/, opera_3/)
+    AND the flat root for entries written before the 2026-05-12 reorg.
+    Filenames are unique across folders by timestamp so collisions
+    don't happen in practice.
+    """
+    lib_path = _get_library_path()
+    # Flat root — pre-reorg entries
+    if os.path.isdir(lib_path):
+        for filename in os.listdir(lib_path):
+            full = os.path.join(lib_path, filename)
+            if os.path.isfile(full) and filename.endswith('.json'):
+                yield full, filename
+    # Engine-specific subfolders — post-reorg entries
+    for sub in _LIBRARY_SUBDIRS:
+        sub_path = os.path.join(lib_path, sub)
+        if os.path.isdir(sub_path):
+            for filename in os.listdir(sub_path):
+                full = os.path.join(sub_path, filename)
+                if os.path.isfile(full) and filename.endswith('.json'):
+                    yield full, filename
+
+
+def _find_library_entry(entry_id: str):
+    """Return the full path of an entry by id, checking both the flat
+    root and the engine subfolders. Returns None if not found."""
+    target = f"{entry_id}.json"
+    for full_path, filename in _iter_library_files():
+        if filename == target:
+            return full_path
+    return None
+
+
 def _get_snapshot_path():
     """Get the snapshot storage directory, creating if needed."""
     os.makedirs(SNAPSHOT_DIR, exist_ok=True)
@@ -770,18 +809,16 @@ async def get_modules():
 @router.get("/api/transaction-snapshot/presets")
 async def get_presets():
     """Get preset transaction types that match what our app posts. Excludes already-captured ones."""
-    # Load library to find already-captured types
-    lib_path = _get_library_path()
+    # Load library to find already-captured types (scans both
+    # engine-specific subfolders + the flat root for older entries).
     captured_names = set()
-    if os.path.exists(lib_path):
-        for filename in os.listdir(lib_path):
-            if filename.endswith('.json'):
-                try:
-                    with open(os.path.join(lib_path, filename)) as f:
-                        entry = json.load(f)
-                        captured_names.add(entry.get('name', '').lower())
-                except Exception:
-                    pass
+    for full_path, _ in _iter_library_files():
+        try:
+            with open(full_path) as f:
+                entry = json.load(f)
+                captured_names.add(entry.get('name', '').lower())
+        except Exception:
+            pass
 
     # Filter out already-captured presets
     remaining = [p for p in PRESETS if p['name'].lower() not in captured_names]
@@ -796,27 +833,27 @@ async def get_presets():
 
 @router.get("/api/transaction-snapshot/library")
 async def get_library():
-    """Get the transaction type library — all recorded posting patterns."""
-    lib_path = _get_library_path()
+    """Get the transaction type library — all recorded posting patterns.
+    Scans both engine-specific subfolders (opera_se/, opera_3/) and the
+    flat root (for entries written before the 2026-05-12 reorg).
+    """
     library = []
-
-    for filename in sorted(os.listdir(lib_path)):
-        if filename.endswith('.json'):
-            try:
-                with open(os.path.join(lib_path, filename)) as f:
-                    entry = json.load(f)
-                    library.append({
-                        'id': filename.replace('.json', ''),
-                        'module': entry.get('module', 'other'),
-                        'module_name': MODULES.get(entry.get('module', 'other'), 'Other'),
-                        'name': entry.get('name', ''),
-                        'description': entry.get('description', ''),
-                        'recorded_at': entry.get('recorded_at', ''),
-                        'tables_changed': entry.get('tables_changed', 0),
-                        'source': entry.get('source', 'opera_se'),
-                    })
-            except Exception as e:
-                logger.warning(f"Could not load library entry {filename}: {e}")
+    for full_path, filename in sorted(_iter_library_files(), key=lambda x: x[1]):
+        try:
+            with open(full_path) as f:
+                entry = json.load(f)
+                library.append({
+                    'id': filename.replace('.json', ''),
+                    'module': entry.get('module', 'other'),
+                    'module_name': MODULES.get(entry.get('module', 'other'), 'Other'),
+                    'name': entry.get('name', ''),
+                    'description': entry.get('description', ''),
+                    'recorded_at': entry.get('recorded_at', ''),
+                    'tables_changed': entry.get('tables_changed', 0),
+                    'source': entry.get('source', 'opera_se'),
+                })
+        except Exception as e:
+            logger.warning(f"Could not load library entry {filename}: {e}")
 
     return {"success": True, "library": library}
 
@@ -824,10 +861,8 @@ async def get_library():
 @router.get("/api/transaction-snapshot/library/{entry_id}")
 async def get_library_entry(entry_id: str):
     """Get a specific transaction type entry with full diff details."""
-    lib_path = _get_library_path()
-    filepath = os.path.join(lib_path, f"{entry_id}.json")
-
-    if not os.path.exists(filepath):
+    filepath = _find_library_entry(entry_id)
+    if not filepath:
         raise HTTPException(status_code=404, detail="Library entry not found")
 
     with open(filepath) as f:
@@ -1073,12 +1108,23 @@ async def take_after_snapshot(request: Request):
             'changes': diff['changes'],
         }
 
-        # Save to library
+        # Save to library — into the source-specific subfolder
+        # (opera_se/ or opera_3/) so SE and Opera 3 traces stay
+        # separated and can be diffed against each other directly.
+        # Falls back to the legacy flat layout if the subfolders don't
+        # exist yet on a fresh install.
         lib_path = _get_library_path()
         safe_name = meta['name'].lower().replace(' ', '_').replace('—', '-')
         safe_name = ''.join(c for c in safe_name if c.isalnum() or c in '-_')[:50]
         entry_id = f"{meta['module']}_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        entry_file = os.path.join(lib_path, f"{entry_id}.json")
+        source_dir_name = 'opera_3' if entry.get('source') == 'opera3' else 'opera_se'
+        source_dir = os.path.join(lib_path, source_dir_name)
+        if not os.path.isdir(source_dir):
+            # Fall back to flat layout if the engine-specific subfolder
+            # hasn't been created yet (e.g. fresh install before the
+            # 2026-05-12 reorg). Once present, future writes use it.
+            source_dir = lib_path
+        entry_file = os.path.join(source_dir, f"{entry_id}.json")
 
         with open(entry_file, 'w') as f:
             json.dump(entry, f, indent=2, default=str)
@@ -1131,10 +1177,8 @@ async def take_after_snapshot(request: Request):
 @router.delete("/api/transaction-snapshot/library/{entry_id}")
 async def delete_library_entry(entry_id: str):
     """Delete a transaction library entry."""
-    lib_path = _get_library_path()
-    filepath = os.path.join(lib_path, f"{entry_id}.json")
-
-    if not os.path.exists(filepath):
+    filepath = _find_library_entry(entry_id)
+    if not filepath:
         raise HTTPException(status_code=404, detail="Library entry not found")
 
     os.remove(filepath)
@@ -1597,10 +1641,8 @@ async def export_to_knowledge(entry_id: str = Query(...)):
     Export a transaction library entry to the Opera knowledge base
     in a format suitable for the knowledge base markdown.
     """
-    lib_path = _get_library_path()
-    filepath = os.path.join(lib_path, f"{entry_id}.json")
-
-    if not os.path.exists(filepath):
+    filepath = _find_library_entry(entry_id)
+    if not filepath:
         raise HTTPException(status_code=404, detail="Library entry not found")
 
     with open(filepath) as f:
