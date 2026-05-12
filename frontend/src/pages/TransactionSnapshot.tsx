@@ -524,6 +524,63 @@ export function TransactionSnapshot() {
             </div>
           )}
 
+          {library.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {(['opera_se', 'opera3'] as const).map(engine => {
+                const isSE = engine === 'opera_se';
+                const colour = isSE
+                  ? { bg: 'bg-blue-50', border: 'border-blue-200', label: 'text-blue-700', big: 'text-blue-900', badge: 'bg-blue-100 text-blue-800' }
+                  : { bg: 'bg-amber-50', border: 'border-amber-200', label: 'text-amber-700', big: 'text-amber-900', badge: 'bg-amber-100 text-amber-800' };
+                const entries = library
+                  .filter(e => (e.source === 'opera3' ? 'opera3' : 'opera_se') === engine)
+                  .sort((a, b) => (b.recorded_at || '').localeCompare(a.recorded_at || ''));
+                const modules = new Set(entries.map(e => e.module));
+                const first = entries[entries.length - 1]?.recorded_at?.split('T')[0];
+                const last = entries[0]?.recorded_at?.split('T')[0];
+                return (
+                  <div key={engine} className={`${colour.bg} border ${colour.border} rounded p-3`}>
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs uppercase font-semibold ${colour.label}`}>
+                        {isSE ? 'Opera SE' : 'Opera 3'}
+                      </span>
+                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${colour.badge}`}>
+                        {isSE ? 'SE' : 'O3'}
+                      </span>
+                    </div>
+                    <div className={`text-3xl font-bold ${colour.big} mt-1`}>{entries.length}</div>
+                    <div className={`text-xs ${colour.label}`}>
+                      capture{entries.length === 1 ? '' : 's'} • {modules.size} module{modules.size === 1 ? '' : 's'}
+                    </div>
+                    {first && last && (
+                      <div className={`text-[10px] ${colour.label} mt-1`}>
+                        {first === last ? `on ${first}` : `${first} → ${last}`}
+                      </div>
+                    )}
+                    {entries.length > 0 && (
+                      <details className="mt-2">
+                        <summary className={`text-xs ${colour.label} cursor-pointer hover:underline`}>
+                          recent captures (most recent first)
+                        </summary>
+                        <ul className="mt-1 space-y-0.5 text-xs">
+                          {entries.slice(0, 8).map(e => (
+                            <li key={e.id} className={`${colour.label} font-mono`}>
+                              <span className="text-gray-500">{e.recorded_at?.split('T')[0] || '?'}</span>
+                              {' · '}
+                              <span className="font-semibold">{e.name}</span>
+                            </li>
+                          ))}
+                          {entries.length > 8 && (
+                            <li className={`${colour.label} italic`}>… and {entries.length - 8} more</li>
+                          )}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {Object.keys(grouped).length === 0 && (
             <p className="text-gray-500 text-sm">
               {engineFilter === 'all'
