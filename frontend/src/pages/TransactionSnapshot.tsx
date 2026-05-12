@@ -517,7 +517,7 @@ export function TransactionSnapshot() {
             </div>
           </div>
 
-          {comparableStems.size > 0 && (
+          {comparableStems.size > 0 && engineFilter === 'all' && (
             <div className="text-xs text-gray-600 bg-purple-50 border border-purple-200 rounded px-3 py-2">
               <strong className="text-purple-800">{comparableStems.size}</strong> transaction(s) have captures on both engines —
               click <span className="font-mono">Compare</span> on any matching entry to see the SE vs Opera 3 diff.
@@ -525,8 +525,14 @@ export function TransactionSnapshot() {
           )}
 
           {library.length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {(['opera_se', 'opera3'] as const).map(engine => {
+            <div className={
+              engineFilter === 'all'
+                ? 'grid grid-cols-1 md:grid-cols-2 gap-3'
+                : 'grid grid-cols-1 gap-3'
+            }>
+              {(['opera_se', 'opera3'] as const)
+                .filter(engine => engineFilter === 'all' || engineFilter === engine)
+                .map(engine => {
                 const isSE = engine === 'opera_se';
                 const colour = isSE
                   ? { bg: 'bg-blue-50', border: 'border-blue-200', label: 'text-blue-700', big: 'text-blue-900', badge: 'bg-blue-100 text-blue-800' }
