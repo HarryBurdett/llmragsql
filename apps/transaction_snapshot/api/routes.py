@@ -858,6 +858,112 @@ async def get_library():
     return {"success": True, "library": library}
 
 
+@router.get("/api/transaction-snapshot/compare")
+async def compare_engines(stem: str):
+    """Compare the most recent SE and Opera 3 captures of a transaction.
+
+    `stem` is the filename prefix shared across both engines'
+    captures, e.g. `sales_ledger_invoice`. Returns a structured diff
+    that pairs tables by canonical name (stripping Opera 3 single-
+    letter company prefixes) and aligns fields by canonical name
+    (lowercased).
+    """
+    import re
+    _PREFIX_RX = re.compile(r'^[a-z]_')
+
+    def canonical_table(name: str) -> str:
+        return _PREFIX_RX.sub('', name.lower())
+
+    def latest_entry(engine_subdir: str):
+        from glob import glob
+        folder = os.path.join(_get_library_path(), engine_subdir)
+        if not os.path.isdir(folder):
+            return None, None
+        matches = sorted(
+            [p for p in glob(os.path.join(folder, '*.json'))
+             if os.path.basename(p).startswith(stem)],
+            key=os.path.getmtime, reverse=True,
+        )
+        if not matches:
+            return None, None
+        with open(matches[0]) as f:
+            return os.path.basename(matches[0]).replace('.json', ''), json.load(f)
+
+    def index_changes(entry):
+        out = {}
+        for c in (entry.get('changes') or []):
+            ct = canonical_table(c.get('table', ''))
+            bucket = out.setdefault(ct, {
+                'orig_names': set(),
+                'rows_added': 0, 'rows_modified': 0, 'rows_deleted': 0,
+                'fields_modified': set(),
+            })
+            bucket['orig_names'].add(c.get('table', ''))
+            bucket['rows_added'] += c.get('rows_added', 0) or 0
+            bucket['rows_modified'] += c.get('rows_modified', 0) or 0
+            bucket['rows_deleted'] += c.get('rows_deleted', 0) or 0
+            for f in (c.get('fields_modified') or []):
+                bucket['fields_modified'].add(f.lower())
+        return out
+
+    se_id, se = latest_entry('opera_se')
+    o3_id, o3 = latest_entry('opera_3')
+
+    if not (se and o3):
+        return {
+            "success": False,
+            "stem": stem,
+            "se_entry_id": se_id,
+            "o3_entry_id": o3_id,
+            "error": (
+                f"Need captures on both engines to compare. "
+                f"Have SE: {'yes' if se else 'no'}, Opera 3: {'yes' if o3 else 'no'}."
+            ),
+        }
+
+    se_idx = index_changes(se)
+    o3_idx = index_changes(o3)
+    se_tables = set(se_idx); o3_tables = set(o3_idx)
+
+    tables = []
+    for ct in sorted(se_tables | o3_tables):
+        s = se_idx.get(ct); o = o3_idx.get(ct)
+        row = {'canonical': ct, 'in_se': bool(s), 'in_o3': bool(o)}
+        if s:
+            row.update({
+                'se_orig_names': sorted(s['orig_names']),
+                'se_rows': {'added': s['rows_added'], 'modified': s['rows_modified'], 'deleted': s['rows_deleted']},
+                'se_fields_modified': sorted(s['fields_modified']),
+            })
+        if o:
+            row.update({
+                'o3_orig_names': sorted(o['orig_names']),
+                'o3_rows': {'added': o['rows_added'], 'modified': o['rows_modified'], 'deleted': o['rows_deleted']},
+                'o3_fields_modified': sorted(o['fields_modified']),
+            })
+        if s and o:
+            s_f = s['fields_modified']; o_f = o['fields_modified']
+            row['fields_both'] = sorted(s_f & o_f)
+            row['fields_se_only'] = sorted(s_f - o_f)
+            row['fields_o3_only'] = sorted(o_f - s_f)
+        tables.append(row)
+
+    return {
+        "success": True,
+        "stem": stem,
+        "se_entry_id": se_id,
+        "o3_entry_id": o3_id,
+        "summary": {
+            "se_tables_count": len(se_tables),
+            "o3_tables_count": len(o3_tables),
+            "tables_in_both": len(se_tables & o3_tables),
+            "tables_se_only": len(se_tables - o3_tables),
+            "tables_o3_only": len(o3_tables - se_tables),
+        },
+        "tables": tables,
+    }
+
+
 @router.get("/api/transaction-snapshot/library/{entry_id}")
 async def get_library_entry(entry_id: str):
     """Get a specific transaction type entry with full diff details."""

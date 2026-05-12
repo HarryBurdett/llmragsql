@@ -38,6 +38,10 @@ export function TransactionSnapshot() {
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
   const [entryDetail, setEntryDetail] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [engineFilter, setEngineFilter] = useState<'all' | 'opera_se' | 'opera3'>('all');
+  const [compareStem, setCompareStem] = useState<string | null>(null);
+  const [compareData, setCompareData] = useState<any>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
   const [beforeSummary, setBeforeSummary] = useState<{
     tables_scanned: number;
     tables_per_folder?: Record<string, { matched: number; available_in_folder: number }>;
@@ -166,12 +170,65 @@ export function TransactionSnapshot() {
     }
   };
 
-  // Group library by module
-  const grouped: Record<string, LibraryEntry[]> = {};
+  // Stem extraction: strip the trailing _YYYYMMDD_HHMMSS so entries
+  // from different captures of the same transaction group together for
+  // the cross-engine comparison.
+  const stemOf = (id: string) => id.replace(/_\d{8}_\d{6}$/, '');
+
+  // Engine counts (always against the unfiltered library, so the
+  // filter buttons can show "(N)" beside each option).
+  const counts = library.reduce(
+    (a, e) => {
+      const k = e.source === 'opera3' ? 'opera3' : 'opera_se';
+      a[k] = (a[k] || 0) + 1;
+      a.all += 1;
+      return a;
+    },
+    { all: 0, opera_se: 0, opera3: 0 } as Record<string, number>,
+  );
+
+  // Stems that have captures on BOTH engines — eligible for comparison.
+  const stemsByEngine: Record<string, Set<string>> = { opera_se: new Set(), opera3: new Set() };
   library.forEach(e => {
+    const eng = e.source === 'opera3' ? 'opera3' : 'opera_se';
+    stemsByEngine[eng].add(stemOf(e.id));
+  });
+  const comparableStems = new Set(
+    [...stemsByEngine.opera_se].filter(s => stemsByEngine.opera3.has(s)),
+  );
+
+  // Apply engine filter, then group by module.
+  const filteredLibrary = library.filter(e => {
+    if (engineFilter === 'all') return true;
+    const eng = e.source === 'opera3' ? 'opera3' : 'opera_se';
+    return eng === engineFilter;
+  });
+  const grouped: Record<string, LibraryEntry[]> = {};
+  filteredLibrary.forEach(e => {
     if (!grouped[e.module]) grouped[e.module] = [];
     grouped[e.module].push(e);
   });
+
+  const openCompare = async (id: string) => {
+    const stem = stemOf(id);
+    setCompareStem(stem);
+    setCompareData(null);
+    setCompareLoading(true);
+    try {
+      const r = await authFetch(`${API}/compare?stem=${encodeURIComponent(stem)}`);
+      const data = await r.json();
+      setCompareData(data);
+    } catch (err: any) {
+      setCompareData({ success: false, error: err.message });
+    } finally {
+      setCompareLoading(false);
+    }
+  };
+
+  const closeCompare = () => {
+    setCompareStem(null);
+    setCompareData(null);
+  };
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -439,10 +496,40 @@ export function TransactionSnapshot() {
       {/* Library */}
       <Card>
         <div className="p-5 space-y-4">
-          <h2 className="text-lg font-semibold text-gray-800">Transaction Library</h2>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-lg font-semibold text-gray-800">Transaction Library</h2>
+            <div className="inline-flex rounded-md border border-gray-300 bg-white text-sm">
+              {([
+                ['all',      `All (${counts.all})`],
+                ['opera_se', `Opera SE (${counts.opera_se})`],
+                ['opera3',   `Opera 3 (${counts.opera3})`],
+              ] as const).map(([k, label], i) => (
+                <button
+                  key={k}
+                  onClick={() => setEngineFilter(k as any)}
+                  className={`px-3 py-1.5 ${i > 0 ? 'border-l border-gray-300' : ''} ${
+                    engineFilter === k ? 'bg-blue-600 text-white' : 'hover:bg-gray-50 text-gray-700'
+                  } ${i === 0 ? 'rounded-l-md' : ''} ${i === 2 ? 'rounded-r-md' : ''}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {comparableStems.size > 0 && (
+            <div className="text-xs text-gray-600 bg-purple-50 border border-purple-200 rounded px-3 py-2">
+              <strong className="text-purple-800">{comparableStems.size}</strong> transaction(s) have captures on both engines —
+              click <span className="font-mono">Compare</span> on any matching entry to see the SE vs Opera 3 diff.
+            </div>
+          )}
 
           {Object.keys(grouped).length === 0 && (
-            <p className="text-gray-500 text-sm">No snapshots recorded yet. Use the tool above to capture your first transaction.</p>
+            <p className="text-gray-500 text-sm">
+              {engineFilter === 'all'
+                ? 'No snapshots recorded yet. Use the tool above to capture your first transaction.'
+                : `No ${engineFilter === 'opera3' ? 'Opera 3' : 'Opera SE'} snapshots yet — switch the filter or capture one.`}
+            </p>
           )}
 
           {Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0])).map(([mod, entries]) => (
@@ -460,12 +547,29 @@ export function TransactionSnapshot() {
                       {expandedEntry === entry.id ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                       <div>
                         <span className="font-medium">{entry.name}</span>
+                        <span
+                          className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ml-2 ${
+                            entry.source === 'opera3' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'
+                          }`}
+                          title={`Captured against ${entry.source === 'opera3' ? 'Opera 3 (FoxPro)' : 'Opera SE (SQL Server)'}`}
+                        >
+                          {entry.source === 'opera3' ? 'O3' : 'SE'}
+                        </span>
                         <span className="text-gray-500 text-sm ml-2">
-                          {entry.tables_changed} table(s) • {entry.source} • {entry.recorded_at?.split('T')[0]}
+                          {entry.tables_changed} table(s) • {entry.recorded_at?.split('T')[0]}
                         </span>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
+                      {comparableStems.has(stemOf(entry.id)) && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openCompare(entry.id); }}
+                          className="px-2 py-1 text-xs font-medium bg-purple-600 text-white rounded hover:bg-purple-700"
+                          title="Compare SE vs Opera 3 captures of this transaction"
+                        >
+                          Compare engines
+                        </button>
+                      )}
                       <button onClick={(e) => { e.stopPropagation(); exportMarkdown(entry.id); }}
                         className="p-1 text-blue-600 hover:bg-blue-50 rounded" title="Copy as markdown">
                         <Download className="w-4 h-4" />
@@ -532,6 +636,104 @@ export function TransactionSnapshot() {
           ))}
         </div>
       </Card>
+
+      {compareStem && (
+        <div
+          className="fixed inset-0 bg-black/40 flex items-start justify-center p-6 z-50 overflow-y-auto"
+          onClick={closeCompare}
+        >
+          <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full my-8" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b">
+              <h3 className="text-lg font-semibold text-gray-800">
+                Engine comparison — <span className="font-mono text-base">{compareStem}</span>
+              </h3>
+              <button onClick={closeCompare} className="text-gray-500 hover:text-gray-800 text-xl px-2">×</button>
+            </div>
+            <div className="p-5">
+              {compareLoading && <p className="text-gray-500">Loading comparison…</p>}
+              {!compareLoading && compareData && !compareData.success && (
+                <div className="text-amber-800 bg-amber-50 border border-amber-200 rounded p-3 text-sm">
+                  {compareData.error || 'Unable to compare.'}
+                </div>
+              )}
+              {!compareLoading && compareData && compareData.success && (
+                <div className="space-y-4 text-sm">
+                  <div className="grid grid-cols-2 gap-4 text-center">
+                    <div className="bg-blue-50 border border-blue-200 rounded p-3">
+                      <div className="text-xs uppercase font-semibold text-blue-700">Opera SE</div>
+                      <div className="text-2xl font-bold text-blue-900 mt-1">{compareData.summary.se_tables_count}</div>
+                      <div className="text-xs text-blue-700">tables touched</div>
+                      <div className="text-[10px] text-blue-600 mt-1 font-mono break-all">{compareData.se_entry_id}</div>
+                    </div>
+                    <div className="bg-amber-50 border border-amber-200 rounded p-3">
+                      <div className="text-xs uppercase font-semibold text-amber-700">Opera 3</div>
+                      <div className="text-2xl font-bold text-amber-900 mt-1">{compareData.summary.o3_tables_count}</div>
+                      <div className="text-xs text-amber-700">tables touched</div>
+                      <div className="text-[10px] text-amber-600 mt-1 font-mono break-all">{compareData.o3_entry_id}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="bg-green-50 border border-green-200 rounded p-2">
+                      <div className="font-semibold text-green-700">Touched by both</div>
+                      <div className="text-xl font-bold text-green-900">{compareData.summary.tables_in_both}</div>
+                    </div>
+                    <div className="bg-blue-50 border border-blue-200 rounded p-2">
+                      <div className="font-semibold text-blue-700">SE only</div>
+                      <div className="text-xl font-bold text-blue-900">{compareData.summary.tables_se_only}</div>
+                    </div>
+                    <div className="bg-amber-50 border border-amber-200 rounded p-2">
+                      <div className="font-semibold text-amber-700">O3 only</div>
+                      <div className="text-xl font-bold text-amber-900">{compareData.summary.tables_o3_only}</div>
+                    </div>
+                  </div>
+
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left border-b bg-gray-50">
+                        <th className="py-1.5 px-2">Table (canonical)</th>
+                        <th className="py-1.5 px-2">SE</th>
+                        <th className="py-1.5 px-2">O3</th>
+                        <th className="py-1.5 px-2">Fields in both</th>
+                        <th className="py-1.5 px-2 text-blue-700">SE-only fields</th>
+                        <th className="py-1.5 px-2 text-amber-700">O3-only fields</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {compareData.tables.map((t: any) => {
+                        const rowCls =
+                          t.in_se && t.in_o3 ? 'bg-green-50' :
+                          t.in_se ? 'bg-blue-50' :
+                          'bg-amber-50';
+                        return (
+                          <tr key={t.canonical} className={`border-b border-gray-200 ${rowCls}`}>
+                            <td className="py-1.5 px-2 font-mono font-semibold">{t.canonical}</td>
+                            <td className="py-1.5 px-2 font-mono text-blue-700">
+                              {t.in_se ? (t.se_orig_names || []).join(', ') : '—'}
+                            </td>
+                            <td className="py-1.5 px-2 font-mono text-amber-700">
+                              {t.in_o3 ? (t.o3_orig_names || []).join(', ') : '—'}
+                            </td>
+                            <td className="py-1.5 px-2 font-mono">
+                              {(t.fields_both || []).join(', ') || (t.in_se && t.in_o3 ? '(none)' : '—')}
+                            </td>
+                            <td className="py-1.5 px-2 font-mono text-blue-700">
+                              {(t.fields_se_only || t.se_fields_modified || []).join(', ') || '—'}
+                            </td>
+                            <td className="py-1.5 px-2 font-mono text-amber-700">
+                              {(t.fields_o3_only || t.o3_fields_modified || []).join(', ') || '—'}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
