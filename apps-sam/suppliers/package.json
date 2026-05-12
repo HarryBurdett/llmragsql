@@ -1,7 +1,7 @@
 {
   "name": "@sqlrag/suppliers",
-  "version": "0.1.0-dev",
-  "description": "Supplier Reconciliation — SAM plugin (in development).",
+  "version": "1.0.0",
+  "description": "Supplier Reconciliation \u2014 SAM plugin (in development).",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
