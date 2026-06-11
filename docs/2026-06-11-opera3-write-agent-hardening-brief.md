@@ -9,16 +9,22 @@ This brief is self-contained — it can be pasted directly into Claude Code
 
 ## Objective
 
-Make the Opera 3 Write Agent production-trustworthy: every posting either
-completes fully verified (tables, fields, balances, indexes all correct) or
-is detected, compensated/blocked, and reported. No silent failure mode of
-any kind. Foolproof locking against both concurrent agent requests and live
-Opera users.
+Make the Opera 3 Write Agent production-trustworthy: writes that update
+tables, fields, balances and CDX indexes exactly as Opera's own posting
+code does, with locking that is correct against both concurrent agent
+requests and live Opera users.
 
-**Honest engineering standard:** shared DBF/CDX storage has no atomic
-multi-table commit, so "physically impossible to fail" does not exist —
-the standard is **"never silently wrong"**: detected ➜ compensated ➜ or
-blocked with `manual_review_required`. Everything below serves that.
+**Acceptance standard (agreed Harry, 2026-06-11):** **at or above the
+integrity level of Opera 3's own posting code.** Opera 3 itself has no
+transaction rollback — a crash mid-posting in Opera leaves a partial
+posting, remedied by Data Repair — and decades of field experience show
+that standard is robust. So the bar is *parity with Opera, proven by
+golden-master comparison* (WP5.1), not theoretical perfection. The
+agent's existing WAL / post-write verification / compensation layers
+already EXCEED Opera's native level; they are kept, but they are a bonus,
+not a gating requirement. Where a WP item below goes beyond Opera-parity
+it is marked **[above-parity — keep, already built or cheap]** and must
+not become a reason to delay go-live.
 
 ## Ground truth (verified 2026-06-11 — do not re-litigate)
 
@@ -231,6 +237,7 @@ receive structured `lock_timeout` within ~5 s, no partial write
    out-of-range. L: strict bool. M: memo via `hb_dbf_replace_m`. Unit
    tests per type including boundary and overflow cases.
 3. **Accounting invariants in post-write verification**
+   **[above-parity — keep, mostly already built]**
    (`transaction_safety.py`, runs inside the same writer-thread operation):
    - sum of `ntran` debits == sum of credits for the posting (to the penny)
    - `na_*` balance deltas on `nacnt` == posted amounts
@@ -239,7 +246,9 @@ receive structured `lock_timeout` within ~5 s, no partial write
    - row counts and key fields as already implemented
    Any invariant failure → existing compensation path → on compensation
    failure, writes_blocked (already implemented — keep).
-4. **Idempotency.** Every mutating request accepts a client-supplied
+4. **Idempotency.** **[above-parity — keep: Opera's UI never retries a
+   posting, but an HTTP client on a flaky network will, so this risk is
+   specific to the agent architecture.]** Every mutating request accepts a client-supplied
    `operation_id` (UUID, required). WAL gains a unique index on it. A
    duplicate `operation_id` returns the stored original result with
    `"duplicate": true` instead of re-posting. The SAM/bank-rec/gocardless
@@ -272,12 +281,14 @@ Run on a **copy** of live Opera 3 data on the Windows host:
    record `ordKeyCount()` per tag, run `hb_dbf_reindex`, confirm key
    counts unchanged and seeks still succeed (reindex-invariance proves the
    incremental index updates were complete).
-3. **Fault injection.** Scripted kill of the agent process at randomised
-   points during postings (≥50 iterations), plus one hard power-off of the
-   test VM mid-batch. After each: restart agent → WAL replay → assert data
-   copy passes the full invariant + CDX suite, and any incomplete
-   operation is either fully compensated or `writes_blocked` is raised.
-   Silence is failure: every iteration must end in a recorded verdict.
+3. **Fault injection.** **[above-parity — scaled to match the agreed
+   standard: Opera itself offers nothing here, so this validates the WAL
+   bonus layer rather than gating parity.]** Scripted kill of the agent
+   process at randomised points during postings (~10 iterations is
+   sufficient). After each: restart agent → WAL replay → assert the data
+   copy passes the CDX checks and any incomplete operation is either
+   compensated or `writes_blocked` is raised. Hard power-off testing is
+   optional.
 4. **Coexistence.** With an Opera client session holding a record lock on
    a target row, drive postings: agent must wait ≤5 s, error cleanly, and
    leave no partial state. Conversely, sustained agent posting load must
@@ -312,8 +323,12 @@ production enablement — no exceptions.
 - Rewriting posting business rules, allocation logic, or duplicate
   detection — unchanged.
 - Automated balance reversal in compensation (Phase 5 of the memo) — the
-  soft-delete + logged-adjustments design stays for now; WP4's invariants
-  make failures loud, which is the requirement.
+  soft-delete + logged-adjustments design stays. Per the agreed
+  Opera-parity standard this is sufficient indefinitely: Opera 3 itself
+  has NO rollback of any kind (its remedy for a partial posting is Data
+  Repair), so "rows auto-removed + exact corrections logged + writes
+  blocked until reviewed" is already above what Opera provides. Automating
+  it is optional future work, only after WP5 passes.
 - Opera SE / SQL Server paths — untouched.
 
 ## Order of work
