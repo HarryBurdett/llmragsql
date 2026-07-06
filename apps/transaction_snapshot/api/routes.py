@@ -105,19 +105,21 @@ _LIBRARY_SUBDIRS = ('opera_se', 'opera_3')
 
 
 def _iter_library_files():
-    """Yield (full_path, filename) for every entry in the library,
-    scanning both the engine-specific subfolders (opera_se/, opera_3/)
-    AND the flat root for entries written before the 2026-05-12 reorg.
-    Filenames are unique across folders by timestamp so collisions
-    don't happen in practice.
+    """Yield (full_path, filename, subdir_engine) for every entry in the
+    library, scanning both the engine-specific subfolders (opera_se/,
+    opera_3/) AND the flat root for entries written before the
+    2026-05-12 reorg. `subdir_engine` is the authoritative engine
+    derived from the containing subfolder ('opera_se' | 'opera_3'), or
+    None for flat-root/legacy entries. Filenames are unique across
+    folders by timestamp so collisions don't happen in practice.
     """
     lib_path = _get_library_path()
-    # Flat root — pre-reorg entries
+    # Flat root — pre-reorg entries (engine unknown from location)
     if os.path.isdir(lib_path):
         for filename in os.listdir(lib_path):
             full = os.path.join(lib_path, filename)
             if os.path.isfile(full) and filename.endswith('.json'):
-                yield full, filename
+                yield full, filename, None
     # Engine-specific subfolders — post-reorg entries
     for sub in _LIBRARY_SUBDIRS:
         sub_path = os.path.join(lib_path, sub)
@@ -125,14 +127,14 @@ def _iter_library_files():
             for filename in os.listdir(sub_path):
                 full = os.path.join(sub_path, filename)
                 if os.path.isfile(full) and filename.endswith('.json'):
-                    yield full, filename
+                    yield full, filename, sub
 
 
 def _find_library_entry(entry_id: str):
     """Return the full path of an entry by id, checking both the flat
     root and the engine subfolders. Returns None if not found."""
     target = f"{entry_id}.json"
-    for full_path, filename in _iter_library_files():
+    for full_path, filename, _engine in _iter_library_files():
         if filename == target:
             return full_path
     return None
@@ -859,7 +861,7 @@ async def get_presets():
     # Load library to find already-captured types (scans both
     # engine-specific subfolders + the flat root for older entries).
     captured_names = set()
-    for full_path, _ in _iter_library_files():
+    for full_path, _filename, _engine in _iter_library_files():
         try:
             with open(full_path) as f:
                 entry = json.load(f)
@@ -885,10 +887,18 @@ async def get_library():
     flat root (for entries written before the 2026-05-12 reorg).
     """
     library = []
-    for full_path, filename in sorted(_iter_library_files(), key=lambda x: x[1]):
+    for full_path, filename, subdir_engine in sorted(_iter_library_files(), key=lambda x: x[1]):
         try:
             with open(full_path) as f:
                 entry = json.load(f)
+                # Authoritative engine: the subfolder the file lives in
+                # wins; else the stored engine tag; else map legacy
+                # `source` ('opera3' → opera_3, anything else → opera_se).
+                engine = (
+                    subdir_engine
+                    or entry.get('engine')
+                    or ('opera_3' if entry.get('source') == 'opera3' else 'opera_se')
+                )
                 library.append({
                     'id': filename.replace('.json', ''),
                     'module': entry.get('module', 'other'),
@@ -897,6 +907,7 @@ async def get_library():
                     'description': entry.get('description', ''),
                     'recorded_at': entry.get('recorded_at', ''),
                     'tables_changed': entry.get('tables_changed', 0),
+                    'engine': engine,
                     'source': entry.get('source', 'opera_se'),
                 })
         except Exception as e:
@@ -1062,19 +1073,47 @@ async def take_before_snapshot(
     module: str = Query(..., description="Module category (cashbook, sales_ledger, etc.)"),
     name: str = Query(..., description="Transaction type name (e.g., 'Sales Receipt — BACS')"),
     description: str = Query("", description="Detailed description of the transaction being entered"),
-    data_path: str = Query("", description="Opera 3 data folder path. When non-empty, forces Opera 3 mode and points the snapshot at this DBF directory. Empty → fall back to config.ini detection (Opera SE by default)."),
+    data_path: str = Query("", description="Opera 3 FoxPro data folder path. When non-empty, the snapshot reads DBF files from this directory. Empty → read via SQL against the active company."),
     file_filter: str = Query("", description="Optional glob filter applied to the company data folder only (System folder always fully scanned). Useful for Opera 3 installs that share one Data/ folder across multiple companies via a prefix convention — e.g. `Z_*` captures only Company Z's tables."),
+    engine: str = Query("", description="Logical engine this capture is filed under: 'opera_se' or 'opera_3'. This is the deliberate declaration made by the menu the user entered — it is INDEPENDENT of how the data is physically read (SQL vs FoxPro). Determines the library subfolder and the entry tag. Empty → inferred (back-compat)."),
 ):
     """
     Take a BEFORE snapshot of all Opera tables.
     Call this, then enter the transaction in Opera, then call /after.
-    Engine selection: a non-empty `data_path` query param forces Opera 3
-    against that path. Otherwise the engine is read from
-    `config.ini` `[opera] version` (default `sql_se` → Opera SE).
+
+    Two independent concepts:
+    - `engine` (opera_se | opera_3) — the LOGICAL engine the capture is
+      filed under. Chosen by the user (which menu they're on).
+    - read mechanism — HOW the data is read: FoxPro when `data_path` is
+      supplied, otherwise SQL against the active company. Opera 3 can be
+      read either way (SQL-SE company or FoxPro DBFs); Opera SE is always
+      SQL.
     """
-    # Engine resolution: explicit data_path wins; otherwise read config.
-    opera_version = 'opera_se'
     explicit_opera3_path = (data_path or '').strip()
+
+    # Logical engine — the label this capture is filed under. Driven by
+    # the explicit `engine` param (the menu the user chose). Empty →
+    # inferred from the read mechanism for older callers.
+    _e = (engine or '').strip().lower()
+    if _e in ('opera_3', 'opera3', '3'):
+        logical_engine = 'opera_3'
+    elif _e in ('opera_se', 'sql_se', 'se'):
+        logical_engine = 'opera_se'
+    else:
+        logical_engine = ''  # infer after read-mechanism resolution
+
+    # Opera SE is always SQL — a data_path is contradictory.
+    if logical_engine == 'opera_se' and explicit_opera3_path:
+        raise HTTPException(
+            status_code=400,
+            detail=("engine='opera_se' cannot be combined with a data_path — "
+                    "Opera SE is always read via SQL. Use engine='opera_3' to "
+                    "snapshot FoxPro DBF files."),
+        )
+
+    # Read mechanism: explicit data_path → FoxPro; otherwise read config
+    # (a version of 'opera3' with no path uses the SMB-managed FoxPro mount).
+    opera_version = 'opera_se'
     try:
         import configparser
         cfg = configparser.ConfigParser()
@@ -1085,6 +1124,10 @@ async def take_before_snapshot(
         pass
     if explicit_opera3_path:
         opera_version = 'opera3'
+
+    # Infer the logical engine when the caller didn't declare one.
+    if not logical_engine:
+        logical_engine = 'opera_3' if opera_version == 'opera3' else 'opera_se'
 
     try:
         if opera_version == 'opera3':
@@ -1164,6 +1207,11 @@ async def take_before_snapshot(
         snap_file = os.path.join(snap_path, 'current_before.json')
         meta_file = os.path.join(snap_path, 'current_meta.json')
 
+        # Stamp the logical engine (the menu the user chose) so it flows
+        # to /after and the library subfolder — decoupled from `source`
+        # (the physical read mechanism).
+        snapshot['engine'] = logical_engine
+
         with open(snap_file, 'w') as f:
             json.dump(snapshot, f)
 
@@ -1172,6 +1220,7 @@ async def take_before_snapshot(
             'name': name,
             'description': description,
             'before_timestamp': snapshot['timestamp'],
+            'engine': logical_engine,
             'source': snapshot.get('source', 'opera_se'),
             # Persist the resolved Opera 3 path + file filter so /after
             # uses the same ones without needing the caller to re-supply.
@@ -1322,6 +1371,7 @@ async def take_after_snapshot(request: Request):
             'module_name': MODULES.get(meta['module'], 'Other'),
             'name': meta['name'],
             'description': meta['description'],
+            'engine': meta.get('engine') or ('opera_3' if meta.get('source') == 'opera3' else 'opera_se'),
             'source': meta.get('source', 'opera_se'),
             'recorded_at': datetime.now().isoformat(),
             'before_timestamp': meta['before_timestamp'],
@@ -1332,16 +1382,18 @@ async def take_after_snapshot(request: Request):
             'changes': diff['changes'],
         }
 
-        # Save to library — into the source-specific subfolder
+        # Save to library — into the engine-specific subfolder
         # (opera_se/ or opera_3/) so SE and Opera 3 traces stay
-        # separated and can be diffed against each other directly.
-        # Falls back to the legacy flat layout if the subfolders don't
-        # exist yet on a fresh install.
+        # separated and can be diffed against each other directly. The
+        # subfolder follows the LOGICAL engine the user declared, NOT the
+        # physical read mechanism — so an Opera-3-over-SQL capture lands
+        # in opera_3/, not opera_se/. Falls back to the legacy flat
+        # layout if the subfolders don't exist yet on a fresh install.
         lib_path = _get_library_path()
         safe_name = meta['name'].lower().replace(' ', '_').replace('—', '-')
         safe_name = ''.join(c for c in safe_name if c.isalnum() or c in '-_')[:50]
         entry_id = f"{meta['module']}_{safe_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        source_dir_name = 'opera_3' if entry.get('source') == 'opera3' else 'opera_se'
+        source_dir_name = entry['engine'] if entry.get('engine') in ('opera_se', 'opera_3') else 'opera_se'
         source_dir = os.path.join(lib_path, source_dir_name)
         if not os.path.isdir(source_dir):
             # Fall back to flat layout if the engine-specific subfolder
