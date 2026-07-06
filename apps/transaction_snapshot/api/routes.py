@@ -47,6 +47,7 @@ MODULES = {
     'purchase_ledger': 'Purchase Ledger Transactions',
     'nominal': 'Nominal Ledger Journals',
     'bank_transfer': 'Bank Transfers',
+    'recurring': 'Recurring Entries',
     'gocardless': 'GoCardless',
     'payroll': 'Payroll',
     'stock': 'Stock Transactions',
@@ -614,6 +615,31 @@ PRESETS = [
     {'module': 'payroll', 'name': 'Payroll Run', 'description': 'Complete payroll run including NI, tax, pension, nominal postings.'},
 ]
 
+# Opera 3 write-feature checklist — the golden masters we need to capture
+# to evaluate the Opera 3 write agent against Opera-native behaviour. Scoped
+# to the transaction types the write path actually produces (see the Opera 3
+# parity table in CLAUDE.md); deliberately excludes generic master-data /
+# payroll presets.
+OPERA3_PRESETS = [
+    {'module': 'cashbook', 'name': 'Sales Receipt — BACS', 'description': 'Receipt from customer via BACS. Creates: aentry, atran, stran, ntran, anoml, nacnt, nbank, sname balance update.'},
+    {'module': 'cashbook', 'name': 'Sales Receipt — Cheque', 'description': 'Receipt from customer via cheque.'},
+    {'module': 'cashbook', 'name': 'Purchase Payment — BACS', 'description': 'Payment to supplier via BACS. Creates: aentry, atran, ptran, ntran, anoml, nacnt, nbank, pname balance update.'},
+    {'module': 'cashbook', 'name': 'Purchase Payment — Cheque', 'description': 'Payment to supplier via cheque.'},
+    {'module': 'cashbook', 'name': 'Sales Refund', 'description': 'Refund to customer. Creates: aentry, atran, stran, ntran, anoml, nacnt, nbank, sname balance update. Opposite signs to receipt.'},
+    {'module': 'cashbook', 'name': 'Purchase Refund', 'description': 'Refund from supplier. Creates: aentry, atran, ptran, ntran, anoml, nacnt, nbank, pname balance update. Opposite signs to payment.'},
+    {'module': 'cashbook', 'name': 'Nominal Payment with VAT', 'description': 'Payment to a nominal account carrying VAT. Creates: aentry, atran, ntran, anoml, nacnt, nbank AND VAT analysis (zvtran; nvat if applicable).'},
+    {'module': 'cashbook', 'name': 'Nominal Receipt with VAT', 'description': 'Receipt to a nominal account carrying VAT. Creates: aentry, atran, ntran, anoml, nacnt, nbank AND VAT analysis (zvtran; nvat if applicable).'},
+    {'module': 'bank_transfer', 'name': 'Bank Transfer', 'description': 'Internal transfer between two bank accounts. Creates 2x aentry, 2x atran, 2x ntran, 2x anoml, 2x nacnt, 2x nbank.'},
+    {'module': 'sales_ledger', 'name': 'Sales Invoice', 'description': 'Sales invoice posting. Creates: stran, snoml, ntran, nacnt, sname balance, plus VAT analysis (zvtran).'},
+    {'module': 'sales_ledger', 'name': 'Sales Credit Note', 'description': 'Sales credit note posting. Opposite signs to invoice.'},
+    {'module': 'purchase_ledger', 'name': 'Purchase Invoice', 'description': 'Purchase invoice posting. Creates: ptran, pnoml, ntran, nacnt, pname balance, plus VAT analysis (zvtran).'},
+    {'module': 'purchase_ledger', 'name': 'Purchase Credit Note', 'description': 'Purchase credit note posting. Opposite signs to invoice.'},
+    {'module': 'recurring', 'name': 'Recurring Entries', 'description': 'Post recurring entries (arhead/arline) — the deferred/scheduled postings with VAT tracking.'},
+    {'module': 'gocardless', 'name': 'GoCardless Batch Import', 'description': 'Batch of customer receipts from a GoCardless payout. Includes fees split and VAT tracking.'},
+    {'module': 'allocations', 'name': 'Sales Receipt with Auto-Allocate', 'description': 'Sales receipt that auto-allocates to a matching invoice. Creates receipt posting + salloc.'},
+    {'module': 'allocations', 'name': 'Purchase Payment with Auto-Allocate', 'description': 'Purchase payment that auto-allocates to a matching invoice. Creates payment posting + palloc.'},
+]
+
 
 # ============================================================================
 # Auto-Classification — Analyses diff to precisely define the transaction
@@ -856,27 +882,41 @@ async def get_modules():
 
 
 @router.get("/api/transaction-snapshot/presets")
-async def get_presets():
-    """Get preset transaction types that match what our app posts. Excludes already-captured ones."""
-    # Load library to find already-captured types (scans both
-    # engine-specific subfolders + the flat root for older entries).
+async def get_presets(
+    engine: str = Query("", description="Engine whose checklist to return: 'opera_3' → the Opera 3 write-feature checklist; anything else → the generic Opera SE preset list. 'Already captured' is scoped to this engine, so a preset captured on the other engine still shows here."),
+):
+    """Get preset transaction types to capture, minus the ones already
+    captured FOR THIS ENGINE. Opera 3 gets its own focused write-feature
+    checklist; Opera SE gets the full generic list."""
+    _e = (engine or '').strip().lower()
+    is_opera3 = _e in ('opera_3', 'opera3', '3')
+    preset_list = OPERA3_PRESETS if is_opera3 else PRESETS
+    target_engine = 'opera_3' if is_opera3 else 'opera_se'
+
+    # Already-captured names — scoped to the requested engine so SE
+    # captures don't deplete the Opera 3 checklist (and vice versa).
     captured_names = set()
-    for full_path, _filename, _engine in _iter_library_files():
+    for full_path, _filename, subdir_engine in _iter_library_files():
         try:
             with open(full_path) as f:
                 entry = json.load(f)
-                captured_names.add(entry.get('name', '').lower())
         except Exception:
-            pass
+            continue
+        entry_engine = (
+            subdir_engine
+            or entry.get('engine')
+            or ('opera_3' if entry.get('source') == 'opera3' else 'opera_se')
+        )
+        if entry_engine == target_engine:
+            captured_names.add(entry.get('name', '').lower())
 
-    # Filter out already-captured presets
-    remaining = [p for p in PRESETS if p['name'].lower() not in captured_names]
+    remaining = [p for p in preset_list if p['name'].lower() not in captured_names]
 
     return {
         "success": True,
         "presets": remaining,
-        "total_presets": len(PRESETS),
-        "captured": len(PRESETS) - len(remaining),
+        "total_presets": len(preset_list),
+        "captured": len(preset_list) - len(remaining),
     }
 
 

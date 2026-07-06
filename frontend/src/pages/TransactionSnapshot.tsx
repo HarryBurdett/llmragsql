@@ -76,9 +76,9 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
     queryFn: async () => { const r = await authFetch(`${API}/modules`); return r.json(); },
   });
 
-  const { data: presetsData } = useQuery({
-    queryKey: ['snapshotPresets'],
-    queryFn: async () => { const r = await authFetch(`${API}/presets`); return r.json(); },
+  const { data: presetsData, refetch: refetchPresets } = useQuery({
+    queryKey: ['snapshotPresets', engine],
+    queryFn: async () => { const r = await authFetch(`${API}/presets?engine=${engine}`); return r.json(); },
   });
 
   const presets: { module: string; name: string; description: string }[] = presetsData?.presets || [];
@@ -136,6 +136,7 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
         setDescription('');
         setBeforeSummary(null);
         refetchLibrary();
+        refetchPresets();
       } else {
         setError(data.error || 'Failed to take after snapshot');
       }
