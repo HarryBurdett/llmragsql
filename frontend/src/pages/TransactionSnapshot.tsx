@@ -56,20 +56,35 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
     effective_filter?: string | null;
     warning?: string | null;
   } | null>(null);
-  // Opera 3 data path — empty means Opera SE (default). Non-empty forces
-  // Opera 3 mode against the supplied DBF directory. Persisted across
-  // sessions so the path you type once stays after refresh.
+  // Opera 3 FoxPro-over-SMB read: server IP, path within the share, and
+  // company code. Persisted across sessions.
+  const [serverIp, setServerIp] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('opera3_snapshot_server_ip') || '';
+  });
+  // Path within the SMB share (e.g. "Data" or "Data/P").
   const [opera3Path, setOpera3Path] = useState<string>(() => {
     if (typeof window === 'undefined') return '';
     return localStorage.getItem('opera3_snapshot_data_path') || '';
   });
-  // Optional filename filter for Opera 3 mode. Applied to the company
-  // data folder only — useful for installs that share one Data/ folder
-  // across companies via a prefix convention (e.g. `Z_*` for Company Z).
+  // Company-code prefix applied to the company folder (e.g. `Z` → `Z_*`).
   const [opera3Filter, setOpera3Filter] = useState<string>(() => {
     if (typeof window === 'undefined') return '';
     return localStorage.getItem('opera3_snapshot_file_filter') || '';
   });
+
+  // Defaults for the Opera 3 SMB fields (server IP, share, known companies)
+  // — from config, so nothing is hard-coded in the UI.
+  const { data: o3Defaults } = useQuery({
+    queryKey: ['opera3SmbDefaults'],
+    queryFn: async () => { const r = await authFetch(`${API}/opera3-smb-defaults`); return r.json(); },
+    enabled: isOpera3,
+  });
+  const o3Companies: { id: string; name: string; code: string; subpath: string }[] = o3Defaults?.companies || [];
+  const setLS = (k: string, v: string) => {
+    if (typeof window === 'undefined') return;
+    if (v.trim()) localStorage.setItem(k, v); else localStorage.removeItem(k);
+  };
 
   const { data: modulesData } = useQuery({
     queryKey: ['snapshotModules'],
@@ -94,9 +109,11 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
   const beforeMutation = useMutation({
     mutationFn: async () => {
       const params = new URLSearchParams({ module, name, description, engine });
-      // DBF params only apply to Opera 3 in FoxPro read mode. Opera SE
-      // and Opera 3 SQL mode both read via SQL (no data_path).
+      // FoxPro-over-SMB params only apply to Opera 3 in FoxPro read mode.
+      // Opera SE and Opera 3 SQL mode both read via SQL (no server/path).
       if (isOpera3 && o3ReadMode === 'foxpro') {
+        const ip = (serverIp || o3Defaults?.server_ip || '').trim();
+        if (ip) params.set('server_ip', ip);
         if (opera3Path.trim()) params.set('data_path', opera3Path.trim());
         if (opera3Filter.trim()) params.set('file_filter', opera3Filter.trim());
       }
@@ -261,7 +278,7 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
               <div className="inline-flex rounded-md border border-gray-300 bg-white text-sm">
                 {([
                   ['sql', 'SQL-SE (active company)'],
-                  ['foxpro', 'FoxPro (DBF folder)'],
+                  ['foxpro', 'FoxPro server (SMB)'],
                 ] as const).map(([k, label], i) => (
                   <button
                     key={k}
@@ -287,45 +304,76 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
 
               {o3ReadMode === 'foxpro' && (
                 <>
+                  {/* Quick-pick a known Opera 3 company — fills path + code */}
+                  {o3Companies.length > 0 && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Known Opera 3 company</label>
+                      <select
+                        className="w-full border rounded px-3 py-2 bg-amber-50 text-sm"
+                        value=""
+                        disabled={phase !== 'idle'}
+                        onChange={(e) => {
+                          const c = o3Companies.find(x => x.id === e.target.value);
+                          if (!c) return;
+                          setOpera3Path(c.subpath); setLS('opera3_snapshot_data_path', c.subpath);
+                          setOpera3Filter(c.code);  setLS('opera3_snapshot_file_filter', c.code);
+                          const ip = (o3Defaults?.server_ip || '').trim();
+                          if (ip) { setServerIp(ip); setLS('opera3_snapshot_server_ip', ip); }
+                        }}
+                      >
+                        <option value="">Select a company to auto-fill…</option>
+                        {o3Companies.map(c => (
+                          <option key={c.id} value={c.id}>{c.name} ({c.code})</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Opera 3 data path (FoxPro DBF folder)</label>
+                    <label className="block text-sm font-medium text-gray-700">Server IP</label>
                     <input
                       type="text"
                       className="w-full border rounded px-3 py-2 font-mono text-sm"
-                      placeholder="/Volumes/Opera3/COMPANY  —  or any local DBF folder"
-                      value={opera3Path}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setOpera3Path(v);
-                        if (typeof window !== 'undefined') {
-                          if (v.trim()) localStorage.setItem('opera3_snapshot_data_path', v);
-                          else localStorage.removeItem('opera3_snapshot_data_path');
-                        }
-                      }}
+                      placeholder={o3Defaults?.server_ip || '172.17.172.214'}
+                      value={serverIp}
+                      onChange={(e) => { setServerIp(e.target.value); setLS('opera3_snapshot_server_ip', e.target.value); }}
                       disabled={phase !== 'idle'}
                     />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Connects over SMB — no drive mounting needed. Share
+                      {o3Defaults?.share ? <> <code>{o3Defaults.share}</code></> : ' name'} and credentials come from the server config. Leave blank to use the configured default{o3Defaults?.server_ip ? <> (<code>{o3Defaults.server_ip}</code>)</> : ''}.
+                    </p>
                   </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Path within share</label>
+                    <input
+                      type="text"
+                      className="w-full border rounded px-3 py-2 font-mono text-sm"
+                      placeholder={o3Defaults?.default_subpath || 'Data'}
+                      value={opera3Path}
+                      onChange={(e) => { setOpera3Path(e.target.value); setLS('opera3_snapshot_data_path', e.target.value); }}
+                      disabled={phase !== 'idle'}
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Folder inside the share, e.g. <code>Data</code> (or <code>Data/P</code> for a company in its own sub-folder).
+                    </p>
+                  </div>
+
                   <div>
                     <label className="block text-sm font-medium text-gray-700">
-                      Company identifier <span className="text-gray-400 font-normal">(optional — e.g. <code>Z</code> for installs that share one Data/ folder across companies)</span>
+                      Company identifier <span className="text-gray-400 font-normal">(e.g. <code>Z</code> — expands to <code>Z_*</code>)</span>
                     </label>
                     <input
                       type="text"
                       className="w-full border rounded px-3 py-2 font-mono text-sm"
                       placeholder="Z   (just the prefix — no underscore, no glob)"
                       value={opera3Filter}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setOpera3Filter(v);
-                        if (typeof window !== 'undefined') {
-                          if (v.trim()) localStorage.setItem('opera3_snapshot_file_filter', v);
-                          else localStorage.removeItem('opera3_snapshot_file_filter');
-                        }
-                      }}
+                      onChange={(e) => { setOpera3Filter(e.target.value); setLS('opera3_snapshot_file_filter', e.target.value); }}
                       disabled={phase !== 'idle'}
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      Type just the company prefix (e.g. <code>Z</code>). The tool expands that to <code>Z_*</code> internally and limits the company-folder scan to those DBFs. System tables are always captured. Power users can paste a raw glob (e.g. <code>Z_PNAME.*</code>) and it'll be used verbatim.
+                      Limits the company-folder scan to those DBFs; System tables are always captured. Very large companies (multi-GB) are refused over SMB — mount those locally instead.
                     </p>
                   </div>
                 </>

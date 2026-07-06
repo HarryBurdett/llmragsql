@@ -431,6 +431,149 @@ def take_snapshot_opera3(data_path: str, file_filter: str = '') -> Dict[str, Any
     return snapshot
 
 
+def _opera3_smb_config():
+    """Read the Opera 3 SMB share name + credentials from config.ini.
+    Returns (share, default_server_ip, user, password). The share name and
+    a fallback host are parsed from `opera3_server_path` (\\host\Share)."""
+    import configparser
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'config.ini'))
+    server_path = cfg.get('opera', 'opera3_server_path', fallback='').strip()
+    user = cfg.get('opera', 'opera3_share_user', fallback='').strip()
+    password = cfg.get('opera', 'opera3_share_password', fallback='')
+    share, default_host = '', ''
+    unc = server_path.lstrip('\\')
+    if unc:
+        parts = unc.split('\\', 1)
+        default_host = parts[0]
+        share = parts[1] if len(parts) > 1 else ''
+    return share, default_host, user, password
+
+
+def take_snapshot_opera3_smb(
+    server_ip: str,
+    subpath: str,
+    file_filter: str = '',
+    max_download_mb: int = 500,
+) -> Dict[str, Any]:
+    """Snapshot an Opera 3 (FoxPro) company that lives on an SMB server,
+    identified by IP — WITHOUT an OS-level mount.
+
+    Connects over SMB (smbclient), downloads only the selected company's
+    DBFs (+ .fpt/.cdx companions) and the System tables into a temp dir,
+    runs the local FoxPro snapshot on them, then deletes the temp dir.
+
+    - Share name + credentials come from config.ini [opera].
+    - `subpath`     : folder within the share (e.g. 'Data' or 'Data/P').
+    - `file_filter` : company-code prefix (e.g. 'Z') applied to the
+      company folder; the System folder is always captured in full.
+    - Refuses a company whose DBF+memo footprint exceeds `max_download_mb`
+      (some live companies are multi-GB) — mount those locally instead.
+    """
+    import tempfile, shutil, fnmatch
+    try:
+        import smbclient
+    except ImportError:
+        raise HTTPException(status_code=503, detail="smbclient not installed — cannot read Opera 3 over SMB.")
+
+    share, default_host, user, password = _opera3_smb_config()
+    server_ip = (server_ip or default_host or '').strip()
+    if not share:
+        raise HTTPException(status_code=500, detail="opera3_server_path not configured — cannot determine the SMB share name.")
+    if not server_ip:
+        raise HTTPException(status_code=400, detail="No server IP supplied and none configured.")
+    if not user or not password:
+        raise HTTPException(status_code=500, detail="Opera 3 SMB credentials (opera3_share_user/password) not configured.")
+
+    smbclient.register_session(server_ip, username=user, password=password)
+
+    def remote(*segs):
+        return '\\\\' + '\\'.join([server_ip, share] + [s for s in segs if s])
+
+    subpath_win = (subpath or '').replace('/', '\\').strip('\\')
+    company_remote = remote(subpath_win) if subpath_win else remote()
+
+    # Expand a bare company code ('Z') to the prefix glob ('Z_*').
+    raw = (file_filter or '').strip()
+    pattern = f"{raw}_*" if raw and not any(c in raw for c in '*?[') else raw
+
+    def is_dbf_family(n):
+        return n.lower().endswith(('.dbf', '.fpt', '.cdx'))
+
+    def matched(n):
+        if not is_dbf_family(n):
+            return False
+        return fnmatch.fnmatch(n.upper(), pattern.upper()) if pattern else True
+
+    try:
+        names = smbclient.listdir(company_remote)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Cannot list \\\\{server_ip}\\{share}\\{subpath_win}: {e}")
+
+    company_files = [n for n in names if matched(n)]
+    dbf_files = [n for n in company_files if n.lower().endswith('.dbf')]
+    if not dbf_files:
+        raise HTTPException(status_code=404, detail=(
+            f"No DBF files matched '{pattern or '*'}' in \\\\{server_ip}\\{share}\\{subpath_win}. "
+            "Check the path and company identifier."))
+
+    def stat_size(path):
+        try:
+            return smbclient.stat(path).st_size
+        except Exception:
+            return 0
+    total = sum(stat_size(f"{company_remote}\\{n}") for n in company_files)
+    if total > max_download_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=(
+            f"Company '{raw or subpath_win}' is ~{total/1e6:.0f} MB over SMB — too large to pull for a snapshot "
+            f"(limit {max_download_mb} MB). Mount the share locally and snapshot a local path instead."))
+
+    def download(remote_path, local_path):
+        with smbclient.open_file(remote_path, mode='rb', share_access='r') as rf:
+            with open(local_path, 'wb') as lf:
+                while True:
+                    chunk = rf.read(1 << 16)
+                    if not chunk:
+                        break
+                    lf.write(chunk)
+
+    tmp = tempfile.mkdtemp(prefix='o3snap_')
+    try:
+        data_dir = os.path.join(tmp, 'DATA')
+        sys_dir = os.path.join(tmp, 'System')
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(sys_dir, exist_ok=True)
+
+        for n in company_files:
+            download(f"{company_remote}\\{n}", os.path.join(data_dir, n))
+
+        # System folder — always at the share root, captured in full.
+        system_remote = remote('System')
+        try:
+            for n in smbclient.listdir(system_remote):
+                if is_dbf_family(n):
+                    download(f"{system_remote}\\{n}", os.path.join(sys_dir, n))
+        except Exception as e:
+            logger.warning(f"Opera 3 SMB: could not read System folder at {system_remote}: {e}")
+
+        # Reuse the local FoxPro scanner on the downloaded files. It finds
+        # the System folder as data_dir's sibling (tmp/System).
+        snapshot = take_snapshot_opera3(data_dir, file_filter='')
+        snapshot['source'] = 'opera3'
+        snapshot['_smb_server'] = server_ip
+        snapshot['_smb_subpath'] = subpath
+        snapshot['_smb_filter'] = raw
+        snapshot['_dbf_downloaded'] = len(dbf_files)
+        snapshot['_mb_downloaded'] = round(total / 1e6, 1)
+        logger.info(
+            f"Opera 3 SMB snapshot: {server_ip}\\{share}\\{subpath_win} "
+            f"filter='{pattern or '*'}' — {len(dbf_files)} DBFs / {total/1e6:.1f} MB"
+        )
+        return snapshot
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ============================================================================
 # Diff Engine — Compares two snapshots
 # ============================================================================
@@ -881,6 +1024,35 @@ async def get_modules():
     return {"success": True, "modules": MODULES}
 
 
+@router.get("/api/transaction-snapshot/opera3-smb-defaults")
+async def get_opera3_smb_defaults():
+    """Defaults for the Opera 3 (FoxPro over SMB) capture fields, so the
+    UI can prefill the server IP + share without hard-coding them. Also
+    returns the known Opera 3 companies (code + data subpath) for quick
+    selection. Never returns credentials."""
+    share, default_host, _user, _pw = _opera3_smb_config()
+    companies = []
+    try:
+        from api.main import load_companies
+        for co in (load_companies() or []):
+            if str(co.get('opera_version', '')).strip() == '3':
+                companies.append({
+                    'id': co.get('id'),
+                    'name': co.get('name'),
+                    'code': (co.get('opera3_company_code') or '').strip(),
+                    'subpath': (co.get('opera3_data_path') or 'Data').strip(),
+                })
+    except Exception as e:
+        logger.warning(f"opera3-smb-defaults: could not load companies: {e}")
+    return {
+        "success": True,
+        "server_ip": default_host,
+        "share": share,
+        "default_subpath": "Data",
+        "companies": companies,
+    }
+
+
 @router.get("/api/transaction-snapshot/presets")
 async def get_presets(
     engine: str = Query("", description="Engine whose checklist to return: 'opera_3' → the Opera 3 write-feature checklist; anything else → the generic Opera SE preset list. 'Already captured' is scoped to this engine, so a preset captured on the other engine still shows here."),
@@ -1113,8 +1285,9 @@ async def take_before_snapshot(
     module: str = Query(..., description="Module category (cashbook, sales_ledger, etc.)"),
     name: str = Query(..., description="Transaction type name (e.g., 'Sales Receipt — BACS')"),
     description: str = Query("", description="Detailed description of the transaction being entered"),
-    data_path: str = Query("", description="Opera 3 FoxPro data folder path. When non-empty, the snapshot reads DBF files from this directory. Empty → read via SQL against the active company."),
-    file_filter: str = Query("", description="Optional glob filter applied to the company data folder only (System folder always fully scanned). Useful for Opera 3 installs that share one Data/ folder across multiple companies via a prefix convention — e.g. `Z_*` captures only Company Z's tables."),
+    data_path: str = Query("", description="For Opera 3: with server_ip set, this is the folder WITHIN the SMB share (e.g. 'Data' or 'Data/P'). Without server_ip, a non-empty value is a local FoxPro DBF folder path. Empty (and no server_ip) → read via SQL against the active company."),
+    file_filter: str = Query("", description="Company-code prefix / glob applied to the company data folder only (System folder always fully scanned). e.g. `Z` (expands to `Z_*`) captures only Company Z's tables."),
+    server_ip: str = Query("", description="Opera 3 FoxPro server IP. When set, the snapshot connects to that server over SMB (no OS mount), pulls the selected company's DBFs, and reads them. Share name + credentials come from config.ini [opera]."),
     engine: str = Query("", description="Logical engine this capture is filed under: 'opera_se' or 'opera_3'. This is the deliberate declaration made by the menu the user entered — it is INDEPENDENT of how the data is physically read (SQL vs FoxPro). Determines the library subfolder and the entry tag. Empty → inferred (back-compat)."),
 ):
     """
@@ -1130,6 +1303,7 @@ async def take_before_snapshot(
       SQL.
     """
     explicit_opera3_path = (data_path or '').strip()
+    smb_server = (server_ip or '').strip()
 
     # Logical engine — the label this capture is filed under. Driven by
     # the explicit `engine` param (the menu the user chose). Empty →
@@ -1142,35 +1316,50 @@ async def take_before_snapshot(
     else:
         logical_engine = ''  # infer after read-mechanism resolution
 
-    # Opera SE is always SQL — a data_path is contradictory.
-    if logical_engine == 'opera_se' and explicit_opera3_path:
+    # Opera SE is always SQL — a data_path or server_ip is contradictory.
+    if logical_engine == 'opera_se' and (explicit_opera3_path or smb_server):
         raise HTTPException(
             status_code=400,
-            detail=("engine='opera_se' cannot be combined with a data_path — "
+            detail=("engine='opera_se' cannot be combined with a data_path/server_ip — "
                     "Opera SE is always read via SQL. Use engine='opera_3' to "
                     "snapshot FoxPro DBF files."),
         )
 
-    # Read mechanism: explicit data_path → FoxPro; otherwise read config
-    # (a version of 'opera3' with no path uses the SMB-managed FoxPro mount).
+    # Read mechanism (three ways to read Opera 3):
+    #   server_ip set        → 'opera3_smb'  (connect over SMB by IP)
+    #   local data_path set  → 'opera3'      (local/mounted DBF folder)
+    #   otherwise            → config version ('sql_se' → SQL)
     opera_version = 'opera_se'
     try:
         import configparser
         cfg = configparser.ConfigParser()
         cfg.read(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), 'config.ini'))
-        if not explicit_opera3_path:
+        if not explicit_opera3_path and not smb_server:
             opera_version = cfg.get('opera', 'version', fallback='sql_se')
     except Exception:
         pass
-    if explicit_opera3_path:
+    if smb_server:
+        opera_version = 'opera3_smb'
+    elif explicit_opera3_path:
         opera_version = 'opera3'
 
     # Infer the logical engine when the caller didn't declare one.
     if not logical_engine:
-        logical_engine = 'opera_3' if opera_version == 'opera3' else 'opera_se'
+        logical_engine = 'opera_3' if opera_version in ('opera3', 'opera3_smb') else 'opera_se'
 
     try:
-        if opera_version == 'opera3':
+        if opera_version == 'opera3_smb':
+            # Opera 3 over SMB — connect to the server by IP, pull the
+            # company's DBFs (+ System) and snapshot them. data_path is the
+            # folder within the share; file_filter is the company code.
+            snapshot = take_snapshot_opera3_smb(smb_server, subpath=explicit_opera3_path, file_filter=file_filter)
+            snapshot['_resolved_data_path'] = f"smb://{smb_server}/{explicit_opera3_path}".rstrip('/')
+            snapshot['_file_filter'] = (file_filter or '').strip()
+            logger.info(
+                f"Taking BEFORE snapshot (Opera 3 SMB) for: {module}/{name} "
+                f"— server={smb_server} path='{explicit_opera3_path}' filter='{file_filter}'"
+            )
+        elif opera_version == 'opera3':
             # Opera 3 — snapshot DBF files
             try:
                 resolved_path = explicit_opera3_path
@@ -1266,6 +1455,10 @@ async def take_before_snapshot(
             # uses the same ones without needing the caller to re-supply.
             'opera3_data_path': snapshot.get('_resolved_data_path', '') if snapshot.get('source') == 'opera3' else '',
             'opera3_file_filter': snapshot.get('_file_filter', '') if snapshot.get('source') == 'opera3' else '',
+            # SMB-native read details (present only for Opera 3 over SMB),
+            # so /after connects to the same server/path/company.
+            'opera3_smb_server': snapshot.get('_smb_server', ''),
+            'opera3_smb_subpath': snapshot.get('_smb_subpath', ''),
         }
         with open(meta_file, 'w') as f:
             json.dump(meta, f)
@@ -1329,7 +1522,18 @@ async def take_after_snapshot(request: Request):
         source = meta.get('source', 'opera_se')
         logger.info(f"Taking AFTER snapshot ({source}) for: {meta['module']}/{meta['name']}")
 
-        if source == 'opera3':
+        smb_server = (meta.get('opera3_smb_server') or '').strip()
+        if source == 'opera3' and smb_server:
+            # Opera 3 over SMB — reconnect to the same server/path/company
+            # that /before used and pull the DBFs again.
+            smb_subpath = (meta.get('opera3_smb_subpath') or '').strip()
+            filter_pattern = (meta.get('opera3_file_filter') or '').strip()
+            logger.info(
+                f"Taking AFTER snapshot (Opera 3 SMB) — server={smb_server} "
+                f"path='{smb_subpath}' filter='{filter_pattern or '<none>'}'"
+            )
+            after = take_snapshot_opera3_smb(smb_server, subpath=smb_subpath, file_filter=filter_pattern)
+        elif source == 'opera3':
             # Opera 3 — snapshot DBF files. Prefer the resolved path
             # that /before recorded (so the AFTER snapshot definitely
             # reads from the same place); fall back to SMB-managed
