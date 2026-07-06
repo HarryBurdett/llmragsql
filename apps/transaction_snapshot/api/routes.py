@@ -148,9 +148,23 @@ def _get_snapshot_path():
 # Snapshot Engine — Scans ALL tables
 # ============================================================================
 
-def take_snapshot_se(sql_connector, max_rows_for_full_data: int = 500000) -> Dict[str, Any]:
+def take_snapshot_se(
+    sql_connector,
+    company_db: str,
+    max_rows_for_full_data: int = 500000,
+) -> Dict[str, Any]:
     """
-    Take a snapshot of ALL tables in both the company and system databases.
+    Take a snapshot of ALL tables in the specified company database and the
+    Opera SE system database.
+
+    The caller is REQUIRED to supply `company_db` — the actual SQL Server
+    database name to scan (e.g. 'Opera3SECompany00Z'). This is resolved
+    from the active company's JSON config (companies/<id>.json's
+    `database` field) at the endpoint level, BEFORE this function is
+    called. We deliberately do NOT ask the connection what database it
+    is bound to via `SELECT DB_NAME()` — that has been the source of
+    several silent "scanned the wrong company" bugs because pooled
+    connections can drift from the company the user actually selected.
 
     Strategy: Get row counts for all tables via sys.partitions (instant).
     Get checksums for all tables (fast). Read full row data for tables
@@ -161,35 +175,68 @@ def take_snapshot_se(sql_connector, max_rows_for_full_data: int = 500000) -> Dic
     snapshot = {
         'timestamp': datetime.now().isoformat(),
         'source': 'opera_se',
+        'company_db': company_db,
         'databases': {},
     }
 
-    db_result = sql_connector.execute_query("SELECT DB_NAME() as db_name")
-    company_db = db_result.iloc[0]['db_name'] if db_result is not None else 'unknown'
     system_db = 'Opera3SESystem'
+    logger.info(
+        f"take_snapshot_se: scanning company_db='{company_db}', "
+        f"system_db='{system_db}' (explicit — no DB_NAME() indirection)"
+    )
 
     for db_name in [company_db, system_db]:
         db_snapshot = {}
+        # Why we use explicit 3-part names and avoid OBJECT_ID():
+        #
+        # 1. The previous code used `OBJECT_ID('{db}.dbo.' + TABLE_NAME)`
+        #    in the JOIN. OBJECT_ID() resolves in the caller's DB
+        #    context, so it silently returned NULL when the connection
+        #    was bound elsewhere → row_count came back NULL → snapshot
+        #    treated tables as 0 rows → row data never captured → the
+        #    diff reported "every table changed" (false positives).
+        #
+        # 2. An earlier "fix" attempted `USE [{db}]; SELECT ...` as a
+        #    single multi-statement batch. pd.read_sql sits on the
+        #    USE's empty result and doesn't advance to the SELECT's
+        #    rows → tables_df is empty → snapshot captures 0 tables.
+        #
+        # Correct approach: explicit `[{db}].sys.tables`,
+        # `[{db}].INFORMATION_SCHEMA.TABLES`, `[{db}].sys.partitions`,
+        # and `[{db}].dbo.[{table}]` 3-part names. The login used for
+        # the snapshot connector has SELECT on every Opera DB on this
+        # server, so cross-DB SELECTs work even if the connection's
+        # current_database differs from the target.
         try:
-            # Get ALL user tables with row counts in a single query (FAST)
             tables_df = sql_connector.execute_query(f"""
                 SELECT t.TABLE_NAME,
-                       p.rows as row_count
+                       ISNULL(p_agg.row_count, 0) AS row_count
                 FROM [{db_name}].INFORMATION_SCHEMA.TABLES t WITH (NOLOCK)
-                LEFT JOIN [{db_name}].sys.partitions p ON p.object_id = OBJECT_ID('{db_name}.dbo.' + t.TABLE_NAME)
-                    AND p.index_id IN (0, 1)
+                LEFT JOIN [{db_name}].sys.tables st WITH (NOLOCK)
+                    ON st.name COLLATE DATABASE_DEFAULT
+                       = t.TABLE_NAME COLLATE DATABASE_DEFAULT
+                LEFT JOIN (
+                    SELECT object_id, SUM(rows) AS row_count
+                    FROM [{db_name}].sys.partitions WITH (NOLOCK)
+                    WHERE index_id IN (0, 1)
+                    GROUP BY object_id
+                ) AS p_agg ON p_agg.object_id = st.object_id
                 WHERE t.TABLE_TYPE = 'BASE TABLE'
                 ORDER BY t.TABLE_NAME
             """)
             if tables_df is None or tables_df.empty:
+                logger.warning(
+                    f"Snapshot: 0 tables returned for [{db_name}]. "
+                    "Connector login may lack SELECT permission on this DB."
+                )
                 continue
+            logger.info(f"Snapshot: listed {len(tables_df)} tables in [{db_name}]")
 
             for _, row in tables_df.iterrows():
                 table_name = row['TABLE_NAME']
                 row_count = int(row['row_count']) if row['row_count'] is not None else 0
 
                 try:
-                    # Get checksum (fast — SQL Server computes internally)
                     checksum = 0
                     try:
                         checksum_df = sql_connector.execute_query(f"""
@@ -1070,17 +1117,47 @@ async def take_before_snapshot(
             except ImportError:
                 raise HTTPException(status_code=503, detail="SMB access module not available")
         else:
-            # Opera SE — snapshot via SQL (use request-aware connector)
+            # Opera SE — snapshot via SQL.
+            # The contract is simple: scan the company the user is
+            # currently logged into. We resolve the SQL Server database
+            # name from companies/<id>.json at the route boundary, then
+            # pass it EXPLICITLY into take_snapshot_se. No `DB_NAME()`
+            # indirection, no reliance on connection-pool state — the
+            # backend asserts which DB to scan rather than asking the
+            # connection what it happens to be bound to.
+            from api.main import _get_active_company_id, load_company
+            company_id = _get_active_company_id()
+            if not company_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No active Opera company in session. Select a company before taking a snapshot.",
+                )
+            co_data = load_company(company_id)
+            if not co_data or not co_data.get('database'):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"Active company '{company_id}' has no `database` field in "
+                        f"companies/{company_id}.json — cannot determine which SQL "
+                        f"Server database to scan."
+                    ),
+                )
+            company_db = co_data['database']
             sql = _get_request_sql_connector(request)
             if not sql:
                 raise HTTPException(status_code=503, detail="No database connection")
-            # Log which database we're scanning
-            try:
-                db_check = sql.execute_query("SELECT DB_NAME() as db")
-                logger.info(f"Taking BEFORE snapshot (Opera SE) for: {module}/{name} — database: {db_check.iloc[0]['db']}")
-            except Exception:
-                logger.info(f"Taking BEFORE snapshot (Opera SE) for: {module}/{name}")
-            snapshot = take_snapshot_se(sql)
+            logger.info(
+                f"Taking BEFORE snapshot (Opera SE) for: {module}/{name} "
+                f"— active company='{company_id}' → database='{company_db}'"
+            )
+            snapshot = take_snapshot_se(sql, company_db=company_db)
+            snapshot['_active_company_id'] = company_id
+            # Surface table counts per database so a "zero scanned"
+            # outcome is visible in the log, not only in the response.
+            for _db, _tables in snapshot.get('databases', {}).items():
+                logger.info(
+                    f"Snapshot result: db='{_db}' tables_scanned={len(_tables)}"
+                )
 
         # Save snapshot to temp file
         snap_path = _get_snapshot_path()
@@ -1186,11 +1263,52 @@ async def take_after_snapshot(request: Request):
             except ImportError:
                 raise HTTPException(status_code=503, detail="SMB access module not available")
         else:
-            # Opera SE (use request-aware connector)
+            # Opera SE — same contract as /before: resolve the active
+            # company's database from companies/<id>.json and scan it
+            # explicitly. Also enforce that AFTER scans the same DB as
+            # BEFORE (the meta file persists the BEFORE company_db),
+            # otherwise the diff would be comparing apples to oranges.
+            from api.main import _get_active_company_id, load_company
+            company_id = _get_active_company_id()
+            if not company_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No active Opera company in session.",
+                )
+            co_data = load_company(company_id)
+            if not co_data or not co_data.get('database'):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"Active company '{company_id}' has no `database` field — "
+                        f"cannot determine which SQL Server database to scan."
+                    ),
+                )
+            company_db = co_data['database']
+            before_company_db = before.get('company_db') if isinstance(before, dict) else None
+            if before_company_db and before_company_db != company_db:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"AFTER company mismatch: BEFORE was captured against "
+                        f"'{before_company_db}' but the active company is now "
+                        f"'{company_db}'. Switch back to the same company before "
+                        f"taking AFTER, or restart the snapshot with BEFORE."
+                    ),
+                )
             sql = _get_request_sql_connector(request)
             if not sql:
                 raise HTTPException(status_code=503, detail="No database connection")
-            after = take_snapshot_se(sql)
+            logger.info(
+                f"Taking AFTER snapshot (Opera SE) "
+                f"— active company='{company_id}' → database='{company_db}'"
+            )
+            after = take_snapshot_se(sql, company_db=company_db)
+            after['_active_company_id'] = company_id
+            for _db, _tables in after.get('databases', {}).items():
+                logger.info(
+                    f"AFTER snapshot result: db='{_db}' tables_scanned={len(_tables)}"
+                )
 
         # Generate diff
         diff = diff_snapshots(before, after, sql_connector=_get_sql_connector() if source != 'opera3' else None)
