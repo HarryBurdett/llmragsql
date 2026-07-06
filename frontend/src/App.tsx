@@ -10,6 +10,7 @@ import { Archive } from './pages/Archive';
 import { Dashboard } from './pages/Dashboard';
 import { CreditControl } from './pages/CreditControl';
 import { Cashflow } from './pages/Cashflow';
+import CashflowForecast from './pages/CashflowForecast';
 import { TrialBalance } from './pages/TrialBalance';
 import { StatutoryAccounts } from './pages/StatutoryAccounts';
 import { SalesDashboards } from './pages/SalesDashboards';
@@ -221,7 +222,9 @@ function AppRoutes() {
 
                   {/* Utilities routes */}
                   <Route path="/utilities/user-activity" element={<UserActivity />} />
-                  <Route path="/utilities/transaction-snapshot" element={<TransactionSnapshot />} />
+                  <Route path="/utilities/transaction-snapshot" element={<Navigate to="/utilities/transaction-snapshot/opera-se" replace />} />
+                  <Route path="/utilities/transaction-snapshot/opera-se" element={<TransactionSnapshot engine="opera_se" />} />
+                  <Route path="/utilities/transaction-snapshot/opera-3" element={<TransactionSnapshot engine="opera_3" />} />
                   <Route path="/utilities/transaction-monitor" element={<TransactionMonitor />} />
                   <Route path="/sop/batch-processing" element={<SOPBatchProcessing />} />
                   <Route path="/admin/migration" element={<MigrationAssistant />} />
@@ -266,7 +269,9 @@ function AppRoutes() {
                   <Route path="/sales-dashboards" element={<Navigate to="/archive/sales-dashboards" replace />} />
                   <Route path="/debtors-control" element={<Navigate to="/archive/debtors-control" replace />} />
                   <Route path="/creditors-control" element={<Navigate to="/archive/creditors-control" replace />} />
-                  <Route path="/cashflow" element={<Navigate to="/archive/cashflow" replace />} />
+                  {/* New SAM Cashflow plugin lives at /cashflow.
+                      Legacy historical-averages page remains at /archive/cashflow. */}
+                  <Route path="/cashflow" element={<CashflowForecast />} />
                   <Route path="/trial-balance" element={<Navigate to="/archive/trial-balance" replace />} />
                   <Route path="/statutory-accounts" element={<Navigate to="/archive/statutory-accounts" replace />} />
                   <Route path="/reconcile" element={<Navigate to="/archive/reconcile" replace />} />

@@ -7,7 +7,7 @@ import {
   FileText, MessageSquare, Shield, LayoutDashboard, Receipt,
   Briefcase, FolderKanban, Package, ShoppingCart, ClipboardList,
   Cog, Activity, LogOut, KeyRound, Send, RotateCcw, Monitor, CalendarDays,
-  Home, User
+  Home, User, TrendingUp
 } from 'lucide-react';
 import { OperaVersionBadge } from './OperaVersionBadge';
 import { Opera3AgentStatus } from './Opera3AgentStatus';
@@ -117,6 +117,26 @@ const gocardlessMenu: TopLevelMenu = {
   ],
 };
 
+const cashflowMenu: TopLevelMenu = {
+  label: 'Cashflow',
+  icon: TrendingUp,
+  sections: [
+    {
+      heading: 'Workflow',
+      items: [
+        {
+          path: '/cashflow',
+          label: 'Forecast',
+          icon: TrendingUp,
+          description:
+            '12-month forward view from commitments, recurring entries & history',
+          color: 'emerald',
+        },
+      ],
+    },
+  ],
+};
+
 const suppliersMenu: TopLevelMenu = {
   label: 'Suppliers',
   icon: Truck,
@@ -164,7 +184,8 @@ const utilitiesMenu: TopLevelMenu = {
     {
       heading: 'Developer Tools',
       items: [
-        { path: '/utilities/transaction-snapshot', label: 'Transaction Snapshot', icon: Database, description: 'Capture Opera posting patterns', color: 'indigo' },
+        { path: '/utilities/transaction-snapshot/opera-se', label: 'Snapshot — Opera SE', icon: Database, description: 'Capture Opera SE posting patterns', color: 'indigo' },
+        { path: '/utilities/transaction-snapshot/opera-3', label: 'Snapshot — Opera 3', icon: Database, description: 'Capture Opera 3 posting patterns', color: 'amber' },
         { path: '/utilities/transaction-monitor', label: 'Transaction Monitor', icon: Activity, description: 'Monitor live Opera systems', color: 'green' },
       ],
     },
@@ -527,6 +548,9 @@ export function Layout({ children }: LayoutProps) {
   if (hasPermission('cashbook')) menus.push(cashbookMenu);
   if (hasPermission('cashbook')) menus.push(gocardlessMenu);
   if (hasPermission('ap_automation')) menus.push(suppliersMenu);
+  // Cashflow forecast — read-only, gated on cashbook permission since it
+  // surfaces Opera bank balances + sales/purchase ledger data.
+  if (hasPermission('cashbook')) menus.push(cashflowMenu);
   menus.push(utilitiesMenu);
   if (hasPermission('administration')) menus.push(getAdminMenu(
     user?.is_admin || false,

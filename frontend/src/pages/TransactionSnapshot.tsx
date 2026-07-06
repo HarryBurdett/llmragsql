@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { Camera, Play, Square, Trash2, Download, ChevronDown, ChevronRight, AlertCircle, Database } from 'lucide-react';
 import { authFetch } from '../api/client';
 import { PageHeader, Card } from '../components/ui';
@@ -14,8 +14,11 @@ interface LibraryEntry {
   description: string;
   recorded_at: string;
   tables_changed: number;
+  engine: string;
   source: string;
 }
+
+type Engine = 'opera_se' | 'opera_3';
 
 interface ChangeDetail {
   database: string;
@@ -28,17 +31,22 @@ interface ChangeDetail {
   modified_rows?: { pk: string; changes: Record<string, { before: any; after: any }> }[];
 }
 
-export function TransactionSnapshot() {
-  const queryClient = useQueryClient();
+export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }) {
+  const isOpera3 = engine === 'opera_3';
   const [module, setModule] = useState('');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [phase, setPhase] = useState<'idle' | 'before_taken' | 'processing'>('idle');
-  const [result, setResult] = useState<{ summary: ChangeDetail[]; entry_id: string; tables_changed: number } | null>(null);
+  const [result, setResult] = useState<{ summary: ChangeDetail[]; entry_id: string; tables_changed: number; classification?: any } | null>(null);
   const [expandedEntry, setExpandedEntry] = useState<string | null>(null);
   const [entryDetail, setEntryDetail] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
-  const [engineFilter, setEngineFilter] = useState<'all' | 'opera_se' | 'opera3'>('all');
+  // Opera 3 only: read via SQL (an Opera 3 SQL-SE company) or FoxPro DBFs.
+  // Opera SE is always SQL, so this is ignored on the SE page.
+  const [o3ReadMode, setO3ReadMode] = useState<'sql' | 'foxpro'>(() => {
+    if (typeof window === 'undefined') return 'sql';
+    return (localStorage.getItem('opera3_snapshot_read_mode') as 'sql' | 'foxpro') || 'sql';
+  });
   const [compareStem, setCompareStem] = useState<string | null>(null);
   const [compareData, setCompareData] = useState<any>(null);
   const [compareLoading, setCompareLoading] = useState(false);
@@ -85,9 +93,13 @@ export function TransactionSnapshot() {
 
   const beforeMutation = useMutation({
     mutationFn: async () => {
-      const params = new URLSearchParams({ module, name, description });
-      if (opera3Path.trim()) params.set('data_path', opera3Path.trim());
-      if (opera3Filter.trim()) params.set('file_filter', opera3Filter.trim());
+      const params = new URLSearchParams({ module, name, description, engine });
+      // DBF params only apply to Opera 3 in FoxPro read mode. Opera SE
+      // and Opera 3 SQL mode both read via SQL (no data_path).
+      if (isOpera3 && o3ReadMode === 'foxpro') {
+        if (opera3Path.trim()) params.set('data_path', opera3Path.trim());
+        if (opera3Filter.trim()) params.set('file_filter', opera3Filter.trim());
+      }
       const r = await authFetch(`${API}/before?${params}`, { method: 'POST' });
       return r.json();
     },
@@ -175,34 +187,21 @@ export function TransactionSnapshot() {
   // the cross-engine comparison.
   const stemOf = (id: string) => id.replace(/_\d{8}_\d{6}$/, '');
 
-  // Engine counts (always against the unfiltered library, so the
-  // filter buttons can show "(N)" beside each option).
-  const counts = library.reduce(
-    (a, e) => {
-      const k = e.source === 'opera3' ? 'opera3' : 'opera_se';
-      a[k] = (a[k] || 0) + 1;
-      a.all += 1;
-      return a;
-    },
-    { all: 0, opera_se: 0, opera3: 0 } as Record<string, number>,
-  );
+  // Normalise an entry's engine (authoritative field from the backend;
+  // fall back to legacy `source` for older entries).
+  const engineOf = (e: LibraryEntry): Engine =>
+    (e.engine as Engine) || (e.source === 'opera3' ? 'opera_3' : 'opera_se');
 
-  // Stems that have captures on BOTH engines — eligible for comparison.
-  const stemsByEngine: Record<string, Set<string>> = { opera_se: new Set(), opera3: new Set() };
-  library.forEach(e => {
-    const eng = e.source === 'opera3' ? 'opera3' : 'opera_se';
-    stemsByEngine[eng].add(stemOf(e.id));
-  });
+  // Stems that have captures on BOTH engines — eligible for the
+  // cross-engine Compare action (computed across the whole library).
+  const stemsByEngine: Record<Engine, Set<string>> = { opera_se: new Set(), opera_3: new Set() };
+  library.forEach(e => stemsByEngine[engineOf(e)].add(stemOf(e.id)));
   const comparableStems = new Set(
-    [...stemsByEngine.opera_se].filter(s => stemsByEngine.opera3.has(s)),
+    [...stemsByEngine.opera_se].filter(s => stemsByEngine.opera_3.has(s)),
   );
 
-  // Apply engine filter, then group by module.
-  const filteredLibrary = library.filter(e => {
-    if (engineFilter === 'all') return true;
-    const eng = e.source === 'opera3' ? 'opera3' : 'opera_se';
-    return eng === engineFilter;
-  });
+  // This page shows ONLY its own engine's captures.
+  const filteredLibrary = library.filter(e => engineOf(e) === engine);
   const grouped: Record<string, LibraryEntry[]> = {};
   filteredLibrary.forEach(e => {
     if (!grouped[e.module]) grouped[e.module] = [];
@@ -234,64 +233,104 @@ export function TransactionSnapshot() {
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <PageHeader
         icon={Database}
-        title="Transaction Snapshot Tool"
+        title={isOpera3 ? 'Snapshot — Opera 3' : 'Snapshot — Opera SE'}
         subtitle="Capture before/after snapshots of Opera to identify exactly which tables and fields are updated for each transaction type"
       />
 
-      {/* Engine selection — Opera SE (default) or Opera 3 via explicit path */}
+      {/* Engine banner + (Opera 3 only) read-mechanism selector */}
       <Card>
         <div className="p-4 space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700">
-              Opera 3 data path <span className="text-gray-400 font-normal">(leave blank to snapshot Opera SE)</span>
-            </label>
-            <input
-              type="text"
-              className="w-full border rounded px-3 py-2 font-mono text-sm"
-              placeholder="/Volumes/Opera3/COMPANY  —  or any local DBF folder"
-              value={opera3Path}
-              onChange={(e) => {
-                const v = e.target.value;
-                setOpera3Path(v);
-                if (typeof window !== 'undefined') {
-                  if (v.trim()) localStorage.setItem('opera3_snapshot_data_path', v);
-                  else localStorage.removeItem('opera3_snapshot_data_path');
-                }
-              }}
-              disabled={phase !== 'idle'}
-            />
+          <div className="flex items-center gap-2">
+            <span className={`text-xs uppercase font-semibold px-2 py-0.5 rounded ${isOpera3 ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
+              {isOpera3 ? 'Opera 3' : 'Opera SE'}
+            </span>
+            <span className="text-sm text-gray-600">
+              Captures on this page are filed under <b>{isOpera3 ? 'Opera 3' : 'Opera SE'}</b>.
+            </span>
           </div>
-          {opera3Path.trim() && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700">
-                Company identifier <span className="text-gray-400 font-normal">(optional — e.g. <code>Z</code> or <code>A</code> for installs that share one Data/ folder across companies)</span>
-              </label>
-              <input
-                type="text"
-                className="w-full border rounded px-3 py-2 font-mono text-sm"
-                placeholder="Z   (just the prefix — no underscore, no glob)"
-                value={opera3Filter}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setOpera3Filter(v);
-                  if (typeof window !== 'undefined') {
-                    if (v.trim()) localStorage.setItem('opera3_snapshot_file_filter', v);
-                    else localStorage.removeItem('opera3_snapshot_file_filter');
-                  }
-                }}
-                disabled={phase !== 'idle'}
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Type just the company prefix (e.g. <code>Z</code>). The tool expands that to <code>Z_*</code> internally and limits the company-folder scan to those DBFs. System tables are always captured. Power users can paste a raw glob (e.g. <code>Z_PNAME.*</code>) and it'll be used verbatim.
-              </p>
-            </div>
+
+          {!isOpera3 && (
+            <p className="text-xs text-gray-500">
+              Reads the active company via <span className="font-semibold text-blue-700">SQL Server</span>. Make sure your active company is an Opera SE company.
+            </p>
           )}
-          <p className="text-xs text-gray-500">
-            {opera3Path.trim()
-              ? <>Engine: <span className="font-semibold text-amber-700">Opera 3 (FoxPro)</span> — snapshots will read DBF files from this path{opera3Filter.trim() ? <> matching <code>{opera3Filter.trim()}</code></> : <></>}.</>
-              : <>Engine: <span className="font-semibold text-blue-700">Opera SE (SQL Server)</span> — paste an Opera 3 DATA folder above to switch.</>
-            }
-          </p>
+
+          {isOpera3 && (
+            <>
+              <div className="inline-flex rounded-md border border-gray-300 bg-white text-sm">
+                {([
+                  ['sql', 'SQL-SE (active company)'],
+                  ['foxpro', 'FoxPro (DBF folder)'],
+                ] as const).map(([k, label], i) => (
+                  <button
+                    key={k}
+                    onClick={() => {
+                      setO3ReadMode(k);
+                      if (typeof window !== 'undefined') localStorage.setItem('opera3_snapshot_read_mode', k);
+                    }}
+                    disabled={phase !== 'idle'}
+                    className={`px-3 py-1.5 disabled:opacity-50 ${i > 0 ? 'border-l border-gray-300' : ''} ${
+                      o3ReadMode === k ? 'bg-amber-600 text-white' : 'hover:bg-gray-50 text-gray-700'
+                    } ${i === 0 ? 'rounded-l-md' : 'rounded-r-md'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {o3ReadMode === 'sql' && (
+                <p className="text-xs text-gray-500">
+                  Reads the active company via <span className="font-semibold text-amber-700">SQL Server</span> (Opera 3 SQL-SE edition). Make sure your active company is an Opera 3 company.
+                </p>
+              )}
+
+              {o3ReadMode === 'foxpro' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Opera 3 data path (FoxPro DBF folder)</label>
+                    <input
+                      type="text"
+                      className="w-full border rounded px-3 py-2 font-mono text-sm"
+                      placeholder="/Volumes/Opera3/COMPANY  —  or any local DBF folder"
+                      value={opera3Path}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setOpera3Path(v);
+                        if (typeof window !== 'undefined') {
+                          if (v.trim()) localStorage.setItem('opera3_snapshot_data_path', v);
+                          else localStorage.removeItem('opera3_snapshot_data_path');
+                        }
+                      }}
+                      disabled={phase !== 'idle'}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">
+                      Company identifier <span className="text-gray-400 font-normal">(optional — e.g. <code>Z</code> for installs that share one Data/ folder across companies)</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="w-full border rounded px-3 py-2 font-mono text-sm"
+                      placeholder="Z   (just the prefix — no underscore, no glob)"
+                      value={opera3Filter}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setOpera3Filter(v);
+                        if (typeof window !== 'undefined') {
+                          if (v.trim()) localStorage.setItem('opera3_snapshot_file_filter', v);
+                          else localStorage.removeItem('opera3_snapshot_file_filter');
+                        }
+                      }}
+                      disabled={phase !== 'idle'}
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Type just the company prefix (e.g. <code>Z</code>). The tool expands that to <code>Z_*</code> internally and limits the company-folder scan to those DBFs. System tables are always captured. Power users can paste a raw glob (e.g. <code>Z_PNAME.*</code>) and it'll be used verbatim.
+                    </p>
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       </Card>
 
@@ -497,101 +536,22 @@ export function TransactionSnapshot() {
       <Card>
         <div className="p-5 space-y-4">
           <div className="flex items-center justify-between gap-3 flex-wrap">
-            <h2 className="text-lg font-semibold text-gray-800">Transaction Library</h2>
-            <div className="inline-flex rounded-md border border-gray-300 bg-white text-sm">
-              {([
-                ['all',      `All (${counts.all})`],
-                ['opera_se', `Opera SE (${counts.opera_se})`],
-                ['opera3',   `Opera 3 (${counts.opera3})`],
-              ] as const).map(([k, label], i) => (
-                <button
-                  key={k}
-                  onClick={() => setEngineFilter(k as any)}
-                  className={`px-3 py-1.5 ${i > 0 ? 'border-l border-gray-300' : ''} ${
-                    engineFilter === k ? 'bg-blue-600 text-white' : 'hover:bg-gray-50 text-gray-700'
-                  } ${i === 0 ? 'rounded-l-md' : ''} ${i === 2 ? 'rounded-r-md' : ''}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <h2 className="text-lg font-semibold text-gray-800">
+              Transaction Library — {isOpera3 ? 'Opera 3' : 'Opera SE'}
+              <span className="text-sm font-normal text-gray-500 ml-2">({filteredLibrary.length})</span>
+            </h2>
           </div>
 
-          {comparableStems.size > 0 && engineFilter === 'all' && (
+          {comparableStems.size > 0 && (
             <div className="text-xs text-gray-600 bg-purple-50 border border-purple-200 rounded px-3 py-2">
               <strong className="text-purple-800">{comparableStems.size}</strong> transaction(s) have captures on both engines —
-              click <span className="font-mono">Compare</span> on any matching entry to see the SE vs Opera 3 diff.
-            </div>
-          )}
-
-          {library.length > 0 && (
-            <div className={
-              engineFilter === 'all'
-                ? 'grid grid-cols-1 md:grid-cols-2 gap-3'
-                : 'grid grid-cols-1 gap-3'
-            }>
-              {(['opera_se', 'opera3'] as const)
-                .filter(engine => engineFilter === 'all' || engineFilter === engine)
-                .map(engine => {
-                const isSE = engine === 'opera_se';
-                const colour = isSE
-                  ? { bg: 'bg-blue-50', border: 'border-blue-200', label: 'text-blue-700', big: 'text-blue-900', badge: 'bg-blue-100 text-blue-800' }
-                  : { bg: 'bg-amber-50', border: 'border-amber-200', label: 'text-amber-700', big: 'text-amber-900', badge: 'bg-amber-100 text-amber-800' };
-                const entries = library
-                  .filter(e => (e.source === 'opera3' ? 'opera3' : 'opera_se') === engine)
-                  .sort((a, b) => (b.recorded_at || '').localeCompare(a.recorded_at || ''));
-                const modules = new Set(entries.map(e => e.module));
-                const first = entries[entries.length - 1]?.recorded_at?.split('T')[0];
-                const last = entries[0]?.recorded_at?.split('T')[0];
-                return (
-                  <div key={engine} className={`${colour.bg} border ${colour.border} rounded p-3`}>
-                    <div className="flex items-center justify-between">
-                      <span className={`text-xs uppercase font-semibold ${colour.label}`}>
-                        {isSE ? 'Opera SE' : 'Opera 3'}
-                      </span>
-                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${colour.badge}`}>
-                        {isSE ? 'SE' : 'O3'}
-                      </span>
-                    </div>
-                    <div className={`text-3xl font-bold ${colour.big} mt-1`}>{entries.length}</div>
-                    <div className={`text-xs ${colour.label}`}>
-                      capture{entries.length === 1 ? '' : 's'} • {modules.size} module{modules.size === 1 ? '' : 's'}
-                    </div>
-                    {first && last && (
-                      <div className={`text-[10px] ${colour.label} mt-1`}>
-                        {first === last ? `on ${first}` : `${first} → ${last}`}
-                      </div>
-                    )}
-                    {entries.length > 0 && (
-                      <details className="mt-2">
-                        <summary className={`text-xs ${colour.label} cursor-pointer hover:underline`}>
-                          recent captures (most recent first)
-                        </summary>
-                        <ul className="mt-1 space-y-0.5 text-xs">
-                          {entries.slice(0, 8).map(e => (
-                            <li key={e.id} className={`${colour.label} font-mono`}>
-                              <span className="text-gray-500">{e.recorded_at?.split('T')[0] || '?'}</span>
-                              {' · '}
-                              <span className="font-semibold">{e.name}</span>
-                            </li>
-                          ))}
-                          {entries.length > 8 && (
-                            <li className={`${colour.label} italic`}>… and {entries.length - 8} more</li>
-                          )}
-                        </ul>
-                      </details>
-                    )}
-                  </div>
-                );
-              })}
+              click <span className="font-mono">Compare engines</span> on any matching entry below to see the SE vs Opera 3 diff.
             </div>
           )}
 
           {Object.keys(grouped).length === 0 && (
             <p className="text-gray-500 text-sm">
-              {engineFilter === 'all'
-                ? 'No snapshots recorded yet. Use the tool above to capture your first transaction.'
-                : `No ${engineFilter === 'opera3' ? 'Opera 3' : 'Opera SE'} snapshots yet — switch the filter or capture one.`}
+              No {isOpera3 ? 'Opera 3' : 'Opera SE'} snapshots recorded yet. Use the tool above to capture your first transaction.
             </p>
           )}
 
@@ -612,11 +572,11 @@ export function TransactionSnapshot() {
                         <span className="font-medium">{entry.name}</span>
                         <span
                           className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ml-2 ${
-                            entry.source === 'opera3' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'
+                            engineOf(entry) === 'opera_3' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'
                           }`}
-                          title={`Captured against ${entry.source === 'opera3' ? 'Opera 3 (FoxPro)' : 'Opera SE (SQL Server)'}`}
+                          title={`Filed under ${engineOf(entry) === 'opera_3' ? 'Opera 3' : 'Opera SE'} · read via ${entry.source === 'opera3' ? 'FoxPro' : 'SQL'}`}
                         >
-                          {entry.source === 'opera3' ? 'O3' : 'SE'}
+                          {engineOf(entry) === 'opera_3' ? 'O3' : 'SE'}
                         </span>
                         <span className="text-gray-500 text-sm ml-2">
                           {entry.tables_changed} table(s) • {entry.recorded_at?.split('T')[0]}
