@@ -131,7 +131,7 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
           warning: data.warning ?? null,
         });
       } else {
-        setError(data.error || 'Failed to take before snapshot');
+        setError(data.detail || data.error || 'Failed to take before snapshot');
         setBeforeSummary(null);
       }
     },
@@ -155,7 +155,7 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
         refetchLibrary();
         refetchPresets();
       } else {
-        setError(data.error || 'Failed to take after snapshot');
+        setError(data.detail || data.error || 'Failed to take after snapshot');
       }
     },
     onError: (err: any) => setError(err.message),

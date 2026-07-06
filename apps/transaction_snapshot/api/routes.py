@@ -498,7 +498,12 @@ def take_snapshot_opera3_smb(
     pattern = f"{raw}_*" if raw and not any(c in raw for c in '*?[') else raw
 
     def is_dbf_family(n):
-        return n.lower().endswith(('.dbf', '.fpt', '.cdx'))
+        # Only the files dbfread actually reads: the table (.dbf) and its
+        # memo companion (.fpt). We deliberately do NOT pull .cdx indexes —
+        # dbfread ignores them, and Opera keeps them open with a deny-read
+        # lock (a live batch locks e.g. z_abatch.CDX), which would otherwise
+        # abort the whole capture with a sharing violation.
+        return n.lower().endswith(('.dbf', '.fpt'))
 
     def matched(n):
         if not is_dbf_family(n):
@@ -537,6 +542,24 @@ def take_snapshot_opera3_smb(
                         break
                     lf.write(chunk)
 
+    skipped = []  # files Opera had locked (deny-read) — skip, don't abort
+
+    def download_resilient(remote_path, local_path, name):
+        try:
+            download(remote_path, local_path)
+        except Exception as e:
+            # A live Opera batch/session can hold specific files open with
+            # a deny-read lock (STATUS_SHARING_VIOLATION). Skip that one
+            # file and carry on rather than failing the whole snapshot.
+            skipped.append(name)
+            # Drop a partial file so dbfread never sees a truncated table.
+            try:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+            except OSError:
+                pass
+            logger.warning(f"Opera 3 SMB: skipped locked/unreadable '{name}': {e}")
+
     tmp = tempfile.mkdtemp(prefix='o3snap_')
     try:
         data_dir = os.path.join(tmp, 'DATA')
@@ -545,16 +568,33 @@ def take_snapshot_opera3_smb(
         os.makedirs(sys_dir, exist_ok=True)
 
         for n in company_files:
-            download(f"{company_remote}\\{n}", os.path.join(data_dir, n))
+            download_resilient(f"{company_remote}\\{n}", os.path.join(data_dir, n), n)
 
         # System folder — always at the share root, captured in full.
+        # Per-file resilience so one locked system file doesn't drop them all.
         system_remote = remote('System')
         try:
-            for n in smbclient.listdir(system_remote):
-                if is_dbf_family(n):
-                    download(f"{system_remote}\\{n}", os.path.join(sys_dir, n))
+            sys_names = smbclient.listdir(system_remote)
         except Exception as e:
-            logger.warning(f"Opera 3 SMB: could not read System folder at {system_remote}: {e}")
+            sys_names = []
+            logger.warning(f"Opera 3 SMB: could not list System folder at {system_remote}: {e}")
+        for n in sys_names:
+            if is_dbf_family(n):
+                download_resilient(f"{system_remote}\\{n}", os.path.join(sys_dir, n), n)
+
+        # If Opera has files open (deny-read lock) we'd be snapshotting an
+        # incomplete set — and a diff against a partial capture invents
+        # phantom added/deleted rows. Fail honestly with guidance instead.
+        if skipped:
+            locked_tables = sorted({s.rsplit('.', 1)[0].lower() for s in skipped})
+            shown = ', '.join(locked_tables[:12]) + (f", +{len(locked_tables) - 12} more" if len(locked_tables) > 12 else '')
+            raise HTTPException(status_code=409, detail=(
+                f"Opera is holding {len(locked_tables)} table(s) open on this company, so they "
+                f"can't be read over SMB: {shown}. Finish and close the transaction (and ideally "
+                f"exit the company) in Opera so it releases the file locks, then take the snapshot "
+                f"again. Tip: take the AFTER snapshot once the posting is fully committed and the "
+                f"Opera screen is closed."
+            ))
 
         # Reuse the local FoxPro scanner on the downloaded files. It finds
         # the System folder as data_dir's sibling (tmp/System).
@@ -1492,6 +1532,8 @@ async def take_before_snapshot(
             "warning": warning,
             "timestamp": snapshot['timestamp'],
         }
+    except HTTPException:
+        raise  # preserve intended status/message (e.g. 409 locked, 413 too large)
     except Exception as e:
         logger.error(f"Snapshot failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1689,6 +1731,8 @@ async def take_after_snapshot(request: Request):
             "classification": classification,
             "summary": summary,
         }
+    except HTTPException:
+        raise  # preserve intended status/message (e.g. 409 locked file)
     except Exception as e:
         logger.error(f"After snapshot failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
