@@ -542,16 +542,22 @@ def take_snapshot_opera3_smb(
                         break
                     lf.write(chunk)
 
-    skipped = []  # files Opera had locked (deny-read) — skip, don't abort
+    # Opera's Pegasus background service permanently holds a handful of
+    # System-service tables open (locking, notifications, messaging,
+    # full-text search) — these are NOT posting data and are expected to
+    # be unreadable over SMB even when no user is in the company. Skipping
+    # them is benign. A locked *company* table, by contrast, means Opera
+    # has the company open (a live batch) — that we must not snapshot past.
+    SYSTEM_SERVICE_TABLES = {
+        'search', 'seqlock', 'seqnotif', 'seqmsgdist', 'seqmsg', 'seqgrp',
+        'sequsrgrp', 'seqproc', 'seqco', 'seqaudit', 'seqses',
+    }
 
-    def download_resilient(remote_path, local_path, name):
+    def download_resilient(remote_path, local_path, name, bucket):
         try:
             download(remote_path, local_path)
         except Exception as e:
-            # A live Opera batch/session can hold specific files open with
-            # a deny-read lock (STATUS_SHARING_VIOLATION). Skip that one
-            # file and carry on rather than failing the whole snapshot.
-            skipped.append(name)
+            bucket.append(name)
             # Drop a partial file so dbfread never sees a truncated table.
             try:
                 if os.path.exists(local_path):
@@ -559,6 +565,8 @@ def take_snapshot_opera3_smb(
             except OSError:
                 pass
             logger.warning(f"Opera 3 SMB: skipped locked/unreadable '{name}': {e}")
+
+    skipped_company, skipped_system = [], []
 
     tmp = tempfile.mkdtemp(prefix='o3snap_')
     try:
@@ -568,10 +576,10 @@ def take_snapshot_opera3_smb(
         os.makedirs(sys_dir, exist_ok=True)
 
         for n in company_files:
-            download_resilient(f"{company_remote}\\{n}", os.path.join(data_dir, n), n)
+            download_resilient(f"{company_remote}\\{n}", os.path.join(data_dir, n), n, skipped_company)
 
-        # System folder — always at the share root, captured in full.
-        # Per-file resilience so one locked system file doesn't drop them all.
+        # System folder — always at the share root. Per-file resilience so
+        # one locked system file doesn't drop them all.
         system_remote = remote('System')
         try:
             sys_names = smbclient.listdir(system_remote)
@@ -580,13 +588,18 @@ def take_snapshot_opera3_smb(
             logger.warning(f"Opera 3 SMB: could not list System folder at {system_remote}: {e}")
         for n in sys_names:
             if is_dbf_family(n):
-                download_resilient(f"{system_remote}\\{n}", os.path.join(sys_dir, n), n)
+                download_resilient(f"{system_remote}\\{n}", os.path.join(sys_dir, n), n, skipped_system)
 
-        # If Opera has files open (deny-read lock) we'd be snapshotting an
-        # incomplete set — and a diff against a partial capture invents
-        # phantom added/deleted rows. Fail honestly with guidance instead.
-        if skipped:
-            locked_tables = sorted({s.rsplit('.', 1)[0].lower() for s in skipped})
+        # A locked COMPANY table = Opera still has the company open, so the
+        # capture would be incomplete and the diff would invent phantom
+        # rows. Fail honestly. Locked System-SERVICE tables are expected
+        # (Pegasus holds them) and tolerated; any OTHER locked system table
+        # is treated like a company lock (it should be readable when idle).
+        blocking = list(skipped_company) + [
+            s for s in skipped_system if s.rsplit('.', 1)[0].lower() not in SYSTEM_SERVICE_TABLES
+        ]
+        if blocking:
+            locked_tables = sorted({s.rsplit('.', 1)[0].lower() for s in blocking})
             shown = ', '.join(locked_tables[:12]) + (f", +{len(locked_tables) - 12} more" if len(locked_tables) > 12 else '')
             raise HTTPException(status_code=409, detail=(
                 f"Opera is holding {len(locked_tables)} table(s) open on this company, so they "
@@ -595,6 +608,10 @@ def take_snapshot_opera3_smb(
                 f"again. Tip: take the AFTER snapshot once the posting is fully committed and the "
                 f"Opera screen is closed."
             ))
+
+        tolerated = sorted({s.rsplit('.', 1)[0].lower() for s in skipped_system})
+        if tolerated:
+            logger.info(f"Opera 3 SMB: tolerated {len(tolerated)} always-locked system-service table(s): {tolerated}")
 
         # Reuse the local FoxPro scanner on the downloaded files. It finds
         # the System folder as data_dir's sibling (tmp/System).
@@ -605,6 +622,8 @@ def take_snapshot_opera3_smb(
         snapshot['_smb_filter'] = raw
         snapshot['_dbf_downloaded'] = len(dbf_files)
         snapshot['_mb_downloaded'] = round(total / 1e6, 1)
+        if tolerated:
+            snapshot['_skipped_system_service'] = tolerated
         logger.info(
             f"Opera 3 SMB snapshot: {server_ip}\\{share}\\{subpath_win} "
             f"filter='{pattern or '*'}' — {len(dbf_files)} DBFs / {total/1e6:.1f} MB"
