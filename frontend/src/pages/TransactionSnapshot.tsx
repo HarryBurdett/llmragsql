@@ -500,6 +500,13 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
                 <p className="text-green-700 text-sm mt-1">Now enter the transaction/record in Opera. When done, click "Take After Snapshot".</p>
               </div>
 
+              {description && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-amber-800 mb-1">Post it exactly like this</p>
+                  <p className="text-sm text-amber-900 whitespace-pre-wrap">{description}</p>
+                </div>
+              )}
+
               {beforeSummary && beforeSummary.tables_per_folder && (
                 <div className={`p-3 rounded-lg border text-sm ${beforeSummary.warning ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-blue-50 border-blue-200 text-blue-900'}`}>
                   <div className="font-medium">Captured tables (Opera 3)</div>
