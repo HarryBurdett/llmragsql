@@ -729,32 +729,45 @@ def diff_snapshots(before: Dict, after: Dict, sql_connector=None) -> Dict[str, A
             after_rows = after_table.get('rows')
 
             if before_rows is not None and after_rows is not None:
-                # Find primary key column (id, or first column)
-                pk_col = 'id'
-                if before_rows and pk_col not in before_rows[0]:
-                    # Try common PK patterns
-                    for candidate in before_rows[0].keys():
-                        if candidate.lower() == 'id' or candidate.lower().endswith('_id'):
-                            pk_col = candidate
-                            break
-                    else:
-                        pk_col = list(before_rows[0].keys())[0] if before_rows[0] else None
+                import json as _json
+                from collections import Counter as _Counter
 
-                if pk_col:
+                def _sig(r):
+                    return _json.dumps(r, sort_keys=True, default=str)
+
+                # Candidate key column (id / *_id), case-insensitive so it
+                # also matches FoxPro's upper-case 'ID'.
+                pk_col = None
+                if before_rows:
+                    if 'id' in before_rows[0]:
+                        pk_col = 'id'
+                    else:
+                        for candidate in before_rows[0].keys():
+                            if candidate.lower() == 'id' or candidate.lower().endswith('_id'):
+                                pk_col = candidate
+                                break
+
+                def _usable(rows, col):
+                    # Only trust a key that is present, fully populated AND
+                    # unique in these rows. Many FoxPro tables (e.g. salloc)
+                    # have no such key — key-matching then silently collapses
+                    # rows and misses the added ones. Fall back to full-row
+                    # signature diff for those.
+                    if not rows or not col or col not in rows[0]:
+                        return False
+                    vals = [str(r.get(col, '')) for r in rows]
+                    return all(v != '' for v in vals) and len(set(vals)) == len(vals)
+
+                if _usable(before_rows, pk_col) and _usable(after_rows, pk_col):
                     before_by_pk = {str(r.get(pk_col, '')): r for r in before_rows}
                     after_by_pk = {str(r.get(pk_col, '')): r for r in after_rows}
 
-                    # Added rows
                     for pk, row in after_by_pk.items():
                         if pk not in before_by_pk:
                             table_change['added_rows'].append(row)
-
-                    # Deleted rows
                     for pk, row in before_by_pk.items():
                         if pk not in after_by_pk:
                             table_change['deleted_rows'].append(row)
-
-                    # Modified rows
                     for pk in before_by_pk:
                         if pk in after_by_pk:
                             before_row = before_by_pk[pk]
@@ -772,6 +785,24 @@ def diff_snapshots(before: Dict, after: Dict, sql_connector=None) -> Dict[str, A
                                     'pk_column': pk_col,
                                     'changes': field_changes,
                                 })
+                    table_change['diff_method'] = f'key:{pk_col}'
+                else:
+                    # No unique key (typical for FoxPro tables like salloc) —
+                    # diff by full-row signature so added/deleted row CONTENTS
+                    # are captured. In-place edits surface as a delete+add pair
+                    # (they cannot be paired without a key).
+                    b = _Counter(_sig(r) for r in before_rows)
+                    a = _Counter(_sig(r) for r in after_rows)
+                    b_repr, a_repr = {}, {}
+                    for r in before_rows:
+                        b_repr.setdefault(_sig(r), r)
+                    for r in after_rows:
+                        a_repr.setdefault(_sig(r), r)
+                    for sig, cnt in (a - b).items():
+                        table_change['added_rows'].extend([a_repr[sig]] * cnt)
+                    for sig, cnt in (b - a).items():
+                        table_change['deleted_rows'].extend([b_repr[sig]] * cnt)
+                    table_change['diff_method'] = 'row-signature (no unique key)'
 
             # Convert set to list for JSON serialisation
             table_change['modified_fields'] = sorted(list(table_change['modified_fields']))
