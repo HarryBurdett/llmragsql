@@ -923,14 +923,13 @@ Note: No ptran/stran records - payment is directly to nominal account.
 | `atran` | 1 | at_type = 2, at_value = +amount_pence |
 | `ntran` | 2 | Bank (DR, +amount_pounds), Nominal account (CR, -amount_pounds) |
 | `anoml` | 2 | Bank + Nominal account (ax_source = 'A') |
-| `zvtran` | 1 | If VAT applicable — VAT analysis record |
-| `nvat` | 1 | If VAT applicable (nv_vattype = 'S' for sales, 'P' for purchase) |
+| `nvat` | 1 | If VAT applicable — the posting-time VAT analysis record (nv_vattype = 'S' here). **`zvtran` is NOT written at posting** — the VAT return builds it from `nvat` later. |
 | `nbank` | Modified | nk_curbal += amount_pence (ALWAYS) |
 | `nacnt` | 2-3 Modified | Period/YTD balances updated (conditional on post_to_nominal; 3 if VAT) |
 | `nhist` | 2-3 Modified | Nominal history updated (conditional on post_to_nominal; 3 if VAT) |
 | `atype` | Modified | ay_entry incremented |
 
-Note: If VAT is present, atran gets 2 records (net + VAT), ntran gets 3 (bank + nominal + VAT account), and zvtran/nvat are created.
+Note: If VAT is present, atran gets 2 records (net + VAT), ntran gets 3 (bank + nominal + VAT account), and the `nvat` analysis record is created. `zvtran` is NOT created at posting — the VAT return builds it later (see "VAT Posting Model").
 
 ---
 
@@ -1228,9 +1227,44 @@ nt_acnt=CA060, nt_value=-0.80 (CR VAT input)
 
 ---
 
-## VAT Tracking Tables (MANDATORY for VAT Returns)
+## Opera 3 (FoxPro) Parity & Posting Reference (VERIFIED 2026-07-08 via golden masters)
 
-Any transaction with VAT **MUST** create both `zvtran` AND `nvat` records. Missing these causes VAT return errors and HMRC compliance failures.
+Opera 3 (FoxPro/DBF) posts transactions **identically to Opera SE** — same tables, same fields, same conventions (`at_type`, pence for `aentry`/`atran`, pounds for `ntran`/ledgers, sequence sources). Confirmed by before/after snapshots of native Opera 3 postings on the .214 test company (Orion, "Z"), compared field-by-field to the Opera SE captures. The **only** differences:
+
+- **Table naming:** Opera 3 files are company-prefixed (`z_atran`, `z_stran`…); Opera SE tables are unprefixed. Same columns.
+- **SQL-only housekeeping columns:** Opera SE rows carry `datecreated`, `datemodified`, `state`, and FK-helper columns that don't exist in FoxPro. Business fields are identical.
+- **Nominal transfer timing:** `anoml` transfer file is written at posting; `ntran`/`nacnt` land immediately (real-time) or on the nominal update — a per-company setting.
+
+**Golden masters** (exact field-level posting shapes, one JSON per type) are in `packages/opera-knowledge/transaction-library/{opera_se,opera_3}/`: sales receipt (allocated + unallocated), purchase payment (allocated + unallocated), sales/purchase refund, nominal payment/receipt with VAT, bank transfer, sales/purchase invoice + credit note, recurring entries, batch receipt (auto-completed), VAT return.
+
+### Sequence allocation (both engines)
+Entry number from `atype.ay_entry`; record IDs from `nextid`; journal from `nparm` (np_nexjrnl). Never `MAX()+1`.
+
+### FoxPro (Opera 3) specifics
+- Files: `.dbf` (+ `.fpt` memo, `.cdx` index). **Writing goes through the Opera 3 Write Agent** (Harbour DBFCDX on the server, port 9000) — direct network writes are unsafe; reads are via SMB (read-only).
+- Company data files sit under `Data\` prefixed by company code; the unprefixed `System\` folder (share root) holds `nextid`/sequence/parameter tables.
+- Some tables have **no unique key** (e.g. `salloc`) — diffing/matching must use full-row identity, not a surrogate id.
+- Opera's Pegasus service permanently holds a few System tables open (`search`, `seqlock`, `seqnotif`, `seqmsgdist`, `seqgrp`, `sequsrgrp`) — expected/benign.
+
+## VAT Posting Model (VERIFIED 2026-07-08 via native Opera golden masters — CORRECTS earlier guidance)
+
+> ⚠️ **Correction.** The earlier rule *"any VAT transaction MUST create both `zvtran` AND `nvat` at posting"* was WRONG and was a root cause of VAT going missing from returns. Before/after snapshots of **native Opera postings** (both Opera SE and Opera 3 — see `transaction-library/`) prove the model below.
+
+**At POSTING time, Opera does NOT write `zvtran`.** A VAT-bearing transaction writes:
+
+1. The **VAT amount on the transaction line** — `st_vatval` (sales) / `pt_vatval` (purchase).
+2. The **nominal VAT-control** line — an `ntran` posting to the VAT control account (net/VAT split, see below).
+3. **One per-transaction VAT ANALYSIS record**, chosen by ledger:
+   - **Sales** invoice / credit note → **`sanal`**
+   - **Purchase** invoice / credit note → **`panal`**
+   - **Direct nominal / cashbook with VAT** (e.g. Nominal Payment/Receipt with VAT, GoCardless fees) → **`nvat`**
+
+**`zvtran` is built LATER by Opera's VAT RETURN / update step**, which reads the `sanal`/`panal`/`nvat` records, flags them as included, consumes `nvat`, and produces `zvtran` (plus return-tracking rows `zvonline`/`zrcsl`). *Verified on Opera 3:* running the VAT return wrote `zvtran +57`, modified/flagged `sanal` (20) and `panal` (35), and consumed `nvat` (−2).
+
+### Write-back rule (CRITICAL for direct posting)
+When posting directly (bypassing the Opera UI), write **`st_vatval`/`pt_vatval` + the nominal VAT-control `ntran` line + the analysis record (`sanal`/`panal`/`nvat`)**. **NEVER write `zvtran` at posting** — Opera's VAT return builds it from the analysis records. The exact field-level shape for each VAT transaction type is the captured golden master in `packages/opera-knowledge/transaction-library/` (opera_3 + opera_se).
+
+### `zvtran` — VAT-return analysis (built by the VAT RETURN, not at posting)
 
 ### `zvtran` - VAT Analysis Records
 
@@ -1280,20 +1314,21 @@ Any transaction with VAT **MUST** create both `zvtran` AND `nvat` records. Missi
 | `nv_comment` | Description |
 | `nv_unique` | Links to atran.at_unique |
 
-### When to Create VAT Records
+### VAT analysis record by transaction type (what to write AT POSTING)
 
-| Transaction Type | nv_vattype | zvtran va_vattyp | Create VAT records? |
-|------------------|------------|-------------------|---------------------|
-| Nominal Payment with VAT (type 1) | 'P' | 'P' | YES |
-| Nominal Receipt with VAT (type 2) | 'S' | 'S' | YES |
-| Sales Refund with VAT (type 3) | 'S' | 'S' | YES |
-| Sales Receipt (type 4) | N/A | N/A | NO — VAT was on original invoice |
-| Purchase Payment (type 5) | N/A | N/A | NO — VAT was on original invoice |
-| Purchase Refund with VAT (type 6) | 'P' | 'P' | YES |
-| GoCardless Fees with VAT | 'P' | 'P' | YES |
-| Sales Invoice | 'S' | 'S' | YES |
-| Purchase Invoice | 'P' | 'P' | YES |
-| Bank Transfer (type 8) | N/A | N/A | NO — no VAT involved |
+`zvtran` is NEVER written at posting — the VAT return builds it. At posting, write only the analysis record shown (plus `st_vatval`/`pt_vatval` and the nominal VAT-control `ntran` line). Golden masters in `transaction-library/` are authoritative for the exact fields.
+
+| Transaction Type | Analysis record at posting | VAT type | Notes |
+|------------------|----------------------------|----------|-------|
+| Sales Invoice / Sales Credit Note | **`sanal`** | 'S' | verified via golden master |
+| Purchase Invoice / Purchase Credit Note | **`panal`** | 'P' | verified via golden master |
+| Nominal Receipt with VAT (type 2) | **`nvat`** | 'S' | direct nominal/cashbook VAT |
+| Nominal Payment with VAT (type 1) | **`nvat`** | 'P' | direct nominal/cashbook VAT; **GoCardless fees** post this way |
+| Sales Receipt (type 4) | none | — | VAT was on the original invoice |
+| Purchase Payment (type 5) | none | — | VAT was on the original invoice |
+| Sales Refund (type 3) / Purchase Refund (type 6) | none | — | VAT was on the original credit note |
+| Bank Transfer (type 8) | none | — | no VAT |
+| *VAT Return / update (not a posting)* | *builds* **`zvtran`** | — | reads & flags `sanal`/`panal`, consumes `nvat` |
 
 ### VAT with Split Nominal Postings
 
@@ -2218,6 +2253,8 @@ Opera repeat invoices (`ih_docstat = 'U'`) use `ih_ignore` for frequency:
 | `st_tref` | `st_trref` | stran | Transaction reference |
 | `pt_tref` | `pt_trref` | ptran | Transaction reference |
 | `nk_lstdate` | DOES NOT EXIST | nbank | Removed from queries |
+| `sn_terms` | DOES NOT EXIST | sname | Terms live in `sterms` table; use `stran.st_dueday` for invoice due dates |
+| `pn_terms` | DOES NOT EXIST | pname | Terms live in `pterms` table; use `ptran.pt_dueday` for invoice due dates |
 
 ---
 
@@ -2234,6 +2271,80 @@ Opera repeat invoices (`ih_docstat = 'U'`) use `ih_ignore` for frequency:
 ## nextid Table (SQL SE Only)
 
 Every INSERT into an Opera SQL SE table MUST include the `id` column obtained from the `nextid` table. This is a SQL SE-specific requirement not present in Opera 3 FoxPro.
+
+---
+
+## POP — New Purchase Order Tables Touched (verified 2026-05-13)
+
+Snapshot capture of a single PO with one stock line. Diff:
+
+| Table | Effect |
+|---|---|
+| `dohead` | +1 row (PO header) |
+| `doline` | +1 row per line item |
+| `nextid` | Counter row bumped |
+| `dparm` | `dp_dcref` (next PO ref) advanced — only when PO ref is auto-assigned |
+| `pname` | `pn_ordrbal` increased by PO total |
+| `cname` | `cn_onorder` increased by line qty |
+| `cstwh` | `cs_order` increased on the matching (item, warehouse) row |
+
+No ntran, no anoml/pnoml, no zvtran/nvat, no salloc/palloc — POs are
+commitments, not ledger postings. Nominal/VAT impact happens at
+invoice time. See `~/opera-knowledge-ref/packages/opera-knowledge/schema/pop.md`
+for the full breakdown.
+
+---
+
+## Bank Statement Import — Outcome States (verified 2026-06-10)
+
+Importing a bank statement produces **per-row outcomes**, not a binary success/fail. Three states:
+
+| State | When | UI |
+|---|---|---|
+| `posted` | Wrote to Opera this run | 🟢 |
+| `held` | Skipped for a legitimate reason (already posted / period blocked / etc.) — not a failure | 🟡 amber, informational |
+| `failed` | Genuine error (DB, validation, schema) | 🔴 |
+
+**Banner from counts** (not from success boolean):
+
+- posted > 0, held = 0, failed = 0 → 🟢 "Imported N"
+- posted = 0, held > 0, failed = 0 → 🟢 "All N already on file"
+- posted > 0, held > 0, failed = 0 → 🟢 "Imported N, M held"
+- failed > 0 → 🔴 "Import failed"
+
+**Implementation contract:** every bank-import endpoint (SE + Opera 3) maintains `already_posted_rows` separately from `errors`, and calls `apps.bank_reconcile.logic.import_outcomes.build_import_outcomes()` to populate `summary` / `counts` / `outcomes` in the response. Set `success = (failed == 0)`, not `success = (posted > 0)`.
+
+Bug history: pre-2026-06-10 the duplicate-check hits were pushed into `errors`. The UI then read `Import Failed` even when nothing actually failed — alarming the operator unnecessarily.
+
+**Recording rule (same date):** all-already-posted runs MUST still record the import:
+`if len(imported) > 0 or deferred_count > 0 or len(already_posted_rows) > 0`. Without
+the record, the post-reconcile `mark_statement_reconciled` finds nothing to mark and
+the statement reappears in Load Statements as "ready to process" forever. Recovery
+for stuck statements: re-import once — the record registers, then the Load Statements
+cross-check auto-marks it reconciled.
+
+Central rule: `~/opera-knowledge-ref/packages/opera-knowledge/business-rules/bank-import-outcomes.md`.
+Spec: `docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md`.
+
+---
+
+## Snapshot Tool — Resolve `company_db` Explicitly (verified 2026-05-13)
+
+**Contract:** snapshot scans the company the user is currently logged
+into. Opera 3 `data_path` on the UI overrides for Opera 3.
+
+**Required pattern:** the endpoint resolves `company_db` from
+`companies/<active_id>.json`'s `database` field and passes it
+EXPLICITLY into `take_snapshot_se(sql, company_db=…)`. Never call
+`SELECT DB_NAME()` inside the snapshot function — pool drift means
+the answer can be wrong silently. AFTER must refuse (HTTP 409) if the
+active company's DB differs from what BEFORE captured.
+
+Why: the active company is unambiguous in the company JSON. The
+connection-pool state is not. We hit at least four flavours of "wrong
+company silently scanned" before adopting this rule. See
+`~/opera-knowledge-ref/packages/opera-knowledge/business-rules/snapshot-rollup.md`
+("Snapshot — Active Company Resolution") for the full pattern.
 
 ---
 
@@ -2315,9 +2426,11 @@ The combined test is implemented in `apps/bank_reconcile/api/routes.py` Step 5 c
 - `imported-for-reconciliation` auto-mark
 - `Step 5 chain filter` in scan-all-banks
 
-Two-stage rule:
-1. **Historical match:** statement closing equals an `aentry.ae_recbal` from a closed reconcile batch AND closing < current `nk_recbal` → `FULLY_RECONCILED`. The period was finalised in a prior cycle.
-2. **Period-aware:** if closing equals current `nk_recbal`, count aentries in the period with `ae_reclnum = 0`. Zero → `FULLY_RECONCILED`. Non-zero → `PARTIALLY_RECONCILED`.
+Two-stage rule (guarded 2026-06-10 — **balance equality is NOT statement identity**):
+1. **Historical match:** statement closing equals an `aentry.ae_recbal` from a closed reconcile batch AND closing < current `nk_recbal` → `FULLY_RECONCILED`. **Guard:** if the statement's `period_end` post-dates `nbank.nk_lststdt` (Opera's last completed reconcile), it is NOT a prior cycle — fall through. This stops repeating-balance accounts (e.g. swept-to-zero clearing accounts, where every statement closes £0) auto-hiding NEW unprocessed statements.
+2. **Period-aware:** if closing equals current `nk_recbal`, count aentries in the period with `ae_reclnum = 0`. Zero unreconciled → **require total entries in period > 0** before declaring `FULLY_RECONCILED`; zero entries means the statement's transactions were never imported → `NOT_RECONCILED`. Non-zero unreconciled → `PARTIALLY_RECONCILED`.
+
+DataSource protocol gained two methods (SE + Opera 3 parity): `query_entry_count_in_period(bank, start, end)` and `query_last_statement_date(bank)` (reads `nk_lststdt`). The function `hasattr`-guards them so legacy DataSources degrade to old behaviour.
 
 Conservative default: returns `UNKNOWN` if inputs are missing or a query fails. Callers MUST treat `UNKNOWN` as "show the statement, don't auto-promote".
 
