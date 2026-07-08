@@ -393,29 +393,60 @@ export function TransactionSnapshot({ engine = 'opera_se' }: { engine?: Engine }
 
           {phase === 'idle' && (
             <>
-              {/* Preset selector */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Quick Select — Preset Transaction Type</label>
-                <select className="w-full border rounded px-3 py-2 bg-blue-50"
-                  value=""
-                  onChange={e => {
-                    const preset = presets[parseInt(e.target.value)];
-                    if (preset) {
-                      setModule(preset.module);
-                      setName(preset.name);
-                      setDescription(preset.description);
-                    }
-                  }}
-                >
-                  <option value="">Select a preset or enter manually below...</option>
-                  {presets.map((p, i) => (
-                    <option key={i} value={i}>{modules[p.module] || p.module}: {p.name}</option>
-                  ))}
-                </select>
-              </div>
+              {/* Snapshot checklist — the transaction types still to capture
+                  for this engine. Captured types drop off automatically. */}
+              {(() => {
+                const total = presetsData?.total_presets ?? presets.length;
+                const captured = presetsData?.captured ?? 0;
+                const pct = total > 0 ? Math.round((captured / total) * 100) : 0;
+                return (
+                  <div className="border rounded-lg overflow-hidden">
+                    <div className="px-3 py-2 bg-gray-50 border-b">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-semibold text-gray-700">
+                          Snapshot checklist — {isOpera3 ? 'Opera 3' : 'Opera SE'}
+                        </span>
+                        <span className="text-xs text-gray-500">{captured} of {total} captured</span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 w-full bg-gray-200 rounded-full overflow-hidden">
+                        <div className="h-full bg-green-500 transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                    {presets.length === 0 ? (
+                      <div className="px-3 py-4 text-sm text-green-700 bg-green-50">
+                        ✓ All {total} transaction types captured — the reference set is complete.
+                      </div>
+                    ) : (
+                      <ul className="divide-y max-h-72 overflow-y-auto">
+                        {presets.map((p, i) => {
+                          const selected = name === p.name && module === p.module;
+                          return (
+                            <li key={i}>
+                              <button
+                                type="button"
+                                onClick={() => { setModule(p.module); setName(p.name); setDescription(p.description); }}
+                                className={`w-full text-left px-3 py-2 flex items-start gap-2 ${selected ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                              >
+                                <span className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${selected ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300'}`}>
+                                  {selected && '✓'}
+                                </span>
+                                <span className="flex-1 min-w-0">
+                                  <span className="block text-sm font-medium text-gray-800">{p.name}</span>
+                                  <span className="block text-xs text-gray-400">{modules[p.module] || p.module}</span>
+                                </span>
+                                {selected && <span className="text-xs text-blue-600 font-medium whitespace-nowrap">selected ↓</span>}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="border-t pt-3">
-                <p className="text-xs text-gray-500 mb-2">Or enter manually:</p>
+                <p className="text-xs text-gray-500 mb-2">Pick one above, or enter a custom type manually:</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
