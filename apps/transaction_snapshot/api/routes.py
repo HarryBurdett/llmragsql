@@ -888,6 +888,8 @@ OPERA3_PRESETS = [
      'description': 'Sales receipt matched and auto-allocated to an outstanding invoice in one step: the full allocated Sales Receipt posting (aentry/atran/stran/ntran/anoml/nacnt/nhist/nbank/sname) PLUS salloc rows and the invoice st_paid/st_trbal reduced. Isolates the allocation mechanics (salloc keys, part-payment vs full).'},
     {'module': 'allocations', 'name': 'Purchase Payment with Auto-Allocate',
      'description': 'Purchase payment matched and auto-allocated to an outstanding invoice: the full allocated Purchase Payment posting (aentry/atran/ptran/ntran/anoml/nacnt/nhist/nbank/pname) PLUS palloc rows and the invoice pt_paid/pt_trbal reduced. Isolates the allocation mechanics (palloc keys, part-payment vs full).'},
+    {'module': 'vat', 'name': 'VAT Return / Update',
+     'description': 'Run Opera\'s VAT return / VAT update AFTER some VAT-bearing transactions have been posted (invoices, nominal-with-VAT). Snapshot BEFORE, run the VAT return in Opera, then AFTER. This is the step that populates the VAT-analysis file zvtran — which is NOT written at posting time on either engine. Purpose: confirm whether Opera builds zvtran itself from the posted transactions (st_vatval/pt_vatval + nominal VAT-control) or whether it must be written at posting. Determines whether the write-backs need to populate zvtran or leave it to Opera\'s return.'},
 ]
 
 
