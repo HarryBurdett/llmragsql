@@ -786,11 +786,27 @@ def diff_snapshots(before: Dict, after: Dict, sql_connector=None) -> Dict[str, A
                                     'changes': field_changes,
                                 })
                     table_change['diff_method'] = f'key:{pk_col}'
+                elif len(before_rows) == len(after_rows):
+                    # No unique key, but the row COUNT is unchanged → these are
+                    # in-place modifications (e.g. balance tables nacnt/nbank/
+                    # sname). Pair rows positionally (FoxPro physical order is
+                    # stable when rows are updated in place) to recover
+                    # field-level before/after.
+                    for i, (br, ar) in enumerate(zip(before_rows, after_rows)):
+                        field_changes = {}
+                        for field in set(list(br.keys()) + list(ar.keys())):
+                            if str(br.get(field)) != str(ar.get(field)):
+                                field_changes[field] = {'before': br.get(field), 'after': ar.get(field)}
+                                table_change['modified_fields'].add(field)
+                        if field_changes:
+                            table_change['modified_rows'].append({
+                                'pk': f'row#{i}', 'pk_column': '(positional)', 'changes': field_changes,
+                            })
+                    table_change['diff_method'] = 'positional (no unique key, equal row count)'
                 else:
-                    # No unique key (typical for FoxPro tables like salloc) —
-                    # diff by full-row signature so added/deleted row CONTENTS
-                    # are captured. In-place edits surface as a delete+add pair
-                    # (they cannot be paired without a key).
+                    # No unique key AND the row count changed → additions/
+                    # deletions. Diff by full-row signature so the added/
+                    # deleted row CONTENTS are captured (e.g. salloc).
                     b = _Counter(_sig(r) for r in before_rows)
                     a = _Counter(_sig(r) for r in after_rows)
                     b_repr, a_repr = {}, {}
