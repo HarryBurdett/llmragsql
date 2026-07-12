@@ -65,6 +65,7 @@ MODULES = {
     'system_config': 'System Configuration',
     'vat': 'VAT / Tax',
     'allocations': 'Allocations (Sales/Purchase)',
+    'reconciliation': 'Bank Reconciliation',
     'other': 'Other',
 }
 
