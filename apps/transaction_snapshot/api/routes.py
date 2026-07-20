@@ -863,6 +863,25 @@ PRESETS = [
     {'module': 'stock_master', 'name': 'New Stock Item', 'description': 'Create a new stock/product record.'},
     {'module': 'employee_master', 'name': 'New Employee', 'description': 'Create a new employee record in payroll.'},
     {'module': 'payroll', 'name': 'Payroll Run', 'description': 'Complete payroll run including NI, tax, pension, nominal postings.'},
+    # ---- Foreign-currency (FC) captures for Phase-2 FX support (added 2026-07-17).
+    # Enter each with the company in MULTI-CURRENCY mode and a FOREIGN-currency
+    # customer / supplier / bank (FC detection: sprfls.sc_currncy /
+    # pprfls.pc_currncy / nbank.nk_fcurr NON-BLANK; home = zxchg.xc_home where
+    # xc_home=1). What the FX write-back needs from each diff: the extra FC
+    # columns *_fcurr (currency), *_fcrate (exchange rate), *_fcval (foreign
+    # value), *_fcbal (foreign balance), *_fcvat (foreign VAT), *_fcmult/*_fcdec
+    # (rate multiplier / FC decimals), the rate row consulted in zxchg, AND any
+    # exchange gain/loss nominal posting. Company Z (Demo) has FC customers
+    # (e.g. ALI0005 = EUR) to use.
+    {'module': 'cashbook', 'name': 'FC Sales Receipt (foreign customer)', 'description': 'Receipt from a FOREIGN-currency customer. All the home Sales-Receipt tables PLUS the FC columns on atran/stran/ntran (*_fcurr/*_fcrate/*_fcval/*_fcbal). Capture BOTH allocated and on-account. Note any exchange gain/loss nominal when the rate moved since the invoice.'},
+    {'module': 'cashbook', 'name': 'FC Purchase Payment (foreign supplier)', 'description': 'Payment to a FOREIGN-currency supplier. Home Purchase-Payment tables PLUS *_fcurr/*_fcrate/*_fcval/*_fcbal on atran/ptran/ntran; capture the exchange gain/loss if the rate differs from the invoice.'},
+    {'module': 'cashbook', 'name': 'FC Nominal Receipt/Payment (foreign bank)', 'description': 'Direct nominal receipt or payment on a FOREIGN-currency BANK (nbank.nk_fcurr set). Capture how nk_curbal (held in the bank currency) relates to the home-currency nominal legs via *_fcrate.'},
+    {'module': 'bank_transfer', 'name': 'FC Bank Transfer (cross-currency)', 'description': 'Transfer where one leg is a FOREIGN-currency bank (or the two banks differ in currency). Capture both legs\' *_fcurr/*_fcrate/*_fcval and the exchange-difference posting — the hardest FX case.'},
+    {'module': 'recurring', 'name': 'FC Recurring Entry', 'description': 'Post a due recurring entry whose account is foreign-currency. Capture the FC columns on the generated transaction and how the rate is sourced at post time.'},
+    {'module': 'sales_ledger', 'name': 'FC Sales Allocation (rate difference)', 'description': 'Allocate an FC receipt against an FC invoice where the RATE DIFFERS between them — capture salloc + the exchange gain/loss the allocation posts.'},
+    {'module': 'purchase_ledger', 'name': 'FC Purchase Allocation (rate difference)', 'description': 'Allocate an FC payment against an FC invoice with a rate difference — palloc + exchange gain/loss.'},
+    {'module': 'reconciliation', 'name': 'FC Bank Reconciliation (foreign bank)', 'description': 'Reconcile entries on a FOREIGN-currency bank — capture whether ae_recbal / nk_recbal are held in the bank currency or home, plus any FC-specific reconciliation fields.'},
+    {'module': 'gocardless', 'name': 'FC GoCardless Batch (foreign customer)', 'description': 'GoCardless batch containing a FOREIGN-currency customer receipt — the FC receipt columns within the batch, plus fee/VAT handling in the foreign currency.'},
 ]
 
 # Opera 3 write-feature checklist — the golden masters we need to capture
@@ -905,6 +924,15 @@ OPERA3_PRESETS = [
      'description': 'Sales receipt matched and auto-allocated to an outstanding invoice in one step: the full allocated Sales Receipt posting (aentry/atran/stran/ntran/anoml/nacnt/nhist/nbank/sname) PLUS salloc rows and the invoice st_paid/st_trbal reduced. Isolates the allocation mechanics (salloc keys, part-payment vs full).'},
     {'module': 'allocations', 'name': 'Purchase Payment with Auto-Allocate',
      'description': 'Purchase payment matched and auto-allocated to an outstanding invoice: the full allocated Purchase Payment posting (aentry/atran/ptran/ntran/anoml/nacnt/nhist/nbank/pname) PLUS palloc rows and the invoice pt_paid/pt_trbal reduced. Isolates the allocation mechanics (palloc keys, part-payment vs full).'},
+    # ---- Added 2026-07-20: STANDALONE allocations (SL/PL Allocation routine
+    # applied to EXISTING transactions — no new receipt/payment in the same
+    # act). This is the exact shape the agent's post-hoc allocate verb must
+    # match; the auto-allocate captures above bundle allocation inside a new
+    # receipt/payment posting.
+    {'module': 'allocations', 'name': 'Sales Allocation — standalone (existing receipt to invoice)',
+     'description': 'Opera SL Allocation routine: allocate an EXISTING on-account receipt against an outstanding invoice, with NO new cashbook posting. Expected delta: salloc rows only (receipt + invoice legs sharing one allocation set), invoice st_paid/st_trbal reduced and the receipt\'s unallocated balance consumed; sname total balance unchanged (allocation moves nothing in or out). NO aentry/atran/ntran/anoml/nbank/zvtran changes. Golden master for the agent\'s sales allocate verb.'},
+    {'module': 'allocations', 'name': 'Purchase Allocation — standalone (existing payment to invoice)',
+     'description': 'Opera PL Allocation routine: allocate an EXISTING on-account payment against an outstanding purchase invoice, with NO new cashbook posting. Expected delta: palloc rows only (payment + invoice legs sharing one allocation set), invoice pt_paid/pt_trbal reduced and the payment\'s unallocated balance consumed; pname total balance unchanged. NO aentry/atran/ntran/anoml/nbank/zvtran changes. Golden master for the agent\'s purchase allocate verb.'},
     {'module': 'vat', 'name': 'VAT Return / Update',
      'description': 'Run Opera\'s VAT return / VAT update AFTER some VAT-bearing transactions have been posted (invoices, nominal-with-VAT). Snapshot BEFORE, run the VAT return in Opera, then AFTER. This is the step that populates the VAT-analysis file zvtran — which is NOT written at posting time on either engine. Purpose: confirm whether Opera builds zvtran itself from the posted transactions (st_vatval/pt_vatval + nominal VAT-control) or whether it must be written at posting. Determines whether the write-backs need to populate zvtran or leave it to Opera\'s return.'},
     # ---- Added 2026-07-12: the write-agent verbs still lacking golden masters
@@ -920,6 +948,31 @@ OPERA3_PRESETS = [
      'description': 'Post a DUE recurring CASHBOOK entry (standing order/DD template in arhead + arline — distinct from ledger recurring invoices). Per line: aentry + atran in PENCE (entry no. from atype.ay_entry), anoml/ntran in POUNDS per the RTU setting, nacnt + nhist; nbank.nk_curbal moved by the schedule total. On the schedule: arhead\'s last-posted (ae_lstpost) and next-due (ae_nxtpost) dates advanced by the frequency, posted-count incremented. Agent endpoint: /import/recurring-entry. Capture a schedule with 2+ lines so the per-line vs per-schedule writes separate.'},
     {'module': 'supplier_master', 'name': 'New Supplier (ensure)',
      'description': 'Create a supplier account the way Opera does (the minimal record the agent\'s /supplier/ensure must reproduce): pname row with account/name/defaults (profile link, terms, currency), any companion profile/analysis rows Opera writes alongside, and the id/sequence sources used. ALSO capture editing nothing (re-saving the same supplier) to prove which fields Opera touches on a no-op save — the agent\'s ensure is idempotent-when-exists. Used by AP automation before posting a purchase invoice for an unknown supplier.'},
+    # ---- Foreign-currency (FC) captures for Phase-2 FX support (added 2026-07-17).
+    # Opera 3 (FoxPro) counterparts of the SE FC list. Enter with the company in
+    # MULTI-CURRENCY mode and a FOREIGN-currency customer/supplier/bank
+    # (sc_currncy / pc_currncy / nk_fcurr non-blank; home = zxchg.xc_home). The
+    # write-agent must reproduce the extra FC columns *_fcurr/*_fcrate/*_fcval/
+    # *_fcbal/*_fcvat (+ *_fcmult/*_fcdec) and any exchange gain/loss nominal;
+    # capture these to compare Opera 3 vs SE FC behaviour side-by-side.
+    {'module': 'cashbook', 'name': 'FC Sales Receipt (foreign customer)',
+     'description': 'Opera 3: customer receipt from a FOREIGN-currency customer, allocated and on-account. Same cashbook/SL/nominal posting as the home Sales Receipt PLUS the FC columns on atran/stran/ntran (*_fcurr/*_fcrate/*_fcval/*_fcbal); zxchg rate; exchange gain/loss nominal if the rate moved. Confirm PENCE-vs-POUNDS conventions still hold in the FC value fields.'},
+    {'module': 'cashbook', 'name': 'FC Purchase Payment (foreign supplier)',
+     'description': 'Opera 3: payment to a FOREIGN-currency supplier. Home Purchase-Payment posting PLUS *_fcurr/*_fcrate/*_fcval/*_fcbal on atran/ptran/ntran; exchange gain/loss on rate difference.'},
+    {'module': 'cashbook', 'name': 'FC Nominal Receipt/Payment (foreign bank)',
+     'description': 'Opera 3: direct nominal receipt/payment on a FOREIGN-currency bank (nbank.nk_fcurr set). Capture nk_curbal (bank currency) vs the home nominal legs via *_fcrate.'},
+    {'module': 'bank_transfer', 'name': 'FC Bank Transfer (cross-currency)',
+     'description': 'Opera 3: transfer with a FOREIGN-currency leg (or two differing currencies). Both legs\' *_fcurr/*_fcrate/*_fcval + the exchange-difference posting.'},
+    {'module': 'recurring', 'name': 'FC Recurring Entry',
+     'description': 'Opera 3: post a due recurring entry on a foreign-currency account — FC columns on the generated transaction + rate sourcing at post time.'},
+    {'module': 'sales_ledger', 'name': 'FC Sales Allocation (rate difference)',
+     'description': 'Opera 3: allocate an FC receipt against an FC invoice at a DIFFERENT rate — salloc + the exchange gain/loss posting.'},
+    {'module': 'purchase_ledger', 'name': 'FC Purchase Allocation (rate difference)',
+     'description': 'Opera 3: allocate an FC payment against an FC invoice at a DIFFERENT rate — palloc + the exchange gain/loss posting.'},
+    {'module': 'reconciliation', 'name': 'FC Bank Reconciliation (foreign bank)',
+     'description': 'Opera 3: reconcile entries on a FOREIGN-currency bank — whether ae_recbal / nk_recbal are in bank currency or home, plus any FC-specific rec fields.'},
+    {'module': 'gocardless', 'name': 'FC GoCardless Batch (foreign customer)',
+     'description': 'Opera 3: GoCardless batch containing a FOREIGN-currency customer receipt — FC receipt columns within the batch + fee/VAT in the foreign currency.'},
 ]
 
 
