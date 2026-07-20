@@ -882,6 +882,10 @@ PRESETS = [
     {'module': 'purchase_ledger', 'name': 'FC Purchase Allocation (rate difference)', 'description': 'Allocate an FC payment against an FC invoice with a rate difference — palloc + exchange gain/loss.'},
     {'module': 'reconciliation', 'name': 'FC Bank Reconciliation (foreign bank)', 'description': 'Reconcile entries on a FOREIGN-currency bank — capture whether ae_recbal / nk_recbal are held in the bank currency or home, plus any FC-specific reconciliation fields.'},
     {'module': 'gocardless', 'name': 'FC GoCardless Batch (foreign customer)', 'description': 'GoCardless batch containing a FOREIGN-currency customer receipt — the FC receipt columns within the batch, plus fee/VAT handling in the foreign currency.'},
+    {'module': 'sales_ledger', 'name': 'FC Sales Invoice (foreign customer)', 'description': 'Sales invoice to a FOREIGN-currency customer — the origination point of FC values (st_fcurr/st_fcrate/st_fcval/st_fcbal + sname FC balances, rate from zxchg). Capture before FC receipts/allocations — they reference this invoice\'s stored rate.'},
+    {'module': 'purchase_ledger', 'name': 'FC Purchase Invoice (foreign supplier)', 'description': 'Purchase invoice from a FOREIGN-currency supplier — FC origination on the PL side (pt_fcurr/pt_fcrate/pt_fcval/pt_fcbal + pname FC balances).'},
+    {'module': 'other', 'name': 'Exchange Rate Update (zxchg)', 'description': 'Update a currency\'s rate in Opera\'s exchange-rate table — zxchg delta only; shows which fields apps read for rate sourcing and whether history is kept.'},
+    {'module': 'other', 'name': 'FC Revaluation (period-end)', 'description': 'Foreign Currency Revaluation routine after a rate move — unrealised gain/loss postings + *_fcbal restatements on open FC balances.'},
 ]
 
 # Opera 3 write-feature checklist — the golden masters we need to capture
@@ -973,6 +977,17 @@ OPERA3_PRESETS = [
      'description': 'Opera 3: reconcile entries on a FOREIGN-currency bank — whether ae_recbal / nk_recbal are in bank currency or home, plus any FC-specific rec fields.'},
     {'module': 'gocardless', 'name': 'FC GoCardless Batch (foreign customer)',
      'description': 'Opera 3: GoCardless batch containing a FOREIGN-currency customer receipt — FC receipt columns within the batch + fee/VAT in the foreign currency.'},
+    # ---- Added 2026-07-20: FC ORIGINATION + master/period-end captures. The
+    # invoice is where the FC value/rate ORIGINATE — receipts and rate-difference
+    # allocations reference the invoice's stored rate, so capture these FIRST.
+    {'module': 'sales_ledger', 'name': 'FC Sales Invoice (foreign customer)',
+     'description': 'Opera 3: sales invoice to a FOREIGN-currency customer — the origination point of FC values. Home Sales-Invoice posting PLUS st_fcurr/st_fcrate/st_fcval/st_fcbal on stran (and FC columns on ntran if present); sname FC balance fields; rate sourced from zxchg at posting. Do a CREDIT NOTE too (mirror, opposite signs) if time allows. Capture BEFORE the FC receipt/allocation presets — they reference this invoice\'s stored rate.'},
+    {'module': 'purchase_ledger', 'name': 'FC Purchase Invoice (foreign supplier)',
+     'description': 'Opera 3: purchase invoice from a FOREIGN-currency supplier — FC origination on the PL side. Home Purchase-Invoice posting PLUS pt_fcurr/pt_fcrate/pt_fcval/pt_fcbal on ptran; pname FC balance fields; zxchg rate at posting. Credit-note mirror optional.'},
+    {'module': 'other', 'name': 'Exchange Rate Update (zxchg)',
+     'description': 'Opera 3: update a currency\'s exchange rate in Opera\'s rate table. Expected delta: zxchg only (rate, date, any multiplier/decimals fields) — no transaction tables. Establishes which zxchg fields the apps must read for rate sourcing, and whether Opera keeps rate history or overwrites in place. (SE equivalent captured 2026-04-07.)'},
+    {'module': 'other', 'name': 'FC Revaluation (period-end)',
+     'description': 'Opera 3: run the Foreign Currency Revaluation routine after rates have moved — Opera restates open FC balances (debtors/creditors/FC banks) and posts unrealised exchange gains/losses. Capture which tables carry the revaluation (ntran postings, *_fcbal restatements on stran/ptran/nbank, any revaluation audit rows). Apps must at minimum not corrupt these fields; Phase 2 needs to know the shape even if the apps never run the routine themselves.'},
 ]
 
 
