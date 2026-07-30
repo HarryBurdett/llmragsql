@@ -862,10 +862,25 @@ PRESETS = [
     {'module': 'supplier_master', 'name': 'New Supplier', 'description': 'Create a new supplier account in pname.'},
     {'module': 'supplier_master', 'name': 'Edit Supplier', 'description': 'Modify an existing supplier account.'},
     {'module': 'nominal_master', 'name': 'New Nominal Account', 'description': 'Create a new nominal account in nacnt/nname.'},
-    {'module': 'bank_master', 'name': 'New Bank Account', 'description': 'Create a new bank account in nbank.'},
+    {'module': 'bank_master', 'name': 'New Bank Account', 'description': 'TWO-STEP (capture separately): a bank account REQUIRES an existing nominal account — capture \'New Nominal Account\' first (nname/nacnt), then this one: the Cashbook setup that designates it as a bank (nbank row, zero balances, cashbook-type wiring, link to the nominal).'},
     {'module': 'stock_master', 'name': 'New Stock Item', 'description': 'Create a new stock/product record.'},
     {'module': 'employee_master', 'name': 'New Employee', 'description': 'Create a new employee record in payroll.'},
     {'module': 'payroll', 'name': 'Payroll Run', 'description': 'Complete payroll run including NI, tax, pension, nominal postings.'},
+    # ---- Added 2026-07-30: from the SE pipeline findings (transfers stamp memos
+    # *_done='Y' + per-run journal and NEVER touch VAT; VAT Processing sweeps
+    # pending sources into zvtran). Verify the same mechanics on Opera 3.
+    {'module': 'nominal', 'name': 'NL Transfer — Cashbook (Opera 3)',
+     'description': 'ONLY if Opera 3 shows pending cashbook items to transfer (transfer mode). Expected (SE parity): anoml memos stamped ax_done=Y + ax_jrnl=run journal; ntran built (one journal per run); nacnt/nhist updated; NO nvat/zvtran changes. If nothing is pending (RTU on), skip.'},
+    {'module': 'nominal', 'name': 'NL Transfer — Purchase (Opera 3)',
+     'description': 'ONLY if pending. Expected: pnoml stamped px_done=Y + px_jrnl (SE split journals per posting type — invoices vs credit notes); ntran built; no VAT changes.'},
+    {'module': 'nominal', 'name': 'NL Transfer — Sales (Opera 3)',
+     'description': 'ONLY if pending. Expected: snoml stamped sx_done=Y + sx_jrnl; ntran built; no VAT changes.'},
+    {'module': 'vat', 'name': 'VAT Processing — re-run with pending nvat (Opera 3)',
+     'description': 'REQUIRED for the agent VAT verdict on Opera 3. Post (or reuse) a nominal payment WITH VAT first so an nvat row is pending, then bracket a full VAT Processing calculate+commit (MTD not needed). Key questions: does O3 convert pending nvat into zvtran (SE did: nvat.state 1→2, zvtran N-source row) and does it stamp va_commvat by taxdate-in-period? The 2026-07-08 O3 run built zvtran from sanal/panal but left nvat untouched — unresolved whether that was mechanism or period-scope.'},
+    {'module': 'nominal_master', 'name': 'New Nominal Account (Opera 3)',
+     'description': 'Step 1 of the bank-account pair: create the nominal account in the NL (nname/nacnt). A cashbook bank REQUIRES this to exist first (Harry, 2026-07-30).'},
+    {'module': 'bank_master', 'name': 'New Bank Account (Opera 3)',
+     'description': 'Step 2, captured SEPARATELY: the Cashbook setup that designates the nominal as a bank — nbank row, zero balances, cashbook-type wiring, link to the nominal.'},
     # ---- Foreign-currency (FC) captures for Phase-2 FX support (added 2026-07-17).
     # Enter each with the company in MULTI-CURRENCY mode and a FOREIGN-currency
     # customer / supplier / bank (FC detection: sprfls.sc_currncy /
@@ -910,7 +925,7 @@ OPERA3_PRESETS = [
     {'module': 'cashbook', 'name': 'Purchase Refund',
      'description': 'Refund RECEIVED from a supplier, against an unallocated credit note. Cashbook at_type 6 (positive value — opposite to a payment): aentry + atran in PENCE; anoml + ntran in POUNDS (debit bank / credit creditors control); nacnt + nhist; nbank.nk_curbal increased. Purchase ledger: ptran refund (POUNDS) + palloc against the credit note, pname.pn_currbal updated. No VAT.'},
     {'module': 'cashbook', 'name': 'Nominal Payment with VAT',
-     'description': 'Direct payment to a nominal account carrying a VAT code (no sales/purchase ledger). Cashbook at_type 1 (negative value): aentry + atran in PENCE; anoml + ntran in POUNDS, split net-to-expense-nominal and VAT-to-VAT-control; nacnt + nhist; nbank.nk_curbal decreased. VAT recorded in zvtran (the Opera VAT analysis file the VAT return reads). Entry no. from atype.ay_entry, journal from nparm.'},
+     'description': 'Direct payment to a nominal account carrying a VAT code (no sales/purchase ledger). Cashbook at_type 1 (negative value): aentry + atran in PENCE; anoml + ntran in POUNDS, split net-to-expense-nominal and VAT-to-VAT-control; nacnt + nhist; nbank.nk_curbal decreased. VAT recorded at posting in nvat (NATIVE behaviour, verified 2026-07-08 capture — NOT zvtran; zvtran is built later by VAT Processing). The write agent deliberately writes zvtran-final instead (validated on SE live returns; O3 validation = the VAT Processing re-run preset). Entry no. from atype.ay_entry, journal from nparm.'},
     {'module': 'cashbook', 'name': 'Nominal Receipt with VAT',
      'description': 'Direct receipt to a nominal account carrying a VAT code (no ledger). Cashbook at_type 2 (positive value): aentry + atran in PENCE; anoml + ntran in POUNDS, split net-to-nominal and VAT-to-VAT-control; nacnt + nhist; nbank.nk_curbal increased. VAT recorded in zvtran (Opera VAT analysis). Entry no. from atype.ay_entry, journal from nparm.'},
     {'module': 'bank_transfer', 'name': 'Bank Transfer',
@@ -955,6 +970,21 @@ OPERA3_PRESETS = [
      'description': 'Post a DUE recurring CASHBOOK entry (standing order/DD template in arhead + arline — distinct from ledger recurring invoices). Per line: aentry + atran in PENCE (entry no. from atype.ay_entry), anoml/ntran in POUNDS per the RTU setting, nacnt + nhist; nbank.nk_curbal moved by the schedule total. On the schedule: arhead\'s last-posted (ae_lstpost) and next-due (ae_nxtpost) dates advanced by the frequency, posted-count incremented. Agent endpoint: /import/recurring-entry. Capture a schedule with 2+ lines so the per-line vs per-schedule writes separate.'},
     {'module': 'supplier_master', 'name': 'New Supplier (ensure)',
      'description': 'Create a supplier account the way Opera does (the minimal record the agent\'s /supplier/ensure must reproduce): pname row with account/name/defaults (profile link, terms, currency), any companion profile/analysis rows Opera writes alongside, and the id/sequence sources used. ALSO capture editing nothing (re-saving the same supplier) to prove which fields Opera touches on a no-op save — the agent\'s ensure is idempotent-when-exists. Used by AP automation before posting a purchase invoice for an unknown supplier.'},
+    # ---- Added 2026-07-30: from the SE pipeline findings (transfers stamp memos
+    # *_done='Y' + per-run journal and NEVER touch VAT; VAT Processing sweeps
+    # pending sources into zvtran). Verify the same mechanics on Opera 3.
+    {'module': 'nominal', 'name': 'NL Transfer — Cashbook (Opera 3)',
+     'description': 'ONLY if Opera 3 shows pending cashbook items to transfer (transfer mode). Expected (SE parity): anoml memos stamped ax_done=Y + ax_jrnl=run journal; ntran built (one journal per run); nacnt/nhist updated; NO nvat/zvtran changes. If nothing is pending (RTU on), skip.'},
+    {'module': 'nominal', 'name': 'NL Transfer — Purchase (Opera 3)',
+     'description': 'ONLY if pending. Expected: pnoml stamped px_done=Y + px_jrnl (SE split journals per posting type — invoices vs credit notes); ntran built; no VAT changes.'},
+    {'module': 'nominal', 'name': 'NL Transfer — Sales (Opera 3)',
+     'description': 'ONLY if pending. Expected: snoml stamped sx_done=Y + sx_jrnl; ntran built; no VAT changes.'},
+    {'module': 'vat', 'name': 'VAT Processing — re-run with pending nvat (Opera 3)',
+     'description': 'REQUIRED for the agent VAT verdict on Opera 3. Post (or reuse) a nominal payment WITH VAT first so an nvat row is pending, then bracket a full VAT Processing calculate+commit (MTD not needed). Key questions: does O3 convert pending nvat into zvtran (SE did: nvat.state 1→2, zvtran N-source row) and does it stamp va_commvat by taxdate-in-period? The 2026-07-08 O3 run built zvtran from sanal/panal but left nvat untouched — unresolved whether that was mechanism or period-scope.'},
+    {'module': 'nominal_master', 'name': 'New Nominal Account (Opera 3)',
+     'description': 'Step 1 of the bank-account pair: create the nominal account in the NL (nname/nacnt). A cashbook bank REQUIRES this to exist first (Harry, 2026-07-30).'},
+    {'module': 'bank_master', 'name': 'New Bank Account (Opera 3)',
+     'description': 'Step 2, captured SEPARATELY: the Cashbook setup that designates the nominal as a bank — nbank row, zero balances, cashbook-type wiring, link to the nominal.'},
     # ---- Foreign-currency (FC) captures for Phase-2 FX support (added 2026-07-17).
     # Opera 3 (FoxPro) counterparts of the SE FC list. Enter with the company in
     # MULTI-CURRENCY mode and a FOREIGN-currency customer/supplier/bank
