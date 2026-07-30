@@ -66,6 +66,7 @@ MODULES = {
     'vat': 'VAT / Tax',
     'allocations': 'Allocations (Sales/Purchase)',
     'reconciliation': 'Bank Reconciliation',
+    'fc': 'Foreign Currency (separate FX project — later release)',
     'other': 'Other',
 }
 
@@ -873,19 +874,19 @@ PRESETS = [
     # (rate multiplier / FC decimals), the rate row consulted in zxchg, AND any
     # exchange gain/loss nominal posting. Company Z (Demo) has FC customers
     # (e.g. ALI0005 = EUR) to use.
-    {'module': 'cashbook', 'name': 'FC Sales Receipt (foreign customer)', 'description': 'Receipt from a FOREIGN-currency customer. All the home Sales-Receipt tables PLUS the FC columns on atran/stran/ntran (*_fcurr/*_fcrate/*_fcval/*_fcbal). Capture BOTH allocated and on-account. Note any exchange gain/loss nominal when the rate moved since the invoice.'},
-    {'module': 'cashbook', 'name': 'FC Purchase Payment (foreign supplier)', 'description': 'Payment to a FOREIGN-currency supplier. Home Purchase-Payment tables PLUS *_fcurr/*_fcrate/*_fcval/*_fcbal on atran/ptran/ntran; capture the exchange gain/loss if the rate differs from the invoice.'},
-    {'module': 'cashbook', 'name': 'FC Nominal Receipt/Payment (foreign bank)', 'description': 'Direct nominal receipt or payment on a FOREIGN-currency BANK (nbank.nk_fcurr set). Capture how nk_curbal (held in the bank currency) relates to the home-currency nominal legs via *_fcrate.'},
-    {'module': 'bank_transfer', 'name': 'FC Bank Transfer (cross-currency)', 'description': 'Transfer where one leg is a FOREIGN-currency bank (or the two banks differ in currency). Capture both legs\' *_fcurr/*_fcrate/*_fcval and the exchange-difference posting — the hardest FX case.'},
-    {'module': 'recurring', 'name': 'FC Recurring Entry', 'description': 'Post a due recurring entry whose account is foreign-currency. Capture the FC columns on the generated transaction and how the rate is sourced at post time.'},
-    {'module': 'sales_ledger', 'name': 'FC Sales Allocation (rate difference)', 'description': 'Allocate an FC receipt against an FC invoice where the RATE DIFFERS between them — capture salloc + the exchange gain/loss the allocation posts.'},
-    {'module': 'purchase_ledger', 'name': 'FC Purchase Allocation (rate difference)', 'description': 'Allocate an FC payment against an FC invoice with a rate difference — palloc + exchange gain/loss.'},
-    {'module': 'reconciliation', 'name': 'FC Bank Reconciliation (foreign bank)', 'description': 'Reconcile entries on a FOREIGN-currency bank — capture whether ae_recbal / nk_recbal are held in the bank currency or home, plus any FC-specific reconciliation fields.'},
-    {'module': 'gocardless', 'name': 'FC GoCardless Batch (foreign customer)', 'description': 'GoCardless batch containing a FOREIGN-currency customer receipt — the FC receipt columns within the batch, plus fee/VAT handling in the foreign currency.'},
-    {'module': 'sales_ledger', 'name': 'FC Sales Invoice (foreign customer)', 'description': 'Sales invoice to a FOREIGN-currency customer — the origination point of FC values (st_fcurr/st_fcrate/st_fcval/st_fcbal + sname FC balances, rate from zxchg). Capture before FC receipts/allocations — they reference this invoice\'s stored rate.'},
-    {'module': 'purchase_ledger', 'name': 'FC Purchase Invoice (foreign supplier)', 'description': 'Purchase invoice from a FOREIGN-currency supplier — FC origination on the PL side (pt_fcurr/pt_fcrate/pt_fcval/pt_fcbal + pname FC balances).'},
-    {'module': 'other', 'name': 'Exchange Rate Update (zxchg)', 'description': 'Update a currency\'s rate in Opera\'s exchange-rate table — zxchg delta only; shows which fields apps read for rate sourcing and whether history is kept.'},
-    {'module': 'other', 'name': 'FC Revaluation (period-end)', 'description': 'Foreign Currency Revaluation routine after a rate move — unrealised gain/loss postings + *_fcbal restatements on open FC balances.'},
+    {'module': 'fc', 'name': 'FC Sales Receipt (foreign customer)', 'description': 'Receipt from a FOREIGN-currency customer. All the home Sales-Receipt tables PLUS the FC columns on atran/stran/ntran (*_fcurr/*_fcrate/*_fcval/*_fcbal). Capture BOTH allocated and on-account. Note any exchange gain/loss nominal when the rate moved since the invoice.'},
+    {'module': 'fc', 'name': 'FC Purchase Payment (foreign supplier)', 'description': 'Payment to a FOREIGN-currency supplier. Home Purchase-Payment tables PLUS *_fcurr/*_fcrate/*_fcval/*_fcbal on atran/ptran/ntran; capture the exchange gain/loss if the rate differs from the invoice.'},
+    {'module': 'fc', 'name': 'FC Nominal Receipt/Payment (foreign bank)', 'description': 'Direct nominal receipt or payment on a FOREIGN-currency BANK (nbank.nk_fcurr set). Capture how nk_curbal (held in the bank currency) relates to the home-currency nominal legs via *_fcrate.'},
+    {'module': 'fc', 'name': 'FC Bank Transfer (cross-currency)', 'description': 'Transfer where one leg is a FOREIGN-currency bank (or the two banks differ in currency). Capture both legs\' *_fcurr/*_fcrate/*_fcval and the exchange-difference posting — the hardest FX case.'},
+    {'module': 'fc', 'name': 'FC Recurring Entry', 'description': 'Post a due recurring entry whose account is foreign-currency. Capture the FC columns on the generated transaction and how the rate is sourced at post time.'},
+    {'module': 'fc', 'name': 'FC Sales Allocation (rate difference)', 'description': 'Allocate an FC receipt against an FC invoice where the RATE DIFFERS between them — capture salloc + the exchange gain/loss the allocation posts.'},
+    {'module': 'fc', 'name': 'FC Purchase Allocation (rate difference)', 'description': 'Allocate an FC payment against an FC invoice with a rate difference — palloc + exchange gain/loss.'},
+    {'module': 'fc', 'name': 'FC Bank Reconciliation (foreign bank)', 'description': 'Reconcile entries on a FOREIGN-currency bank — capture whether ae_recbal / nk_recbal are held in the bank currency or home, plus any FC-specific reconciliation fields.'},
+    {'module': 'fc', 'name': 'FC GoCardless Batch (foreign customer)', 'description': 'GoCardless batch containing a FOREIGN-currency customer receipt — the FC receipt columns within the batch, plus fee/VAT handling in the foreign currency.'},
+    {'module': 'fc', 'name': 'FC Sales Invoice (foreign customer)', 'description': 'Sales invoice to a FOREIGN-currency customer — the origination point of FC values (st_fcurr/st_fcrate/st_fcval/st_fcbal + sname FC balances, rate from zxchg). Capture before FC receipts/allocations — they reference this invoice\'s stored rate.'},
+    {'module': 'fc', 'name': 'FC Purchase Invoice (foreign supplier)', 'description': 'Purchase invoice from a FOREIGN-currency supplier — FC origination on the PL side (pt_fcurr/pt_fcrate/pt_fcval/pt_fcbal + pname FC balances).'},
+    {'module': 'fc', 'name': 'Exchange Rate Update (zxchg)', 'description': 'Update a currency\'s rate in Opera\'s exchange-rate table — zxchg delta only; shows which fields apps read for rate sourcing and whether history is kept.'},
+    {'module': 'fc', 'name': 'FC Revaluation (period-end)', 'description': 'Foreign Currency Revaluation routine after a rate move — unrealised gain/loss postings + *_fcbal restatements on open FC balances.'},
 ]
 
 # Opera 3 write-feature checklist — the golden masters we need to capture
@@ -959,34 +960,34 @@ OPERA3_PRESETS = [
     # write-agent must reproduce the extra FC columns *_fcurr/*_fcrate/*_fcval/
     # *_fcbal/*_fcvat (+ *_fcmult/*_fcdec) and any exchange gain/loss nominal;
     # capture these to compare Opera 3 vs SE FC behaviour side-by-side.
-    {'module': 'cashbook', 'name': 'FC Sales Receipt (foreign customer)',
+    {'module': 'fc', 'name': 'FC Sales Receipt (foreign customer)',
      'description': 'Opera 3: customer receipt from a FOREIGN-currency customer, allocated and on-account. Same cashbook/SL/nominal posting as the home Sales Receipt PLUS the FC columns on atran/stran/ntran (*_fcurr/*_fcrate/*_fcval/*_fcbal); zxchg rate; exchange gain/loss nominal if the rate moved. Confirm PENCE-vs-POUNDS conventions still hold in the FC value fields.'},
-    {'module': 'cashbook', 'name': 'FC Purchase Payment (foreign supplier)',
+    {'module': 'fc', 'name': 'FC Purchase Payment (foreign supplier)',
      'description': 'Opera 3: payment to a FOREIGN-currency supplier. Home Purchase-Payment posting PLUS *_fcurr/*_fcrate/*_fcval/*_fcbal on atran/ptran/ntran; exchange gain/loss on rate difference.'},
-    {'module': 'cashbook', 'name': 'FC Nominal Receipt/Payment (foreign bank)',
+    {'module': 'fc', 'name': 'FC Nominal Receipt/Payment (foreign bank)',
      'description': 'Opera 3: direct nominal receipt/payment on a FOREIGN-currency bank (nbank.nk_fcurr set). Capture nk_curbal (bank currency) vs the home nominal legs via *_fcrate.'},
-    {'module': 'bank_transfer', 'name': 'FC Bank Transfer (cross-currency)',
+    {'module': 'fc', 'name': 'FC Bank Transfer (cross-currency)',
      'description': 'Opera 3: transfer with a FOREIGN-currency leg (or two differing currencies). Both legs\' *_fcurr/*_fcrate/*_fcval + the exchange-difference posting.'},
-    {'module': 'recurring', 'name': 'FC Recurring Entry',
+    {'module': 'fc', 'name': 'FC Recurring Entry',
      'description': 'Opera 3: post a due recurring entry on a foreign-currency account — FC columns on the generated transaction + rate sourcing at post time.'},
-    {'module': 'sales_ledger', 'name': 'FC Sales Allocation (rate difference)',
+    {'module': 'fc', 'name': 'FC Sales Allocation (rate difference)',
      'description': 'Opera 3: allocate an FC receipt against an FC invoice at a DIFFERENT rate — salloc + the exchange gain/loss posting.'},
-    {'module': 'purchase_ledger', 'name': 'FC Purchase Allocation (rate difference)',
+    {'module': 'fc', 'name': 'FC Purchase Allocation (rate difference)',
      'description': 'Opera 3: allocate an FC payment against an FC invoice at a DIFFERENT rate — palloc + the exchange gain/loss posting.'},
-    {'module': 'reconciliation', 'name': 'FC Bank Reconciliation (foreign bank)',
+    {'module': 'fc', 'name': 'FC Bank Reconciliation (foreign bank)',
      'description': 'Opera 3: reconcile entries on a FOREIGN-currency bank — whether ae_recbal / nk_recbal are in bank currency or home, plus any FC-specific rec fields.'},
-    {'module': 'gocardless', 'name': 'FC GoCardless Batch (foreign customer)',
+    {'module': 'fc', 'name': 'FC GoCardless Batch (foreign customer)',
      'description': 'Opera 3: GoCardless batch containing a FOREIGN-currency customer receipt — FC receipt columns within the batch + fee/VAT in the foreign currency.'},
     # ---- Added 2026-07-20: FC ORIGINATION + master/period-end captures. The
     # invoice is where the FC value/rate ORIGINATE — receipts and rate-difference
     # allocations reference the invoice's stored rate, so capture these FIRST.
-    {'module': 'sales_ledger', 'name': 'FC Sales Invoice (foreign customer)',
+    {'module': 'fc', 'name': 'FC Sales Invoice (foreign customer)',
      'description': 'Opera 3: sales invoice to a FOREIGN-currency customer — the origination point of FC values. Home Sales-Invoice posting PLUS st_fcurr/st_fcrate/st_fcval/st_fcbal on stran (and FC columns on ntran if present); sname FC balance fields; rate sourced from zxchg at posting. Do a CREDIT NOTE too (mirror, opposite signs) if time allows. Capture BEFORE the FC receipt/allocation presets — they reference this invoice\'s stored rate.'},
-    {'module': 'purchase_ledger', 'name': 'FC Purchase Invoice (foreign supplier)',
+    {'module': 'fc', 'name': 'FC Purchase Invoice (foreign supplier)',
      'description': 'Opera 3: purchase invoice from a FOREIGN-currency supplier — FC origination on the PL side. Home Purchase-Invoice posting PLUS pt_fcurr/pt_fcrate/pt_fcval/pt_fcbal on ptran; pname FC balance fields; zxchg rate at posting. Credit-note mirror optional.'},
-    {'module': 'other', 'name': 'Exchange Rate Update (zxchg)',
+    {'module': 'fc', 'name': 'Exchange Rate Update (zxchg)',
      'description': 'Opera 3: update a currency\'s exchange rate in Opera\'s rate table. Expected delta: zxchg only (rate, date, any multiplier/decimals fields) — no transaction tables. Establishes which zxchg fields the apps must read for rate sourcing, and whether Opera keeps rate history or overwrites in place. (SE equivalent captured 2026-04-07.)'},
-    {'module': 'other', 'name': 'FC Revaluation (period-end)',
+    {'module': 'fc', 'name': 'FC Revaluation (period-end)',
      'description': 'Opera 3: run the Foreign Currency Revaluation routine after rates have moved — Opera restates open FC balances (debtors/creditors/FC banks) and posts unrealised exchange gains/losses. Capture which tables carry the revaluation (ntran postings, *_fcbal restatements on stran/ptran/nbank, any revaluation audit rows). Apps must at minimum not corrupt these fields; Phase 2 needs to know the shape even if the apps never run the routine themselves.'},
 ]
 
