@@ -80,6 +80,10 @@ from apps.pension_export.api.routes import router as pension_export_router
 # Balance check routes (extracted from main.py)
 from apps.balance_check.api.routes import router as balance_check_router
 
+# Cashflow forecast routes (new forward forecast — distinct from the legacy
+# /api/cashflow/forecast in apps/dashboards/api/routes.py)
+from apps.cashflow.api.routes import router as cashflow_router
+
 # Supplier routes (extracted from main.py)
 from apps.suppliers.api.routes import router as suppliers_router
 from apps.suppliers.api.routes_contacts import router as supplier_contacts_router
@@ -1030,6 +1034,9 @@ if _should_install('suppliers'):
 # balance_check
 if _should_install('balance_check'):
     app.include_router(balance_check_router)
+
+# cashflow (forward forecast)
+app.include_router(cashflow_router)
 
 # pension_export
 if _should_install('pension_export'):
@@ -3133,6 +3140,27 @@ async def activate_system(request: Request, system_id: str):
                           "Please check the server address and credentials in Installation settings.",
             },
         )
+
+    # Opera 3 systems read their DBF data over SMB — mount it as part of the
+    # switch. Startup only auto-connects when the BOOT config was already
+    # opera3, and the company-switch endpoint requires the mount to exist,
+    # so without this an Opera 3 system activated after an API restart 503'd
+    # ("Opera 3 SMB connection not available") on the first company switch.
+    if config and config.get("opera", "version", fallback="") == "opera3":
+        server_path = config.get("opera", "opera3_server_path", fallback="")
+        share_user = config.get("opera", "opera3_share_user", fallback="")
+        share_pass = config.get("opera", "opera3_share_password", fallback="")
+        smb = get_smb_manager()
+        if server_path and share_user and share_pass and (smb is None or not smb.is_connected()):
+            try:
+                msg = _connect_opera3_smb(server_path, share_user, share_pass)
+                logger.info(f"System-activate SMB: {msg}")
+                smb = get_smb_manager()
+                if smb and smb.get_local_base():
+                    # In memory only — the temp mount point is ephemeral
+                    config["opera"]["opera3_base_path"] = str(smb.get_local_base())
+            except Exception as e:
+                logger.warning(f"SMB connect on system activate failed: {e}")
 
     # Store system_id on the user's session for per-user isolation
     if user_auth:
