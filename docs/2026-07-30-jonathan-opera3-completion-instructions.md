@@ -1,7 +1,7 @@
 # Opera 3 for bank-reconcile & gocardless — what Jonathan needs to do to complete it
 
 **Date:** 2026-07-30 · **From:** Harry / Charlie · **For:** Jonathan
-**One-line:** The apps and the write agent are essentially done. Two SAM-platform pieces remain, both yours: **(1) merge a ready branch of Opera-3 read fixes, and (2) build multi-connection support so the live SAM can hold an Opera-3 connection alongside Opera SE.** Everything else on the critical path (agent verification, releases, production enable) is ours.
+**One-line (updated 2026-07-30):** Charlie has now done most of the platform work too. Your remaining tasks: **(1) merge the ready Opera-3 read-fix branch, (2) review the multi-connection branch — 2A+2C are DONE, implement the designed 2B, then deploy.** The agent is ours and its reconcile verb is now golden-verified live on .214. Branches waiting on `jonathangintsys/aisam`: `port/opera3-app-read-fixes` (Task 1) and `feat/opera-multi-connection` (Task 2).
 
 Repos referenced: `jonathangintsys/aisam` (the SAM platform — yours), `jonathangintsys/bank-rec`, `jonathangintsys/gocardless` (the apps — Charlie's), `jonathangintsys/opera3-write-agent` (Charlie's).
 
@@ -39,18 +39,18 @@ Repos referenced: `jonathangintsys/aisam` (the SAM platform — yours), `jonatha
 
 So with two active connections, `.first()` is non-deterministic for **every** app — finance-hub/apautomation (which write to Opera) could bind to the wrong system on a restart. The gate is currently protecting you from exactly that.
 
-**What to build (three parts):**
+**UPDATE 2026-07-30 — Charlie has already implemented 2A + 2C and designed 2B.** All on branch **`feat/opera-multi-connection`** (pushed to `jonathangintsys/aisam`, based on current main). Your job on this task is now **review + implement 2B + deploy**, not build from scratch.
 
-**2A. Deterministic connection binding (safety-critical, small).**
-Give the single-connection resolutions a stable order so legacy (v1) apps always bind to the *primary* connection. Simplest: `orderBy('created_at','asc')` (oldest = the established Opera SE Production connection), or add an explicit `is_primary` flag to `opera_connections`. Apply at `loader.ts:439` & `:590` and the equivalent spots in `context.ts`. After this, a second connection can exist without ever repointing the legacy apps.
+**2A. Deterministic connection binding — DONE (commit `2a26f9c`).**
+The three connection lookups (`loader.ts` ~439/~590, `context.ts`) now `.orderBy('created_at','asc').first()`, so legacy (v1) plugins always bind to the OLDEST = the established Opera SE Production connection. With one connection (every tenant today) this changes nothing; it only matters once a second exists. ~15 lines; 109/109 plugin tests pass.
 
-**2B. Per-company connection resolution for v2 apps (the actual feature).**
-`opera_companies` already carries `connection_id`. For `samContextVersion: 2` plugins, resolve the request's context **from the selected company's connection** (company → connection → type/agent/facade) instead of the global first-active row. This is what lets bank-rec/gocardless serve Opera SE companies via SQL and Opera-3 companies via the sidecar/agent **in the same instance**. (The plugin scheduler is already per-connection, so the request path is the only gap.)
+**2C. Relax `checkV1PluginGate` — DONE (commit `2a26f9c`).**
+The hard 422 block is now a **non-blocking advisory**: a second connection is allowed (safe because 2A pins legacy apps to the primary, and a new connection is always newer), and the create response carries an `advisory` naming the plugins pinned to primary. v1Gate tests updated to the new contract (11/11 pass). Review and confirm you're comfortable dropping the hard block.
 
-**2C. Relax `checkV1PluginGate`.**
-Once 2A is in, allow additional connections while v1 plugins are present (they're pinned to the primary). If you'd rather keep it strict until the 6 legacy apps are on `samContextVersion 2`, that's your call — but 2A+2B is the minimum that unblocks Charlie's apps.
+**2B. Per-company connection resolution — DESIGNED, needs your implementation (commit `1ea7f61`).**
+Full design in **`docs/opera3-multi-connection-2B-design.md`** on the branch. This is the actual feature (v2 apps serving SE companies via SQL AND Opera-3 companies via the sidecar/agent in one instance). Charlie did NOT implement it because it changes `AppContext` — the contract all 11 apps consume — so it wants your eyes on the contract + the per-company pool/agent lifecycle before it lands. The doc has the contract change, an implementation sketch (SAM side), migration notes (no schema change — `opera_companies.connection_id` already exists), and a test plan. Additive and back-compatible: apps adopt the per-company resolvers in their next release; until then they run against the primary exactly as today.
 
-**2D. Deploy.** Rebuild + restart the live SAM Docker container on the Intsys server. (The box is already on 1.17.1, so the deploy path is proven — the last upgrade went cleanly.)
+**2D. Deploy.** Merge the branch (after your 2B implementation) and rebuild + restart the live SAM Docker container on the Intsys server. (The box is already on 1.17.1, so the deploy path is proven — the last upgrade went cleanly.) This deploy is yours — Charlie can't reach that host.
 
 ---
 
