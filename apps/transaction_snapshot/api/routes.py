@@ -49,7 +49,7 @@ MODULES = {
     'bank_transfer': 'Bank Transfers',
     'recurring': 'Recurring Entries',
     'gocardless': 'GoCardless',
-    'payroll': 'Payroll',
+    'payroll': 'Payroll (separate project — when a payroll-updating app is built)',
     'stock': 'Stock Transactions',
     'sop': 'Sales Order Processing',
     'pop': 'Purchase Order Processing',
@@ -865,7 +865,7 @@ PRESETS = [
     {'module': 'bank_master', 'name': 'New Bank Account', 'description': 'TWO-STEP (capture separately): a bank account REQUIRES an existing nominal account — capture \'New Nominal Account\' first (nname/nacnt), then this one: the Cashbook setup that designates it as a bank (nbank row, zero balances, cashbook-type wiring, link to the nominal).'},
     {'module': 'stock_master', 'name': 'New Stock Item', 'description': 'Create a new stock/product record.'},
     {'module': 'employee_master', 'name': 'New Employee', 'description': 'Create a new employee record in payroll.'},
-    {'module': 'payroll', 'name': 'Payroll Run', 'description': 'Complete payroll run including NI, tax, pension, nominal postings.'},
+    {'module': 'payroll', 'name': 'Payroll Run', 'description': 'DEFERRED — separate project (payroll-updating app, not yet scheduled). Multi-step process: capture per stage when the time comes. April 2026 already captured calculation / employee calc / NL analysis / cashbook transfer; the only outstanding nominal-relevant stage is the payroll UPDATE (period-end commit to NL). Not write-back relevant today.'},
     # ---- Added 2026-07-30: from the SE pipeline findings (transfers stamp memos
     # *_done='Y' + per-run journal and NEVER touch VAT; VAT Processing sweeps
     # pending sources into zvtran). Verify the same mechanics on Opera 3.
