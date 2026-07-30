@@ -3449,8 +3449,20 @@ async def switch_company(request: Request, company_id: str):
         if smb is None or not smb.is_connected():
             raise HTTPException(status_code=503, detail="Opera 3 SMB connection not available")
 
-        data_path_rel = company.get("opera3_data_path", "")
         local_base = smb.get_local_base()
+        # Authoritative path = Opera's company parameters (seqco co_subdir),
+        # resolved live. Configured opera3_data_path is only the fallback —
+        # hardcoded paths go stale when company folders move (2026-07-30).
+        data_path_rel = None
+        try:
+            from sql_rag.opera3_paths import resolve_company_subdir
+            code = (company.get("opera3_company_code") or "").strip()
+            if code:
+                data_path_rel = resolve_company_subdir(str(local_base), code)
+        except Exception as e:
+            logger.warning(f"seqco path resolution failed for {company_id}: {e}")
+        if not data_path_rel:
+            data_path_rel = company.get("opera3_data_path", "")
         if data_path_rel:
             opera3_data_path = str(Path(local_base) / data_path_rel)
         else:

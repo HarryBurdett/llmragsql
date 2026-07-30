@@ -1274,13 +1274,32 @@ async def get_opera3_smb_defaults():
     companies = []
     try:
         from api.main import load_companies
+        # Authoritative data path = Opera's own company parameters
+        # (System/seqco.dbf co_subdir), resolved live against the SMB mount.
+        # The per-company JSON is only a fallback when seqco is unreachable —
+        # hardcoded paths go stale when installations move company folders
+        # (live incident 2026-07-30: six empty captures after the Z refresh).
+        mount_root = None
+        try:
+            from api.main import get_smb_manager
+            smb = get_smb_manager()
+            if smb and smb.is_connected():
+                mount_root = str(smb.get_local_base())
+        except Exception:
+            mount_root = None
+        from sql_rag.opera3_paths import resolve_company_subdir
         for co in (load_companies() or []):
             if str(co.get('opera_version', '')).strip() == '3':
+                code = (co.get('opera3_company_code') or '').strip()
+                subpath = None
+                if mount_root and code:
+                    subpath = resolve_company_subdir(mount_root, code)
                 companies.append({
                     'id': co.get('id'),
                     'name': co.get('name'),
-                    'code': (co.get('opera3_company_code') or '').strip(),
-                    'subpath': (co.get('opera3_data_path') or 'Data').strip(),
+                    'code': code,
+                    'subpath': subpath or (co.get('opera3_data_path') or 'Data').strip(),
+                    'subpath_source': 'seqco' if subpath else 'config-fallback',
                 })
     except Exception as e:
         logger.warning(f"opera3-smb-defaults: could not load companies: {e}")
