@@ -83,6 +83,27 @@ class DataSource(Protocol):
         """
         ...
 
+    def query_entry_count_in_period(
+        self, bank_code: str, period_start: date, period_end: date
+    ) -> int:
+        """Return TOTAL count of aentry rows on this bank in the period
+        (reconciled or not). Used to distinguish "everything in the
+        period is reconciled" from "nothing has been imported yet" —
+        critical for accounts whose balance repeats (e.g. swept-to-zero
+        clearing accounts), where balance equality alone is not
+        statement identity.
+        """
+        ...
+
+    def query_last_statement_date(self, bank_code: str):
+        """Return Opera's last completed-statement date for this bank
+        (nbank.nk_lststdt) as a `date`, or None when unavailable. Used
+        to reject the "prior closed cycle" inference for statements
+        whose period END post-dates the last reconcile — a new statement
+        that merely repeats an old balance is not a prior cycle.
+        """
+        ...
+
 
 def _to_pence(amount: Optional[float]) -> Optional[int]:
     """Convert pounds to pence, integer-rounded. None passes through."""
@@ -152,16 +173,36 @@ def check_period_reconciled(
         and closing_pence < rec_bal_pence
         and closing_pence in historical
     ):
-        return PeriodReconciliationResult(
-            status=PeriodReconciliationStatus.FULLY_RECONCILED,
-            unreconciled_count=None,
-            matched_historical_boundary=True,
-            reason=(
-                f"closing £{statement_closing:,.2f} matches a historical "
-                f"batch boundary AND is below current rec_bal "
-                f"£{current_rec_bal:,.2f} (prior closed cycle)"
-            ),
-        )
+        # Guard against repeating balances (e.g. swept-to-zero clearing
+        # accounts): a NEW statement whose closing happens to equal an
+        # old boundary is NOT a prior closed cycle. When the data source
+        # can tell us Opera's last completed-statement date and the
+        # statement's period END post-dates it, the statement is from
+        # the future relative to the last reconcile — fall through to
+        # the period-aware stages instead of auto-promoting. Balance
+        # equality alone is not statement identity.
+        _is_genuinely_historical = True
+        if period_end is not None and hasattr(data_source, 'query_last_statement_date'):
+            try:
+                _last_stmt = data_source.query_last_statement_date(bank_code)
+            except Exception:
+                _last_stmt = None
+            if _last_stmt is not None and period_end > _last_stmt:
+                _is_genuinely_historical = False
+
+        if _is_genuinely_historical:
+            return PeriodReconciliationResult(
+                status=PeriodReconciliationStatus.FULLY_RECONCILED,
+                unreconciled_count=None,
+                matched_historical_boundary=True,
+                reason=(
+                    f"closing £{statement_closing:,.2f} matches a historical "
+                    f"batch boundary AND is below current rec_bal "
+                    f"£{current_rec_bal:,.2f} (prior closed cycle)"
+                ),
+            )
+        # else: fall through — looks historical by balance only, but the
+        # period post-dates the last reconcile. Stages 2/3 decide.
 
     # Stage 2: closing equals current rec_bal — query period
     if rec_bal_pence is not None and abs(closing_pence - rec_bal_pence) <= 1:
@@ -184,6 +225,38 @@ def check_period_reconciled(
                 reason=f"could not query unreconciled count: {e}",
             )
         if unrec == 0:
+            # "Zero unreconciled" is only meaningful if entries EXIST in
+            # the period. For accounts whose balance repeats (e.g. a
+            # clearing account that opens and closes at £0 every
+            # statement), a brand-new statement whose transactions
+            # haven't been imported yet would also report zero
+            # unreconciled — auto-promoting it would hide an
+            # unprocessed statement. Require at least one entry.
+            if hasattr(data_source, 'query_entry_count_in_period'):
+                try:
+                    total_in_period = data_source.query_entry_count_in_period(
+                        bank_code, period_start, period_end
+                    )
+                except Exception as e:
+                    return PeriodReconciliationResult(
+                        status=PeriodReconciliationStatus.UNKNOWN,
+                        unreconciled_count=0,
+                        matched_historical_boundary=False,
+                        reason=f"could not query entry count in period: {e}",
+                    )
+                if total_in_period == 0:
+                    return PeriodReconciliationResult(
+                        status=PeriodReconciliationStatus.NOT_RECONCILED,
+                        unreconciled_count=0,
+                        matched_historical_boundary=False,
+                        reason=(
+                            f"closing £{statement_closing:,.2f} equals rec_bal but "
+                            f"NO cashbook entries exist in period "
+                            f"{period_start}..{period_end} — the statement's "
+                            f"transactions have not been imported (balance match "
+                            f"alone is not statement identity)"
+                        ),
+                    )
             return PeriodReconciliationResult(
                 status=PeriodReconciliationStatus.FULLY_RECONCILED,
                 unreconciled_count=0,

@@ -64,14 +64,32 @@ def test_datasource_protocol_signatures_pinned():
         f"query_unreconciled_in_period signature drifted: {params}"
     )
 
+    # query_entry_count_in_period(self, bank_code, period_start, period_end) -> int
+    # Added 2026-06-10: distinguishes "all reconciled" from "nothing
+    # imported yet" on repeating-balance accounts.
+    sig = inspect.signature(DataSource.query_entry_count_in_period)
+    params = list(sig.parameters)
+    assert params == ['self', 'bank_code', 'period_start', 'period_end'], (
+        f"query_entry_count_in_period signature drifted: {params}"
+    )
+
+    # query_last_statement_date(self, bank_code) -> Optional[date]
+    sig = inspect.signature(DataSource.query_last_statement_date)
+    params = list(sig.parameters)
+    assert params == ['self', 'bank_code'], (
+        f"query_last_statement_date signature drifted: {params}"
+    )
+
     # Runtime-checkable: a class with the right method names satisfies
     # isinstance; one missing a method does not.
     class _Good:
         def query_historical_recbals(self, bank_code): return set()
         def query_unreconciled_in_period(self, bank_code, period_start, period_end): return 0
+        def query_entry_count_in_period(self, bank_code, period_start, period_end): return 0
+        def query_last_statement_date(self, bank_code): return None
     class _Bad:
         def query_historical_recbals(self, bank_code): return set()
-        # missing query_unreconciled_in_period
+        # missing the other methods
     assert isinstance(_Good(), DataSource)
     assert not isinstance(_Bad(), DataSource)
 
@@ -79,7 +97,14 @@ def test_datasource_protocol_signatures_pinned():
 from datetime import date
 
 class _FakeDataSource:
-    """In-memory DataSource for unit tests."""
+    """In-memory DataSource for unit tests.
+
+    NB: deliberately does NOT implement the optional 2026-06-10
+    discriminator methods (query_entry_count_in_period /
+    query_last_statement_date) so the legacy-behaviour tests exercise
+    the hasattr-guarded fallback path. Use _FakeDataSourceV2 for the
+    repeating-balance scenarios.
+    """
     def __init__(
         self,
         historical_recbals: set[int] | None = None,
@@ -101,6 +126,30 @@ class _FakeDataSource:
         if self._raise_on_unrec:
             raise self._raise_on_unrec
         return self._unrec
+
+
+class _FakeDataSourceV2(_FakeDataSource):
+    """Fixture with the 2026-06-10 statement-identity discriminators."""
+    def __init__(
+        self,
+        *,
+        entry_count: int = 0,
+        last_statement_date=None,
+        raise_on_entry_count: Exception | None = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._entry_count = entry_count
+        self._last_stmt = last_statement_date
+        self._raise_on_entry_count = raise_on_entry_count
+
+    def query_entry_count_in_period(self, bank_code, ps, pe):
+        if self._raise_on_entry_count:
+            raise self._raise_on_entry_count
+        return self._entry_count
+
+    def query_last_statement_date(self, bank_code):
+        return self._last_stmt
 
 
 def test_fully_reconciled_when_closing_matches_historical_boundary_and_below_recbal():
@@ -454,3 +503,165 @@ def test_step_5_chain_filter_uses_function():
         "query — delegate to check_period_reconciled (via the F9 "
         "filter_fully_reconciled_statements helper)."
     )
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-10: statement identity must not rest on balance equality alone.
+# Repeating-balance accounts (e.g. a clearing account swept to £0 every
+# statement) made the function auto-promote brand-new statements as
+# already reconciled. Two discriminators were added:
+#   - query_last_statement_date  → rejects "prior closed cycle" for
+#     statements whose period END post-dates Opera's last reconcile
+#   - query_entry_count_in_period → "zero unreconciled" only counts when
+#     entries actually exist in the period
+# ---------------------------------------------------------------------------
+
+
+def test_swept_to_zero_new_statement_is_not_fully_reconciled():
+    """Clearing account: opens £0, closes £0 every week. A NEW statement
+    whose transactions are NOT yet in Opera must NOT be auto-promoted —
+    previously 'zero unreconciled in period' was treated as done even
+    though the period contained no entries at all.
+    """
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSourceV2(
+        historical_recbals={0},        # £0 boundary from every prior cycle
+        unreconciled_count=0,          # nothing unreconciled (nothing there!)
+        entry_count=0,                 # period has NO entries
+        last_statement_date=date(2026, 5, 30),
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BC020",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 7),
+        statement_closing=0.0,         # swept to zero
+        current_rec_bal=0.0,           # Opera also at zero
+    )
+    assert result.status is PeriodReconciliationStatus.NOT_RECONCILED
+    assert "not been imported" in result.reason
+
+
+def test_swept_to_zero_statement_with_entries_all_reconciled_is_done():
+    """Same clearing account, but the statement HAS been imported and
+    every entry reconciled → FULLY_RECONCILED stands."""
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSourceV2(
+        historical_recbals={0},
+        unreconciled_count=0,
+        entry_count=14,               # entries exist, all reconciled
+        last_statement_date=date(2026, 6, 7),
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BC020",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 7),
+        statement_closing=0.0,
+        current_rec_bal=0.0,
+    )
+    assert result.status is PeriodReconciliationStatus.FULLY_RECONCILED
+
+
+def test_repeating_balance_new_statement_not_marked_historical():
+    """A NEW statement (period end AFTER Opera's last reconcile) whose
+    closing happens to equal an old batch boundary must NOT be declared
+    'prior closed cycle'. It falls through to the period-aware stages.
+    """
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSourceV2(
+        historical_recbals={100000},   # £1,000.00 seen before
+        unreconciled_count=0,
+        entry_count=0,                 # nothing imported for this period
+        last_statement_date=date(2026, 5, 31),  # Opera last reconciled May
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BC025",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 30),  # June — post-dates last reconcile
+        statement_closing=1000.00,     # repeats the old boundary
+        current_rec_bal=2500.00,       # rec_bal moved on
+    )
+    # Must NOT be FULLY_RECONCILED via the historical shortcut
+    assert result.status is not PeriodReconciliationStatus.FULLY_RECONCILED
+    assert result.matched_historical_boundary is False
+
+
+def test_genuinely_historical_statement_still_promotes():
+    """A statement from a PRIOR cycle (period end on/before Opera's last
+    reconcile) with a matching boundary keeps the legacy behaviour."""
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSourceV2(
+        historical_recbals={5037738},
+        unreconciled_count=0,
+        entry_count=20,
+        last_statement_date=date(2026, 5, 31),  # last rec covers this period
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 3, 31),  # March — before last reconcile
+        statement_closing=50377.38,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.FULLY_RECONCILED
+    assert result.matched_historical_boundary is True
+
+
+def test_legacy_datasource_without_new_methods_keeps_old_behaviour():
+    """A DataSource lacking the 2026-06-10 methods (older integrations)
+    must degrade to the pre-guard behaviour, not crash."""
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSource(           # V1 — no new methods
+        historical_recbals={5037738},
+        unreconciled_count=0,
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BB005",
+        period_start=date(2026, 3, 1),
+        period_end=date(2026, 3, 31),
+        statement_closing=50377.38,
+        current_rec_bal=82557.56,
+    )
+    assert result.status is PeriodReconciliationStatus.FULLY_RECONCILED
+
+
+def test_entry_count_query_failure_returns_unknown():
+    """If the entry-count probe fails, be conservative: UNKNOWN (show,
+    don't auto-promote)."""
+    from sql_rag.period_reconciliation import (
+        check_period_reconciled,
+        PeriodReconciliationStatus,
+    )
+    ds = _FakeDataSourceV2(
+        historical_recbals=set(),
+        unreconciled_count=0,
+        raise_on_entry_count=RuntimeError("dbf locked"),
+    )
+    result = check_period_reconciled(
+        data_source=ds,
+        bank_code="BC020",
+        period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 7),
+        statement_closing=0.0,
+        current_rec_bal=0.0,
+    )
+    assert result.status is PeriodReconciliationStatus.UNKNOWN

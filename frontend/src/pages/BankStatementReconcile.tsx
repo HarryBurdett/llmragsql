@@ -2097,17 +2097,38 @@ export function BankStatementReconcile({ initialReconcileData = null, resumeImpo
       }
 
       if (data.success) {
-        // Mark the statement file as reconciled in the database
+        // Mark the statement file as reconciled in the database.
+        // Resolve the filename robustly: prefer the file-listing lookup,
+        // but fall back to the path basename — the lookup fails when the
+        // statement was loaded via email scan or the listing query is
+        // stale, and previously that silently skipped the marker, leaving
+        // the statement showing as "ready to process" forever.
         const selectedFileInfo = statementFilesQuery.data?.files?.find(f => f.path === statementPath);
-        if (selectedFileInfo?.filename) {
+        const markFilename = selectedFileInfo?.filename
+          || (statementPath ? statementPath.split('/').pop() : undefined);
+        if (markFilename) {
           try {
-            await authFetch(
-              `/api/statement-files/mark-reconciled?filename=${encodeURIComponent(selectedFileInfo.filename)}&bank_code=${selectedBank}&reconciled_count=${data.entries_reconciled}`,
+            const markRes = await authFetch(
+              `/api/statement-files/mark-reconciled?filename=${encodeURIComponent(markFilename)}&bank_code=${selectedBank}&reconciled_count=${data.entries_reconciled}`,
               { method: 'POST' }
             );
+            const markData = await markRes.json();
+            if (!markData.success) {
+              // No matching import record — surface it instead of
+              // swallowing. The statement will reappear in Load
+              // Statements until this is resolved.
+              console.warn('mark-reconciled found no matching import record for', markFilename);
+              showDialog({
+                title: 'Statement tracking incomplete',
+                message: `Reconciliation completed in Opera, but the statement record for "${markFilename}" could not be marked as reconciled (no matching import record). It may reappear in Load Statements — re-import it once to register it, then reconcile will stick.`,
+                type: 'warning',
+              });
+            }
           } catch (e) {
             console.warn('Could not mark statement as reconciled:', e);
           }
+        } else {
+          console.warn('mark-reconciled skipped — no filename resolvable from', statementPath);
         }
 
         // Use server-side partial flag (auto-detected when balance doesn't match)

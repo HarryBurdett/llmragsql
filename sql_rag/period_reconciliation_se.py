@@ -59,3 +59,36 @@ class OperaSEDataSource:
         if df is None or df.empty:
             return 0
         return int(df.iloc[0]['n'])
+
+    def query_entry_count_in_period(
+        self, bank_code: str, period_start: date, period_end: date
+    ) -> int:
+        """TOTAL aentry rows in the period (reconciled or not). Used to
+        distinguish 'all reconciled' from 'nothing imported yet' on
+        accounts whose balance repeats (e.g. swept-to-zero)."""
+        df = self._sql.execute_query(f"""
+            SELECT COUNT(*) AS n
+            FROM aentry WITH (NOLOCK)
+            WHERE ae_acnt = '{bank_code}'
+              AND ae_lstdate BETWEEN '{period_start.isoformat()}' AND '{period_end.isoformat()}'
+        """)
+        if df is None or df.empty:
+            return 0
+        return int(df.iloc[0]['n'])
+
+    def query_last_statement_date(self, bank_code: str):
+        """Opera's last completed-statement date (nbank.nk_lststdt) for
+        this bank, as a date, or None."""
+        df = self._sql.execute_query(f"""
+            SELECT nk_lststdt
+            FROM nbank WITH (NOLOCK)
+            WHERE RTRIM(nk_acnt) = '{bank_code}'
+        """)
+        if df is None or df.empty:
+            return None
+        v = df.iloc[0]['nk_lststdt']
+        if v is None or (hasattr(pd, 'isna') and pd.isna(v)):
+            return None
+        if hasattr(v, 'date'):
+            return v.date()
+        return v

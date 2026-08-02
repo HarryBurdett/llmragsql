@@ -4161,6 +4161,11 @@ async def import_bank_statement_from_pdf(
         # Import transactions one by one (same pattern as email import)
         imported = []
         errors = []
+        # Pre-posting duplicate-check hits ('cashbook entry X already
+        # posted') belong here, NOT in `errors`. They are a "held"
+        # outcome, not a failure. See
+        # docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md.
+        already_posted_rows = []
         skipped_not_selected = 0
         skipped_incomplete = 0
         skipped_duplicates = 0
@@ -4336,8 +4341,21 @@ async def import_bank_statement_from_pdf(
                     )
                     if dup_check['is_duplicate']:
                         skipped_duplicates += 1
-                        errors.append({"row": txn.row_number, "error": f"Skipped - {dup_check['details']}"})
-                        logger.warning(f"Row {txn.row_number}: Pre-posting duplicate detected - {dup_check['details']}")
+                        # Pre-posting duplicate is a "held" outcome, NOT a
+                        # failure — the system correctly prevented a
+                        # double-post. Surfacing it in `errors` made the
+                        # UI render "Import Failed" which alarmed the
+                        # operator unnecessarily.
+                        already_posted_rows.append({
+                            "row": txn.row_number,
+                            "amount": txn.amount,
+                            "date": txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date),
+                            "description": getattr(txn, 'name', '') or getattr(txn, 'memo', ''),
+                            "action": getattr(txn, 'action', None),
+                            "reason": dup_check['details'],
+                            "opera_entry_ref": dup_check.get('entry_number'),
+                        })
+                        logger.info(f"Row {txn.row_number}: Pre-posting duplicate detected (held) - {dup_check['details']}")
                         # Claim the matched entry so the next identical-amount
                         # txn doesn't re-detect it.
                         en = dup_check.get('entry_number')
@@ -4414,8 +4432,23 @@ async def import_bank_statement_from_pdf(
         # Build result. Treat deferred-only outcome as success too — the
         # operator's intent (defer the row) was honoured even though no
         # Opera write happened.
+        # `success` reflects whether anything actually failed — held
+        # rows (duplicates, blocked periods) are NOT failures. See
+        # docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md.
+        from apps.bank_reconcile.logic.import_outcomes import build_import_outcomes
+        outcome_payload = build_import_outcomes(
+            imported=imported,
+            already_posted=already_posted_rows,
+            errors=errors,
+        )
         result = {
-            "success": len(imported) > 0 or deferred_count > 0,
+            # Legacy field — kept for backwards compatibility with any
+            # caller that still keys off it. New UI should read `summary`.
+            "success": outcome_payload['success'],
+            # New canonical shape — three-state outcome reporting.
+            "summary": outcome_payload['summary'],
+            "counts": outcome_payload['counts'],
+            "outcomes": outcome_payload['outcomes'],
             "imported_count": len(imported),
             "imported_transactions_count": len(imported),
             "deferred_count": deferred_count,
@@ -4428,6 +4461,8 @@ async def import_bank_statement_from_pdf(
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
             "skipped_duplicates": skipped_duplicates,
+            "already_posted_count": len(already_posted_rows),
+            "already_posted_rows": already_posted_rows,
             "imported_transactions": imported,
             "errors": errors,
             "auto_allocate_enabled": auto_allocate,
@@ -4437,7 +4472,14 @@ async def import_bank_statement_from_pdf(
         # Record in import history. Also fire when only deferred rows exist
         # so Sequential Statement Gating can derive `state='imported'` and the
         # operator can move on to the next statement.
-        if len(imported) > 0 or deferred_count > 0:
+        #
+        # ALSO fire when every row was already posted (held): the statement
+        # IS fully represented in Opera, so it must be tracked — otherwise
+        # the subsequent reconcile has no record to mark `is_reconciled=1`
+        # against, and the statement reappears in Load Statements as "ready
+        # to process" forever. See docs/superpowers/specs/
+        # 2026-06-10-bank-statement-partial-posting-design.md.
+        if len(imported) > 0 or deferred_count > 0 or len(already_posted_rows) > 0:
             total_receipts = result.get('receipts_imported', 0)
             total_payments = result.get('payments_imported', 0)
             transactions_imported = total_receipts + total_payments
@@ -5012,6 +5054,9 @@ async def import_with_manual_overrides(
         # Import transactions (all 4 action types), only importing selected rows
         imported = []
         errors = []
+        # Held outcomes (e.g. already-posted) live here, not in `errors`.
+        # See docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md.
+        already_posted_rows = []
         skipped_not_selected = 0
         skipped_incomplete = 0
 
@@ -5168,8 +5213,11 @@ async def import_with_manual_overrides(
         allocations_attempted = sum(1 for t in imported if t.get('allocation_result'))
         allocations_successful = sum(1 for t in imported if t.get('allocated', False))
 
-        # Record import in history (for file imports)
-        if len(imported) > 0 and email_storage:
+        # Record import in history (for file imports).
+        # Fires on posted rows AND on all-already-posted runs — the
+        # statement is fully in Opera either way and must be tracked so
+        # the subsequent reconcile can mark it `is_reconciled=1`.
+        if (len(imported) > 0 or len(already_posted_rows) > 0) and email_storage:
             try:
                 email_storage.record_bank_statement_import(
                     bank_code=bank_code,
@@ -5282,8 +5330,19 @@ async def import_with_manual_overrides(
                     "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
                 }
 
+        from apps.bank_reconcile.logic.import_outcomes import build_import_outcomes
+        outcome_payload = build_import_outcomes(
+            imported=imported,
+            already_posted=already_posted_rows,
+            errors=errors,
+        )
         return {
-            "success": len(imported) > 0,  # Success if any transactions were imported
+            # Legacy field — kept for backwards compat. New UI reads `summary`.
+            # See docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md.
+            "success": outcome_payload['success'],
+            "summary": outcome_payload['summary'],
+            "counts": outcome_payload['counts'],
+            "outcomes": outcome_payload['outcomes'],
             "imported_count": len(imported),
             "imported_transactions_count": len(imported),  # Frontend expects this name
             "receipts_imported": receipts_imported,
@@ -5294,6 +5353,8 @@ async def import_with_manual_overrides(
             "total_payments": total_payments,
             "skipped_not_selected": skipped_not_selected,
             "skipped_incomplete": skipped_incomplete,
+            "already_posted_count": len(already_posted_rows),
+            "already_posted_rows": already_posted_rows,
             "imported_transactions": imported,
             "errors": errors,
             "auto_allocate_enabled": auto_allocate,
@@ -9481,6 +9542,10 @@ async def import_bank_statement_from_email(
         # Import transactions
         imported = []
         errors = []
+        # Pre-posting duplicate-check hits ('cashbook entry X already
+        # posted') belong here, NOT in `errors`. See
+        # docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md.
+        already_posted_rows = []
         skipped_not_selected = 0
         skipped_incomplete = 0
         skipped_duplicates = 0
@@ -9604,8 +9669,21 @@ async def import_bank_statement_from_email(
                     )
                     if dup_check['is_duplicate']:
                         skipped_duplicates += 1
-                        errors.append({"row": txn.row_number, "error": f"Skipped - {dup_check['details']}"})
-                        logger.warning(f"Row {txn.row_number}: Pre-posting duplicate detected - {dup_check['details']}")
+                        # Pre-posting duplicate is a "held" outcome, NOT a
+                        # failure — the system correctly prevented a
+                        # double-post. Surfacing it in `errors` made the
+                        # UI render "Import Failed" which alarmed the
+                        # operator unnecessarily.
+                        already_posted_rows.append({
+                            "row": txn.row_number,
+                            "amount": txn.amount,
+                            "date": txn.date.isoformat() if hasattr(txn.date, 'isoformat') else str(txn.date),
+                            "description": getattr(txn, 'name', '') or getattr(txn, 'memo', ''),
+                            "action": getattr(txn, 'action', None),
+                            "reason": dup_check['details'],
+                            "opera_entry_ref": dup_check.get('entry_number'),
+                        })
+                        logger.info(f"Row {txn.row_number}: Pre-posting duplicate detected (held) - {dup_check['details']}")
                         # Claim the matched entry so the next identical-amount
                         # txn doesn't re-detect it.
                         en = dup_check.get('entry_number')
@@ -9697,8 +9775,11 @@ async def import_bank_statement_from_email(
         allocations_attempted = sum(1 for t in imported if t.get('allocation_result'))
         allocations_successful = sum(1 for t in imported if t.get('allocated', False))
 
-        # Record successful import in tracking table
-        if len(imported) > 0:
+        # Record successful import in tracking table.
+        # Fires on posted rows AND on all-already-posted runs — the
+        # statement is fully in Opera either way and must be tracked so
+        # the subsequent reconcile can mark it `is_reconciled=1`.
+        if len(imported) > 0 or len(already_posted_rows) > 0:
             # Build statement metadata from extraction if available
             stmt_opening = None
             stmt_closing = None
@@ -9924,9 +10005,20 @@ async def import_bank_statement_from_email(
                     "messages": [f"Auto-reconciliation error: {str(recon_err)}"]
                 }
 
+        from apps.bank_reconcile.logic.import_outcomes import build_import_outcomes
+        outcome_payload = build_import_outcomes(
+            imported=imported,
+            already_posted=already_posted_rows,
+            errors=errors,
+        )
         release_import_lock(_bank_lock_key(bank_code))
         return {
-            "success": len(imported) > 0,  # Success if any transactions were imported
+            # Legacy field — kept for backwards compat. New UI reads `summary`.
+            # See docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md.
+            "success": outcome_payload['success'],
+            "summary": outcome_payload['summary'],
+            "counts": outcome_payload['counts'],
+            "outcomes": outcome_payload['outcomes'],
             "source": "email",
             "email_id": email_id,
             "attachment_id": attachment_id,
@@ -9934,6 +10026,8 @@ async def import_bank_statement_from_email(
             "import_id": import_record_id if len(imported) > 0 else None,
             "imported_count": len(imported),
             "imported_transactions_count": len(imported),  # Frontend expects this name
+            "already_posted_count": len(already_posted_rows),
+            "already_posted_rows": already_posted_rows,
             "receipts_imported": receipts_imported,
             "payments_imported": payments_imported,
             "refunds_imported": refunds_imported,
@@ -13282,6 +13376,9 @@ async def opera3_import_bank_statement_from_pdf(
         # Build response - include already-posted lines from previous partial import
         imported = []
         errors = []
+        # Held outcomes (already-posted, period-blocked) live here, not in `errors`.
+        # See docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md.
+        already_posted_rows = []
 
         for row_num, entry_num in already_posted_o3.items():
             imported.append({
@@ -13417,7 +13514,10 @@ async def opera3_import_bank_statement_from_pdf(
         # Record in import history and persist statement transactions.
         # Also fire when only deferred rows exist so Sequential Statement
         # Gating can derive `state='imported'` and unblock the next statement.
-        if (len(imported) > 0 or deferred_count > 0) and email_storage:
+        # ALSO fire on all-already-posted runs — the statement is fully in
+        # Opera and must be tracked so the reconcile can mark it (parity
+        # with the SE endpoints — see 2026-06-10 partial-posting spec).
+        if (len(imported) > 0 or deferred_count > 0 or len(already_posted_rows) > 0) and email_storage:
             try:
                 current_user = getattr(request.state, 'user', None)
                 imported_by = current_user.get('username', 'Unknown') if current_user else 'Unknown'
@@ -13523,9 +13623,19 @@ async def opera3_import_bank_statement_from_pdf(
             except Exception as e:
                 logger.warning(f"Could not learn patterns (Opera 3 PDF): {e}")
 
+        from apps.bank_reconcile.logic.import_outcomes import build_import_outcomes
+        outcome_payload = build_import_outcomes(
+            imported=imported,
+            already_posted=already_posted_rows,
+            errors=errors,
+        )
         return {
             # Treat deferred-only outcome as success — operator's intent was honoured.
-            "success": len(imported) > 0 or deferred_count > 0,
+            # Legacy field — kept for backwards compat. New UI reads `summary`.
+            "success": outcome_payload['success'],
+            "summary": outcome_payload['summary'],
+            "counts": outcome_payload['counts'],
+            "outcomes": outcome_payload['outcomes'],
             "source": "opera3",
             "data_path": data_path,
             "filename": filename,
@@ -13536,6 +13646,8 @@ async def opera3_import_bank_statement_from_pdf(
             "transfers_imported": transfers_imported,
             "total_receipts": total_receipts,
             "total_payments": total_payments,
+            "already_posted_count": len(already_posted_rows),
+            "already_posted_rows": already_posted_rows,
             "imported_transactions": imported,
             "errors": errors,
             "auto_allocate_enabled": auto_allocate,

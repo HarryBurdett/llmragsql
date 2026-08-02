@@ -9955,18 +9955,57 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
               </div>
             )}
 
-            {/* Import Results */}
-            {bankImportResult && (
-              <div ref={importResultRef} className={`p-4 rounded-lg ${bankImportResult.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+            {/* Import Results
+                 Banner is driven by the backend's `summary` field —
+                 see docs/superpowers/specs/2026-06-10-bank-statement-partial-posting-design.md.
+                 We distinguish three outcomes: posted / held / failed.
+                 Held (duplicates, blocked periods) is NOT red. */}
+            {bankImportResult && (() => {
+              // Determine banner from `summary` if present, else fall back to legacy `success`.
+              type BannerCfg = { tone: 'green' | 'red' | 'neutral'; title: string };
+              const summary: string | undefined = bankImportResult.summary;
+              const counts = bankImportResult.counts || {};
+              const posted = counts.posted ?? bankImportResult.imported_transactions_count ?? 0;
+              const held = counts.held ?? bankImportResult.already_posted_count ?? 0;
+              const failed = counts.failed ?? (bankImportResult.errors?.length ?? 0);
+              let cfg: BannerCfg;
+              if (summary === 'failed' || (!summary && !bankImportResult.success)) {
+                cfg = { tone: 'red', title: `Import failed — ${failed} transaction${failed === 1 ? '' : 's'} couldn't post` };
+              } else if (summary === 'all_already_posted') {
+                cfg = { tone: 'green', title: `Already on file — all ${held} transactions previously imported` };
+              } else if (summary === 'nothing_to_import') {
+                cfg = { tone: 'neutral', title: 'Nothing to import' };
+              } else if (summary === 'partial' || (summary === undefined && bankImportResult.success && held > 0)) {
+                cfg = { tone: 'green', title: `Imported ${posted} — ${held} held, see below` };
+              } else {
+                cfg = { tone: 'green', title: `Imported ${posted} transaction${posted === 1 ? '' : 's'}` };
+              }
+              const containerCls =
+                cfg.tone === 'red' ? 'bg-red-50 border border-red-200'
+                : cfg.tone === 'neutral' ? 'bg-gray-50 border border-gray-200'
+                : 'bg-green-50 border border-green-200';
+              const titleCls =
+                cfg.tone === 'red' ? 'text-red-800'
+                : cfg.tone === 'neutral' ? 'text-gray-800'
+                : 'text-green-800';
+              return (
+              <div ref={importResultRef} className={`p-4 rounded-lg ${containerCls}`}>
                 <div className="flex items-center gap-2 mb-2">
-                  {bankImportResult.success ? (
-                    <CheckCircle className="h-5 w-5 text-green-600" />
-                  ) : (
+                  {cfg.tone === 'red' ? (
                     <XCircle className="h-5 w-5 text-red-600" />
+                  ) : cfg.tone === 'neutral' ? (
+                    <CheckCircle className="h-5 w-5 text-gray-500" />
+                  ) : (
+                    <CheckCircle className="h-5 w-5 text-green-600" />
                   )}
-                  <h3 className={`font-semibold ${bankImportResult.success ? 'text-green-800' : 'text-red-800'}`}>
-                    {bankImportResult.success ? 'Import Completed' : 'Import Failed'}
+                  <h3 className={`font-semibold ${titleCls}`}>
+                    {cfg.title}
                   </h3>
+                  {held > 0 && cfg.tone !== 'red' && (
+                    <span className="ml-2 inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded">
+                      {held} held
+                    </span>
+                  )}
                 </div>
                 {bankImportResult.imported_transactions_count !== undefined && (
                   <div className="text-sm text-gray-700">
@@ -10113,9 +10152,26 @@ export function Imports({ bankRecOnly = false, initialStatement = null, resumeIm
                     ))}
                   </ul>
                 )}
+                {/* Held rows — duplicates / blocked periods. Amber, informational. */}
+                {bankImportResult.already_posted_rows && bankImportResult.already_posted_rows.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="text-xs text-amber-700 cursor-pointer hover:text-amber-900">
+                      {bankImportResult.already_posted_rows.length} held — already on file
+                    </summary>
+                    <ul className="mt-1 ml-4 list-disc list-inside text-xs text-amber-700 space-y-0.5">
+                      {bankImportResult.already_posted_rows.map((r: any, idx: number) => (
+                        <li key={idx}>
+                          Row {r.row}: £{(typeof r.amount === 'number' ? r.amount : 0).toFixed(2)} — {r.reason || 'already posted'}
+                          {r.opera_entry_ref ? ` (${r.opera_entry_ref})` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
 
               </div>
-            )}
+              );
+            })()}
 
             {/* ===== STAGE 5: RECONCILE ===== */}
             {((bankImportResult?.success && showReconcilePrompt) || allAlreadyInOpera || allItemsHandled) && bankPreview && (

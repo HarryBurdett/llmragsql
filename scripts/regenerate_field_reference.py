@@ -67,6 +67,12 @@ REQUIRED_KEYS = {"name", "module", "changes"}
 def discover_snapshots(library_dir: Path) -> List[Path]:
     """Return every *.json file in library_dir, sorted lexicographically.
 
+    Scans both the flat root (for pre-2026-05-12 entries) AND the
+    engine-specific subfolders (opera_se/, opera_3/) introduced on
+    2026-05-12 in commit 16bf957. Without the subfolder scan the
+    rollup silently goes stale — none of the post-reorg entries land
+    in COMPLETE_FIELD_REFERENCE.md.
+
     Excludes the rollup itself (COMPLETE_FIELD_REFERENCE.md) and any
     non-JSON files. Order is deterministic — sort by filename.
     """
@@ -74,7 +80,17 @@ def discover_snapshots(library_dir: Path) -> List[Path]:
         raise FileNotFoundError(
             f"snapshot library directory not found: {library_dir}"
         )
-    return sorted(library_dir.glob("*.json"))
+    # Flat root + engine subfolders. Deduplicate by filename in case the
+    # same entry exists at both layers (shouldn't, but be defensive).
+    candidates: dict[str, Path] = {}
+    for p in library_dir.glob("*.json"):
+        candidates[p.name] = p
+    for sub in ("opera_se", "opera_3"):
+        sub_path = library_dir / sub
+        if sub_path.is_dir():
+            for p in sub_path.glob("*.json"):
+                candidates[p.name] = p
+    return sorted(candidates.values(), key=lambda p: p.name)
 
 
 def load_and_validate(path: Path) -> Dict[str, Any]:
@@ -274,7 +290,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not output.exists():
             print(f"STALE: {output} does not exist.", file=sys.stderr)
             return 1
-        existing = output.read_text(encoding="utf-8")
+        # Read with newline='' so Python's universal-newlines mode does
+        # NOT silently translate any '\r' bytes in the file to '\n'. Some
+        # snapshot source data carries embedded CR characters (e.g. old
+        # multi-line Opera memo fields) that the renderer preserves; the
+        # write path stores those as-is, so the read path must also
+        # leave them alone or the comparison reports false STALE.
+        # (Path.read_text gained `newline=` only in 3.13 — use open().)
+        with open(output, "r", encoding="utf-8", newline="") as f:
+            existing = f.read()
         if existing != rendered:
             print(f"STALE: {output} differs from regenerated content.", file=sys.stderr)
             return 1

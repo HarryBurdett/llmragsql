@@ -366,6 +366,56 @@ export interface CashflowForecastResponse {
   error?: string;
 }
 
+/* === SAM Cashflow plugin response types === */
+export interface CashflowPluginBankPosition {
+  code: string;
+  description: string;
+  balance: number;
+}
+
+export interface CashflowPluginMonthSources {
+  commitments_in: number;
+  commitments_out: number;
+  recurring_in: number;
+  recurring_out: number;
+  historical_in: number;
+  historical_out: number;
+}
+
+export interface CashflowPluginMonth {
+  month: string; // YYYY-MM
+  label: string;
+  expected_receipts: number;
+  expected_payments: number;
+  net_cashflow: number;
+  running_balance: number;
+  sources: CashflowPluginMonthSources;
+}
+
+export interface CashflowPluginForecastResponse {
+  success: boolean;
+  as_of_date: string;
+  current_position: {
+    bank_total: number;
+    bank_accounts: CashflowPluginBankPosition[];
+    debtors_outstanding: number;
+    creditors_outstanding: number;
+    net_working_capital: number;
+  };
+  monthly_forecast: CashflowPluginMonth[];
+  totals: {
+    total_receipts: number;
+    total_payments: number;
+    net_position: number;
+    opening_balance: number;
+    closing_balance: number;
+    lowest_balance: number;
+    lowest_balance_month: string | null;
+  };
+  assumptions: string[];
+  error?: string;
+}
+
 export interface YearlyHistory {
   year: number;
   total_receipts: number;
@@ -1272,13 +1322,30 @@ export const apiClient = {
   supplierDirectory: (search?: string) =>
     api.get<SupplierDirectoryResponse>('/supplier-directory', { params: search ? { search } : {} }),
 
-  // Cashflow Forecast
+  // Cashflow Forecast (legacy /api/cashflow/* endpoints)
   cashflowForecast: (yearsHistory = 3) =>
     api.get<CashflowForecastResponse>('/cashflow/forecast', {
       params: { years_history: yearsHistory },
     }),
   cashflowHistory: () =>
     api.get<CashflowHistoryResponse>('/cashflow/history'),
+
+  /**
+   * Forward Cashflow forecast — driven by Opera commitments
+   * (outstanding stran/ptran with due dates), recurring entries
+   * (arhead/arline), and 12-month historical averages.
+   *
+   * Backed by apps/cashflow/api/routes.py:/api/cashflow-forecast.
+   * The TypeScript SAM plugin at apps-sam/cashflow/ mirrors this
+   * endpoint for when SAM becomes the deployment target.
+   */
+  cashflowPluginForecast: (asOfDate?: string, monthsAhead?: number) =>
+    api.get<CashflowPluginForecastResponse>('/cashflow-forecast', {
+      params: {
+        ...(asOfDate ? { as_of_date: asOfDate } : {}),
+        ...(monthsAhead !== undefined ? { months: monthsAhead } : {}),
+      },
+    }),
 
   // Sales Dashboards
   dashboardCeoKpis: (year = 2026) =>

@@ -78,3 +78,41 @@ class Opera3DataSource:
             if period_start <= lstdate <= period_end:
                 n += 1
         return n
+
+    def query_entry_count_in_period(
+        self, bank_code: str, period_start: date, period_end: date
+    ) -> int:
+        """TOTAL aentry rows in the period (reconciled or not) — parity
+        with OperaSEDataSource.query_entry_count_in_period."""
+        n = 0
+        for row in self._aentry_rows():
+            acnt = _row_get(row, 'ae_acnt')
+            if not acnt or str(acnt).strip() != bank_code:
+                continue
+            lstdate = _row_get(row, 'ae_lstdate')
+            if lstdate is None:
+                continue
+            if hasattr(lstdate, 'date'):
+                lstdate = lstdate.date()
+            if period_start <= lstdate <= period_end:
+                n += 1
+        return n
+
+    def query_last_statement_date(self, bank_code: str):
+        """Opera's last completed-statement date (nbank.nk_lststdt) —
+        parity with OperaSEDataSource.query_last_statement_date."""
+        try:
+            rows = self._reader.read_table('nbank')
+        except Exception:
+            return None
+        for row in rows:
+            acnt = _row_get(row, 'nk_acnt')
+            if not acnt or str(acnt).strip() != bank_code:
+                continue
+            v = _row_get(row, 'nk_lststdt')
+            if v is None:
+                return None
+            if hasattr(v, 'date'):
+                return v.date()
+            return v
+        return None

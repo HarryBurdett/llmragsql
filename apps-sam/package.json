@@ -7,6 +7,7 @@
   "workspaces": [
     "shared",
     "balance-check",
+    "cashflow",
     "gocardless",
     "bank-reconcile",
     "suppliers",

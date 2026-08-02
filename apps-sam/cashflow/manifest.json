@@ -1,0 +1,28 @@
+{
+  "id": "cashflow",
+  "name": "Cashflow",
+  "description": "Forward cashflow forecast against Opera SE — current bank position, outstanding ledger commitments (debtors/creditors with due dates), recurring entries, and 12-month historical averages. Read-only.",
+  "version": "1.0.0",
+  "author": "IntSys",
+  "category": "finance",
+  "type": "full-stack",
+  "minSamVersion": "1.0.0",
+  "frontend": {
+    "entryComponent": "Cashflow",
+    "basePath": "/cashflow",
+    "navLabel": "Cashflow",
+    "navIcon": "TrendingUp",
+    "requiredSharedDeps": ["react", "react-dom", "react-router-dom"]
+  },
+  "backend": {
+    "routePrefix": "/api/apps/cashflow",
+    "requiresDatabase": true,
+    "databaseType": "opera-se",
+    "separateDatabase": false,
+    "internalApiPrefix": "/api"
+  },
+  "permissions": [
+    "opera:read",
+    "sam:config:read"
+  ]
+}
