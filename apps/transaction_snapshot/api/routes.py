@@ -904,6 +904,28 @@ PRESETS = [
     {'module': 'fc', 'name': 'FC Purchase Invoice (foreign supplier)', 'description': 'Purchase invoice from a FOREIGN-currency supplier — FC origination on the PL side (pt_fcurr/pt_fcrate/pt_fcval/pt_fcbal + pname FC balances).'},
     {'module': 'fc', 'name': 'Exchange Rate Update (zxchg)', 'description': 'Update a currency\'s rate in Opera\'s exchange-rate table — zxchg delta only; shows which fields apps read for rate sourcing and whether history is kept.'},
     {'module': 'fc', 'name': 'FC Revaluation (period-end)', 'description': 'Foreign Currency Revaluation routine after a rate move — unrealised gain/loss postings + *_fcbal restatements on open FC balances.'},
+
+    # --- Parity-harness gaps (added 2026-08-02) -------------------------------
+    # bank-rec's automated Opera-parity test (tests/golden-master/
+    # opera-parity.test.ts) compares the tables OUR postings write against the
+    # tables OPERA writes. It can only compare like with like: RTU mode and VAT
+    # presence both change a posting's table footprint legitimately, so a
+    # capture taken in a different mode is skipped as incomparable.
+    #
+    # Three of its seven scenarios are skipped today for exactly that reason.
+    # These three presets close them, taking coverage from 4/7 to 7/7. The
+    # CONFIGURATION IS THE POINT — capture each in the stated mode or it will
+    # not match and the gap stays open.
+    #
+    # RTU = Nominal > Utilities > Set Options > Real Time Update NL
+    #       (seqco.co_rtupdnl). ON writes ntran immediately; OFF queues anoml
+    #       memos for the NL transfer to build ntran later.
+    {'module': 'bank_transfer', 'name': 'Bank Transfer — RTU OFF (parity gap 1 of 3)',
+     'description': 'A normal internal bank-to-bank transfer, but captured with Real Time Update NL switched OFF. Expect the two mirrored cashbook sides (2x aentry + 2x atran) and 2x anoml memos, and NO ntran — the NL transfer builds those later. Our bank-transfer test scenario runs RTU-off, so the existing RTU-on capture cannot be compared against it. Turn RTU off, post the transfer, capture, then put RTU back as it was.'},
+    {'module': 'cashbook', 'name': 'Nominal Payment with VAT — RTU ON (parity gap 2 of 3)',
+     'description': 'A nominal payment carrying a VAT code, captured with Real Time Update NL switched ON. Expect aentry + atran, the net/VAT split across anoml, AND ntran written immediately, plus nacnt/nhist. The existing "Nominal Payment with VAT" capture was taken RTU-off so it cannot be compared with our RTU-on scenario. This capture should also settle whether Opera writes nvat or zvtran at posting on an RTU-on nominal payment — two existing captures disagree and it has never been resolved from live evidence.'},
+    {'module': 'cashbook', 'name': 'Nominal Payment — NO VAT (parity gap 3 of 3)',
+     'description': 'A nominal payment with NO VAT code on any line — e.g. a bank charge, or wages to a non-VAT nominal. Expect no VAT table touched at all. Our multi-line-nominal scenario posts no VAT, so today it is compared against a VAT-bearing capture and skipped. Use two or more analysis lines if convenient, so the per-line writes separate.'},
 ]
 
 # Opera 3 write-feature checklist — the golden masters we need to capture
