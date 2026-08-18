@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>APAssist — marketing screen mock-ups</title>
+<!--
+  APAssist screen mock-ups for marketing material.
+
+  Faithful to the real APAssist UI (frontend/src/components/AppShell.tsx +
+  Sidebar.tsx): white 14rem sidebar with the eight real nav labels, gray-50
+  content area, company switcher top-right, white cards with gray-200 borders,
+  blue-50/blue-700 active state. KPI top-borders, badge and table treatments
+  follow the house convention in generate_screenshots.py.
+
+  Data shapes match the real app:
+    dashboard.ts     — statementsThisMonth, pendingApprovals, openQueries,
+                       matchRate, needsAttention.*, agedCreditorSummary.totals
+    statements.ts    — StatementLine.match_status Matched|Query|Manual|Unmatched,
+                       opera_state, opera_outstanding; OperaOnlyLine.pt_*
+    enquiries.ts     — EnquirySummary, Communication.direction, InvoiceRef
+
+  SUPPLIER NAMES ARE INVENTED. Do not substitute real client names — this
+  material is shown to prospects.
+
+  Each .screen is exactly 1280x800 for capture. To render as PNGs:
+    npx playwright screenshot --viewport-size=1280,800 \
+      "file://$PWD/apassist-screens.html#dashboard" ../screenshots/apassist-dashboard.png
+  or drive it with the Playwright MCP / recapture pattern used for
+  demos/gocardless-overview/.
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    background: #64748b;
+    color: #0f172a;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    align-items: flex-start;
+  }
+
+  .screen {
+    width: 1280px;
+    height: 800px;
+    display: flex;
+    background: #f9fafb;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  }
+
+  /* ---------- sidebar (real APAssist chrome) ---------- */
+
+  .sb { width: 224px; background: #ffffff; border-right: 1px solid #e5e7eb; padding: 12px; flex-shrink: 0; }
+  .sb-brand { padding: 4px 8px 14px; font-size: 18px; font-weight: 700; color: #111827; }
+  .sb-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-radius: 6px;
+    font-size: 13.5px; font-weight: 500; color: #4b5563;
+    margin-bottom: 2px;
+  }
+  .sb-item.on { background: #eff6ff; color: #1d4ed8; }
+  .sb-ic { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+
+  /* ---------- frame ---------- */
+
+  .fr { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .hd {
+    display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+    border-bottom: 1px solid #e5e7eb; background: #fff; padding: 11px 24px;
+  }
+  .co {
+    display: flex; align-items: center; gap: 7px;
+    border: 1px solid #d1d5db; border-radius: 6px; padding: 5px 10px;
+    font-size: 12.5px; color: #374151; background: #fff;
+  }
+  .co b { font-weight: 600; color: #111827; }
+  .av { width: 26px; height: 26px; border-radius: 50%; background: #2563eb; color: #fff; font-size: 10.5px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+  .bd { padding: 22px 24px; flex: 1; overflow: hidden; }
+
+  h1 { font-size: 19px; font-weight: 700; letter-spacing: -0.02em; color: #111827; }
+  .sub { font-size: 12.5px; color: #6b7280; margin-top: 3px; }
+  .ph { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 16px; }
+
+  /* ---------- kpi ---------- */
+
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .kpi { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px 14px; position: relative; overflow: hidden; }
+  .kpi::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 3px; }
+  .kpi.b::before { background: #3b82f6; }
+  .kpi.g::before { background: #10b981; }
+  .kpi.a::before { background: #f59e0b; }
+  .kpi.r::before { background: #f43f5e; }
+  .kpi-l { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; margin-bottom: 5px; }
+  .kpi-v { font-size: 23px; font-weight: 700; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; color: #111827; }
+  .kpi-s { font-size: 11px; color: #6b7280; margin-top: 2px; }
+
+  /* ---------- cards ---------- */
+
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+  .card-h { padding: 11px 14px; border-bottom: 1px solid #f3f4f6; display: flex; align-items: center; justify-content: space-between; }
+  .card-h h3 { font-size: 12.5px; font-weight: 600; color: #111827; }
+  .card-h span { font-size: 11px; color: #6b7280; }
+  .cols { display: grid; gap: 12px; }
+  .c-2 { grid-template-columns: 1.35fr 1fr; }
+
+  /* ---------- tables ---------- */
+
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  th {
+    background: #f9fafb; text-align: left; padding: 8px 12px;
+    font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #6b7280; border-bottom: 1px solid #e5e7eb; white-space: nowrap;
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid #f3f4f6; color: #374151; white-space: nowrap; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td.ref { font-weight: 600; color: #111827; }
+  tr.q { background: #fffbeb; }
+  tr.ok { background: #f0fdf4; }
+
+  /* ---------- badges ---------- */
+
+  .bg { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; }
+  .bg-g { background: #dcfce7; color: #15803d; }
+  .bg-a { background: #fef3c7; color: #92400e; }
+  .bg-r { background: #fee2e2; color: #b91c1c; }
+  .bg-b { background: #dbeafe; color: #1d4ed8; }
+  .bg-v { background: #ede9fe; color: #6d28d9; }
+  .bg-n { background: #f3f4f6; color: #4b5563; }
+
+  /* ---------- banners / buttons ---------- */
+
+  .ban { display: flex; align-items: flex-start; gap: 9px; padding: 11px 13px; border-radius: 7px; font-size: 12px; margin-bottom: 14px; line-height: 1.45; }
+  .ban-a { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+  .ban-b { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+  .ban-g { background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; }
+  .ban b { font-weight: 700; }
+
+  .btn { padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; border: 1px solid transparent; }
+  .btn-p { background: #2563eb; color: #fff; }
+  .btn-o { background: #fff; color: #374151; border-color: #d1d5db; }
+  .btn-g { background: #059669; color: #fff; }
+  .btns { display: flex; gap: 8px; }
+
+  /* ---------- enquiry thread ---------- */
+
+  .msg { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; margin-bottom: 10px; background: #fff; }
+  .msg-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #f9fafb; border-bottom: 1px solid #f3f4f6; font-size: 11px; color: #6b7280; }
+  .msg-h b { color: #111827; font-size: 11.5px; }
+  .msg-b { padding: 11px 13px; font-size: 12.5px; line-height: 1.55; color: #374151; }
+  .msg-b .hl { background: #fef9c3; padding: 0 2px; border-radius: 2px; }
+
+  .meta { display: grid; grid-template-columns: repeat(2, auto); gap: 6px 22px; font-size: 12px; color: #6b7280; }
+  .meta b { color: #111827; font-weight: 600; }
+
+  .mono { font-family: ui-monospace, 'SF Mono', Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+  /* ---------- aged bars ---------- */
+
+  .bar { height: 6px; border-radius: 3px; background: #f3f4f6; overflow: hidden; display: flex; }
+  .bar i { display: block; height: 100%; }
+
+  .cap { color: #fff; font-size: 12px; font-family: ui-monospace, monospace; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.85; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════ 1 · DASHBOARD ══════════════ -->
+<div class="cap">apassist-dashboard.png</div>
+<div class="screen" id="dashboard">
+  <aside class="sb">
+    <div class="sb-brand">APAssist</div>
+    <div class="sb-item on"><svg class="sb-ic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>Statement Queue</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>Enquiries</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M22 7l-8.5 8.5-4-4L2 19"/><path d="M16 7h6v6"/></svg>Aged Creditors</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/></svg>Suppliers</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Invoice Status</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 7l8 6 8-6"/></svg>Unassigned Email</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.82 1.17V21a2 2 0 11-4 0v-.09A1.65 1.65 0 007 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 003.6 15a1.65 1.65 0 00-1.51-1H2a2 2 0 110-4h.09A1.65 1.65 0 003.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 3.6V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0020.4 9V9a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</div>
+  </aside>
+  <div class="fr">
+    <div class="hd">
+      <div class="co">Company <b>Ashfield Group (A)</b></div>
+      <div class="av">FD</div>
+    </div>
+    <div class="bd">
+      <div class="ph">
+        <div>
+          <h1>Dashboard</h1>
+          <div class="sub">Supplier statements and payment enquiries &mdash; August 2026</div>
+        </div>
+        <div class="btns"><button class="btn btn-o">Daily digest</button></div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi b"><div class="kpi-l">Statements this month</div><div class="kpi-v">34</div><div class="kpi-s">28 reconciled without a touch</div></div>
+        <div class="kpi g"><div class="kpi-l">Match rate</div><div class="kpi-v">94%</div><div class="kpi-s">of statement lines matched</div></div>
+        <div class="kpi a"><div class="kpi-l">Open queries</div><div class="kpi-v">11</div><div class="kpi-s">3 past their SLA</div></div>
+        <div class="kpi r"><div class="kpi-l">Needs a person</div><div class="kpi-v">4</div><div class="kpi-s">held drafts and conflicts</div></div>
+      </div>
+
+      <div class="cols c-2">
+        <div class="card">
+          <div class="card-h"><h3>Recent statements</h3><span>Last 7 days</span></div>
+          <table>
+            <thead><tr><th>Supplier</th><th>Statement date</th><th class="n">Lines</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td class="ref">A014 &middot; Northgate Supplies</td><td class="mono">31/07/2026</td><td class="n mono">18</td><td><span class="bg bg-g">completed</span></td></tr>
+              <tr><td class="ref">A032 &middot; Trellis Components</td><td class="mono">31/07/2026</td><td class="n mono">24</td><td><span class="bg bg-a">has queries</span></td></tr>
+              <tr><td class="ref">A008 &middot; Ashcroft Packaging</td><td class="mono">31/07/2026</td><td class="n mono">9</td><td><span class="bg bg-g">completed</span></td></tr>
+              <tr><td class="ref">A045 &middot; Barrowfield Steel</td><td class="mono">30/07/2026</td><td class="n mono">31</td><td><span class="bg bg-b">acknowledged</span></td></tr>
+              <tr><td class="ref">A021 &middot; Calder Electrical</td><td class="mono">30/07/2026</td><td class="n mono">6</td><td><span class="bg bg-g">completed</span></td></tr>
+              <tr><td class="ref">A003 &middot; Marchwood Timber</td><td class="mono">29/07/2026</td><td class="n mono">12</td><td><span class="bg bg-n">processing</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div class="card">
+            <div class="card-h"><h3>Needs attention</h3></div>
+            <table>
+              <tbody>
+                <tr><td>Statements with queries</td><td class="n"><span class="bg bg-a">6</span></td></tr>
+                <tr><td>Queries past SLA</td><td class="n"><span class="bg bg-r">3</span></td></tr>
+                <tr><td>Enquiries needing an operator</td><td class="n"><span class="bg bg-r">4</span></td></tr>
+                <tr><td>Unassigned email held</td><td class="n"><span class="bg bg-n">2</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <div class="card-h"><h3>Aged creditors</h3><span>Period 4-week</span></div>
+            <div style="padding:12px 14px;">
+              <div class="bar" style="margin-bottom:10px;">
+                <i style="width:58%;background:#10b981;"></i><i style="width:22%;background:#3b82f6;"></i><i style="width:13%;background:#f59e0b;"></i><i style="width:7%;background:#f43f5e;"></i>
+              </div>
+              <table>
+                <tbody>
+                  <tr><td>Current</td><td class="n mono">168,420.55</td></tr>
+                  <tr><td>Period 1</td><td class="n mono">63,905.10</td></tr>
+                  <tr><td>Period 2</td><td class="n mono">37,760.00</td></tr>
+                  <tr><td>Period 3+</td><td class="n mono">20,314.85</td></tr>
+                  <tr><td style="font-weight:600;color:#111827;">Balance</td><td class="n mono" style="font-weight:700;color:#111827;">290,400.50</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ 2 · STATEMENT DETAIL ══════════════ -->
+<div class="cap">apassist-statement-detail.png</div>
+<div class="screen" id="statement-detail">
+  <aside class="sb">
+    <div class="sb-brand">APAssist</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</div>
+    <div class="sb-item on"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>Statement Queue</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>Enquiries</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M22 7l-8.5 8.5-4-4L2 19"/><path d="M16 7h6v6"/></svg>Aged Creditors</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/></svg>Suppliers</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Invoice Status</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 7l8 6 8-6"/></svg>Unassigned Email</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.82 1.17V21a2 2 0 11-4 0v-.09A1.65 1.65 0 007 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 003.6 15a1.65 1.65 0 00-1.51-1H2a2 2 0 110-4h.09A1.65 1.65 0 003.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 3.6V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0020.4 9V9a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</div>
+  </aside>
+  <div class="fr">
+    <div class="hd">
+      <div class="co">Company <b>Ashfield Group (A)</b></div>
+      <div class="av">FD</div>
+    </div>
+    <div class="bd">
+      <div class="ph">
+        <div>
+          <h1>A032 &middot; Trellis Components Ltd</h1>
+          <div class="sub">Statement to 31/07/2026 &nbsp;·&nbsp; 24 lines &nbsp;·&nbsp; received by email 01/08 09:14</div>
+        </div>
+        <div class="btns">
+          <button class="btn btn-o">Acknowledge</button>
+          <button class="btn btn-p">Approve</button>
+        </div>
+      </div>
+
+      <div class="ban ban-a">
+        <div><b>3 discrepancies.</b> Two statement lines have no match in the purchase ledger, and one ledger item is missing from the statement. Held for review &mdash; nothing has been sent to the supplier.</div>
+      </div>
+
+      <div class="cols" style="grid-template-columns:1fr;gap:12px;">
+        <div class="card">
+          <div class="card-h"><h3>Statement lines</h3><span>21 of 24 matched</span></div>
+          <table>
+            <thead>
+              <tr><th>Reference</th><th class="n">Statement</th><th class="n">Ledger</th><th class="n">Outstanding</th><th>Due</th><th>Ledger state</th><th>Match</th></tr>
+            </thead>
+            <tbody>
+              <tr class="ok"><td class="ref">INV70948</td><td class="n mono">1,240.00</td><td class="n mono">1,240.00</td><td class="n mono">0.00</td><td class="mono">14/07/26</td><td><span class="bg bg-g">paid</span></td><td><span class="bg bg-g">Matched</span></td></tr>
+              <tr class="ok"><td class="ref">INV70972</td><td class="n mono">880.40</td><td class="n mono">880.40</td><td class="n mono">880.40</td><td class="mono">28/08/26</td><td><span class="bg bg-b">posted</span></td><td><span class="bg bg-g">Matched</span></td></tr>
+              <tr class="ok"><td class="ref">INV71002</td><td class="n mono">742.15</td><td class="n mono">742.15</td><td class="n mono">242.15</td><td class="mono">05/09/26</td><td><span class="bg bg-g">part-paid</span></td><td><span class="bg bg-g">Matched</span></td></tr>
+              <tr class="q"><td class="ref">INV70951</td><td class="n mono">3,918.60</td><td class="n mono">&mdash;</td><td class="n mono">&mdash;</td><td class="mono">21/07/26</td><td><span class="bg bg-v">in approval 2/3</span></td><td><span class="bg bg-a">Query</span></td></tr>
+              <tr class="q"><td class="ref">INV71040</td><td class="n mono">515.00</td><td class="n mono">&mdash;</td><td class="n mono">&mdash;</td><td class="mono">&mdash;</td><td><span class="bg bg-n">not found</span></td><td><span class="bg bg-r">Unmatched</span></td></tr>
+              <tr class="q"><td class="ref">INV70915</td><td class="n mono">1,102.00</td><td class="n mono">1,120.00</td><td class="n mono">1,120.00</td><td class="mono">30/06/26</td><td><span class="bg bg-b">posted</span></td><td><span class="bg bg-a">Query</span></td></tr>
+              <tr class="ok"><td class="ref">CRN2214</td><td class="n mono">-260.00</td><td class="n mono">-260.00</td><td class="n mono">0.00</td><td class="mono">12/07/26</td><td><span class="bg bg-g">allocated</span></td><td><span class="bg bg-g">Matched</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><h3>On the ledger, not on the statement</h3><span>The half manual checking misses</span></div>
+          <table>
+            <thead><tr><th>Ledger reference</th><th class="n">Value</th><th class="n">Outstanding</th><th>Due</th><th>Note</th></tr></thead>
+            <tbody>
+              <tr><td class="ref mono">INV70889</td><td class="n mono">2,100.00</td><td class="n mono">2,100.00</td><td class="mono">30/06/26</td><td style="color:#6b7280;">Outstanding with us, absent from their statement</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ 3 · ENQUIRY DETAIL ══════════════ -->
+<div class="cap">apassist-enquiry-detail.png</div>
+<div class="screen" id="enquiry-detail">
+  <aside class="sb">
+    <div class="sb-brand">APAssist</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>Statement Queue</div>
+    <div class="sb-item on"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>Enquiries</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M22 7l-8.5 8.5-4-4L2 19"/><path d="M16 7h6v6"/></svg>Aged Creditors</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/></svg>Suppliers</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Invoice Status</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 7l8 6 8-6"/></svg>Unassigned Email</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.82 1.17V21a2 2 0 11-4 0v-.09A1.65 1.65 0 007 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 003.6 15a1.65 1.65 0 00-1.51-1H2a2 2 0 110-4h.09A1.65 1.65 0 003.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 3.6V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0020.4 9V9a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</div>
+  </aside>
+  <div class="fr">
+    <div class="hd">
+      <div class="co">Company <b>Ashfield Group (A)</b></div>
+      <div class="av">FD</div>
+    </div>
+    <div class="bd">
+      <div class="ph">
+        <div>
+          <h1>Where is payment for INV70951?</h1>
+          <div class="sub">A032 &middot; Trellis Components Ltd &nbsp;·&nbsp; opened 04/08/2026 10:22</div>
+        </div>
+        <div class="btns"><span class="bg bg-a" style="padding:6px 12px;">awaiting review</span></div>
+      </div>
+
+      <div class="cols c-2">
+        <div>
+          <div class="msg">
+            <div class="msg-h"><span class="bg bg-n">inbound</span><b>accounts@trelliscomponents.example</b><span style="margin-left:auto;">04/08 10:22 &middot; email</span></div>
+            <div class="msg-b">Morning &mdash; can you tell me when <span class="hl">70951</span> is being paid? It&rsquo;s well past terms now and I can&rsquo;t see a remittance. Thanks.</div>
+          </div>
+
+          <div class="msg" style="border-color:#bfdbfe;">
+            <div class="msg-h" style="background:#eff6ff;border-color:#dbeafe;"><span class="bg bg-b">draft reply</span><b>Grounded in 2 sources</b><span style="margin-left:auto;">held &mdash; not sent</span></div>
+            <div class="msg-b">
+              Thanks for chasing, and apologies for the wait.<br><br>
+              Invoice <b>INV70951</b> for <b>&pound;3,918.60</b> is with us and currently at the second of three
+              approval stages, so it hasn&rsquo;t yet reached the ledger for payment. Once it clears the
+              final approval it will go into the next payment run.<br><br>
+              I&rsquo;ll come back to you as soon as that happens.
+            </div>
+            <div style="padding:10px 13px;border-top:1px solid #f3f4f6;display:flex;gap:8px;align-items:center;">
+              <button class="btn btn-g">Approve &amp; send</button>
+              <button class="btn btn-o">Edit</button>
+              <button class="btn btn-o">Discard</button>
+              <span style="margin-left:auto;font-size:11px;color:#6b7280;">Auto-send off for this supplier</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div class="card">
+            <div class="card-h"><h3>Reference resolved</h3></div>
+            <div style="padding:12px 14px;">
+              <div class="meta">
+                <span>Supplier wrote</span><b class="mono">70951</b>
+                <span>Matched to</span><b class="mono">INV70951</b>
+                <span>Claimed amount</span><b class="mono">&mdash;</b>
+                <span>Channel</span><b>email</b>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h3>Status sources consulted</h3></div>
+            <table>
+              <thead><tr><th>Source</th><th class="n">Value</th><th>State</th></tr></thead>
+              <tbody>
+                <tr><td>Opera purchase ledger</td><td class="n mono">&mdash;</td><td><span class="bg bg-n">not posted</span></td></tr>
+                <tr><td>AP Automation</td><td class="n mono">3,918.60</td><td><span class="bg bg-v">in approval 2/3</span></td></tr>
+              </tbody>
+            </table>
+            <div style="padding:10px 14px;border-top:1px solid #f3f4f6;font-size:11.5px;color:#6b7280;">
+              Opera is authoritative once posted. Nothing settled found, so the in-flight answer was used.
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><h3>Pre-send checks</h3></div>
+            <table>
+              <tbody>
+                <tr><td>Contradicts the ledger</td><td class="n"><span class="bg bg-g">passed</span></td></tr>
+                <tr><td>Unallocated payments on account</td><td class="n"><span class="bg bg-g">passed</span></td></tr>
+                <tr><td>All sources reachable</td><td class="n"><span class="bg bg-g">passed</span></td></tr>
+                <tr><td>Review of finished draft</td><td class="n"><span class="bg bg-g">passed</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ 4 · AGED CREDITORS ══════════════ -->
+<div class="cap">apassist-aged-creditors.png</div>
+<div class="screen" id="aged-creditors">
+  <aside class="sb">
+    <div class="sb-brand">APAssist</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>Statement Queue</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>Enquiries</div>
+    <div class="sb-item on"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M22 7l-8.5 8.5-4-4L2 19"/><path d="M16 7h6v6"/></svg>Aged Creditors</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/></svg>Suppliers</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Invoice Status</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 7l8 6 8-6"/></svg>Unassigned Email</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.82 1.17V21a2 2 0 11-4 0v-.09A1.65 1.65 0 007 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 003.6 15a1.65 1.65 0 00-1.51-1H2a2 2 0 110-4h.09A1.65 1.65 0 003.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 3.6V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0020.4 9V9a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</div>
+  </aside>
+  <div class="fr">
+    <div class="hd">
+      <div class="co">Company <b>Ashfield Group (A)</b></div>
+      <div class="av">FD</div>
+    </div>
+    <div class="bd">
+      <div class="ph">
+        <div>
+          <h1>Aged Creditors</h1>
+          <div class="sub">As at 18/08/2026 &nbsp;·&nbsp; ageing period 4 weeks &nbsp;·&nbsp; read live from the purchase ledger</div>
+        </div>
+        <div class="btns"><button class="btn btn-o">Export</button></div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi g"><div class="kpi-l">Current</div><div class="kpi-v">168,421</div><div class="kpi-s">58% of the balance</div></div>
+        <div class="kpi b"><div class="kpi-l">Period 1</div><div class="kpi-v">63,905</div><div class="kpi-s">22%</div></div>
+        <div class="kpi a"><div class="kpi-l">Period 2</div><div class="kpi-v">37,760</div><div class="kpi-s">13%</div></div>
+        <div class="kpi r"><div class="kpi-l">Period 3+</div><div class="kpi-v">20,315</div><div class="kpi-s">7% &mdash; chase risk</div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3>By supplier</h3><span>Balance 290,400.50 across 46 accounts</span></div>
+        <table>
+          <thead>
+            <tr><th>Account</th><th>Supplier</th><th class="n">Current</th><th class="n">Period 1</th><th class="n">Period 2</th><th class="n">Period 3+</th><th class="n">Balance</th><th>Enquiries</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="ref mono">A045</td><td>Barrowfield Steel Ltd</td><td class="n mono">41,220.00</td><td class="n mono">18,400.00</td><td class="n mono">6,100.00</td><td class="n mono">0.00</td><td class="n mono" style="font-weight:700;color:#111827;">65,720.00</td><td><span class="bg bg-n">&mdash;</span></td></tr>
+            <tr><td class="ref mono">A032</td><td>Trellis Components Ltd</td><td class="n mono">22,905.40</td><td class="n mono">9,918.60</td><td class="n mono">3,918.60</td><td class="n mono">2,100.00</td><td class="n mono" style="font-weight:700;color:#111827;">38,842.60</td><td><span class="bg bg-a">2 open</span></td></tr>
+            <tr><td class="ref mono">A014</td><td>Northgate Supplies</td><td class="n mono">28,140.15</td><td class="n mono">4,200.00</td><td class="n mono">0.00</td><td class="n mono">0.00</td><td class="n mono" style="font-weight:700;color:#111827;">32,340.15</td><td><span class="bg bg-n">&mdash;</span></td></tr>
+            <tr><td class="ref mono">A008</td><td>Ashcroft Packaging Ltd</td><td class="n mono">18,600.00</td><td class="n mono">7,740.00</td><td class="n mono">2,240.00</td><td class="n mono">1,880.00</td><td class="n mono" style="font-weight:700;color:#111827;">30,460.00</td><td><span class="bg bg-a">1 open</span></td></tr>
+            <tr><td class="ref mono">A003</td><td>Marchwood Timber Co</td><td class="n mono">14,880.00</td><td class="n mono">6,102.50</td><td class="n mono">4,880.00</td><td class="n mono">3,404.85</td><td class="n mono" style="font-weight:700;color:#111827;">29,267.35</td><td><span class="bg bg-r">past SLA</span></td></tr>
+            <tr><td class="ref mono">A021</td><td>Calder Electrical</td><td class="n mono">11,420.00</td><td class="n mono">3,880.00</td><td class="n mono">1,240.00</td><td class="n mono">0.00</td><td class="n mono" style="font-weight:700;color:#111827;">16,540.00</td><td><span class="bg bg-n">&mdash;</span></td></tr>
+            <tr><td class="ref mono">A057</td><td>Pennine Fasteners</td><td class="n mono">9,240.00</td><td class="n mono">2,110.00</td><td class="n mono">880.00</td><td class="n mono">1,240.00</td><td class="n mono" style="font-weight:700;color:#111827;">13,470.00</td><td><span class="bg bg-n">&mdash;</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ 5 · UNASSIGNED EMAIL ══════════════ -->
+<div class="cap">apassist-unassigned-email.png</div>
+<div class="screen" id="unassigned-email">
+  <aside class="sb">
+    <div class="sb-brand">APAssist</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>Dashboard</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>Statement Queue</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>Enquiries</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M22 7l-8.5 8.5-4-4L2 19"/><path d="M16 7h6v6"/></svg>Aged Creditors</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/></svg>Suppliers</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Invoice Status</div>
+    <div class="sb-item on"><svg class="sb-ic" viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 7l8 6 8-6"/></svg>Unassigned Email</div>
+    <div class="sb-item"><svg class="sb-ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.82 1.17V21a2 2 0 11-4 0v-.09A1.65 1.65 0 007 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 003.6 15a1.65 1.65 0 00-1.51-1H2a2 2 0 110-4h.09A1.65 1.65 0 003.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 3.6V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0020.4 9V9a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</div>
+  </aside>
+  <div class="fr">
+    <div class="hd">
+      <div class="co">Company <b>Ashfield Group (A)</b></div>
+      <div class="av">FD</div>
+    </div>
+    <div class="bd">
+      <div class="ph">
+        <div>
+          <h1>Unassigned Email</h1>
+          <div class="sub">Mail from senders not on a supplier&rsquo;s approved list &mdash; held, never processed automatically</div>
+        </div>
+      </div>
+
+      <div class="ban ban-b">
+        <div><b>Why mail lands here.</b> A statement or query only runs automatically when the sending address is on the approved list for that supplier account. Anything else waits for a person to assign it &mdash; which is also how a new contact gets added.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h3>Held for assignment</h3><span>2 items</span></div>
+        <table>
+          <thead><tr><th>Received</th><th>From</th><th>Subject</th><th>Looks like</th><th>Suggested supplier</th><th></th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="mono">18/08 08:41</td>
+              <td>j.hale@pennine-fasteners.example</td>
+              <td>Statement &mdash; July</td>
+              <td><span class="bg bg-b">statement</span></td>
+              <td>A057 &middot; Pennine Fasteners <span class="bg bg-n">domain match</span></td>
+              <td><div class="btns"><button class="btn btn-p">Assign</button><button class="btn btn-o">Ignore</button></div></td>
+            </tr>
+            <tr>
+              <td class="mono">17/08 16:05</td>
+              <td>credit.control@unknown-vendor.example</td>
+              <td>Overdue account &mdash; urgent</td>
+              <td><span class="bg bg-a">payment query</span></td>
+              <td><span style="color:#6b7280;">No match</span></td>
+              <td><div class="btns"><button class="btn btn-p">Assign</button><button class="btn btn-o">Ignore</button></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <div class="card-h"><h3>Recently assigned</h3></div>
+        <table>
+          <thead><tr><th>Received</th><th>From</th><th>Assigned to</th><th>Outcome</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">15/08 11:20</td><td>ap@calder-electrical.example</td><td>A021 &middot; Calder Electrical</td><td><span class="bg bg-g">added to approved list &middot; reconciled</span></td></tr>
+            <tr><td class="mono">14/08 09:02</td><td>accounts@marchwood.example</td><td>A003 &middot; Marchwood Timber Co</td><td><span class="bg bg-g">added to approved list &middot; replied</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
