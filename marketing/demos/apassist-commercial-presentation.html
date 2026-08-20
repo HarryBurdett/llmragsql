@@ -1194,23 +1194,17 @@
     // Narrate the current slide, then advance when the speech finishes —
     // speech length varies by voice and rate, so follow the utterance rather
     // than guessing a duration.
-    function playCurrent() {
-      clearAdvance();
-      stopSpeech();
-      if (!playing) { return; }
-
-      var script = NARRATION[idx];
-      if (muted || !speech || !script) {
-        queueAdvance(SILENT_DWELL);
-        render();
-        return;
-      }
-
+    function speakNow(script, myIdx) {
+      if (!playing || myIdx !== idx) { return; }
+      var started = false;
       utterance = new window.SpeechSynthesisUtterance(script);
       utterance.rate = 0.95;
       utterance.pitch = 1;
       utterance.volume = 1;
+      // Only pin a voice when we actually resolved one: Safari can refuse an
+      // utterance whose voice came from a stale getVoices() list.
       if (voice) { utterance.voice = voice; }
+      utterance.onstart = function () { started = true; };
       utterance.onend = function () {
         if (playing) { queueAdvance(GAP_AFTER_SPEECH); }
       };
@@ -1220,7 +1214,40 @@
         if (playing) { queueAdvance(SILENT_DWELL); }
       };
       window.speechSynthesis.speak(utterance);
+      // Watchdog: if nothing is speaking shortly after we asked, fall back to
+      // the timed advance so a silent failure cannot park the deck for good.
+      setTimeout(function () {
+        if (!playing || myIdx !== idx || started) { return; }
+        var live = false;
+        try { live = window.speechSynthesis.speaking || window.speechSynthesis.pending; } catch (err) { live = false; }
+        if (!live) { queueAdvance(SILENT_DWELL); }
+      }, 600);
       render();
+    }
+
+    function playCurrent() {
+      clearAdvance();
+      if (!playing) { stopSpeech(); return; }
+
+      var script = NARRATION[idx];
+      if (muted || !speech || !script) {
+        stopSpeech();
+        queueAdvance(SILENT_DWELL);
+        render();
+        return;
+      }
+
+      // Safari drops an utterance when cancel() and speak() land in the same
+      // tick, so when genuinely interrupting speech, cancel and let the queue
+      // drain first. On the first play there is nothing to cancel and we must
+      // speak synchronously to stay inside the user gesture that authorises
+      // audio — deferring there would break Safari the other way.
+      var wasSpeaking = false;
+      try { wasSpeaking = window.speechSynthesis.speaking || window.speechSynthesis.pending; } catch (err) { wasSpeaking = false; }
+      stopSpeech();
+      var myIdx = idx;
+      if (wasSpeaking) { setTimeout(function () { speakNow(script, myIdx); }, 80); render(); }
+      else { speakNow(script, myIdx); }
     }
 
     function play() { playing = true; playCurrent(); render(); }
